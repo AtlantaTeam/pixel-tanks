@@ -7,6 +7,13 @@ import { createSeededRandom } from '@/shared/lib/random';
 import { useGameStore } from '../../model/game.store';
 import { GamePlay, type TTanksWeapons } from '../../lib/game-play';
 import { Bullet } from '../../lib/bullet';
+import { calculateDragAim } from '../../lib/drag-aim';
+
+type TDragState = {
+    pointerId: number;
+    startX: number;
+    startY: number;
+};
 
 const WEAPONS_AMOUNT = 10;
 
@@ -28,6 +35,10 @@ type TGameCanvasProps = {
 export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const gameRef = useRef<GamePlay | null>(null);
+    const dragRef = useRef<TDragState | null>(null);
+    // После тач-жеста браузер шлёт синтетический click — глотаем его,
+    // чтобы тап/оттяжка не приводили к повторному выстрелу мышиной схемой.
+    const suppressClickRef = useRef(false);
 
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
@@ -170,10 +181,64 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [selectedWeapon, weapons, moves, selectWeapon, removeWeaponById, increaseAngle]);
 
+    const fireSelectedWeapon = () => {
+        const game = gameRef.current;
+        if (!game || !selectedWeapon || game.isFireMode || !game.leftTank?.isActive) return;
+        game.onFire(selectedWeapon);
+        removeWeaponById(selectedWeapon.id);
+    };
+
     return (
         <canvas
             ref={canvasRef}
             className="game-canvas block h-full w-full touch-none bg-base-200"
+            onPointerDown={(e) => {
+                // Мышь оставляем на своей схеме (движение — угол, клик — выстрел);
+                // жест «оттяни и отпусти» — для touch/pen.
+                if (e.pointerType === 'mouse') return;
+                const game = gameRef.current;
+                if (!game?.leftTank?.isActive || game.isFireMode) return;
+                dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY };
+                try {
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                } catch {
+                    // синтетические события (эмуляция) не имеют активного pointerId
+                }
+            }}
+            onPointerMove={(e) => {
+                const drag = dragRef.current;
+                if (!drag || drag.pointerId !== e.pointerId) return;
+                const aim = calculateDragAim(
+                    { x: drag.startX, y: drag.startY },
+                    { x: e.clientX, y: e.clientY },
+                );
+                if (!aim) return;
+                setAngle(aim.angle);
+                setPower(aim.power);
+            }}
+            onPointerUp={(e) => {
+                const drag = dragRef.current;
+                if (!drag || drag.pointerId !== e.pointerId) return;
+                dragRef.current = null;
+                suppressClickRef.current = true;
+                const game = gameRef.current;
+                const aim = calculateDragAim(
+                    { x: drag.startX, y: drag.startY },
+                    { x: e.clientX, y: e.clientY },
+                );
+                if (!aim || !game?.leftTank || !game.rightTank) return;
+                // Движок обновляем напрямую: store-синк через useEffect может не
+                // успеть примениться до выстрела в этом же обработчике.
+                const [activeTank] = game.getActiveAndTargetTanks(game.leftTank, game.rightTank);
+                activeTank.gunpointAngle = aim.angle;
+                activeTank.power = aim.power;
+                setAngle(aim.angle);
+                setPower(aim.power);
+                fireSelectedWeapon();
+            }}
+            onPointerCancel={() => {
+                dragRef.current = null;
+            }}
             onMouseMove={(e) => {
                 const game = gameRef.current;
                 if (!game || !game.leftTank?.isActive || game.isFireMode || !game.ctx) return;
@@ -189,11 +254,11 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                 if (game?.isAngleMode) game.activateMode('idle');
             }}
             onClick={() => {
-                const game = gameRef.current;
-                if (game && selectedWeapon && !game.isFireMode && game.leftTank?.isActive) {
-                    game.onFire(selectedWeapon);
-                    removeWeaponById(selectedWeapon.id);
+                if (suppressClickRef.current) {
+                    suppressClickRef.current = false;
+                    return;
                 }
+                fireSelectedWeapon();
             }}
         />
     );
