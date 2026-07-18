@@ -1,26 +1,41 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { getAudioEngine } from './audio-engine';
 
 const MUTE_STORAGE_KEY = 'audio-mute';
+const listeners = new Set<() => void>();
+
+function readMuted(): boolean {
+    return localStorage.getItem(MUTE_STORAGE_KEY) === 'true';
+}
+
+// Сервер не знает mute-состояние клиента — до гидратации считаем звук включённым.
+function readServerMuted(): boolean {
+    return false;
+}
+
+function subscribe(onStoreChange: () => void): () => void {
+    listeners.add(onStoreChange);
+    return () => listeners.delete(onStoreChange);
+}
+
+function writeMuted(muted: boolean): void {
+    localStorage.setItem(MUTE_STORAGE_KEY, String(muted));
+    for (const listener of listeners) listener();
+}
 
 export function useMuteState() {
-    const [isMuted, setIsMutedState] = useState<boolean>(false);
-    const [isHydrated, setIsHydrated] = useState(false);
+    const isMuted = useSyncExternalStore(subscribe, readMuted, readServerMuted);
 
+    // Синхронизация внешней системы (движок) с прочитанным React-состоянием —
+    // разрешённый паттерн эффекта, в отличие от setState внутри эффекта.
     useEffect(() => {
-        const stored = localStorage.getItem(MUTE_STORAGE_KEY);
-        const initialMuted = stored === 'true';
-        setIsMutedState(initialMuted);
-        getAudioEngine().setMuted(initialMuted);
-        setIsHydrated(true);
-    }, []);
+        getAudioEngine().setMuted(isMuted);
+    }, [isMuted]);
 
     const setMuted = (muted: boolean) => {
-        setIsMutedState(muted);
-        localStorage.setItem(MUTE_STORAGE_KEY, String(muted));
-        getAudioEngine().setMuted(muted);
+        writeMuted(muted);
     };
 
     const toggle = () => {
@@ -31,6 +46,5 @@ export function useMuteState() {
         isMuted,
         setMuted,
         toggle,
-        isHydrated,
     };
 }
