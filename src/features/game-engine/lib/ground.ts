@@ -119,7 +119,21 @@ export class Ground {
     private decorateWithSand(ctx: CanvasRenderingContext2D, xStart: number, xEnd: number) {
         if (!this.sandImage) return;
         if (!this.sandImagePattern) {
-            this.sandImagePattern = ctx.createPattern(this.sandImage, 'repeat');
+            // Текстура не бесшовная (1920px): на экранах шире стык тайла виден линией.
+            // Зеркальный тайл 2× ширины делает повтор непрерывным. Аллокация одноразовая.
+            const tile = document.createElement('canvas');
+            tile.width = this.sandImage.width * 2;
+            tile.height = this.sandImage.height;
+            const tileCtx = tile.getContext('2d');
+            if (tileCtx) {
+                tileCtx.drawImage(this.sandImage, 0, 0);
+                tileCtx.translate(tile.width, 0);
+                tileCtx.scale(-1, 1);
+                tileCtx.drawImage(this.sandImage, 0, 0);
+                this.sandImagePattern = ctx.createPattern(tile, 'repeat');
+            } else {
+                this.sandImagePattern = ctx.createPattern(this.sandImage, 'repeat');
+            }
         }
         ctx.save();
         if (ctx.globalCompositeOperation !== 'source-atop') {
