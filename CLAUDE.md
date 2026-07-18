@@ -6,17 +6,18 @@
 
 ### Rewrite Pocket Tanks на современный стек
 
-| Шаг                  | Описание                                                                       | Прогресс |
-| -------------------- | ------------------------------------------------------------------------------ | -------- |
-| 1. Каркас            | Next 16 + React 19 + TS + Tailwind 4 + FSD + Steiger                           | ✅ done  |
-| 2. Конвенции         | ESLint flat config, Prettier, vitest, субагенты                                | ✅ done  |
-| 3. Базовая страница  | `app/layout.tsx` + `views/main-page` + QueryProvider                           | ✅ done  |
-| 4. Перенос игры      | Canvas-логика из старого `src/components/Pages/Game/` в `features/game-engine` | ✅ done  |
-| 5. Payload CMS       | Inline-интеграция Payload 3, SQLite-адаптер, коллекции users + scores          | ✅ done  |
-| 6. Auth              | Регистрация / логин через Payload local auth                                   | ⬜ 0%    |
-| 7. Лидерборд         | `views/leaderboard` + TanStack Query + Payload REST                            | ⬜ 0%    |
-| 8. OAuth (Яндекс ID) | Payload OAuth-стратегия, авторизация через Яндекс ID                           | ⬜ 0%    |
-| 9. i18n              | `next-intl`, обернуть все строки в `t('...')`                                  | ⬜ 0%    |
+| Шаг                  | Описание                                                                                                              | Прогресс |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------- | -------- |
+| 1. Каркас            | Next 16 + React 19 + TS + Tailwind 4 + FSD + Steiger                                                                  | ✅ done  |
+| 2. Конвенции         | ESLint flat config, Prettier, vitest, субагенты                                                                       | ✅ done  |
+| 3. Базовая страница  | `app/layout.tsx` + `views/main-page` + QueryProvider                                                                  | ✅ done  |
+| 4. Перенос игры      | Canvas-логика из старого `src/components/Pages/Game/` в `features/game-engine`                                        | ✅ done  |
+| 5. Payload CMS       | Inline-интеграция Payload 3, SQLite-адаптер, коллекции users + scores                                                 | ✅ done  |
+| 6. Game-next         | Мобилка (тач) + клавиатура, juice, оригинальный звук, бот-реплики, daily challenge + реплеи — `docs/game-next/prd.md` | ⬜ 0%    |
+| 7. Auth + профиль    | Регистрация / логин через Payload local auth, страница профиля                                                        | ⬜ 0%    |
+| 8. Лидерборд         | `views/leaderboard` + TanStack Query + Payload REST                                                                   | ⬜ 0%    |
+| 9. OAuth (Яндекс ID) | Payload OAuth-стратегия, авторизация через Яндекс ID                                                                  | ⬜ 0%    |
+| 10. i18n             | `next-intl`, обернуть все строки в `t('...')`                                                                         | ⬜ 0%    |
 
 **Старый код** — в `../pocket-tanks/` (соседняя папка на Desktop). Это референс при портировании, не трогать на запись.
 
@@ -30,7 +31,7 @@
 **Pocket Tanks** — учебная игра в жанре «танковая дуэль» на Canvas. Два танка по углу, силе и ветру стреляют друг в друга. Старая курсовая Яндекс.Практикума (команда «Atlanta Team», 2021), переписывается на современный стек.
 
 **Что переносим:** игру, регистрацию/логин, профиль, лидерборд.
-**Что выкидываем:** Redux + redux-saga, Webpack, connected-react-router, Formik+Yup, Sequelize+Express, Storybook. OAuth Яндекс — возвращаем в фазе 8.
+**Что выкидываем:** Redux + redux-saga, Webpack, connected-react-router, Formik+Yup, Sequelize+Express, Storybook, страницы Forum и Privacy. OAuth Яндекс — возвращаем в фазе 9. Аудио из `static/audio/` (мелодии Андрея) — возвращаем в фазе 6 (game-next).
 
 ## Технологический стек
 
