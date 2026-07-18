@@ -1,10 +1,12 @@
 import Link from 'next/link';
 import { APP_NAME } from '@/shared/config';
+import { SceneMusic } from '@/shared/lib/audio';
 import { buttonClasses } from '@/shared/ui';
 
 export function MainPage() {
     return (
         <main className="flex min-h-dvh flex-col items-center justify-center gap-8 p-6">
+            <SceneMusic track="menu" />
             <h1 className="text-center font-pixel text-2xl text-primary sm:text-4xl">{APP_NAME}</h1>
             <p className="max-w-prose text-center text-muted">
                 Танковая дуэль на Canvas. Управление: мышь — угол, колесо — мощность, клик —

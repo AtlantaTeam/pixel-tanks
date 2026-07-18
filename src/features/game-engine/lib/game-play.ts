@@ -1,5 +1,6 @@
 import type { RefObject } from 'react';
 import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
+import { getAudioEngine } from '@/shared/lib/audio';
 import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
 import { Ground } from './ground';
@@ -30,12 +31,6 @@ const GAME_ASSET_PATHS = {
     sand: '/game/sand.jpg',
 };
 
-const SOUND_PATHS = {
-    fire: '/game/fire.wav',
-    hit: '/game/explosion-hit.wav',
-    miss: '/game/explosion-miss.wav',
-};
-
 export class GamePlay {
     private prevTimestamp = 0;
     ctx: CanvasRenderingContext2D | null | undefined;
@@ -58,12 +53,9 @@ export class GamePlay {
     private isImagesLoaded = false;
     allWeapons: TTanksWeapons;
     callbacks: TGamePlayCallbacks;
-    fireSoundEl: HTMLAudioElement | undefined;
-    explosionMissSoundEl: HTMLAudioElement | undefined;
-    explosionHitSoundEl: HTMLAudioElement | undefined;
+    private readonly audio = getAudioEngine();
     damageAmount = 0;
     rafTimerId: number | undefined;
-    isSoundOn = true;
     private random: TSeededRandom;
     wind = 0;
     private resizeObserver: ResizeObserver | undefined;
@@ -282,9 +274,6 @@ export class GamePlay {
         if (this.ctx) {
             this.ground.draw(this.ctx);
         }
-        this.fireSoundEl = new Audio(SOUND_PATHS.fire);
-        this.explosionMissSoundEl = new Audio(SOUND_PATHS.miss);
-        this.explosionHitSoundEl = new Audio(SOUND_PATHS.hit);
         this.animate();
         this.fullRedraw();
         this.observeResize();
@@ -426,7 +415,7 @@ export class GamePlay {
         this.bullet.move();
         if (this.bullet.isHit(ctx)) {
             if (this.bullet.isTankHit && this.bullet.hittedTank) {
-                this.playSound(this.explosionHitSoundEl);
+                void this.audio.playSfx('hit');
                 this.bullet.hittedTank.jumpOnHit(
                     this.bullet.power,
                     this.bullet.gravity,
@@ -439,7 +428,7 @@ export class GamePlay {
                 });
                 this.damageAmount += this.bullet.power;
             } else {
-                this.playSound(this.explosionMissSoundEl);
+                void this.audio.playSfx('miss');
             }
             this.bullet.drawExplosion(ctx);
         }
@@ -452,14 +441,6 @@ export class GamePlay {
         this.bullet = undefined;
         this.changeActiveTank();
     };
-
-    private playSound(audio: HTMLAudioElement | undefined) {
-        if (!this.isSoundOn || !audio) return;
-        audio.currentTime = 0;
-        audio.play().catch(() => {
-            // browser blocks autoplay until user interaction — игнорируем
-        });
-    }
 
     botFire = () => {
         if (!this.leftTank || !this.rightTank || !this.ground) return;
@@ -566,7 +547,7 @@ export class GamePlay {
             targetTank,
             this.wind,
         );
-        this.playSound(this.fireSoundEl);
+        void this.audio.playSfx('fire');
         activeTank.fire(weaponType);
     };
 
