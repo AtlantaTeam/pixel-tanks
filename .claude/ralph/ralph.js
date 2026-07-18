@@ -145,35 +145,35 @@ function pickReviewModel(milestone) {
 
 // ── Закрытие milestones ──────────────────────────────────────────────────────
 // Milestone закрывается НЕ при создании PR (ревью может вернуть работу),
-// а когда фаза принята: все issues разобраны И PR ветки фазы смерджен.
-// Свип на каждом старте раннера — закрывает хвосты прошлых фаз.
+// а когда фаза принята: все issues разобраны И PR фазы смерджен.
+// Свип на каждом старте раннера — закрывает хвосты прошлых фаз, в том числе
+// уже выпавших из config.phases (для них PR ищется по заголовку
+// «feat: <milestone>» — так его называет сам раннер при создании).
 
 function closeCompletedMilestones() {
     let milestones = [];
+    let mergedPrs = [];
     try {
         milestones = JSON.parse(sh('gh api "repos/{owner}/{repo}/milestones?state=open"'));
+        mergedPrs = JSON.parse(
+            sh('gh pr list --state merged --json title,headRefName --limit 100'),
+        );
     } catch (e) {
-        log(`⚠ Не смог получить milestones для свипа: ${e.message}`);
+        log(`⚠ Не смог получить данные для свипа milestones: ${e.message}`);
         return;
     }
-    for (const phase of config.phases) {
-        const ms = milestones.find((m) => m.title === phase.milestone);
-        if (!ms || ms.open_issues > 0) continue;
-        let merged = false;
-        try {
-            merged =
-                JSON.parse(
-                    sh(`gh pr list --head ${phase.branch} --state merged --json number --limit 1`),
-                ).length > 0;
-        } catch (e) {
-            log(`⚠ Не смог проверить PR ветки ${phase.branch}: ${e.message}`);
-        }
+    for (const ms of milestones) {
+        if (ms.open_issues > 0 || ms.closed_issues === 0) continue;
+        const phase = config.phases.find((p) => p.milestone === ms.title);
+        const merged = mergedPrs.some((pr) =>
+            phase ? pr.headRefName === phase.branch : pr.title === `feat: ${ms.title}`,
+        );
         if (!merged) continue;
         try {
             sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${ms.number} -f state=closed`);
-            log(`🏁 Milestone закрыт: "${phase.milestone}" (issues разобраны, PR смерджен)`);
+            log(`🏁 Milestone закрыт: "${ms.title}" (issues разобраны, PR смерджен)`);
         } catch (e) {
-            log(`⚠ Не смог закрыть milestone "${phase.milestone}": ${e.message}`);
+            log(`⚠ Не смог закрыть milestone "${ms.title}": ${e.message}`);
         }
     }
 }
