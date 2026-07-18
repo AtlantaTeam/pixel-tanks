@@ -199,6 +199,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                 const game = gameRef.current;
                 if (!game?.leftTank?.isActive || game.isFireMode) return;
                 dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY };
+                game.setAimPreviewVisible(true);
                 try {
                     e.currentTarget.setPointerCapture(e.pointerId);
                 } catch {
@@ -222,6 +223,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                 dragRef.current = null;
                 suppressClickRef.current = true;
                 const game = gameRef.current;
+                game?.setAimPreviewVisible(false);
                 const aim = calculateDragAim(
                     { x: drag.startX, y: drag.startY },
                     { x: e.clientX, y: e.clientY },
@@ -238,6 +240,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             }}
             onPointerCancel={() => {
                 dragRef.current = null;
+                gameRef.current?.setAimPreviewVisible(false);
             }}
             onMouseMove={(e) => {
                 const game = gameRef.current;

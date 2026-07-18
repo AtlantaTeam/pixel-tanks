@@ -6,6 +6,7 @@ import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
+import { calculateAimPreviewDots } from './aim-preview';
 
 export type TTanksWeapons = {
     leftTankWeapons: TWeapon[];
@@ -52,6 +53,8 @@ export class GamePlay {
     isFireMode = true;
     isAngleMode = false;
     isMoveMode = false;
+    /** Пунктирная линия прицела видна только во время оттяжки (тач-жест) */
+    showAimPreview = false;
     private isImagesLoaded = false;
     allWeapons: TTanksWeapons;
     callbacks: TGamePlayCallbacks;
@@ -89,6 +92,30 @@ export class GamePlay {
         activeTank.dx = delta;
         this.callbacks.onMovesChange(-1);
     };
+
+    // Управляется жестом «оттяни и отпусти»: показываем пунктир на время драга,
+    // при скрытии форсируем fullRedraw — иначе хвост линии остаётся на песке
+    // до следующей полной перерисовки (выстрел её не гарантирует сразу).
+    setAimPreviewVisible = (visible: boolean) => {
+        if (this.showAimPreview === visible) return;
+        this.showAimPreview = visible;
+        if (!visible) this.fullRedraw();
+    };
+
+    private drawAimPreview(ctx: CanvasRenderingContext2D) {
+        if (!this.leftTank || !this.rightTank) return;
+        const [activeTank] = this.getActiveAndTargetTanks(this.leftTank, this.rightTank);
+        const dots = calculateAimPreviewDots(
+            { x: activeTank.gunpointX, y: activeTank.gunpointY },
+            activeTank.gunpointAngle,
+            activeTank.power,
+        );
+        const dotSize = 3;
+        ctx.fillStyle = '#ffcd75';
+        for (const dot of dots) {
+            ctx.fillRect(dot.x - dotSize / 2, dot.y - dotSize / 2, dotSize, dotSize);
+        }
+    }
 
     changeTankPower = (delta: number) => {
         if (!this.leftTank || !this.rightTank || !this.leftTank.isActive) return;
@@ -339,6 +366,12 @@ export class GamePlay {
     };
 
     private tankAreaRedraw(tanks: Tank[]) {
+        // Линия прицела может выходить далеко за паддинг вокруг танка — точечная
+        // перерисовка её не очистит, поэтому во время оттяжки берём fullRedraw.
+        if (this.showAimPreview) {
+            this.fullRedraw();
+            return;
+        }
         this.redrawGroundUnderTanks(tanks);
         tanks.forEach((tank) => {
             if (this.ctx && this.ground) {
@@ -370,6 +403,7 @@ export class GamePlay {
         this.ground.draw(this.ctx);
         this.leftTank.draw(this.ctx, this.mousePos, this.ground);
         this.rightTank.draw(this.ctx, this.mousePos, this.ground);
+        if (this.showAimPreview) this.drawAimPreview(this.ctx);
     }
 
     private redrawGroundUnderTanks(tanks: Tank[]) {
