@@ -1,45 +1,43 @@
 # Session Handoff
 
-**Дата**: 2026-07-18
+**Дата**: 2026-07-18 (вечер)
 
 ## Текущая задача
 
-Game-next (фазы 4–9). **Фаза 4 (клавиатура) завершена и смерджена** (#46).
-Ralph loop переписан на **полный AFK-цикл сдачи фазы** и укреплён по ревью fable.
-Всё смерджено, main чистый — готово к рестарту loop **после решения по C3**.
-
-## Что сделано в этой сессии
-
-- **Redesign ralph.js**: после закрытия issues фазы loop сам гонит
-  `PR → code review (отд. модель) → авто-правки по ревью → детерминированный
-гейт → squash-merge → следующая фаза`. Гейт (раннер сам, не доверяя агенту):
-  нет `blocked` + локальный HEAD==голова PR + зелёные `build/lint/lint:fsd/
-typecheck/test`. Красный/blocked → PR человеку, loop стоп. Смерджено в #47.
-- **Ревью fable** всей ralph-инфры → исправлены ВСЕ находки (C1–C4, H1–H4,
-  M1–M8, часть Low) с подробными комментариями. Ключевое: C1 (`--dry-run`
-  read-only), C2 (blocked/чужие issues блокируют сдачу), **C3 (`authorAllowlist:
-["Pelmenya"]` против инъекции — репо PUBLIC + bypassPermissions)**, C4
-  (preflight-инвариант «прошлые фазы смерджены» + state по имени milestone).
-- **Мерджи**: инфра #47 + Фаза 4 #46. Milestone Фазы 4 закрыт. Заведён **#48**
-  (полировка клавиатуры по ревью, milestone Фаза 6, low).
+Game-next AFK через ralph loop. **Фаза 5 «Оригинальный звук» смерджена** (PR #50,
+milestone #5 закрыт). Идёт **Фаза 6 «Juice-пакет»** — на момент паузы 2/7 закрыто
+(#21 пул частиц, #22), активный issue #23 (след пули). Дима устал → пауза, рестарт завтра.
 
 ## Состояние на сейчас
 
-- main = origin/main = `7c16105` (чисто). state = `{count:0, milestone:"Фаза 4",
-submitted:false}` — loop на рестарте увидит Фазу 4 смердженной и сам перейдёт
-  на Фазу 5 (проверено `--dry-run`).
-- state/log — gitignored (ensureClean их не видит). authorAllowlist=["Pelmenya"].
+- `ralph.state.json` = `{count:3, milestone:"Фаза 6: Juice-пакет", submitted:false}` — персистентный,
+  рестарт продолжит Фазу 6 с открытых issues.
+- Фоновый `node ralph.js` при закрытии терминала прервётся посреди #23 → **дерево останется
+  грязным** (bullet-trail.ts/.test.ts, shared/lib/animation/, M game-play.ts, M game-controls.tsx).
+- Наблюдающий heartbeat-loop остановлен.
 
-## Следующие шаги
+## Готово, но НЕ применено (ждёт завтра)
 
-1. **РЕШИТЬ C3** (операционный слой, за Димой): гонять AFK на public-репо как
-   есть (allowlist прикрывает код-слой, но не 100%) / сделать репо private на
-   время прогонов / песочница-VM. Раннер видимость репо НЕ меняет.
-2. Рестарт: `node .claude/ralph/ralph.js` (фоново) → AFK по фазам 5–9.
-   Теперь loop **сам мерджит** на зелёном гейте и **стоит** на красном/blocked.
-3. Финальный гейт после Фазы 9 — `/code-review ultra` по всему game-next.
+Улучшение ralph по просьбе Димы «чинить всё вплоть до мелких»:
+
+- Патч промптов ревью/правок: `.claude/ralph/pending-review-improvements.patch` (durable, в git-exclude).
+  Ревьюер маркирует severity [blocker/major/minor/nit] и выдаёт мелочи; fix-шаг чинит КАЖДЫЙ
+  комментарий (пропуск — только с обоснованием в PR).
+- ЕЩЁ не написано: авто-закрытие milestone сразу после мерджа фазы (сейчас `closeCompletedMilestones()`
+  зовётся только на старте раннера, ~стр 560 → milestone Фазы висит open до следующего рестарта).
+
+## Чеклист рестарта (завтра, по порядку)
+
+1. `git status` — если грязно от прерванного #23: `git checkout -- .` + удалить untracked
+   (`bullet-trail.*`, `src/shared/lib/animation/`). Issue #23 останется открыт — loop переделает.
+2. `git apply .claude/ralph/pending-review-improvements.patch` → проверить `node --check .claude/ralph/ralph.js`.
+3. Дописать в `ralph.js` фикс милстоуна: после `gate==='merged'` (~стр 805) закрывать milestone фазы
+   через `gh api -X PATCH .../milestones/{n} -f state=closed`.
+4. Закоммитить ralph.js в текущую ветку `feature/phase-6-juice` (уедет в PR Фазы 6) — дерево чистое.
+5. `node .claude/ralph/ralph.js` (фон) → продолжит Фазу 6 уже с улучшенным ревью.
+6. Мониторинг: `node .claude/ralph/monitor.js` (обновление 5 мин; в git-exclude, коммитить не нужно).
 
 ## Open questions
 
-- C3: public vs private vs песочница — до рестарта AFK.
-- OPENAI_API_KEY для генерации артов (Фаза 6) — Дима в .env.local по запросу.
+- C3 (public-репо + bypassPermissions на AFK) — прикрыт allowlist=[Pelmenya], операционный слой за Димой.
+- OPENAI_API_KEY для артов (если Фаза 6/juice потребует генерации) — Дима в .env.local по запросу.
