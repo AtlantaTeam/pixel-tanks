@@ -176,7 +176,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     return (
         <canvas
             ref={canvasRef}
-            className="game-canvas block w-full h-full bg-base-200"
+            className="game-canvas block h-full w-full touch-none bg-base-200"
             onMouseMove={(e) => {
                 const game = gameRef.current;
                 if (!game || !game.leftTank?.isActive || game.isFireMode || !game.ctx) return;

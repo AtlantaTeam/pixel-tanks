@@ -8,7 +8,7 @@ type TGamePageProps = {
 
 export function GamePage({ seed }: TGamePageProps = {}) {
     return (
-        <main className="flex h-dvh flex-col">
+        <main className="safe-area-inset flex h-dvh flex-col overflow-hidden">
             <div className="relative flex-1 overflow-hidden">
                 <GameCanvas seed={seed} />
             </div>

@@ -35,9 +35,19 @@
         4px 0 0 0 var(--pixel-border-color, currentColor);
 }
 
+/* Отступы под чёлку/скруглённые углы/жест-бар (iOS notch, Android gesture nav).
+   viewport-fit: cover в metadata — без него env() всегда резолвится в 0. */
+@utility safe-area-inset {
+    padding-top: env(safe-area-inset-top);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+}
+
 html,
 body {
     height: 100%;
+    overflow-x: hidden;
 }
 
 body {
