@@ -9,9 +9,20 @@ import { Bullet } from './bullet';
 import { generateWind } from './wind';
 import { calculateAimPreviewDots } from './aim-preview';
 import { ParticlePool, damageFlashBurst, groundBurst } from './particle-pool';
+import { CameraShake } from './camera-shake';
+import { SlowMotion } from './slow-motion';
 
 /** Ёмкости пула хватает на одновременный залп земли и вспышку урона. */
 const PARTICLE_CAPACITY = 96;
+
+/** Травма screen shake при промахе (взрыв по земле) — короткий толчок. */
+const MISS_SHAKE_TRAUMA = 0.5;
+/** Травма при прямом попадании в танк — заметно сильнее промаха. */
+const HIT_SHAKE_TRAUMA = 0.85;
+/** Запас очистки при сдвиге сцены во время тряски, CSS-пиксели. */
+const SHAKE_CLEAR_PAD = 4;
+/** Базовый интервал шага симуляции (~66 к/с). Slow-mo растягивает его. */
+const BASE_FRAME_INTERVAL_MS = 15;
 
 export type TTanksWeapons = {
     leftTankWeapons: TWeapon[];
@@ -67,6 +78,17 @@ export class GamePlay {
     // Пул частиц взрыва: комья земли (промах) и вспышка урона (попадание в танк).
     // Живёт весь бой, объекты переиспользуются — аллокаций в кадре нет.
     private readonly particles: ParticlePool;
+    // Screen shake (тряска сцены) и slow-mo (замедление времени) — «сочность»
+    // удара. Оба чистые, детерминированы seed'ом движка. Смещение применяется
+    // в fullRedraw, масштаб времени — в throttle игрового цикла.
+    private readonly camera: CameraShake;
+    private readonly slowMo: SlowMotion;
+    // Отметка последнего кадра rAF: реальный dt для затухания shake/slow-mo,
+    // считается КАЖДЫЙ кадр (в т.ч. пропущенные throttle'ом).
+    private lastFrameTs = 0;
+    // Тряска была в прошлом кадре — чтобы один раз «доосадить» сцену в базовое
+    // положение, когда дрожание закончилось (иначе остаётся суб-пиксельный сдвиг).
+    private wasShaking = false;
 
     constructor(
         canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -76,6 +98,8 @@ export class GamePlay {
     ) {
         this.random = random;
         this.particles = new ParticlePool(PARTICLE_CAPACITY, random);
+        this.camera = new CameraShake(random);
+        this.slowMo = new SlowMotion();
         this.canvasRef = canvasRef;
         this.mousePos = null;
         this.allWeapons = allWeapons;
@@ -309,25 +333,45 @@ export class GamePlay {
     animate = () => {
         this.rafTimerId = requestAnimationFrame(this.animate);
         const now = performance.now();
+        // Реальный dt между кадрами rAF — для затухания shake и slow-mo независимо
+        // от throttle (иначе замедление/тряска «зависли» бы вместе с симуляцией).
+        const frameDt = this.lastFrameTs ? now - this.lastFrameTs : 0;
+        this.lastFrameTs = now;
         this.checkGameOver();
+
+        // Slow-mo растягивает интервал шага: масштаб < 1 → шаги реже → взрыв,
+        // частицы и осыпание земли идут в замедлении.
+        const timeScale = this.slowMo.update(frameDt);
+        const minInterval = BASE_FRAME_INTERVAL_MS / timeScale;
         const particlesAlive = this.particles.hasAlive();
+        const shakeActive = this.camera.isActive();
         if (
-            now - this.prevTimestamp < 15 ||
+            now - this.prevTimestamp < minInterval ||
             !this.ctx ||
             !this.leftTank ||
             !this.rightTank ||
             !this.ground ||
-            // Пока частицы летят — крутим цикл даже в idle, чтобы их дорисовать
-            (this.isIdleMode() && !particlesAlive)
+            // Пока частицы летят или сцена дрожит — крутим цикл даже в idle
+            (this.isIdleMode() && !particlesAlive && !shakeActive)
         ) {
+            // Тряска только что закончилась в тихом кадре — вернём сцену на место.
+            if (this.wasShaking && !shakeActive && this.ctx) {
+                this.fullRedraw();
+                this.wasShaking = false;
+            }
             return;
         }
 
+        const stepDt = now - this.prevTimestamp;
         this.prevTimestamp = now;
-        if (particlesAlive) {
-            // Частицы разлетаются далеко за полосу точечной перерисовки взрыва —
-            // пока они живы, перерисовываем сцену целиком, иначе остаются хвосты.
-            this.particles.update();
+        // Дрожание — по реальному времени шага, чтобы длительность не зависела
+        // от FPS/slow-mo (смещение пересчитывается и применяется в fullRedraw).
+        this.camera.update(stepDt);
+        this.wasShaking = this.camera.isActive();
+        if (particlesAlive || shakeActive) {
+            // Частицы разлетаются далеко за полосу точечной перерисовки взрыва, а
+            // тряска сдвигает всю сцену — в обоих случаях перерисовываем целиком.
+            if (particlesAlive) this.particles.update();
             this.fullRedraw();
         } else if (
             (this.isFireMode && (!this.bullet || this.bullet.explosionRadius)) ||
@@ -372,6 +416,13 @@ export class GamePlay {
         if (particlesAlive) {
             this.particles.draw(this.ctx);
         }
+
+        // fullRedraw мог оставить сдвиг тряски в трансформе — сбрасываем в базу,
+        // чтобы следующий кадр с точечной перерисовкой не чистил смещённую область.
+        if (this.camera.offsetX || this.camera.offsetY) {
+            const dpr = getDevicePixelRatio();
+            this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
     };
 
     private tankAreaRedraw(tanks: Tank[]) {
@@ -408,7 +459,16 @@ export class GamePlay {
 
     fullRedraw() {
         if (!this.ctx || !this.leftTank || !this.rightTank || !this.ground) return;
-        this.ctx.clearRect(0, 0, this.innerWidth, this.innerHeight);
+        // Screen shake: сдвигаем всю сцену на смещение камеры (0 вне тряски).
+        // Трансформ включает dpr, сдвиг задаём в CSS-пикселях (× dpr).
+        const ox = this.camera.offsetX;
+        const oy = this.camera.offsetY;
+        const dpr = getDevicePixelRatio();
+        this.ctx.setTransform(dpr, 0, 0, dpr, ox * dpr, oy * dpr);
+        // Чистим с запасом на сдвиг, иначе на краю остаётся полоса прошлого кадра.
+        const padX = SHAKE_CLEAR_PAD + Math.abs(ox);
+        const padY = SHAKE_CLEAR_PAD + Math.abs(oy);
+        this.ctx.clearRect(-padX, -padY, this.innerWidth + padX * 2, this.innerHeight + padY * 2);
         this.ground.draw(this.ctx);
         this.leftTank.draw(this.ctx, this.mousePos, this.ground);
         this.rightTank.draw(this.ctx, this.mousePos, this.ground);
@@ -439,8 +499,13 @@ export class GamePlay {
             if (this.bullet.explosionRadius === 0) {
                 if (this.bullet.isTankHit) {
                     this.particles.emitBurst(damageFlashBurst(this.bullet.x, this.bullet.y));
+                    // Попадание в танк: сильная тряска + короткий slow-mo для веса удара.
+                    this.camera.addTrauma(HIT_SHAKE_TRAUMA);
+                    this.slowMo.trigger();
                 } else {
                     this.particles.emitBurst(groundBurst(this.bullet.x, this.bullet.y));
+                    // Промах по земле: только лёгкая тряска, без замедления.
+                    this.camera.addTrauma(MISS_SHAKE_TRAUMA);
                 }
             }
             if (this.bullet.isTankHit && this.bullet.hittedTank) {
