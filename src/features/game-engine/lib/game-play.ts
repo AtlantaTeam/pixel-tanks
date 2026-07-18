@@ -11,6 +11,7 @@ import { calculateAimPreviewDots } from './aim-preview';
 import { ParticlePool, damageFlashBurst, groundBurst } from './particle-pool';
 import { CameraShake } from './camera-shake';
 import { SlowMotion } from './slow-motion';
+import { BulletTrail } from './bullet-trail';
 
 /** Ёмкости пула хватает на одновременный залп земли и вспышку урона. */
 const PARTICLE_CAPACITY = 96;
@@ -83,6 +84,9 @@ export class GamePlay {
     // в fullRedraw, масштаб времени — в throttle игрового цикла.
     private readonly camera: CameraShake;
     private readonly slowMo: SlowMotion;
+    // Затухающий след снаряда: точки следа сами очищают свой прошлый прямоугольник
+    // (см. bullet-trail.ts), поэтому полёт снаряда не требует fullRedraw каждый кадр.
+    private readonly trail: BulletTrail;
     // Отметка последнего кадра rAF: реальный dt для затухания shake/slow-mo,
     // считается КАЖДЫЙ кадр (в т.ч. пропущенные throttle'ом).
     private lastFrameTs = 0;
@@ -100,6 +104,7 @@ export class GamePlay {
         this.particles = new ParticlePool(PARTICLE_CAPACITY, random);
         this.camera = new CameraShake(random);
         this.slowMo = new SlowMotion();
+        this.trail = new BulletTrail();
         this.canvasRef = canvasRef;
         this.mousePos = null;
         this.allWeapons = allWeapons;
@@ -345,14 +350,15 @@ export class GamePlay {
         const minInterval = BASE_FRAME_INTERVAL_MS / timeScale;
         const particlesAlive = this.particles.hasAlive();
         const shakeActive = this.camera.isActive();
+        const trailActive = this.trail.hasActive();
         if (
             now - this.prevTimestamp < minInterval ||
             !this.ctx ||
             !this.leftTank ||
             !this.rightTank ||
             !this.ground ||
-            // Пока частицы летят или сцена дрожит — крутим цикл даже в idle
-            (this.isIdleMode() && !particlesAlive && !shakeActive)
+            // Пока частицы летят, сцена дрожит или дотлевает след снаряда — крутим цикл даже в idle
+            (this.isIdleMode() && !particlesAlive && !shakeActive && !trailActive)
         ) {
             // Тряска только что закончилась в тихом кадре — вернём сцену на место.
             if (this.wasShaking && !shakeActive && this.ctx) {
@@ -412,9 +418,14 @@ export class GamePlay {
 
         this.moveBullet(this.ctx);
 
-        // Частицы — поверх всего (сцена, взрыв, снаряд уже нарисованы этим кадром)
+        // Частицы и след — поверх всего (сцена, взрыв, снаряд уже нарисованы этим кадром).
+        // Каждая точка следа сама очищает свой прошлый прямоугольник (bullet-trail.ts),
+        // поэтому trail.draw безопасен и без fullRedraw этого кадра.
         if (particlesAlive) {
             this.particles.draw(this.ctx);
+        }
+        if (trailActive) {
+            this.trail.draw(this.ctx);
         }
 
         // fullRedraw мог оставить сдвиг тряски в трансформе — сбрасываем в базу,
@@ -493,6 +504,11 @@ export class GamePlay {
     moveBullet = (ctx: CanvasRenderingContext2D) => {
         if (!this.isFireMode || !this.bullet) return;
         this.bullet.move();
+        // explosionRadius === 0 значит снаряд ещё летит (взрыв этого тика не начат) —
+        // след кладём только вдоль полёта, не поверх растущего взрыва.
+        if (this.bullet.explosionRadius === 0) {
+            this.trail.emit(this.bullet.x, this.bullet.y);
+        }
         if (this.bullet.isHit(ctx)) {
             // explosionRadius === 0 только в первый кадр взрыва — эмитим залп один раз,
             // дальше drawExplosion его инкрементирует и повторного эмита не будет.
