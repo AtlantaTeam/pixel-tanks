@@ -17,7 +17,16 @@ function readServerMuted(): boolean {
 
 function subscribe(onStoreChange: () => void): () => void {
     listeners.add(onStoreChange);
-    return () => listeners.delete(onStoreChange);
+    // Событие 'storage' прилетает только из других вкладок — подхватываем их mute,
+    // чтобы состояние не разъезжалось между открытыми вкладками игры.
+    const onStorage = (e: StorageEvent) => {
+        if (e.key === MUTE_STORAGE_KEY) onStoreChange();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+        listeners.delete(onStoreChange);
+        window.removeEventListener('storage', onStorage);
+    };
 }
 
 function writeMuted(muted: boolean): void {

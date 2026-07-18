@@ -14,6 +14,20 @@ function resolveAudioContextCtor(): TAudioContextCtor | undefined {
     return window.AudioContext ?? w.webkitAudioContext;
 }
 
+// Единый источник истины mute — localStorage; движок читает его сам, чтобы
+// сохранённое состояние применялось на любой странице (в т.ч. меню, где хук
+// useMuteState не смонтирован), а не только там, где висит кнопка mute.
+const MUTE_STORAGE_KEY = 'audio-mute';
+
+function readMutedFromStorage(): boolean {
+    if (typeof localStorage === 'undefined') return false;
+    try {
+        return localStorage.getItem(MUTE_STORAGE_KEY) === 'true';
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Аудио-движок на WebAudio: декодирует буферы через AudioContext, играет
  * одноразовые эффекты боя (fire/hit/miss) и зацикленную музыку сцены
@@ -33,7 +47,14 @@ export class AudioEngine {
     private readonly loading = new Map<string, Promise<AudioBuffer | null>>();
     private currentMusic: TMusicTrack | null = null;
     private musicSource: AudioBufferSourceNode | null = null;
-    private muted = false;
+    private muted: boolean;
+
+    constructor() {
+        // Инициализируем mute из сохранённого состояния при создании синглтона —
+        // так mute применяется на любой странице (в т.ч. меню), а не только там,
+        // где смонтирован хук useMuteState с кнопкой.
+        this.muted = readMutedFromStorage();
+    }
 
     private ensureContext(): AudioContext | null {
         if (this.ctx) return this.ctx;
@@ -83,11 +104,14 @@ export class AudioEngine {
         const promise = (async () => {
             try {
                 const res = await fetch(url);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const raw = await res.arrayBuffer();
                 const buffer = await ctx.decodeAudioData(raw);
                 this.buffers.set(url, buffer);
                 return buffer;
-            } catch {
+            } catch (err) {
+                // Деградируем тихо (звук опционален), но оставляем след для отладки.
+                console.warn(`[audio] не удалось загрузить ${url}:`, err);
                 return null;
             } finally {
                 this.loading.delete(url);
@@ -122,8 +146,14 @@ export class AudioEngine {
 
         this.stopMusicSource();
         const buffer = await this.loadBuffer(MUSIC_SOURCES[track]);
+        if (!buffer) {
+            // Загрузка сорвалась (транзиентный сбой fetch/decode) — сбрасываем
+            // currentMusic, иначе ранний return выше навсегда отсёк бы повтор.
+            if (this.currentMusic === track) this.currentMusic = null;
+            return;
+        }
         // Пока грузился буфер, сцена могла смениться снова — не перебиваем новый трек.
-        if (!buffer || this.currentMusic !== track) return;
+        if (this.currentMusic !== track) return;
 
         const source = ctx.createBufferSource();
         source.buffer = buffer;

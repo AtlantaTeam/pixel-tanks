@@ -84,7 +84,7 @@ describe('AudioEngine with mocked WebAudio', () => {
         window.AudioContext = vi.fn(() => ctx);
         vi.stubGlobal(
             'fetch',
-            vi.fn(async () => ({ arrayBuffer: async () => new ArrayBuffer(8) })),
+            vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) })),
         );
     });
 
@@ -158,7 +158,7 @@ describe('AudioEngine with mocked WebAudio', () => {
     it('stays silent and caches nothing when the buffer fails to decode', async () => {
         vi.stubGlobal(
             'fetch',
-            vi.fn(async () => ({ arrayBuffer: async () => new ArrayBuffer(8) })),
+            vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) })),
         );
         ctx.decodeAudioData.mockRejectedValueOnce(new Error('bad data'));
         const engine = new AudioEngine();

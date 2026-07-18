@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useMuteState } from './use-mute-state';
+import { getAudioEngine } from './audio-engine';
 
 describe('useMuteState', () => {
     beforeEach(() => {
@@ -56,6 +57,7 @@ describe('useMuteState', () => {
     });
 
     it('applies mute state to audio engine', () => {
+        const setMutedSpy = vi.spyOn(getAudioEngine(), 'setMuted');
         const { result } = renderHook(() => useMuteState());
 
         act(() => {
@@ -63,5 +65,6 @@ describe('useMuteState', () => {
         });
 
         expect(result.current.isMuted).toBe(true);
+        expect(setMutedSpy).toHaveBeenCalledWith(true);
     });
 });
