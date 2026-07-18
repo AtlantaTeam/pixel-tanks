@@ -134,4 +134,45 @@ describe('AudioEngine with mocked WebAudio', () => {
         await flush();
         expect(ctx.resume).toHaveBeenCalled();
     });
+
+    it('silences the master gain when muted after the context exists', async () => {
+        const engine = new AudioEngine();
+        await engine.playSfx('fire');
+        const masterGain = ctx.createGain.mock.results[0]!.value as TMockNode;
+
+        engine.setMuted(true);
+        expect(masterGain.gain.setValueAtTime).toHaveBeenLastCalledWith(0, ctx.currentTime);
+
+        engine.setMuted(false);
+        expect(masterGain.gain.setValueAtTime).toHaveBeenLastCalledWith(1, ctx.currentTime);
+    });
+
+    it('applies a pre-existing mute state to the master gain on context creation', async () => {
+        const engine = new AudioEngine();
+        engine.setMuted(true);
+        await engine.playSfx('fire');
+        const masterGain = ctx.createGain.mock.results[0]!.value as TMockNode;
+        expect(masterGain.gain.value).toBe(0);
+    });
+
+    it('stays silent and caches nothing when the buffer fails to decode', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => ({ arrayBuffer: async () => new ArrayBuffer(8) })),
+        );
+        ctx.decodeAudioData.mockRejectedValueOnce(new Error('bad data'));
+        const engine = new AudioEngine();
+        await expect(engine.playSfx('fire')).resolves.toBeUndefined();
+        expect(ctx.sources).toHaveLength(0);
+    });
+
+    it('does not throw when stopping a music source that was never started', async () => {
+        const engine = new AudioEngine();
+        await engine.playMusic('menu');
+        await flush();
+        ctx.sources[0]!.stop.mockImplementationOnce(() => {
+            throw new Error('cannot stop before start');
+        });
+        await expect(engine.playMusic('battle')).resolves.toBeUndefined();
+    });
 });
