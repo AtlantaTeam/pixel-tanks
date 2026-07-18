@@ -8,9 +8,11 @@
  *
  *   пока есть открытые issues в milestone фазы:
  *     claude -p "возьми следующий issue и реализуй"     (1 issue = 1 сессия = чистый контекст)
- *   issues кончились:
- *     claude -p "создай PR"  →  claude -p "проведи code review" (отдельная модель)
- *     переход к следующей фазе
+ *   issues кончились (фаза готова) — полный AFK-цикл сдачи:
+ *     claude -p "создай PR" → claude -p "code review" (отдельная модель, блокеры→label blocked)
+ *       → claude -p "правки по ревью" → детерминированный гейт (раннер сам: нет blocked +
+ *       зелёные lint/lint:fsd/typecheck/test) → squash-merge → переход к следующей фазе.
+ *     Гейт красный/blocked → PR оставлен человеку, loop стоп (следующая фаза зависима).
  *
  * Circuit breaker: maxIterations (на фазу), maxTurns (на сессию),
  * maxTestAttempts — в ralph.md как правило для агента.
@@ -178,6 +180,91 @@ function closeCompletedMilestones() {
     }
 }
 
+// ── AFK-гейт мерджа фазы ─────────────────────────────────────────────────────
+// После PR → ревью → авто-правки раннер САМ проверяет качество (детерминированно,
+// не доверяя агенту на слово): PR не помечен 'blocked' И зелёные все чеки.
+// Зелёно → squash-merge, main обновляется, переход к следующей фазе (полный AFK).
+// Красно / blocked / мердж не удался → PR оставлен человеку, loop останавливается.
+
+const GATE_CHECKS = [
+    ['lint', 'npm run lint'],
+    ['lint:fsd', 'npm run lint:fsd'],
+    ['typecheck', 'npm run typecheck'],
+    ['test', 'npm run test --silent'],
+];
+
+function findOpenPr(branch) {
+    try {
+        const prs = JSON.parse(sh(`gh pr list --head ${branch} --state open --json number,labels`));
+        return prs[0] || null;
+    } catch (e) {
+        log(`⚠ Не смог получить PR ветки ${branch}: ${e.message}`);
+        return null;
+    }
+}
+
+// Чеки прогоняются на коде ветки — переключаемся на неё. true только если ВСЕ зелёные.
+function checksGreen(branch) {
+    try {
+        sh(`git checkout ${branch}`);
+    } catch (e) {
+        log(`⚠ Не смог переключиться на ${branch} для прогонки чеков: ${e.message}`);
+        return false;
+    }
+    for (const [name, cmd] of GATE_CHECKS) {
+        try {
+            sh(cmd);
+            log(`  ✓ ${name}`);
+        } catch {
+            log(`  ✗ ${name} — красный, авто-мердж отменён`);
+            return false;
+        }
+    }
+    return true;
+}
+
+// Фаза уже смерджена (авто-мерджем прошлого прогона ИЛИ вручную человеком)?
+// Нужно, чтобы после ручного мерджа loop не зациклился на пересоздании PR, а
+// просто перешёл к следующей фазе.
+function phaseMerged(phase) {
+    try {
+        const merged = JSON.parse(
+            sh(`gh pr list --head ${phase.branch} --state merged --json number --limit 1`),
+        );
+        return merged.length > 0;
+    } catch (e) {
+        log(`⚠ Не смог проверить мердж-статус ветки ${phase.branch}: ${e.message}`);
+        return false;
+    }
+}
+
+// Гейт мерджа фазы. true = смерджено и main обновлён; false = оставлено человеку.
+function tryMergePhase(phase) {
+    const pr = findOpenPr(phase.branch);
+    if (!pr) {
+        log(`⛔ Гейт: открытый PR ветки ${phase.branch} не найден — мердж невозможен.`);
+        return false;
+    }
+    if ((pr.labels || []).some((l) => l.name === 'blocked')) {
+        log(`⛔ Гейт: PR #${pr.number} помечен 'blocked' — оставлен человеку.`);
+        return false;
+    }
+    if (!checksGreen(phase.branch)) {
+        log(`⛔ Гейт: чеки красные на PR #${pr.number} — оставлен человеку.`);
+        return false;
+    }
+    try {
+        sh(`gh pr merge ${pr.number} --squash --delete-branch`);
+        sh('git checkout main');
+        sh('git pull --ff-only');
+        log(`✅ PR #${pr.number} смерджен (squash), main обновлён.`);
+        return true;
+    } catch (e) {
+        log(`⛔ Гейт: мердж PR #${pr.number} не удался (${e.message}) — оставлен человеку.`);
+        return false;
+    }
+}
+
 // ── Preflight ────────────────────────────────────────────────────────────────
 
 const config = loadJson(CONFIG_PATH, null);
@@ -218,7 +305,7 @@ const state = loadJson(STATE_PATH, { count: 0, phaseIndex: 0 });
 if (ONCE) state.count = 0;
 
 log(
-    `🚀 Ralph start | mode=${ONCE ? 'HITL (1 итерация)' : 'AFK'} | dry=${DRY} | фаза ${state.phaseIndex + 1}/${config.phases.length}, итерация ${state.count}`,
+    `🚀 Ralph start | mode=${ONCE ? 'HITL (1 итерация)' : 'AFK'} | dry=${DRY} | ${config.phases[state.phaseIndex]?.milestone ?? '—'} (${state.phaseIndex + 1}/${config.phases.length}), итерация ${state.count}`,
 );
 
 // ── Main loop ────────────────────────────────────────────────────────────────
@@ -247,7 +334,7 @@ while (true) {
         const next = issues[0];
         const issueModel = pickModel(next);
         log(
-            `🔄 Фаза ${state.phaseIndex + 1} | итерация ${state.count}/${maxIterations} | Issue #${next.number}: ${next.title} | модель: ${issueModel} | осталось: ${issues.length}`,
+            `🔄 ${phase.milestone} | итерация ${state.count}/${maxIterations} | Issue #${next.number}: ${next.title} | модель: ${issueModel} | осталось: ${issues.length}`,
         );
 
         const prompt = (config.prompt || '')
@@ -261,28 +348,58 @@ while (true) {
         }
         if (DRY) break;
     } else {
-        log(`✅ Фаза "${phase.milestone}" завершена (открытых issues нет). PR + review...`);
+        // Фаза уже смерджена (авто- или вручную) — просто идём дальше, без пересоздания PR.
+        if (phaseMerged(phase)) {
+            log(`✅ Фаза "${phase.milestone}" уже смерджена — переход к следующей.`);
+            state.phaseIndex++;
+            state.count = 0;
+            saveState(state);
+            if (ONCE || DRY) break;
+            continue;
+        }
 
+        log(`✅ Фаза "${phase.milestone}" — issues закрыты. PR → ревью → правки → гейт мерджа...`);
+
+        // 1. PR (идемпотентно — не плодим дубликаты при рестарте).
         runClaude(
-            `Создай PR из ветки ${phase.branch} в main. Заголовок: feat: ${phase.milestone}. В описании перечисли закрытые issues этой фазы и план тестирования.`,
+            `Если открытого PR из ветки ${phase.branch} в main ещё нет — создай его (заголовок: feat: ${phase.milestone}, в описании перечисли закрытые issues фазы и план тестирования). Если PR уже есть — ничего не создавай.`,
             { model: config.model, maxTurns: 30 },
         );
+
+        // 2. Ревью отдельной моделью. Блокеры → label blocked на PR (гейт их поймает).
         const reviewModel = pickReviewModel(phase.milestone);
         if (reviewModel && reviewModel !== 'none') {
             log(`🔍 Ревью фазы моделью: ${reviewModel}`);
             runClaude(
-                `Найди последний открытый PR из ветки ${phase.branch} и проведи детальное code review: архитектура, безопасность, производительность, соответствие PRD. Оставь комментарии в PR через gh cli.`,
+                `Найди последний открытый PR из ветки ${phase.branch} и проведи детальное code review: архитектура, безопасность, производительность, соответствие PRD. Оставь комментарии в PR через gh cli. Если есть БЛОКИРУЮЩИЕ проблемы (баги, дыры безопасности, сломанная физика или сборка) — поставь на PR label blocked.`,
                 { model: reviewModel, maxTurns },
             );
         } else {
             log('👀 Ревью PR — за супервизором (review: none).');
         }
 
-        state.phaseIndex++;
-        state.count = 0;
-        saveState(state);
+        // 3. Авто-правки по ревью кодерской моделью фазы.
+        log('🔧 Правки по ревью...');
+        runClaude(
+            `Прочитай комментарии code review в открытом PR ветки ${phase.branch}. Примени применимые правки (low/nit — где уместно; спорные помечай ответом-комментарием в PR), закоммить в ту же ветку со ссылкой на PR. Затем прогони npm run lint, npm run lint:fsd, npm run typecheck, npm run test и добейся зелёного. Если правку нельзя сделать автономно или тесты не удаётся починить — поставь на PR label blocked и опиши причину в комментарии.`,
+            { model: config.model, maxTurns },
+        );
 
-        if (ONCE || DRY) break;
+        // 4. Детерминированный гейт: раннер сам проверяет blocked + чеки и мерджит.
+        log('🚦 Гейт мерджа: проверка label blocked + прогон чеков...');
+        if (tryMergePhase(phase)) {
+            state.phaseIndex++;
+            state.count = 0;
+            saveState(state);
+            if (ONCE || DRY) break;
+            // continue → следующая фаза стартует с обновлённого main (полный AFK)
+        } else {
+            log(
+                `⛔ Фаза "${phase.milestone}" не прошла авто-мердж — PR оставлен человеку. ` +
+                    `Разберись/смерджи вручную, затем перезапусти loop.`,
+            );
+            break;
+        }
     }
 }
 
