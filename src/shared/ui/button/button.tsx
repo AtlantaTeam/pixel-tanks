@@ -11,9 +11,9 @@ const VARIANT_CLASSES: Record<TButtonVariant, string> = {
 };
 
 const SIZE_CLASSES: Record<TButtonSize, string> = {
-    sm: 'px-3 py-2 text-[10px]',
-    md: 'px-5 py-3 text-xs',
-    icon: 'size-7 text-[10px]',
+    sm: 'min-h-11 px-3 py-2 text-[10px]',
+    md: 'min-h-11 px-5 py-3 text-xs',
+    icon: 'size-11 text-[10px]',
 };
 
 /** Классы кнопки отдельно от компонента — для Link и других не-button элементов */

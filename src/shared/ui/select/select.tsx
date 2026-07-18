@@ -12,7 +12,7 @@ export function Select({ label, className, id, ...props }: TSelectProps) {
             <select
                 id={id}
                 className={clsx(
-                    'pixel-border m-1 w-full cursor-pointer bg-panel-deep px-2 py-1.5',
+                    'pixel-border m-1 min-h-11 w-full cursor-pointer bg-panel-deep px-2 py-1.5',
                     'font-pixel text-[10px] text-ink',
                     className,
                 )}

@@ -5,7 +5,7 @@ import { Button, Select } from '@/shared/ui';
 
 const formatAngle = (radians: number) => {
     const normalized = radians < 0 ? -radians : 2 * Math.PI - radians;
-     
+
     return ((normalized * 180) / Math.PI) | 0;
 };
 
@@ -23,13 +23,13 @@ export function GameControls() {
     const selectWeapon = useGameStore((s) => s.selectWeapon);
 
     return (
-        <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-[1fr_2fr_1fr] sm:items-center">
+        <div className="grid grid-cols-1 gap-2 p-2 sm:grid-cols-[auto_1fr_auto] sm:items-center sm:gap-4 sm:p-4">
             <div className="flex flex-col items-center gap-2">
                 <div className="font-pixel text-xs text-muted">Игрок</div>
                 <div className="font-pixel text-2xl text-primary">{playerPoints}</div>
             </div>
 
-            <div className="flex flex-wrap items-end justify-center gap-4">
+            <div className="flex flex-wrap items-end justify-center gap-2 sm:gap-4">
                 <Counter
                     label="Мощность"
                     value={power}
