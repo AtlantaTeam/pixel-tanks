@@ -44,10 +44,12 @@
     padding-left: env(safe-area-inset-left);
 }
 
+/* Без overflow-x: hidden здесь: глобальный клиппинг на html/body ломает
+   position: sticky у потомков и маскирует реальные overflow-баги вёрстки.
+   Горизонтальный скролл игры запрещает overflow-hidden на <main> game-page. */
 html,
 body {
     height: 100%;
-    overflow-x: hidden;
 }
 
 body {
