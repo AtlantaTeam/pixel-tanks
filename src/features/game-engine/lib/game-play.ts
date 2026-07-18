@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import { floor } from '@/shared/lib/canvas';
+import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
 import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
 import { Ground } from './ground';
@@ -63,6 +63,8 @@ export class GamePlay {
     isSoundOn = true;
     private random: TSeededRandom;
     wind = 0;
+    private resizeObserver: ResizeObserver | undefined;
+    private resizeRafId: number | undefined;
 
     constructor(
         canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -120,13 +122,84 @@ export class GamePlay {
         });
     };
 
+    // Подгоняет бэкинг-стор canvas под CSS-размер и devicePixelRatio.
+    // innerWidth/innerHeight — ЛОГИЧЕСКИЕ (CSS) пиксели: вся физика и рисование
+    // в них, а ctx масштабируется на dpr, поэтому картинка чёткая на ретине.
+    // Возвращает true, если логический размер изменился (нужна перерисовка сцены).
+    fit = (): boolean => {
+        const canvas = this.canvasRef.current;
+        if (!canvas) return false;
+        const rect = canvas.getBoundingClientRect();
+        const cssWidth = floor(rect.width || canvas.offsetWidth || this.innerWidth);
+        const cssHeight = floor(rect.height || canvas.offsetHeight || this.innerHeight);
+        const dpr = getDevicePixelRatio();
+        const backingWidth = toDevicePixels(cssWidth, dpr);
+        const backingHeight = toDevicePixels(cssHeight, dpr);
+        const changed = this.innerWidth !== cssWidth || this.innerHeight !== cssHeight;
+
+        // Присваивание canvas.width/height сбрасывает контекст (transform → identity,
+        // очистка), поэтому меняем только при реальном изменении и заново ставим базу.
+        if (canvas.width !== backingWidth) canvas.width = backingWidth;
+        if (canvas.height !== backingHeight) canvas.height = backingHeight;
+        this.innerWidth = cssWidth;
+        this.innerHeight = cssHeight;
+        if (this.ctx) {
+            this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+        return changed;
+    };
+
+    private observeResize = () => {
+        const canvas = this.canvasRef.current;
+        if (!canvas || typeof ResizeObserver === 'undefined' || this.resizeObserver) return;
+        // Реагируем на resize окна и поворот телефона: коалесцируем в один rAF.
+        this.resizeObserver = new ResizeObserver(() => {
+            if (this.resizeRafId !== undefined) return;
+            this.resizeRafId = requestAnimationFrame(() => {
+                this.resizeRafId = undefined;
+                this.applyResize();
+            });
+        });
+        this.resizeObserver.observe(canvas);
+    };
+
+    private applyResize = () => {
+        if (!this.ctx || !this.ground || !this.leftTank || !this.rightTank) return;
+        const changed = this.fit();
+        if (!changed) return;
+        // Снаряд в полёте: его координаты для старого размера уже неактуальны — сбрасываем.
+        this.bullet = undefined;
+        this.rebuildTerrainAndTanks();
+        this.fullRedraw();
+    };
+
+    // Регенерирует террейн под новый размер и переставляет танки пропорционально,
+    // чтобы поворот/ресайз не ломали пропорции и не роняли танки за пределы холста.
+    private rebuildTerrainAndTanks = () => {
+        if (!this.leftTank || !this.rightTank) return;
+        const { sand } = GamePlay.images;
+        this.ground = new Ground(this.innerWidth, this.innerHeight, this.random, sand);
+        const leftTankX = floor(this.innerWidth / 4);
+        const rightTankX = floor((this.innerWidth * 3) / 4);
+        for (const [tank, x] of [
+            [this.leftTank, leftTankX],
+            [this.rightTank, rightTankX],
+        ] as const) {
+            tank.innerWidth = this.innerWidth;
+            tank.innerHeight = this.innerHeight;
+            tank.x = x;
+            tank.y = this.innerHeight - this.ground.heights[x];
+            tank.dx = 0;
+            tank.dy = 0;
+        }
+    };
+
     initPaint = () => {
         const canvas = this.canvasRef.current;
         if (canvas) {
             this.ctx = canvas.getContext('2d');
-            this.innerWidth = canvas.width;
-            this.innerHeight = canvas.height;
         }
+        this.fit();
         const { leftTank, leftGunpoint, sand, rightTank, rightGunpoint } = GamePlay.images;
         const { leftTankWeapons, rightTankWeapons } = this.allWeapons;
         this.ground = new Ground(this.innerWidth, this.innerHeight, this.random, sand);
@@ -165,6 +238,7 @@ export class GamePlay {
         this.explosionHitSoundEl = new Audio(SOUND_PATHS.hit);
         this.animate();
         this.fullRedraw();
+        this.observeResize();
     };
 
     getActiveAndTargetTanks = (t1: Tank, t2: Tank) => (t1.isActive ? [t1, t2] : [t2, t1]);
@@ -476,5 +550,11 @@ export class GamePlay {
             cancelAnimationFrame(this.rafTimerId);
             this.rafTimerId = undefined;
         }
+        if (this.resizeRafId !== undefined) {
+            cancelAnimationFrame(this.resizeRafId);
+            this.resizeRafId = undefined;
+        }
+        this.resizeObserver?.disconnect();
+        this.resizeObserver = undefined;
     }
 }

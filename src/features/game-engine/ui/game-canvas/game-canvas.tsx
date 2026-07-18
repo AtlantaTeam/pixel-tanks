@@ -52,10 +52,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         const canvas = canvasRef.current;
         if (!canvas) return;
 
-        const rect = document.body.getBoundingClientRect();
-        canvas.width = canvas.offsetWidth > 300 ? canvas.offsetWidth : rect.width;
-        canvas.height = canvas.offsetHeight > 150 ? canvas.offsetHeight : rect.height - 200;
-
+        // Размер бэкинг-стора canvas (dpr, resize) полностью на стороне GamePlay.fit().
         const allWeapons = generateRandomWeapons(WEAPONS_AMOUNT);
         setWeapons(allWeapons.leftTankWeapons);
         selectWeapon(allWeapons.leftTankWeapons[0]);
