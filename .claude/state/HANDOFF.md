@@ -4,25 +4,31 @@
 
 ## Текущая задача
 
-**Фаза 1 смерджена в main (PR #39)** после code review (opus-агент) + фикса ветра + смоука. Ветка `feature/phase-2-mobile` создана, конфиг Ralph переключён на Фазу 2, счётчики сброшены. **Раннер НЕ запущен** — решение по квоте за Димой: `node .claude/ralph/ralph.js --once` (HITL).
+Ralph-цикл по Фазе 2 (мобильный layout). Issue #5 (вьюпорт: h-dvh, safe-area, touch-action, запрет
+h-скролла) закрыт и запушен в `feature/phase-2-mobile` (коммит 2333f2b). Следующие в очереди по
+возрастанию номера: #6 (адаптивный HUD, тач-цели ≥ 44px), #7 (devicePixelRatio + ResizeObserver),
+#8 (Playwright-проверка вьюпортов).
 
 ## Последние принятые решения
 
-- **Ревью PR #39 (opus, один агент по просьбе Димы)** нашло major: ветер `dx -= dx*wind` был затуханием, а не силой. Исправлено на `dx += wind` (постоянное боковое ускорение, px/тик²) + тесты на знак/симметрию/вертикальный выстрел. 32/32 зелёные.
-- Смоук-протокол детерминизма: hash canvas.toDataURL через Playwright — `seed=42` дважды идентичен, `seed=99` отличается.
-- **Роутинг моделей Ralph**: label `complexity:{low|medium|high|expert}` → haiku/sonnet/opus/fable; ревью фазы opus, эскалация на fable при `complexity:expert` (фазы 3 и 9). Скилл `issues` проставляет labels при создании.
-- **main защищён**: только через PR, enforce_admins=true → прямой push отклонится, даже для правки конфига — любые изменения через ветку+PR.
-- README: «дипломный проект», ASCII-арт из monospace-безопасных символов (◎ ▲ ▬ ▂ и эмодзи ломали выравнивание на GitHub).
-- `.claude/**` исключён из ESLint (Node-скрипты хуков/Ralph с require).
+- Safe-area — переиспользуемая Tailwind-утилита `safe-area-inset` в `globals.css` (padding через
+  `env(safe-area-inset-*)` на всех 4 сторонах), применена на корневом `<main>` игровой страницы.
+- `touch-action: none` — через Tailwind-класс `touch-none` прямо на `<canvas>`.
+- `overflow-x: hidden` добавлен на html/body в globals.css глобально (не только для game-page).
+- Playwright MCP browser был залочен зависшим процессом chrome.exe от предыдущей сессии
+  (профиль `mcp-chrome-fad4cbb`) — пришлось `taskkill`, чтобы снять блокировку `browser_navigate`.
+  Если повторится — тот же fix (все процессы с этим user-data-dir безопасно убивать, это выделенный
+  автоматизационный профиль, не личный браузер Димы).
 
 ## Следующие шаги
 
-1. Запуск Ralph по Фазе 2 (`--once`, HITL): issues #5–#8, модели по labels (sonnet ×3, opus #7)
-2. Известный minor из ревью: смена seed при client-side навигации игнорируется (`game-canvas.tsx` deps `[]`) — починить в одной из мобильных фаз
-3. После issues фазы: раннер сам создаст PR + ревью (opus)
+1. Запустить раннер на Issue #6 (адаптивный HUD, sonnet).
+2. Известный minor из ревью Фазы 1: смена seed при client-side навигации игнорируется
+   (`game-canvas.tsx` useEffect deps `[]`) — не входит в issues Фазы 2, чинить отдельно.
+3. После всех issues Фазы 2 — раннер сам создаст PR + ревью (opus).
 
 ## Open questions
 
-- Мелочи: favicon 404, unused `setPower` в game-canvas.tsx
-- Кто из команды подключается к AtlantaTeam-репо (права, ревью, распределение issues)
-- OPENAI_API_KEY для генерации артов — Дима положит в `.env.local` по запросу
+- Мелочи: favicon 404 (не относится к Фазе 2), unused `setPower` в game-canvas.tsx (ESLint warning).
+- Кто из команды подключается к AtlantaTeam-репо (права, ревью, распределение issues).
+- OPENAI_API_KEY для генерации артов — Дима положит в `.env.local` по запросу.
