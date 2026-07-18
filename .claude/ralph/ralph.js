@@ -179,10 +179,14 @@ while (true) {
             `Создай PR из ветки ${phase.branch} в main. Заголовок: feat: ${phase.milestone}. В описании перечисли закрытые issues этой фазы и план тестирования.`,
             { model: config.model, maxTurns: 30 },
         );
-        runClaude(
-            `Найди последний открытый PR из ветки ${phase.branch} и проведи детальное code review: архитектура, безопасность, производительность, соответствие PRD. Оставь комментарии в PR через gh cli.`,
-            { model: config.reviewModel || config.model, maxTurns },
-        );
+        if (config.reviewModel && config.reviewModel !== 'none') {
+            runClaude(
+                `Найди последний открытый PR из ветки ${phase.branch} и проведи детальное code review: архитектура, безопасность, производительность, соответствие PRD. Оставь комментарии в PR через gh cli.`,
+                { model: config.reviewModel, maxTurns },
+            );
+        } else {
+            log('👀 Ревью PR — за супервизором (reviewModel: none).');
+        }
 
         state.phaseIndex++;
         state.count = 0;
