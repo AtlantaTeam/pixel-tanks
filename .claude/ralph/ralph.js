@@ -87,13 +87,52 @@ function openIssues(milestone) {
     try {
         // gh отдаёт новые-первыми; порядок работы — по возрастанию номера (порядок задач в плане)
         return JSON.parse(
-            sh(`gh issue list --milestone "${milestone}" --state open --json number,title`),
+            sh(`gh issue list --milestone "${milestone}" --state open --json number,title,labels`),
         ).sort((a, b) => a.number - b.number);
     } catch (e) {
         fail(
             `gh issue list упал: ${e.message}\nПроверь: gh auth status, milestone "${milestone}" существует.`,
         );
     }
+}
+
+// ── Роутинг моделей по сложности ─────────────────────────────────────────────
+// Issue помечается одним label complexity:{low|medium|high|expert}.
+// Кодер: label → модель из config.modelRouting.labels (haiku/sonnet/opus/fable).
+// Ревью фазы: config.review.default (opus), но если в фазе был хоть один issue
+// с label из config.review.escalateOn — эскалация на config.review.escalated (fable).
+
+const COMPLEXITY_PRIORITY = [
+    'complexity:expert',
+    'complexity:high',
+    'complexity:medium',
+    'complexity:low',
+];
+
+function pickModel(issue) {
+    const routing = config.modelRouting;
+    if (!routing || !routing.labels) return config.model;
+    const names = (issue.labels || []).map((l) => l.name);
+    for (const label of COMPLEXITY_PRIORITY) {
+        if (names.includes(label) && routing.labels[label]) return routing.labels[label];
+    }
+    return routing.default || config.model;
+}
+
+function pickReviewModel(milestone) {
+    const review = config.review;
+    if (!review) return config.reviewModel; // легаси-конфиг без блока review
+    const escalateOn = review.escalateOn || [];
+    let all = [];
+    try {
+        all = JSON.parse(
+            sh(`gh issue list --milestone "${milestone}" --state all --json labels --limit 100`),
+        );
+    } catch (e) {
+        log(`⚠ Не смог получить labels фазы для выбора ревью-модели: ${e.message}`);
+    }
+    const hasComplex = all.some((i) => (i.labels || []).some((l) => escalateOn.includes(l.name)));
+    return hasComplex ? review.escalated : review.default;
 }
 
 // ── Preflight ────────────────────────────────────────────────────────────────
@@ -158,14 +197,15 @@ while (true) {
         state.count++;
         saveState(state);
         const next = issues[0];
+        const issueModel = pickModel(next);
         log(
-            `🔄 Фаза ${state.phaseIndex + 1} | итерация ${state.count}/${maxIterations} | Issue #${next.number}: ${next.title} | осталось: ${issues.length}`,
+            `🔄 Фаза ${state.phaseIndex + 1} | итерация ${state.count}/${maxIterations} | Issue #${next.number}: ${next.title} | модель: ${issueModel} | осталось: ${issues.length}`,
         );
 
         const prompt = (config.prompt || '')
             .replace('{milestone}', phase.milestone)
             .replace('{branch}', phase.branch);
-        runClaude(prompt, { model: config.model, maxTurns });
+        runClaude(prompt, { model: issueModel, maxTurns });
 
         if (ONCE) {
             log('✋ HITL: одна итерация выполнена, стоп. Проверь результат и запусти снова.');
@@ -179,13 +219,15 @@ while (true) {
             `Создай PR из ветки ${phase.branch} в main. Заголовок: feat: ${phase.milestone}. В описании перечисли закрытые issues этой фазы и план тестирования.`,
             { model: config.model, maxTurns: 30 },
         );
-        if (config.reviewModel && config.reviewModel !== 'none') {
+        const reviewModel = pickReviewModel(phase.milestone);
+        if (reviewModel && reviewModel !== 'none') {
+            log(`🔍 Ревью фазы моделью: ${reviewModel}`);
             runClaude(
                 `Найди последний открытый PR из ветки ${phase.branch} и проведи детальное code review: архитектура, безопасность, производительность, соответствие PRD. Оставь комментарии в PR через gh cli.`,
-                { model: config.reviewModel, maxTurns },
+                { model: reviewModel, maxTurns },
             );
         } else {
-            log('👀 Ревью PR — за супервизором (reviewModel: none).');
+            log('👀 Ревью PR — за супервизором (review: none).');
         }
 
         state.phaseIndex++;
