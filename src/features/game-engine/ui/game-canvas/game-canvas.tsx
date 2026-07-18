@@ -8,6 +8,7 @@ import { useGameStore } from '../../model/game.store';
 import { GamePlay, type TTanksWeapons } from '../../lib/game-play';
 import { Bullet } from '../../lib/bullet';
 import { calculateDragAim } from '../../lib/drag-aim';
+import { attachGestureGuard } from '../../lib/gesture-guard';
 
 type TDragState = {
     pointerId: number;
@@ -106,6 +107,14 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             resetGame();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // Защита от конфликтов жестов: гасим iOS pinch-zoom (gesture*) и мультитач
+    // на самом Canvas. touch-action: none (класс touch-none) закрывает остальное.
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        return attachGestureGuard(canvas);
     }, []);
 
     // Sync store → engine (когда меняем угол/мощность через UI)
