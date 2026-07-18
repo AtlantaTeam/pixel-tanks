@@ -62,7 +62,7 @@ export class Bullet {
         if (this.y + this.radius < this.innerHeight) {
             this.dy += this.gravity;
         }
-        this.dx -= this.dx * this.wind;
+        this.dx += this.wind;
         this.x = floor(this.x + this.dx);
         this.y = floor(this.y + this.dy);
     }

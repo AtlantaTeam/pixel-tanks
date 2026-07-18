@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
 import { floor } from '@/shared/lib/canvas';
-import type { TWeapon } from '@/shared/model/t-weapon';
+import type { TWeapon } from '@/shared/model';
 import { Bullet } from './bullet';
 import { Ground } from './ground';
 import { Tank } from './tank';
@@ -92,13 +92,37 @@ describe('Bullet: детерминизм траектории', () => {
         expect(bullet.dx).toBe(dxBefore);
     });
 
-    it('встречный ветер гасит горизонтальную скорость', () => {
-        const { bullet } = makeBullet(0, 10, 0.01);
+    it('ветер — постоянное боковое ускорение: dx растёт линейно на wind за шаг', () => {
+        const wind = 0.01;
+        const { bullet } = makeBullet(0, 10, wind);
         const dxBefore = bullet.dx;
 
         recordTrajectory(bullet, 60);
 
-        expect(Math.abs(bullet.dx)).toBeLessThan(Math.abs(dxBefore));
+        expect(bullet.dx).toBeCloseTo(dxBefore + 60 * wind, 10);
+    });
+
+    it('отрицательный ветер сносит влево, положительный — вправо (симметрично)', () => {
+        const calm = makeBullet(-Math.PI / 4, 15, 0);
+        const left = makeBullet(-Math.PI / 4, 15, -0.01);
+        const right = makeBullet(-Math.PI / 4, 15, 0.01);
+
+        const calmX = recordTrajectory(calm.bullet, 120).at(-1)![0];
+        const leftX = recordTrajectory(left.bullet, 120).at(-1)![0];
+        const rightX = recordTrajectory(right.bullet, 120).at(-1)![0];
+
+        expect(leftX).toBeLessThan(calmX);
+        expect(rightX).toBeGreaterThan(calmX);
+    });
+
+    it('вертикальный выстрел (dx=0) сносится ветром', () => {
+        const { bullet } = makeBullet(-Math.PI / 2, 15, 0.01);
+        const startX = bullet.x;
+        expect(bullet.dx).toBe(0);
+
+        recordTrajectory(bullet, 300);
+
+        expect(bullet.x).toBeGreaterThan(startX);
     });
 });
 
