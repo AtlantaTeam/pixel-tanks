@@ -177,7 +177,10 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                     if (moves > 0 && !game.isMoveMode) game.changeTankPosition(150);
                     break;
                 case 'fire':
-                    if (selectedWeapon) {
+                    // Как мышь/тач: не стреляем, пока снаряд в полёте (isFireMode) —
+                    // иначе повторный Enter/Space до смены хода даёт двойной выстрел
+                    // и лишний раз тратит оружие (конфликт клавиатурной схемы с собой).
+                    if (selectedWeapon && !game.isFireMode) {
                         game.onFire(selectedWeapon);
                         removeWeaponById(selectedWeapon.id);
                     }
