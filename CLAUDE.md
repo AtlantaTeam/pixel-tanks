@@ -6,19 +6,19 @@
 
 ### Rewrite Pocket Tanks на современный стек
 
-| Шаг                 | Описание                                                                  | Прогресс |
-| ------------------- | ------------------------------------------------------------------------- | -------- |
-| 1. Каркас           | Next 16 + React 19 + TS + Tailwind 4 + FSD + Steiger                      | ✅ done  |
-| 2. Конвенции        | ESLint flat config, Prettier, vitest, субагенты                           | ✅ done  |
-| 3. Базовая страница | `app/layout.tsx` + `views/main-page` + QueryProvider                      | ✅ done  |
-| 4. Перенос игры     | Canvas-логика из `../src/components/Pages/Game/` в `features/game-engine` | ✅ done  |
-| 5. Payload CMS      | Inline-интеграция Payload 3, SQLite-адаптер, коллекции users + scores     | ✅ done  |
-| 6. Auth             | Регистрация / логин через Payload local auth                              | ⬜ 0%    |
-| 7. Лидерборд        | `views/leaderboard` + TanStack Query + Payload REST                       | ⬜ 0%    |
-| 8. OAuth (Google)   | NextAuth или Payload OAuth-стратегия                                      | ⬜ 0%    |
-| 9. i18n             | `next-intl`, обернуть все строки в `t('...')`                             | ⬜ 0%    |
+| Шаг                  | Описание                                                                       | Прогресс |
+| -------------------- | ------------------------------------------------------------------------------ | -------- |
+| 1. Каркас            | Next 16 + React 19 + TS + Tailwind 4 + FSD + Steiger                           | ✅ done  |
+| 2. Конвенции         | ESLint flat config, Prettier, vitest, субагенты                                | ✅ done  |
+| 3. Базовая страница  | `app/layout.tsx` + `views/main-page` + QueryProvider                           | ✅ done  |
+| 4. Перенос игры      | Canvas-логика из старого `src/components/Pages/Game/` в `features/game-engine` | ✅ done  |
+| 5. Payload CMS       | Inline-интеграция Payload 3, SQLite-адаптер, коллекции users + scores          | ✅ done  |
+| 6. Auth              | Регистрация / логин через Payload local auth                                   | ⬜ 0%    |
+| 7. Лидерборд         | `views/leaderboard` + TanStack Query + Payload REST                            | ⬜ 0%    |
+| 8. OAuth (Яндекс ID) | Payload OAuth-стратегия, авторизация через Яндекс ID                           | ⬜ 0%    |
+| 9. i18n              | `next-intl`, обернуть все строки в `t('...')`                                  | ⬜ 0%    |
 
-**Старый код** — в `../src/` (рядом, не внутри). Это референс при портировании, не трогать на запись.
+**Старый код** — в `../pocket-tanks/` (соседняя папка на Desktop). Это референс при портировании, не трогать на запись.
 
 ## Язык общения
 
@@ -30,7 +30,7 @@
 **Pocket Tanks** — учебная игра в жанре «танковая дуэль» на Canvas. Два танка по углу, силе и ветру стреляют друг в друга. Старая курсовая Яндекс.Практикума (команда «Atlanta Team», 2021), переписывается на современный стек.
 
 **Что переносим:** игру, регистрацию/логин, профиль, лидерборд.
-**Что выкидываем:** Redux + redux-saga, Webpack, connected-react-router, Formik+Yup, Sequelize+Express, Storybook, OAuth Yandex (можно вернуть позже).
+**Что выкидываем:** Redux + redux-saga, Webpack, connected-react-router, Formik+Yup, Sequelize+Express, Storybook. OAuth Яндекс — возвращаем в фазе 8.
 
 ## Технологический стек
 
@@ -40,7 +40,7 @@
 
 **Backend (фаза 5+):** Payload CMS 3, inline в Next.js. Адаптер БД — `@payloadcms/db-sqlite` (dev) или `@payloadcms/db-postgres` (prod). Оба адаптера **используют Drizzle под капотом** — для кастомных запросов `payload.db.drizzle`.
 
-**Auth (фаза 6+):** Payload local auth (email/password) + опционально Google OAuth.
+**Auth (фаза 6+):** Payload local auth (email/password) + OAuth через **Яндекс ID** (фаза 8). **Google OAuth не используем** — по закону РФ (поправки к 149-ФЗ, с 01.12.2023) авторизация пользователей на российских сайтах допускается только через телефон, Госуслуги (ЕСИА) или российские сервисы (Яндекс ID, VK ID).
 
 **Тесты:** Vitest + Testing Library + happy-dom (unit/component), Playwright (e2e).
 
@@ -49,7 +49,7 @@
 ## Архитектура: FSD 2.1 + App Router
 
 ```
-web/src/
+src/
 ├── app/                 — Next.js App Router: маршрутизация, layout'ы, провайдеры
 │   ├── layout.tsx       — Root layout, QueryProvider, Montserrat
 │   ├── page.tsx         — Главная (тонкая обёртка → views/main-page)
@@ -129,7 +129,7 @@ Steiger валидирует структуру автоматически: `npm
 
 ### Git
 
-Этот каталог — **отдельный git-репозиторий** (`Pelmenya/pocket-tanks-next`), вложенный в старый репо курсовой. Коммиты здесь разрешены и приветствуются. Родительский каталог `../` (старый репо) — НЕ трогать: ни файлы, ни git. По завершении rewrite ветка уедет в общий командный репозиторий вторым remote.
+Этот каталог — **самостоятельный git-репозиторий** (`Pelmenya/pocket-tanks-next`) на Desktop. Коммиты здесь разрешены и приветствуются. Старый репо курсовой — соседняя папка `../pocket-tanks/` — НЕ трогать: ни файлы, ни git. По завершении rewrite ветка уедет в общий командный репозиторий вторым remote.
 
 ### Коммиты (Conventional Commits)
 
@@ -199,27 +199,26 @@ npm run test:coverage
 
 ## Старый код проекта
 
-В корне репозитория (`../`, на уровень выше от `web/`) лежит старый код. Структура:
+Старый код лежит в соседней папке `../pocket-tanks/` (Desktop). Структура:
 
 ```
-pocket-tanks/
+../pocket-tanks/
 ├── src/                    — Старый React 17 + Webpack + Sequelize код (РЕФЕРЕНС, не трогать)
 │   ├── components/Pages/Game/   — Старая Canvas-игра. Логика, спрайты, физика
 │   ├── modules/                 — bot-messages, http-service, notifications
 │   └── ...
-├── static/                  — Шрифты, иконки, фоны игры (можно копировать в web/public/)
-├── stage/                   — Старый docker-compose (Postgres) — не используем
-└── web/                     — НОВЫЙ проект (этот)
+├── static/                  — Шрифты, иконки, фоны игры (можно копировать в public/)
+└── stage/                   — Старый docker-compose (Postgres) — не используем
 ```
 
-При портировании игры — изучать `../src/components/Pages/Game/` и переносить логику в `web/src/features/game-engine/` или `web/src/entities/game/`.
+При портировании — изучать `../pocket-tanks/src/components/Pages/Game/` и переносить логику в `src/features/game-engine/` или `src/entities/game/`. Папка только для чтения, пользователь чистит её сам.
 
 ## Этапы реализации
 
-- **Этап 1 (текущий):** Каркас web/ ✅, базовая страница ✅
+- **Этап 1:** Каркас ✅, базовая страница ✅
 - **Этап 2:** Перенос Canvas-игры (физика, рендер, управление) — без сервера
 - **Этап 3:** Payload CMS + SQLite + коллекции users/scores
 - **Этап 4:** Auth (регистрация/логин)
 - **Этап 5:** Лидерборд с отправкой результатов
-- **Этап 6:** Google OAuth, темы, polish
+- **Этап 6:** OAuth Яндекс ID, темы, polish
 - **Этап 7:** i18n через `next-intl` (RU + EN), обернуть все строки в `t('...')`. Добавляем перед мерджем фазы 3 — раньше нет смысла, текстов мало
