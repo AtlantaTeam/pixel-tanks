@@ -125,7 +125,8 @@ export class GamePlay {
     // Подгоняет бэкинг-стор canvas под CSS-размер и devicePixelRatio.
     // innerWidth/innerHeight — ЛОГИЧЕСКИЕ (CSS) пиксели: вся физика и рисование
     // в них, а ctx масштабируется на dpr, поэтому картинка чёткая на ретине.
-    // Возвращает true, если логический размер изменился (нужна перерисовка сцены).
+    // Возвращает true, если логический размер или бэкинг-стор изменились
+    // (в обоих случаях нужна перерисовка сцены).
     fit = (): boolean => {
         const canvas = this.canvasRef.current;
         if (!canvas) return false;
@@ -135,7 +136,13 @@ export class GamePlay {
         const dpr = getDevicePixelRatio();
         const backingWidth = toDevicePixels(cssWidth, dpr);
         const backingHeight = toDevicePixels(cssHeight, dpr);
-        const changed = this.innerWidth !== cssWidth || this.innerHeight !== cssHeight;
+        // Смена только dpr (перенос окна между мониторами, зум) меняет бэкинг-стор
+        // при том же CSS-размере — canvas очищается, поэтому это тоже «изменение».
+        const changed =
+            this.innerWidth !== cssWidth ||
+            this.innerHeight !== cssHeight ||
+            canvas.width !== backingWidth ||
+            canvas.height !== backingHeight;
 
         // Присваивание canvas.width/height сбрасывает контекст (transform → identity,
         // очистка), поэтому меняем только при реальном изменении и заново ставим базу.
@@ -165,20 +172,23 @@ export class GamePlay {
 
     private applyResize = () => {
         if (!this.ctx || !this.ground || !this.leftTank || !this.rightTank) return;
-        const changed = this.fit();
-        if (!changed) return;
-        // Снаряд в полёте: его координаты для старого размера уже неактуальны — сбрасываем.
-        this.bullet = undefined;
-        this.rebuildTerrainAndTanks();
+        const prevWidth = this.innerWidth;
+        const prevHeight = this.innerHeight;
+        if (!this.fit()) return;
+        if (prevWidth !== this.innerWidth || prevHeight !== this.innerHeight) {
+            this.rescaleTerrainAndTanks();
+            this.rescaleBullet(prevWidth, prevHeight);
+        }
+        // Даже при смене только dpr бэкинг-стор пересоздан (canvas очищен) —
+        // перерисовка нужна безусловно.
         this.fullRedraw();
     };
 
-    // Регенерирует террейн под новый размер и переставляет танки пропорционально,
-    // чтобы поворот/ресайз не ломали пропорции и не роняли танки за пределы холста.
-    private rebuildTerrainAndTanks = () => {
-        if (!this.leftTank || !this.rightTank) return;
-        const { sand } = GamePlay.images;
-        this.ground = new Ground(this.innerWidth, this.innerHeight, this.random, sand);
+    // Пересчитывает террейн под новый размер (Ground.resize — без RNG, форма и
+    // детерминизм сохраняются) и переставляет танки пропорционально.
+    private rescaleTerrainAndTanks = () => {
+        if (!this.leftTank || !this.rightTank || !this.ground) return;
+        this.ground.resize(this.innerWidth, this.innerHeight);
         const leftTankX = floor(this.innerWidth / 4);
         const rightTankX = floor((this.innerWidth * 3) / 4);
         for (const [tank, x] of [
@@ -192,6 +202,18 @@ export class GamePlay {
             tank.dx = 0;
             tank.dy = 0;
         }
+    };
+
+    // Снаряд в полёте переносится в новые координаты пропорционально: сброс терял бы
+    // уже израсходованное оружие и подвешивал ход на игроке (ревью PR #41).
+    private rescaleBullet = (prevWidth: number, prevHeight: number) => {
+        if (!this.bullet) return;
+        this.bullet.x = floor((this.bullet.x * this.innerWidth) / prevWidth);
+        this.bullet.y = floor((this.bullet.y * this.innerHeight) / prevHeight);
+        this.bullet.lastX = this.bullet.x;
+        this.bullet.lastY = this.bullet.y;
+        this.bullet.innerWidth = this.innerWidth;
+        this.bullet.innerHeight = this.innerHeight;
     };
 
     initPaint = () => {

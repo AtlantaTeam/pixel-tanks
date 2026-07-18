@@ -70,6 +70,30 @@ export class Ground {
         }
     };
 
+    // Пересчитывает рельеф под новый размер: интерполяция профиля по ширине и
+    // пропорциональный масштаб по высоте. В отличие от generate() не трогает RNG —
+    // поворот экрана не меняет форму карты и не ломает детерминизм seed'а;
+    // кратеры, уже вычтенные из heights, сохраняются в форме профиля.
+    resize = (innerWidth: number, innerHeight: number) => {
+        const oldHeights = this.heights;
+        const oldWidth = oldHeights.length;
+        const scaleY = innerHeight / this.innerHeight;
+        this.innerWidth = innerWidth;
+        this.innerHeight = innerHeight;
+        this.heightMax = floor(innerHeight / 2);
+        this.heightMin = this.heightMax / 4;
+        this.heights = new Array<number>(innerWidth);
+        this.explosionHeights = new Array<number>(innerWidth).fill(0);
+        const step = innerWidth > 1 ? (oldWidth - 1) / (innerWidth - 1) : 0;
+        for (let x = 0; x < innerWidth; x++) {
+            const t = x * step;
+            const x0 = Math.floor(t);
+            const x1 = Math.min(x0 + 1, oldWidth - 1);
+            const frac = t - x0;
+            this.heights[x] = floor((oldHeights[x0] * (1 - frac) + oldHeights[x1] * frac) * scaleY);
+        }
+    };
+
     fall = (x: number, y: number, radius: number) => {
         this.explosionHeights[x - radius] = { bulletY: y, delta: 2 };
         this.explosionHeights[x + radius] = this.explosionHeights[x - radius];
