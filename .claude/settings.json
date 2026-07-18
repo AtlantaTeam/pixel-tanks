@@ -1,92 +1,89 @@
 {
-  "permissions": {
-    "allow": [
-      "Edit(*)",
-      "Write(*)",
-      "Bash(npm run test*)",
-      "Bash(npm run lint*)",
-      "Bash(npm run build*)",
-      "Bash(npm run format*)",
-      "Bash(npx tsc*)",
-      "Bash(npx prettier*)",
-      "Bash(npx eslint*)",
-      "Bash(git status*)",
-      "Bash(git diff*)",
-      "Bash(git log*)",
-      "Bash(git branch*)",
-      "Bash(git checkout -b*)",
-      "Bash(git switch*)",
-      "Bash(git stash*)",
-      "Bash(gh issue*)",
-      "Bash(gh pr*)",
-      "Bash(gh api repos/:owner/:repo/milestones*)"
-    ],
-    "ask": [
-      "Bash(git add*)",
-      "Bash(git commit*)",
-      "Bash(git push*)",
-      "Bash(npm install*)",
-      "Bash(gh repo*)"
-    ],
-    "deny": [
-      "Read(.env)",
-      "Read(.env.*)",
-      "Read(**/.env)",
-      "Read(**/.env.*)",
-      "Read(**/*.pem)",
-      "Read(**/*.key)",
-      "Bash(git push --force*)",
-      "Bash(git reset --hard*)",
-      "Bash(rm -rf*)"
-    ]
-  },
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/load-context.js\"",
-            "timeout": 15
-          }
+    "permissions": {
+        "allow": [
+            "Edit(*)",
+            "Write(*)",
+            "Bash(npm run test*)",
+            "Bash(npm run lint*)",
+            "Bash(npm run build*)",
+            "Bash(npm run format*)",
+            "Bash(npx tsc*)",
+            "Bash(npx prettier*)",
+            "Bash(npx eslint*)",
+            "Bash(git status*)",
+            "Bash(git diff*)",
+            "Bash(git log*)",
+            "Bash(git branch*)",
+            "Bash(git checkout -b*)",
+            "Bash(git switch*)",
+            "Bash(git stash*)",
+            "Bash(gh issue*)",
+            "Bash(gh pr*)",
+            "Bash(gh api repos/:owner/:repo/milestones*)",
+            "Bash(git add*)",
+            "Bash(git commit*)",
+            "Bash(git push*)"
+        ],
+        "ask": ["Bash(npm install*)", "Bash(gh repo*)"],
+        "deny": [
+            "Read(.env)",
+            "Read(.env.*)",
+            "Read(**/.env)",
+            "Read(**/.env.*)",
+            "Read(**/*.pem)",
+            "Read(**/*.key)",
+            "Bash(git push --force*)",
+            "Bash(git reset --hard*)",
+            "Bash(rm -rf*)"
         ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/backup-transcript.js\"",
-            "timeout": 30
-          }
+    },
+    "hooks": {
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/load-context.js\"",
+                        "timeout": 15
+                    }
+                ]
+            }
+        ],
+        "PreCompact": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/backup-transcript.js\"",
+                        "timeout": 30
+                    }
+                ]
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "Bash|Read|Edit|Write",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.js\"",
+                        "timeout": 10
+                    }
+                ]
+            }
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "Write|Edit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/format.js\"",
+                        "timeout": 30,
+                        "statusMessage": "Formatting..."
+                    }
+                ]
+            }
         ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Read|Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.js\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/format.js\"",
-            "timeout": 30,
-            "statusMessage": "Formatting..."
-          }
-        ]
-      }
-    ]
-  }
+    }
 }

@@ -35,6 +35,7 @@ export class Bullet {
         ground: Ground,
         activeTank: Tank,
         targetTank: Tank,
+        wind = 0,
     ) {
         this.activeTank = activeTank;
         this.targetTank = targetTank;
@@ -48,7 +49,7 @@ export class Bullet {
         this.dy = floor(Math.sin(activeTank.gunpointAngle) * this.power);
         this.gravity = 0.1;
         this.elasticity = 1;
-        this.wind = 0;
+        this.wind = wind;
         this.explosionRadius = 0;
         this.explosionMaxRadius = 50;
         this.color = '#000000';

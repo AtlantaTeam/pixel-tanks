@@ -4,27 +4,22 @@
 
 ## Текущая задача
 
-Переезд в pocket-tanks-next закрыт (CLAUDE.md актуализирован, смоук пройден). Курс изменён: вместо auth следующая работа — **game-next** (некст-ген апгрейд игры, мобилка в приоритете). PRD и план готовы, бэклог развёрнут в командном репо.
+Ralph Loop, Фаза 1 («Детерминированная физика + seed»), ветка `feature/phase-1-seed`. **Issue #1 закрыт** (коммит `2d0bda9`), конвейер работает: реализация → тесты → коммит → закрытие issue → карточка в Done. Осталось: #2 (seed из URL), #3 (тесты физики), #4 (тесты террейна).
+
+## ⚡ ПЕРВЫМ ДЕЛОМ в новой сессии (Ralph умер вместе со старой сессией)
+
+1. Проверить хвост `.claude/ralph/ralph.log` и `gh issue list --milestone "Фаза 1: Детерминированная физика + seed" --state open`
+2. Если рабочее дерево грязное (HANDOFF.md и пр.) — закоммитить в ветку фазы (`chore:`), иначе preflight раннера упадёт
+3. Перезапустить: `node .claude/ralph/ralph.js` в фоне + монитор на `tail -f .claude/ralph/ralph.log`
+4. Счётчик итераций: сгорело 5/10 (4 — об permission-блок, устранён). Если сработает circuit breaker — перезапуск продолжит с места остановки
 
 ## Последние принятые решения
 
-- **Приоритет — game-next, не auth**: пользователь хочет геймплейный скачок, а не только перенос. Auth съехал в фазу 7 и забрал профиль
-- **OAuth только Яндекс ID** — по 149-ФЗ Google-авторизация на росс. сайтах запрещена (телефон/Госуслуги/росс. сервисы)
-- **Мобилка (тач «оттяни и отпусти») и клавиатура — равноправные схемы**, обе в скоупе game-next
-- **Звук возвращаем оригинальный** — мелодии Андрея в `../pocket-tanks/static/audio/` (menu, gameplay + 3 эффекта)
-- **Forum и Privacy выкинуты окончательно**; bot-messages (реплики Терминатора) возвращаем как chat-bubble
-- **Командный репо = единственный origin**: `AtlantaTeam/pocket-tanks-next` (личный Pelmenya-репо пользователь удаляет). Бэклог: 9 milestones, 37 issues, все на доске [projects/1](https://github.com/orgs/AtlantaTeam/projects/1)
-- **Цепочка prd → plan-phase → issues автоматизирована** в SKILL.md: план сразу заводит milestones/issues + доску
-- **Арты** (скины, бэклог): OpenAI API `gpt-image-1`, аккаунт у пользователя есть, ключ в env (`.env.example` заведён)
-- Скилл `ui-ux-pro-max` установлен глобально в `~/.claude/skills/` — юзать при вёрстке UI
-
-## Следующие шаги
-
-1. Фаза 1 game-next (Tracer Bullet): seeded-random в движке, `/game?seed=`, первые unit-тесты физики и террейна (закрывает и долг «тестов нет»)
-2. Дальше по milestones: Фаза 2 мобильный layout → Фаза 3 тач-жест
-3. Мелочи: favicon (404), unused `setPower` в game-canvas.tsx
+- Ralph: кодер `claude-fable-5`, fallback sonnet-5, ревью PR — за супервизором (`reviewModel: none`), запуск НЕ трогать при живом раннере
+- Permission-блок устранён: `git add/commit/push` в `allow` проектного settings.json (коммит `ec5c87d` в ветке фазы)
+- Seeded-random: mulberry32 в `src/shared/lib/random/`, инжектируется в ground/wind/bullet/game-play; проп `seed` в GameCanvas — задел под #2
+- По завершении фазы раннер сам создаёт PR → супервизор: /code-review, тесты, смоук, доклад Диме перед мерджем
 
 ## Open questions
 
-- Кто из команды подключается к AtlantaTeam-репо (права, ревью, распределение issues)
-- Начислять ли анонимные результаты daily challenge до фазы auth (сейчас план — писать в scores без юзера)
+- Мелочи вне скоупа: favicon 404, unused `setPower`, ESLint-ошибки в `.claude/hooks/*.js`

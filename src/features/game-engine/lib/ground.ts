@@ -1,4 +1,5 @@
 import { floor } from '@/shared/lib/canvas';
+import type { TSeededRandom } from '@/shared/lib/random';
 
 type TExplosion = {
     bulletY: number;
@@ -17,9 +18,16 @@ export class Ground {
     private explosionHeights: (number | TExplosion)[];
     private innerWidth: number;
     private innerHeight: number;
+    private random: TSeededRandom;
     isFalling = false;
 
-    constructor(innerWidth: number, innerHeight: number, sandImage?: HTMLImageElement) {
+    constructor(
+        innerWidth: number,
+        innerHeight: number,
+        random: TSeededRandom,
+        sandImage?: HTMLImageElement,
+    ) {
+        this.random = random;
         this.stepMax = 3;
         this.stepChange = 0.3;
         this.innerWidth = innerWidth;
@@ -35,8 +43,8 @@ export class Ground {
     }
 
     generate = () => {
-        let height = Math.random() * this.heightMax;
-        let slope = Math.random() * this.stepMax * 2 - this.stepMax;
+        let height = this.random() * this.heightMax;
+        let slope = this.random() * this.stepMax * 2 - this.stepMax;
 
         for (let x = 0; x < this.innerWidth; x++) {
             const isTooHigh = this.heightMax / height < 1.1;
@@ -44,7 +52,7 @@ export class Ground {
             this.stepMax = isTooHigh || isTooLow ? 0.9 : 3;
 
             height += slope;
-            slope += Math.random() * this.stepChange * 2 - this.stepChange;
+            slope += this.random() * this.stepChange * 2 - this.stepChange;
 
             slope = slope > this.stepMax ? this.stepMax : slope;
             slope = slope < -this.stepMax ? -this.stepMax : slope;
@@ -73,11 +81,7 @@ export class Ground {
         }
     };
 
-    draw = (
-        ctx: CanvasRenderingContext2D,
-        xStart = 0,
-        xEnd = this.innerWidth,
-    ) => {
+    draw = (ctx: CanvasRenderingContext2D, xStart = 0, xEnd = this.innerWidth) => {
         this.isFalling = false;
         ctx.strokeStyle = this.color;
         ctx.lineWidth = 2;
