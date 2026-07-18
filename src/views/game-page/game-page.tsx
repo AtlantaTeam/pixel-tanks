@@ -12,7 +12,7 @@ export function GamePage({ seed }: TGamePageProps = {}) {
             <div className="relative flex-1 overflow-hidden">
                 <GameCanvas seed={seed} />
             </div>
-            <div className="border-t border-base-300 bg-base-200">
+            <div data-testid="game-hud" className="border-t border-base-300 bg-base-200">
                 <GameControls />
             </div>
             <GameOverDialog />

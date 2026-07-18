@@ -22,6 +22,8 @@ src/payload-types.ts
 .claude/backups/
 screenshots/
 .playwright-mcp/
+playwright-report/
+test-results/
 
 # Ralph runtime
 .claude/ralph/ralph.state.json
