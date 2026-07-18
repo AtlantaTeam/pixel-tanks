@@ -8,6 +8,10 @@ import { Tank } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
 import { calculateAimPreviewDots } from './aim-preview';
+import { ParticlePool, damageFlashBurst, groundBurst } from './particle-pool';
+
+/** Ёмкости пула хватает на одновременный залп земли и вспышку урона. */
+const PARTICLE_CAPACITY = 96;
 
 export type TTanksWeapons = {
     leftTankWeapons: TWeapon[];
@@ -60,6 +64,9 @@ export class GamePlay {
     wind = 0;
     private resizeObserver: ResizeObserver | undefined;
     private resizeRafId: number | undefined;
+    // Пул частиц взрыва: комья земли (промах) и вспышка урона (попадание в танк).
+    // Живёт весь бой, объекты переиспользуются — аллокаций в кадре нет.
+    private readonly particles: ParticlePool;
 
     constructor(
         canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -68,6 +75,7 @@ export class GamePlay {
         random: TSeededRandom,
     ) {
         this.random = random;
+        this.particles = new ParticlePool(PARTICLE_CAPACITY, random);
         this.canvasRef = canvasRef;
         this.mousePos = null;
         this.allWeapons = allWeapons;
@@ -302,19 +310,26 @@ export class GamePlay {
         this.rafTimerId = requestAnimationFrame(this.animate);
         const now = performance.now();
         this.checkGameOver();
+        const particlesAlive = this.particles.hasAlive();
         if (
             now - this.prevTimestamp < 15 ||
             !this.ctx ||
             !this.leftTank ||
             !this.rightTank ||
             !this.ground ||
-            this.isIdleMode()
+            // Пока частицы летят — крутим цикл даже в idle, чтобы их дорисовать
+            (this.isIdleMode() && !particlesAlive)
         ) {
             return;
         }
 
         this.prevTimestamp = now;
-        if (
+        if (particlesAlive) {
+            // Частицы разлетаются далеко за полосу точечной перерисовки взрыва —
+            // пока они живы, перерисовываем сцену целиком, иначе остаются хвосты.
+            this.particles.update();
+            this.fullRedraw();
+        } else if (
             (this.isFireMode && (!this.bullet || this.bullet.explosionRadius)) ||
             this.ground.isFalling
         ) {
@@ -352,6 +367,11 @@ export class GamePlay {
         }
 
         this.moveBullet(this.ctx);
+
+        // Частицы — поверх всего (сцена, взрыв, снаряд уже нарисованы этим кадром)
+        if (particlesAlive) {
+            this.particles.draw(this.ctx);
+        }
     };
 
     private tankAreaRedraw(tanks: Tank[]) {
@@ -414,6 +434,15 @@ export class GamePlay {
         if (!this.isFireMode || !this.bullet) return;
         this.bullet.move();
         if (this.bullet.isHit(ctx)) {
+            // explosionRadius === 0 только в первый кадр взрыва — эмитим залп один раз,
+            // дальше drawExplosion его инкрементирует и повторного эмита не будет.
+            if (this.bullet.explosionRadius === 0) {
+                if (this.bullet.isTankHit) {
+                    this.particles.emitBurst(damageFlashBurst(this.bullet.x, this.bullet.y));
+                } else {
+                    this.particles.emitBurst(groundBurst(this.bullet.x, this.bullet.y));
+                }
+            }
             if (this.bullet.isTankHit && this.bullet.hittedTank) {
                 void this.audio.playSfx('hit');
                 this.bullet.hittedTank.jumpOnHit(
