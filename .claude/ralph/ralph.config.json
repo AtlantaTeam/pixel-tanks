@@ -22,8 +22,8 @@
     "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
     "phases": [
         {
-            "milestone": "Фаза 1: Детерминированная физика + seed",
-            "branch": "feature/phase-1-seed"
+            "milestone": "Фаза 2: Мобильный layout",
+            "branch": "feature/phase-2-mobile"
         }
     ]
 }
