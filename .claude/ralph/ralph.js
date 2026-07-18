@@ -168,6 +168,9 @@ if (dirty && !DRY) {
 const maxIterations = ONCE ? 1 : config.maxIterations || 10;
 const maxTurns = config.maxTurns || 200;
 const state = loadJson(STATE_PATH, { count: 0, phaseIndex: 0 });
+// HITL: лимит «1 итерация» отсчитывается от этого запуска, накопленный счётчик
+// AFK-прогонов не должен превращать запуск в холостой сброс через circuit breaker.
+if (ONCE) state.count = 0;
 
 log(
     `🚀 Ralph start | mode=${ONCE ? 'HITL (1 итерация)' : 'AFK'} | dry=${DRY} | фаза ${state.phaseIndex + 1}/${config.phases.length}, итерация ${state.count}`,
@@ -195,7 +198,7 @@ while (true) {
 
     if (issues.length > 0) {
         state.count++;
-        saveState(state);
+        if (!DRY) saveState(state);
         const next = issues[0];
         const issueModel = pickModel(next);
         log(
