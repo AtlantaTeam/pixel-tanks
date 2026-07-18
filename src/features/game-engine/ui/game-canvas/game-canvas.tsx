@@ -9,6 +9,7 @@ import { GamePlay, type TTanksWeapons } from '../../lib/game-play';
 import { Bullet } from '../../lib/bullet';
 import { calculateDragAim } from '../../lib/drag-aim';
 import { attachGestureGuard } from '../../lib/gesture-guard';
+import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
 
 type TDragState = {
     pointerId: number;
@@ -138,55 +139,52 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         const onKeyDown = (e: KeyboardEvent) => {
             const game = gameRef.current;
             if (!game?.leftTank?.isActive || !game.rightTank) return;
-            if (
-                e.key !== 'ArrowRight' &&
-                e.key !== 'ArrowLeft' &&
-                e.key !== 'ArrowUp' &&
-                e.key !== 'ArrowDown' &&
-                e.key !== ' '
-            ) {
-                return;
-            }
+            const intent = resolveKeyboardIntent(e.key, e.ctrlKey);
+            if (!intent) return;
             e.preventDefault();
 
-            switch (e.key) {
-                case 'ArrowDown':
-                    if (e.ctrlKey && weapons.length > 0 && selectedWeapon) {
+            switch (intent) {
+                case 'power-down':
+                    game.changeTankPower(-1);
+                    break;
+                case 'power-up':
+                    game.changeTankPower(1);
+                    break;
+                case 'weapon-next':
+                    if (weapons.length > 0 && selectedWeapon) {
                         const idx = weapons.findIndex((w) => w.id === selectedWeapon.id);
                         const next = idx + 1 > weapons.length - 1 ? 0 : idx + 1;
                         selectWeapon(weapons[next]);
-                    } else {
-                        game.changeTankPower(-1);
                     }
                     break;
-                case 'ArrowUp':
-                    if (e.ctrlKey && weapons.length > 0 && selectedWeapon) {
+                case 'weapon-prev':
+                    if (weapons.length > 0 && selectedWeapon) {
                         const idx = weapons.findIndex((w) => w.id === selectedWeapon.id);
                         const prev = idx - 1 < 0 ? weapons.length - 1 : idx - 1;
                         selectWeapon(weapons[prev]);
-                    } else {
-                        game.changeTankPower(1);
                     }
                     break;
-                case 'ArrowLeft':
-                    if (e.ctrlKey) {
-                        if (moves > 0 && !game.isMoveMode) game.changeTankPosition(-150);
-                    } else {
-                        increaseAngle(-Math.PI / 180);
-                    }
+                case 'angle-left':
+                    increaseAngle(-Math.PI / 180);
                     break;
-                case 'ArrowRight':
-                    if (e.ctrlKey) {
-                        if (moves > 0 && !game.isMoveMode) game.changeTankPosition(150);
-                    } else {
-                        increaseAngle(Math.PI / 180);
-                    }
+                case 'angle-right':
+                    increaseAngle(Math.PI / 180);
                     break;
-                default:
-                    if (selectedWeapon) {
+                case 'move-left':
+                    if (moves > 0 && !game.isMoveMode) game.changeTankPosition(-150);
+                    break;
+                case 'move-right':
+                    if (moves > 0 && !game.isMoveMode) game.changeTankPosition(150);
+                    break;
+                case 'fire':
+                    // Как мышь/тач: не стреляем, пока снаряд в полёте (isFireMode) —
+                    // иначе повторный Enter/Space до смены хода даёт двойной выстрел
+                    // и лишний раз тратит оружие (конфликт клавиатурной схемы с собой).
+                    if (selectedWeapon && !game.isFireMode) {
                         game.onFire(selectedWeapon);
                         removeWeaponById(selectedWeapon.id);
                     }
+                    break;
             }
         };
 

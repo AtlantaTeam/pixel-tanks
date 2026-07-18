@@ -2,6 +2,7 @@
 
 import { useGameStore } from '@/features/game-engine';
 import { Button, Select } from '@/shared/ui';
+import { KeyboardSchemeHint } from './keyboard-scheme-hint';
 
 const formatAngle = (radians: number) => {
     const normalized = radians < 0 ? -radians : 2 * Math.PI - radians;
@@ -23,47 +24,53 @@ export function GameControls() {
     const selectWeapon = useGameStore((s) => s.selectWeapon);
 
     return (
-        <div className="grid grid-cols-1 gap-2 p-2 sm:grid-cols-[auto_1fr_auto] sm:items-center sm:gap-4 sm:p-4">
-            <div className="flex flex-col items-center gap-2">
-                <div className="font-pixel text-xs text-muted">Игрок</div>
-                <div className="font-pixel text-2xl text-primary">{playerPoints}</div>
+        <div className="flex flex-col gap-2 p-2 sm:gap-4 sm:p-4">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center sm:gap-4">
+                <div className="flex flex-col items-center gap-2">
+                    <div className="font-pixel text-xs text-muted">Игрок</div>
+                    <div className="font-pixel text-2xl text-primary">{playerPoints}</div>
+                </div>
+
+                <div className="flex flex-wrap items-end justify-center gap-2 sm:gap-4">
+                    <Counter
+                        label="Мощность"
+                        value={power}
+                        onDec={() => increasePower(-1)}
+                        onInc={() => increasePower(1)}
+                    />
+                    <Counter
+                        label="Угол"
+                        value={formatAngle(angle)}
+                        onDec={() => increaseAngle(Math.PI / 180)}
+                        onInc={() => increaseAngle(-Math.PI / 180)}
+                    />
+                    <Select
+                        id="weapon-select"
+                        label="Оружие"
+                        className="w-36"
+                        value={selectedWeapon?.id ?? ''}
+                        onChange={(e) => {
+                            const next = weapons.find((w) => w.id === Number(e.target.value));
+                            if (next) selectWeapon(next);
+                        }}
+                    >
+                        {weapons.map((w) => (
+                            <option key={w.id} value={w.id}>
+                                {w.name} #{w.id}
+                            </option>
+                        ))}
+                    </Select>
+                    <Counter label="Ходы" value={moves} />
+                </div>
+
+                <div className="flex flex-col items-center gap-2">
+                    <div className="font-pixel text-xs text-muted">Terminator</div>
+                    <div className="font-pixel text-2xl text-danger">{enemyPoints}</div>
+                </div>
             </div>
 
-            <div className="flex flex-wrap items-end justify-center gap-2 sm:gap-4">
-                <Counter
-                    label="Мощность"
-                    value={power}
-                    onDec={() => increasePower(-1)}
-                    onInc={() => increasePower(1)}
-                />
-                <Counter
-                    label="Угол"
-                    value={formatAngle(angle)}
-                    onDec={() => increaseAngle(Math.PI / 180)}
-                    onInc={() => increaseAngle(-Math.PI / 180)}
-                />
-                <Select
-                    id="weapon-select"
-                    label="Оружие"
-                    className="w-36"
-                    value={selectedWeapon?.id ?? ''}
-                    onChange={(e) => {
-                        const next = weapons.find((w) => w.id === Number(e.target.value));
-                        if (next) selectWeapon(next);
-                    }}
-                >
-                    {weapons.map((w) => (
-                        <option key={w.id} value={w.id}>
-                            {w.name} #{w.id}
-                        </option>
-                    ))}
-                </Select>
-                <Counter label="Ходы" value={moves} />
-            </div>
-
-            <div className="flex flex-col items-center gap-2">
-                <div className="font-pixel text-xs text-muted">Terminator</div>
-                <div className="font-pixel text-2xl text-danger">{enemyPoints}</div>
+            <div className="border-t border-base-300 pt-2 sm:pt-4">
+                <KeyboardSchemeHint />
             </div>
         </div>
     );
