@@ -1,6 +1,7 @@
 'use client';
 
 import { useGameStore } from '@/features/game-engine';
+import { useMuteState } from '@/shared/lib/audio';
 import { Button, Select } from '@/shared/ui';
 import { KeyboardSchemeHint } from './keyboard-scheme-hint';
 
@@ -23,8 +24,22 @@ export function GameControls() {
     const increasePower = useGameStore((s) => s.increasePower);
     const selectWeapon = useGameStore((s) => s.selectWeapon);
 
+    const { isMuted, toggle: toggleMute } = useMuteState();
+
     return (
         <div className="flex flex-col gap-2 p-2 sm:gap-4 sm:p-4">
+            <div className="flex items-center justify-end">
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={toggleMute}
+                    aria-label={isMuted ? 'Включить звук' : 'Выключить звук'}
+                    title={isMuted ? 'Включить звук' : 'Выключить звук'}
+                >
+                    {isMuted ? '🔇' : '🔊'}
+                </Button>
+            </div>
+
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center sm:gap-4">
                 <div className="flex flex-col items-center gap-2">
                     <div className="font-pixel text-xs text-muted">Игрок</div>

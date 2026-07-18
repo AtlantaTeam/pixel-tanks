@@ -1,4 +1,5 @@
 import { GameCanvas } from '@/features/game-engine';
+import { SceneMusic } from '@/shared/lib/audio';
 import { GameControls } from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
 
@@ -9,6 +10,7 @@ type TGamePageProps = {
 export function GamePage({ seed }: TGamePageProps = {}) {
     return (
         <main className="safe-area-inset flex h-dvh flex-col overflow-hidden">
+            <SceneMusic track="battle" />
             <div className="relative flex-1 overflow-hidden">
                 <GameCanvas seed={seed} />
             </div>
