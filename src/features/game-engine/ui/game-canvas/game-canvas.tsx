@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import type { TWeapon } from '@/shared/model';
 import { floor } from '@/shared/lib/canvas';
+import { createSeededRandom } from '@/shared/lib/random';
 import { useGameStore } from '../../model/game.store';
 import { GamePlay, type TTanksWeapons } from '../../lib/game-play';
 import { Bullet } from '../../lib/bullet';
@@ -20,7 +21,11 @@ const generateRandomWeapons = (amount: number): TTanksWeapons => {
     };
 };
 
-export function GameCanvas() {
+type TGameCanvasProps = {
+    seed?: number | string;
+};
+
+export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const gameRef = useRef<GamePlay | null>(null);
 
@@ -55,30 +60,35 @@ export function GameCanvas() {
         setWeapons(allWeapons.leftTankWeapons);
         selectWeapon(allWeapons.leftTankWeapons[0]);
 
-        const game = new GamePlay(canvasRef, allWeapons, {
-            onPointsCalc: ({ hittedIsLeft, leftActive, power: hitPower }) => {
-                if (hittedIsLeft) {
-                    if (leftActive) {
-                        increasePlayerPoints(-hitPower);
+        const game = new GamePlay(
+            canvasRef,
+            allWeapons,
+            {
+                onPointsCalc: ({ hittedIsLeft, leftActive, power: hitPower }) => {
+                    if (hittedIsLeft) {
+                        if (leftActive) {
+                            increasePlayerPoints(-hitPower);
+                        } else {
+                            increaseEnemyPoints(hitPower);
+                        }
+                    } else if (leftActive) {
+                        increasePlayerPoints(hitPower);
                     } else {
-                        increaseEnemyPoints(hitPower);
+                        increaseEnemyPoints(-hitPower);
                     }
-                } else if (leftActive) {
-                    increasePlayerPoints(hitPower);
-                } else {
-                    increaseEnemyPoints(-hitPower);
-                }
+                },
+                onGameOverCheck: ({ leftWeapons, rightWeapons }) => {
+                    if (!leftWeapons && !rightWeapons && !game.isFireMode) {
+                        setGameOver(true);
+                    }
+                },
+                onMovesChange: (delta) => {
+                    if (delta < 0) decrementMoves();
+                },
+                onPowerChange: (delta) => increasePower(delta),
             },
-            onGameOverCheck: ({ leftWeapons, rightWeapons }) => {
-                if (!leftWeapons && !rightWeapons && !game.isFireMode) {
-                    setGameOver(true);
-                }
-            },
-            onMovesChange: (delta) => {
-                if (delta < 0) decrementMoves();
-            },
-            onPowerChange: (delta) => increasePower(delta),
-        });
+            createSeededRandom(seed ?? Date.now()),
+        );
         gameRef.current = game;
         game.loadImages();
 
@@ -161,14 +171,7 @@ export function GameCanvas() {
 
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
-    }, [
-        selectedWeapon,
-        weapons,
-        moves,
-        selectWeapon,
-        removeWeaponById,
-        increaseAngle,
-    ]);
+    }, [selectedWeapon, weapons, moves, selectWeapon, removeWeaponById, increaseAngle]);
 
     return (
         <canvas

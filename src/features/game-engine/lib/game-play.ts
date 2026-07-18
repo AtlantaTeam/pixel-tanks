@@ -1,9 +1,11 @@
 import type { RefObject } from 'react';
 import { floor } from '@/shared/lib/canvas';
+import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
+import { generateWind } from './wind';
 
 export type TTanksWeapons = {
     leftTankWeapons: TWeapon[];
@@ -59,12 +61,16 @@ export class GamePlay {
     damageAmount = 0;
     rafTimerId: number | undefined;
     isSoundOn = true;
+    private random: TSeededRandom;
+    wind = 0;
 
     constructor(
         canvasRef: RefObject<HTMLCanvasElement | null>,
         allWeapons: TTanksWeapons,
         callbacks: TGamePlayCallbacks,
+        random: TSeededRandom,
     ) {
+        this.random = random;
         this.canvasRef = canvasRef;
         this.mousePos = null;
         this.allWeapons = allWeapons;
@@ -123,7 +129,8 @@ export class GamePlay {
         }
         const { leftTank, leftGunpoint, sand, rightTank, rightGunpoint } = GamePlay.images;
         const { leftTankWeapons, rightTankWeapons } = this.allWeapons;
-        this.ground = new Ground(this.innerWidth, this.innerHeight, sand);
+        this.ground = new Ground(this.innerWidth, this.innerHeight, this.random, sand);
+        this.wind = generateWind(this.random);
         const leftTankX = floor(this.innerWidth / 4);
         const leftTankY = this.innerHeight - this.ground.heights[leftTankX];
         this.leftTank = new Tank(
@@ -273,7 +280,12 @@ export class GamePlay {
         tanks.forEach((tank) => {
             const padding = 50;
             if (this.ctx && this.ground) {
-                this.ctx.clearRect(tank.x - padding, 0, tank.tankWidth + padding * 2, this.innerHeight);
+                this.ctx.clearRect(
+                    tank.x - padding,
+                    0,
+                    tank.tankWidth + padding * 2,
+                    this.innerHeight,
+                );
                 this.ground.draw(this.ctx, tank.x - padding, tank.x + tank.tankWidth + padding);
             }
         });
@@ -345,11 +357,7 @@ export class GamePlay {
         };
 
         for (let curPower = startPower; curPower < 18; curPower += 1) {
-            for (
-                let currentAngle = startAngle;
-                stopCondition(currentAngle);
-                currentAngle += step
-            ) {
+            for (let currentAngle = startAngle; stopCondition(currentAngle); currentAngle += step) {
                 this.rightTank.canHarmYourself = false;
                 const { hitX, isTankHit } = this.virtualFire(currentAngle, curPower);
 
@@ -371,7 +379,7 @@ export class GamePlay {
                         break;
                     }
                     this.rightTank.gunpointAngle +=
-                        Math.random() *
+                        this.random() *
                         (this.maxGameDifficulty - this.gameDifficulty) *
                         (step / 10);
                     this.rightTank.isReadyToFire = true;
@@ -404,6 +412,7 @@ export class GamePlay {
             this.ground,
             this.rightTank,
             this.leftTank,
+            this.wind,
         );
         virtualBullet.move();
         while (!virtualBullet.isHit(this.ctx)) {
@@ -419,7 +428,14 @@ export class GamePlay {
 
     fire = (activeTank: Tank, targetTank: Tank, ground: Ground, weaponType: TWeapon) => {
         this.activateMode('fire');
-        this.bullet = new Bullet(this.innerWidth, this.innerHeight, ground, activeTank, targetTank);
+        this.bullet = new Bullet(
+            this.innerWidth,
+            this.innerHeight,
+            ground,
+            activeTank,
+            targetTank,
+            this.wind,
+        );
         this.playSound(this.fireSoundEl);
         activeTank.fire(weaponType);
     };
