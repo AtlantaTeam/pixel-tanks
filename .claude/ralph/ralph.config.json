@@ -2,6 +2,8 @@
     "active": true,
     "maxIterations": 10,
     "maxTurns": 200,
+    "claudeTimeoutMs": 7200000,
+    "authorAllowlist": ["Pelmenya"],
     "model": "claude-opus-4-8",
     "fallbackModel": "claude-sonnet-5",
     "permissionMode": "bypassPermissions",
