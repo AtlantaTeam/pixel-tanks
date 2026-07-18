@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import { floor } from '@/shared/lib/canvas';
+import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
 import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
 import { Ground } from './ground';
@@ -63,6 +63,8 @@ export class GamePlay {
     isSoundOn = true;
     private random: TSeededRandom;
     wind = 0;
+    private resizeObserver: ResizeObserver | undefined;
+    private resizeRafId: number | undefined;
 
     constructor(
         canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -120,13 +122,106 @@ export class GamePlay {
         });
     };
 
+    // Подгоняет бэкинг-стор canvas под CSS-размер и devicePixelRatio.
+    // innerWidth/innerHeight — ЛОГИЧЕСКИЕ (CSS) пиксели: вся физика и рисование
+    // в них, а ctx масштабируется на dpr, поэтому картинка чёткая на ретине.
+    // Возвращает true, если логический размер или бэкинг-стор изменились
+    // (в обоих случаях нужна перерисовка сцены).
+    fit = (): boolean => {
+        const canvas = this.canvasRef.current;
+        if (!canvas) return false;
+        const rect = canvas.getBoundingClientRect();
+        const cssWidth = floor(rect.width || canvas.offsetWidth || this.innerWidth);
+        const cssHeight = floor(rect.height || canvas.offsetHeight || this.innerHeight);
+        const dpr = getDevicePixelRatio();
+        const backingWidth = toDevicePixels(cssWidth, dpr);
+        const backingHeight = toDevicePixels(cssHeight, dpr);
+        // Смена только dpr (перенос окна между мониторами, зум) меняет бэкинг-стор
+        // при том же CSS-размере — canvas очищается, поэтому это тоже «изменение».
+        const changed =
+            this.innerWidth !== cssWidth ||
+            this.innerHeight !== cssHeight ||
+            canvas.width !== backingWidth ||
+            canvas.height !== backingHeight;
+
+        // Присваивание canvas.width/height сбрасывает контекст (transform → identity,
+        // очистка), поэтому меняем только при реальном изменении и заново ставим базу.
+        if (canvas.width !== backingWidth) canvas.width = backingWidth;
+        if (canvas.height !== backingHeight) canvas.height = backingHeight;
+        this.innerWidth = cssWidth;
+        this.innerHeight = cssHeight;
+        if (this.ctx) {
+            this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+        return changed;
+    };
+
+    private observeResize = () => {
+        const canvas = this.canvasRef.current;
+        if (!canvas || typeof ResizeObserver === 'undefined' || this.resizeObserver) return;
+        // Реагируем на resize окна и поворот телефона: коалесцируем в один rAF.
+        this.resizeObserver = new ResizeObserver(() => {
+            if (this.resizeRafId !== undefined) return;
+            this.resizeRafId = requestAnimationFrame(() => {
+                this.resizeRafId = undefined;
+                this.applyResize();
+            });
+        });
+        this.resizeObserver.observe(canvas);
+    };
+
+    private applyResize = () => {
+        if (!this.ctx || !this.ground || !this.leftTank || !this.rightTank) return;
+        const prevWidth = this.innerWidth;
+        const prevHeight = this.innerHeight;
+        if (!this.fit()) return;
+        if (prevWidth !== this.innerWidth || prevHeight !== this.innerHeight) {
+            this.rescaleTerrainAndTanks();
+            this.rescaleBullet(prevWidth, prevHeight);
+        }
+        // Даже при смене только dpr бэкинг-стор пересоздан (canvas очищен) —
+        // перерисовка нужна безусловно.
+        this.fullRedraw();
+    };
+
+    // Пересчитывает террейн под новый размер (Ground.resize — без RNG, форма и
+    // детерминизм сохраняются) и переставляет танки пропорционально.
+    private rescaleTerrainAndTanks = () => {
+        if (!this.leftTank || !this.rightTank || !this.ground) return;
+        this.ground.resize(this.innerWidth, this.innerHeight);
+        const leftTankX = floor(this.innerWidth / 4);
+        const rightTankX = floor((this.innerWidth * 3) / 4);
+        for (const [tank, x] of [
+            [this.leftTank, leftTankX],
+            [this.rightTank, rightTankX],
+        ] as const) {
+            tank.innerWidth = this.innerWidth;
+            tank.innerHeight = this.innerHeight;
+            tank.x = x;
+            tank.y = this.innerHeight - this.ground.heights[x];
+            tank.dx = 0;
+            tank.dy = 0;
+        }
+    };
+
+    // Снаряд в полёте переносится в новые координаты пропорционально: сброс терял бы
+    // уже израсходованное оружие и подвешивал ход на игроке (ревью PR #41).
+    private rescaleBullet = (prevWidth: number, prevHeight: number) => {
+        if (!this.bullet) return;
+        this.bullet.x = floor((this.bullet.x * this.innerWidth) / prevWidth);
+        this.bullet.y = floor((this.bullet.y * this.innerHeight) / prevHeight);
+        this.bullet.lastX = this.bullet.x;
+        this.bullet.lastY = this.bullet.y;
+        this.bullet.innerWidth = this.innerWidth;
+        this.bullet.innerHeight = this.innerHeight;
+    };
+
     initPaint = () => {
         const canvas = this.canvasRef.current;
         if (canvas) {
             this.ctx = canvas.getContext('2d');
-            this.innerWidth = canvas.width;
-            this.innerHeight = canvas.height;
         }
+        this.fit();
         const { leftTank, leftGunpoint, sand, rightTank, rightGunpoint } = GamePlay.images;
         const { leftTankWeapons, rightTankWeapons } = this.allWeapons;
         this.ground = new Ground(this.innerWidth, this.innerHeight, this.random, sand);
@@ -165,6 +260,7 @@ export class GamePlay {
         this.explosionHitSoundEl = new Audio(SOUND_PATHS.hit);
         this.animate();
         this.fullRedraw();
+        this.observeResize();
     };
 
     getActiveAndTargetTanks = (t1: Tank, t2: Tank) => (t1.isActive ? [t1, t2] : [t2, t1]);
@@ -476,5 +572,11 @@ export class GamePlay {
             cancelAnimationFrame(this.rafTimerId);
             this.rafTimerId = undefined;
         }
+        if (this.resizeRafId !== undefined) {
+            cancelAnimationFrame(this.resizeRafId);
+            this.resizeRafId = undefined;
+        }
+        this.resizeObserver?.disconnect();
+        this.resizeObserver = undefined;
     }
 }

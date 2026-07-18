@@ -135,6 +135,41 @@ function pickReviewModel(milestone) {
     return hasComplex ? review.escalated : review.default;
 }
 
+// ── Закрытие milestones ──────────────────────────────────────────────────────
+// Milestone закрывается НЕ при создании PR (ревью может вернуть работу),
+// а когда фаза принята: все issues разобраны И PR ветки фазы смерджен.
+// Свип на каждом старте раннера — закрывает хвосты прошлых фаз.
+
+function closeCompletedMilestones() {
+    let milestones = [];
+    try {
+        milestones = JSON.parse(sh('gh api "repos/{owner}/{repo}/milestones?state=open"'));
+    } catch (e) {
+        log(`⚠ Не смог получить milestones для свипа: ${e.message}`);
+        return;
+    }
+    for (const phase of config.phases) {
+        const ms = milestones.find((m) => m.title === phase.milestone);
+        if (!ms || ms.open_issues > 0) continue;
+        let merged = false;
+        try {
+            merged =
+                JSON.parse(
+                    sh(`gh pr list --head ${phase.branch} --state merged --json number --limit 1`),
+                ).length > 0;
+        } catch (e) {
+            log(`⚠ Не смог проверить PR ветки ${phase.branch}: ${e.message}`);
+        }
+        if (!merged) continue;
+        try {
+            sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${ms.number} -f state=closed`);
+            log(`🏁 Milestone закрыт: "${phase.milestone}" (issues разобраны, PR смерджен)`);
+        } catch (e) {
+            log(`⚠ Не смог закрыть milestone "${phase.milestone}": ${e.message}`);
+        }
+    }
+}
+
 // ── Preflight ────────────────────────────────────────────────────────────────
 
 const config = loadJson(CONFIG_PATH, null);
@@ -165,9 +200,14 @@ if (dirty && !DRY) {
     fail('Рабочее дерево грязное — закоммить или застэшь перед автономным запуском:\n' + dirty);
 }
 
+if (!DRY) closeCompletedMilestones();
+
 const maxIterations = ONCE ? 1 : config.maxIterations || 10;
 const maxTurns = config.maxTurns || 200;
 const state = loadJson(STATE_PATH, { count: 0, phaseIndex: 0 });
+// HITL: лимит «1 итерация» отсчитывается от этого запуска, накопленный счётчик
+// AFK-прогонов не должен превращать запуск в холостой сброс через circuit breaker.
+if (ONCE) state.count = 0;
 
 log(
     `🚀 Ralph start | mode=${ONCE ? 'HITL (1 итерация)' : 'AFK'} | dry=${DRY} | фаза ${state.phaseIndex + 1}/${config.phases.length}, итерация ${state.count}`,
@@ -195,7 +235,7 @@ while (true) {
 
     if (issues.length > 0) {
         state.count++;
-        saveState(state);
+        if (!DRY) saveState(state);
         const next = issues[0];
         const issueModel = pickModel(next);
         log(

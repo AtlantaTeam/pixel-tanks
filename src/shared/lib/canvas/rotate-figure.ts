@@ -23,7 +23,17 @@ export const rotateFigure = (
     ctx.save();
     const angle = Math.atan2(y - rotationPointY, x - rotationPointX);
     rotateFigureByAngle(ctx, angle, rotationPointX, rotationPointY);
-    return { angle, transformer: ctx.getTransform() };
+    // Матрицу поворота считаем вручную в ЛОГИЧЕСКИХ координатах, а не через
+    // ctx.getTransform(): базовый transform ctx масштабирован на dpr (ретина),
+    // и getTransform() вернул бы матрицу с dpr. Но эта матрица используется для
+    // hit-детекта (isPointInPath) и позиционирования дула (transformPoint) —
+    // там всё в логических пикселях, dpr сломал бы физику. Так матрица совпадает
+    // с поведением при dpr = 1.
+    const transformer = new DOMMatrix()
+        .translateSelf(rotationPointX, rotationPointY)
+        .rotateSelf((angle * 180) / Math.PI)
+        .translateSelf(-rotationPointX, -rotationPointY);
+    return { angle, transformer };
 };
 
 export const transformPoint = (point: TCoords, matrix: DOMMatrix) => ({
