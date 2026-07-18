@@ -86,9 +86,17 @@ function runClaude(prompt, { model, maxTurns }) {
 function openIssues(milestone) {
     try {
         // gh отдаёт новые-первыми; порядок работы — по возрастанию номера (порядок задач в плане)
-        return JSON.parse(
-            sh(`gh issue list --milestone "${milestone}" --state open --json number,title,labels`),
-        ).sort((a, b) => a.number - b.number);
+        return (
+            JSON.parse(
+                sh(
+                    `gh issue list --milestone "${milestone}" --state open --json number,title,labels`,
+                ),
+            )
+                // blocked = агент упёрся в ручной гейт (npm install и т.п.) — пропускаем,
+                // чтобы AFK-цикл не сжигал итерации об одну стену; снимает label человек.
+                .filter((i) => !(i.labels || []).some((l) => l.name === 'blocked'))
+                .sort((a, b) => a.number - b.number)
+        );
     } catch (e) {
         fail(
             `gh issue list упал: ${e.message}\nПроверь: gh auth status, milestone "${milestone}" существует.`,
