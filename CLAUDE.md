@@ -189,7 +189,6 @@ npm run test:coverage
 
 | Агент                    | Когда использовать                                             | subagent_type          |
 | ------------------------ | -------------------------------------------------------------- | ---------------------- |
-| **code-reviewer**        | Ревью кода: качество, безопасность, дублирование               | `code-reviewer`        |
 | **architect-reviewer**   | Архитектурные решения: FSD, паттерны, слои, зависимости        | `architect-reviewer`   |
 | **test-automator**       | Генерация тестов, покрытие, стратегия тестирования             | `test-automator`       |
 | **performance-engineer** | Оптимизация: бандл, рендер, Canvas FPS, SSR/ISR                | `performance-engineer` |
@@ -197,6 +196,8 @@ npm run test:coverage
 | **docs-reviewer**        | Дрейф документации: CLAUDE.md vs package.json/код vs git log   | `docs-reviewer`        |
 
 Все агенты используют модель `opus`.
+
+Ревью кода — встроенный `/code-review` (не кастомный агент): верификация находок, уровни глубины, ultra-режим.
 
 ## Старый код проекта
 
