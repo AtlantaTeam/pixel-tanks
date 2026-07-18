@@ -4,22 +4,24 @@
 
 ## Текущая задача
 
-Ralph Loop, Фаза 1 («Детерминированная физика + seed»), ветка `feature/phase-1-seed`. **Issue #1 закрыт** (коммит `2d0bda9`), конвейер работает: реализация → тесты → коммит → закрытие issue → карточка в Done. Осталось: #2 (seed из URL), #3 (тесты физики), #4 (тесты террейна).
+**Фаза 1 game-next ЗАВЕРШЕНА**: issues #1–#4 закрыты, 30/30 тестов зелёные, ветка `feature/phase-1-seed` запушена. **PR #39 создан и ждёт ревью** — https://github.com/AtlantaTeam/pocket-tanks-next/pull/39. Ревью отложено из-за лимита квоты (2-часовое окно Max 5x).
 
-## ⚡ ПЕРВЫМ ДЕЛОМ в новой сессии (Ralph умер вместе со старой сессией)
+## ⚡ ПЕРВЫМ ДЕЛОМ в новой сессии
 
-1. Проверить хвост `.claude/ralph/ralph.log` и `gh issue list --milestone "Фаза 1: Детерминированная физика + seed" --state open`
-2. Если рабочее дерево грязное (HANDOFF.md и пр.) — закоммитить в ветку фазы (`chore:`), иначе preflight раннера упадёт
-3. Перезапустить: `node .claude/ralph/ralph.js` в фоне + монитор на `tail -f .claude/ralph/ralph.log`
-4. Счётчик итераций: сгорело 5/10 (4 — об permission-блок, устранён). Если сработает circuit breaker — перезапуск продолжит с места остановки
+1. `/code-review` по PR #39 (diff: `src/shared/lib/random/`, wind.ts, правки движка, 4 тест-файла)
+2. Если ревью чистое → смоук `/game?seed=42` (дважды — идентичный террейн) → мердж PR (squash не нужен, история фазы полезна) → issues #1–4 закроются сами
+3. После мерджа: в `.claude/ralph/ralph.config.json` сменить phases на Фазу 2 (`milestone: "Фаза 2: Мобильный layout"`, `branch: "feature/phase-2-mobile"`), `node .claude/ralph/ralph.js --reset`, затем запуск
+4. Режим запуска Ralph: `--once` (HITL) — себя оправдал; полный AFK — только при большом запасе квоты
 
 ## Последние принятые решения
 
-- Ralph: кодер `claude-fable-5`, fallback sonnet-5, ревью PR — за супервизором (`reviewModel: none`), запуск НЕ трогать при живом раннере
-- Permission-блок устранён: `git add/commit/push` в `allow` проектного settings.json (коммит `ec5c87d` в ветке фазы)
-- Seeded-random: mulberry32 в `src/shared/lib/random/`, инжектируется в ground/wind/bullet/game-play; проп `seed` в GameCanvas — задел под #2
-- По завершении фазы раннер сам создаёт PR → супервизор: /code-review, тесты, смоук, доклад Диме перед мерджем
+- Разделение труда: Ralph (opus-4-8) — типовые issues, супервизор (fable) — сложная физика (#3 сделан супервизором напрямую). Конфиг: кодер opus-4-8, reviewModel fable-5 (авторевью раннера), fallback sonnet-5
+- Ralph-сессии жгут ту же квоту, что и основная — при <20% окна раннер стопать, тяжёлое переносить в свежее окно
+- Перед перезапуском раннера дерево должно быть чистым (preflight), счётчик после `--once` сбрасывать `--reset`
+- README проекта готов (в ветке фазы, уедет в main с PR #39)
+- OPENAI_API_KEY: Дима положит в `.env.local` по запросу — понадобится только для генерации артов (бэклог)
 
 ## Open questions
 
 - Мелочи вне скоупа: favicon 404, unused `setPower`, ESLint-ошибки в `.claude/hooks/*.js`
+- Кто из команды подключается к AtlantaTeam-репо (права, ревью, распределение issues)
