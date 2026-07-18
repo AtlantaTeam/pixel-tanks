@@ -3,9 +3,22 @@
     "maxIterations": 10,
     "maxTurns": 200,
     "model": "claude-opus-4-8",
-    "reviewModel": "claude-fable-5",
     "fallbackModel": "claude-sonnet-5",
     "permissionMode": "bypassPermissions",
+    "modelRouting": {
+        "default": "claude-opus-4-8",
+        "labels": {
+            "complexity:low": "claude-haiku-4-5-20251001",
+            "complexity:medium": "claude-sonnet-5",
+            "complexity:high": "claude-opus-4-8",
+            "complexity:expert": "claude-fable-5"
+        }
+    },
+    "review": {
+        "default": "claude-opus-4-8",
+        "escalated": "claude-fable-5",
+        "escalateOn": ["complexity:expert"]
+    },
     "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
     "phases": [
         {

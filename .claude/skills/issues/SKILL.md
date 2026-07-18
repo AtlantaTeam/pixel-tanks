@@ -16,12 +16,25 @@ description: Создаёт GitHub milestones и issues из файла план
    `gh api repos/:owner/:repo/milestones --jq '.[].title'`
 3. Для каждой фазы создай milestone (если ещё нет):
    `gh api repos/:owner/:repo/milestones -f title="Фаза N: название"`
-4. Для каждой задачи фазы создай Issue:
-   `gh issue create --title "..." --body "..." --milestone "Фаза N: название"`
+4. Для каждой задачи фазы создай Issue **с label сложности** (см. раздел ниже):
+   `gh issue create --title "..." --body "..." --milestone "Фаза N: название" --label "complexity:<уровень>"`
 5. **Доска (GitHub Projects, обязательно)** — issues должны попасть на доску проекта:
     - Найди доску: `gh project list --owner <owner>`; если нет — создай (`gh project create --owner <owner> --title "<имя проекта>"`) и привяжи к репо (`gh project link <number> --owner <owner> --repo <owner/repo>`)
     - Добавь каждый созданный issue: `gh project item-add <number> --owner <owner> --url <issue-url>`
     - Проверь счётчик с запасом по лимиту: `gh project item-list <number> --owner <owner> --limit 100 --format json --jq '.items | length'` (без `--limit` вернёт максимум 30 — обманчиво)
+
+## Label сложности (обязательно, ровно один на issue)
+
+По label Ralph-раннер выбирает модель кодера (`.claude/ralph/ralph.config.json → modelRouting`), а `complexity:expert` дополнительно эскалирует ревью всей фазы на fable. Если label'ов ещё нет в репо — создай (`gh label create ...`).
+
+| Label               | Модель | Когда ставить                                                                      |
+| ------------------- | ------ | ---------------------------------------------------------------------------------- |
+| `complexity:low`    | haiku  | Механика: перенос файлов, тумблер, подсказка, конфиг — без решений                 |
+| `complexity:medium` | sonnet | Типовая фича по готовому образцу: компонент, привязка событий, обычные unit-тесты  |
+| `complexity:high`   | opus   | Требует инженерных решений: физика/Canvas, e2e-сценарии, производительность, жесты |
+| `complexity:expert` | fable  | Критично для корректности всей системы: детерминизм, сериализация, ядро управления |
+
+Сомневаешься между двумя — бери более высокий уровень.
 
 ## Формат Issue
 

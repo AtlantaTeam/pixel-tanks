@@ -4,22 +4,24 @@
 
 ## Текущая задача
 
-Ralph Loop, Фаза 1 («Детерминированная физика + seed»), ветка `feature/phase-1-seed`. **Issue #1 закрыт** (коммит `2d0bda9`), конвейер работает: реализация → тесты → коммит → закрытие issue → карточка в Done. Осталось: #2 (seed из URL), #3 (тесты физики), #4 (тесты террейна).
-
-## ⚡ ПЕРВЫМ ДЕЛОМ в новой сессии (Ralph умер вместе со старой сессией)
-
-1. Проверить хвост `.claude/ralph/ralph.log` и `gh issue list --milestone "Фаза 1: Детерминированная физика + seed" --state open`
-2. Если рабочее дерево грязное (HANDOFF.md и пр.) — закоммитить в ветку фазы (`chore:`), иначе preflight раннера упадёт
-3. Перезапустить: `node .claude/ralph/ralph.js` в фоне + монитор на `tail -f .claude/ralph/ralph.log`
-4. Счётчик итераций: сгорело 5/10 (4 — об permission-блок, устранён). Если сработает circuit breaker — перезапуск продолжит с места остановки
+Фаза 1 game-next завершена, **PR #39 всё ещё ждёт `/code-review`** (отложен из-за квоты). В этой сессии: роутинг моделей Ralph по сложности, README (дипломный проект + починен ASCII-арт), защита main.
 
 ## Последние принятые решения
 
-- Ralph: кодер `claude-fable-5`, fallback sonnet-5, ревью PR — за супервизором (`reviewModel: none`), запуск НЕ трогать при живом раннере
-- Permission-блок устранён: `git add/commit/push` в `allow` проектного settings.json (коммит `ec5c87d` в ветке фазы)
-- Seeded-random: mulberry32 в `src/shared/lib/random/`, инжектируется в ground/wind/bullet/game-play; проп `seed` в GameCanvas — задел под #2
-- По завершении фазы раннер сам создаёт PR → супервизор: /code-review, тесты, смоук, доклад Диме перед мерджем
+- **Роутинг моделей Ralph**: issue помечается label `complexity:{low|medium|high|expert}` → haiku/sonnet/opus/fable (`ralph.config.json → modelRouting`). Все 33 открытых issues размечены. Ревью фазы: **opus по умолчанию**, эскалация на **fable**, если в фазе есть `complexity:expert` (`review.escalateOn`). Fable-ревью получат фазы 3 (тач-рогатка) и 9 (реплеи).
+- **Скилл `issues`** теперь обязан проставлять label сложности при создании issue (таблица критериев — в SKILL.md) — договорённость с Димой: labels автоматом при загрузке бэклога.
+- **main защищён**: только через PR, enforce_admins=true, force-push/удаление запрещены, approvals = 0 (чтобы не блокировать автономный мердж). Прямой push в main теперь отклонится — не пытаться.
+- README: «дипломный проект» (не «курсовая»); ASCII-арт перерисован только из monospace-безопасных символов (█ ▄ ▀ ═ o) — глифы ◎ ▲ ▬ ▂ и эмодзи ломали выравнивание на GitHub. Проверено Playwright-скриншотом блока.
+
+## Следующие шаги
+
+1. `/code-review` по PR #39 (diff: `src/shared/lib/random/`, wind.ts, движок, 4 тест-файла)
+2. Чистое ревью → смоук `/game?seed=42` (дважды — идентичный террейн) → мердж PR (не squash) → issues #1–4 закроются
+3. После мерджа: в `ralph.config.json` phases → Фаза 2 (`milestone: "Фаза 2: Мобильный layout"`, `branch: "feature/phase-2-mobile"`), `node .claude/ralph/ralph.js --reset`, запуск `--once` (HITL)
+4. При <20% окна квоты раннер не запускать
 
 ## Open questions
 
 - Мелочи вне скоупа: favicon 404, unused `setPower`, ESLint-ошибки в `.claude/hooks/*.js`
+- Кто из команды подключается к AtlantaTeam-репо (права, ревью, распределение issues)
+- OPENAI_API_KEY для генерации артов — Дима положит в `.env.local` по запросу
