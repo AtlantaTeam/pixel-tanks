@@ -1,0 +1,16 @@
+{
+  "active": false,
+  "maxIterations": 10,
+  "maxTurns": 200,
+  "model": "claude-sonnet-5",
+  "reviewModel": "claude-opus-4-8",
+  "fallbackModel": "",
+  "permissionMode": "",
+  "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
+  "phases": [
+    {
+      "milestone": "Фаза 1: НАЗВАНИЕ",
+      "branch": "feature/phase-1"
+    }
+  ]
+}
