@@ -4,27 +4,21 @@
 
 ## Текущая задача
 
-Переезд в pocket-tanks-next закрыт (CLAUDE.md актуализирован, смоук пройден). Курс изменён: вместо auth следующая работа — **game-next** (некст-ген апгрейд игры, мобилка в приоритете). PRD и план готовы, бэклог развёрнут в командном репо.
+Ralph, Фаза 1 («Детерминированная физика + seed»). **Issue #1 закрыт** — коммит `2d0bda9` в `feature/phase-1-seed`. Блокер коммитов снят: Дима перенёс `git add`/`git commit`/`git push` в `allow`.
 
 ## Последние принятые решения
 
-- **Приоритет — game-next, не auth**: пользователь хочет геймплейный скачок, а не только перенос. Auth съехал в фазу 7 и забрал профиль
-- **OAuth только Яндекс ID** — по 149-ФЗ Google-авторизация на росс. сайтах запрещена (телефон/Госуслуги/росс. сервисы)
-- **Мобилка (тач «оттяни и отпусти») и клавиатура — равноправные схемы**, обе в скоупе game-next
-- **Звук возвращаем оригинальный** — мелодии Андрея в `../pocket-tanks/static/audio/` (menu, gameplay + 3 эффекта)
-- **Forum и Privacy выкинуты окончательно**; bot-messages (реплики Терминатора) возвращаем как chat-bubble
-- **Командный репо = единственный origin**: `AtlantaTeam/pocket-tanks-next` (личный Pelmenya-репо пользователь удаляет). Бэклог: 9 milestones, 37 issues, все на доске [projects/1](https://github.com/orgs/AtlantaTeam/projects/1)
-- **Цепочка prd → plan-phase → issues автоматизирована** в SKILL.md: план сразу заводит milestones/issues + доску
-- **Арты** (скины, бэклог): OpenAI API `gpt-image-1`, аккаунт у пользователя есть, ключ в env (`.env.example` заведён)
-- Скилл `ui-ux-pro-max` установлен глобально в `~/.claude/skills/` — юзать при вёрстке UI
+- Seeded-random: mulberry32 в `src/shared/lib/random/`, инжектируется как `TRandomFn` в ground/wind/bullet/game-play.
+- Проп `seed` в `GameCanvas` уже заведён — задел под Issue #2.
+- Автономный цикл рабочий: коммит + закрытие Issue прошли без permission-блоков.
 
 ## Следующие шаги
 
-1. Фаза 1 game-next (Tracer Bullet): seeded-random в движке, `/game?seed=`, первые unit-тесты физики и террейна (закрывает и долг «тестов нет»)
-2. Дальше по milestones: Фаза 2 мобильный layout → Фаза 3 тач-жест
-3. Мелочи: favicon (404), unused `setPower` в game-canvas.tsx
+1. Issue #2: seed из URL `/game?seed=...` — прокинуть searchParam в `GameCanvas`.
+2. Issue #3: детерминированные unit-тесты физики (траектория, столкновения).
+3. Issue #4: unit-тесты генерации террейна (частично покрыто в `ground.test.ts` — сверить с критериями Issue).
+4. После закрытия всех issues фазы — PR делает раннер, не сессия.
 
 ## Open questions
 
-- Кто из команды подключается к AtlantaTeam-репо (права, ревью, распределение issues)
-- Начислять ли анонимные результаты daily challenge до фазы auth (сейчас план — писать в scores без юзера)
+- Известные мелочи вне скоупа фазы: favicon 404, unused `setPower`, ESLint-ошибки в `.claude/hooks/*.js`.
