@@ -123,9 +123,13 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         if (!game?.leftTank || !game?.rightTank) return;
         const [activeTank] = game.getActiveAndTargetTanks(game.leftTank, game.rightTank);
         activeTank.power = power;
-        if (activeTank.gunpointAngle !== angle) {
+        const angleChanged = activeTank.gunpointAngle !== angle;
+        activeTank.gunpointAngle = angle;
+        // Будим рендер-цикл при смене угла ИЛИ мощности, пока видна линия прицела:
+        // power-only оттяжка строго вдоль луча иначе выходит на isIdleMode()
+        // и превью не удлиняется до первого изменения угла.
+        if (angleChanged || game.showAimPreview) {
             game.activateMode('angle');
-            activeTank.gunpointAngle = angle;
         }
     }, [angle, power]);
 
@@ -204,7 +208,13 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             onPointerDown={(e) => {
                 // Мышь оставляем на своей схеме (движение — угол, клик — выстрел);
                 // жест «оттяни и отпусти» — для touch/pen.
-                if (e.pointerType === 'mouse') return;
+                if (e.pointerType === 'mouse') {
+                    // Настоящий клик мыши всегда начинается с mouse-pointerdown —
+                    // снимаем возможное залипшее подавление: после полного драга
+                    // (не тапа) синтетический click не приходит и флаг остаётся true.
+                    suppressClickRef.current = false;
+                    return;
+                }
                 const game = gameRef.current;
                 if (!game?.leftTank?.isActive || game.isFireMode) return;
                 dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY };
