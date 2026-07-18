@@ -15,18 +15,24 @@
     --color-danger: #b13e53;
     --color-ink: #f4f4f4;
     --color-muted: #94b0c2;
+}
 
+/* Шрифтовой токен — в @theme inline: --font-press-start объявляется next/font
+   на body, обычный @theme зарезолвил бы var() на :root, где её ещё нет. */
+@theme inline {
     --font-pixel: var(--font-press-start), monospace;
 }
 
 /* NES-рамка: 4 box-shadow по сторонам, углы остаются пустыми — пиксельный вид.
-   Цвет рамки = currentColor. Нужен внешний отступ >=4px (m-1), чтобы тень не резалась. */
+   Цвет — через --pixel-border-color (дефолт currentColor: у primary-кнопки текст
+   тёмный на тёмном фоне страницы, там нужен явный светлый override).
+   Нужен внешний отступ >=4px (m-1), чтобы тень не резалась. */
 @utility pixel-border {
     box-shadow:
-        0 -4px 0 0 currentColor,
-        0 4px 0 0 currentColor,
-        -4px 0 0 0 currentColor,
-        4px 0 0 0 currentColor;
+        0 -4px 0 0 var(--pixel-border-color, currentColor),
+        0 4px 0 0 var(--pixel-border-color, currentColor),
+        -4px 0 0 0 var(--pixel-border-color, currentColor),
+        4px 0 0 0 var(--pixel-border-color, currentColor);
 }
 
 html,

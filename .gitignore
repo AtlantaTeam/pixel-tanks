@@ -20,3 +20,5 @@ src/payload-types.ts
 
 .claude/settings.local.json
 .claude/backups/
+screenshots/
+.playwright-mcp/

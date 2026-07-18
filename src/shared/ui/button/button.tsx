@@ -5,7 +5,7 @@ export type TButtonVariant = 'primary' | 'ghost' | 'danger';
 export type TButtonSize = 'sm' | 'md' | 'icon';
 
 const VARIANT_CLASSES: Record<TButtonVariant, string> = {
-    primary: 'bg-primary text-surface hover:brightness-110',
+    primary: 'bg-primary text-surface hover:brightness-110 [--pixel-border-color:var(--color-ink)]',
     ghost: 'bg-panel-deep text-ink hover:bg-panel',
     danger: 'bg-danger text-ink hover:brightness-110',
 };
