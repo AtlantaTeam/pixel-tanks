@@ -13,7 +13,8 @@
 - **Мобилка (тач «оттяни и отпусти») и клавиатура — равноправные схемы**, обе в скоупе game-next
 - **Звук возвращаем оригинальный** — мелодии Андрея в `../pocket-tanks/static/audio/` (menu, gameplay + 3 эффекта)
 - **Forum и Privacy выкинуты окончательно**; bot-messages (реплики Терминатора) возвращаем как chat-bubble
-- **Командный репо**: `AtlantaTeam/pocket-tanks-next`, remote `team` (origin — личный Pelmenya, пушить в оба). Milestones/issues там: 9 фаз, 37 issues по `docs/game-next/plan.md`
+- **Командный репо = единственный origin**: `AtlantaTeam/pocket-tanks-next` (личный Pelmenya-репо пользователь удаляет). Бэклог: 9 milestones, 37 issues, все на доске [projects/1](https://github.com/orgs/AtlantaTeam/projects/1)
+- **Цепочка prd → plan-phase → issues автоматизирована** в SKILL.md: план сразу заводит milestones/issues + доску
 - **Арты** (скины, бэклог): OpenAI API `gpt-image-1`, аккаунт у пользователя есть, ключ в env (`.env.example` заведён)
 - Скилл `ui-ux-pro-max` установлен глобально в `~/.claude/skills/` — юзать при вёрстке UI
 

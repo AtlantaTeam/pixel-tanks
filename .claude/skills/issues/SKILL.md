@@ -18,6 +18,10 @@ description: Создаёт GitHub milestones и issues из файла план
    `gh api repos/:owner/:repo/milestones -f title="Фаза N: название"`
 4. Для каждой задачи фазы создай Issue:
    `gh issue create --title "..." --body "..." --milestone "Фаза N: название"`
+5. **Доска (GitHub Projects, обязательно)** — issues должны попасть на доску проекта:
+    - Найди доску: `gh project list --owner <owner>`; если нет — создай (`gh project create --owner <owner> --title "<имя проекта>"`) и привяжи к репо (`gh project link <number> --owner <owner> --repo <owner/repo>`)
+    - Добавь каждый созданный issue: `gh project item-add <number> --owner <owner> --url <issue-url>`
+    - Проверь счётчик с запасом по лимиту: `gh project item-list <number> --owner <owner> --limit 100 --format json --jq '.items | length'` (без `--limit` вернёт максимум 30 — обманчиво)
 
 ## Формат Issue
 
@@ -28,4 +32,5 @@ description: Создаёт GitHub milestones и issues из файла план
 
 - Порядок issues = порядок задач в плане (агент берёт их по номерам).
 - Не выдумывай задачи, которых нет в плане.
-- В конце выведи компактную сводку: milestone → количество issues.
+- Много однотипных вызовов gh — оформи bash-скриптом в scratchpad, не десятками отдельных команд.
+- В конце выведи компактную сводку: milestone → количество issues + ссылка на доску.
