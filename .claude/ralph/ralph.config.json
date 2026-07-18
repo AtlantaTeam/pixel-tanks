@@ -1,16 +1,16 @@
 {
-  "active": false,
-  "maxIterations": 10,
-  "maxTurns": 200,
-  "model": "claude-sonnet-5",
-  "reviewModel": "claude-opus-4-8",
-  "fallbackModel": "",
-  "permissionMode": "",
-  "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
-  "phases": [
-    {
-      "milestone": "Фаза 1: НАЗВАНИЕ",
-      "branch": "feature/phase-1"
-    }
-  ]
+    "active": true,
+    "maxIterations": 10,
+    "maxTurns": 200,
+    "model": "claude-opus-4-8",
+    "reviewModel": "claude-opus-4-8",
+    "fallbackModel": "claude-sonnet-5",
+    "permissionMode": "bypassPermissions",
+    "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
+    "phases": [
+        {
+            "milestone": "Фаза 1: Детерминированная физика + seed",
+            "branch": "feature/phase-1-seed"
+        }
+    ]
 }
