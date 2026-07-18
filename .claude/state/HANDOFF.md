@@ -1,43 +1,40 @@
 # Session Handoff
 
-**Дата**: 2026-07-18 (вечер)
+**Дата**: 2026-07-18 (поздний вечер)
 
 ## Текущая задача
 
-Game-next AFK через ralph loop. **Фаза 5 «Оригинальный звук» смерджена** (PR #50,
-milestone #5 закрыт). Идёт **Фаза 6 «Juice-пакет»** — на момент паузы 2/7 закрыто
-(#21 пул частиц, #22), активный issue #23 (след пули). Дима устал → пауза, рестарт завтра.
+Game-next AFK через ralph loop. **Фаза 5 «Звук» смерджена** (#50, milestone закрыт).
+Идёт **Фаза 6 «Juice-пакет»** — 3/7 закрыто (#21 пул частиц, #22 shake+slow-mo,
+#23 трейл+HUD). Loop остановлен на паузу, рестарт завтра (новая сессия).
+
+## Инфра-улучшение ralph — ГОТОВО и в main
+
+По просьбе Димы «чинить всё вплоть до мелких»:
+
+- Ревьюер маркирует severity `[blocker/major/minor/nit]`, выдаёт мелочи; fix-шаг чинит
+  КАЖДЫЙ комментарий доверенных авторов (пропуск — только с обоснованием в PR).
+- `closeMilestoneByTitle` — милстоун фазы закрывается сразу после мерджа, не ждёт свипа.
+- Прошло **ревью fable** (нашёл ослабление anti-injection C3 → сузили до «доверенных
+  авторов», фикс `90b5b34`). Смерджено в main через **PR #51** (`52ba9e9`),
+  и влито в рабочую `feature/phase-6-juice` → активно уже для ревью Фазы 6 и дальше.
 
 ## Состояние на сейчас
 
-- `ralph.state.json` = `{count:3, milestone:"Фаза 6: Juice-пакет", submitted:false}` — персистентный,
-  рестарт продолжит Фазу 6 с открытых issues.
-- Фоновый `node ralph.js` при закрытии терминала прервётся посреди #23 → **дерево останется
-  грязным** (bullet-trail.ts/.test.ts, shared/lib/animation/, M game-play.ts, M game-controls.tsx).
-- Наблюдающий heartbeat-loop остановлен.
+- Рабочая ветка: `feature/phase-6-juice`, дерево ЧИСТОЕ, `ralph.js` = улучшенная версия.
+- `main` = `origin/main` = `52ba9e9` (Фаза 5 + инфра #51).
+- `ralph.state.json` = `{count:3, milestone:"Фаза 6", submitted:false}` — рестарт продолжит Фазу 6.
+- `monitor.js` — git-excluded durable-утилита (не коммитим). Патч `pending-review-improvements.patch`
+  теперь ОБСОЛЕТ (влит в #51) — можно удалить.
 
-## Готово, но НЕ применено (ждёт завтра)
+## Чеклист рестарта (завтра)
 
-Улучшение ralph по просьбе Димы «чинить всё вплоть до мелких»:
-
-- Патч промптов ревью/правок: `.claude/ralph/pending-review-improvements.patch` (durable, в git-exclude).
-  Ревьюер маркирует severity [blocker/major/minor/nit] и выдаёт мелочи; fix-шаг чинит КАЖДЫЙ
-  комментарий (пропуск — только с обоснованием в PR).
-- ЕЩЁ не написано: авто-закрытие milestone сразу после мерджа фазы (сейчас `closeCompletedMilestones()`
-  зовётся только на старте раннера, ~стр 560 → milestone Фазы висит open до следующего рестарта).
-
-## Чеклист рестарта (завтра, по порядку)
-
-1. `git status` — если грязно от прерванного #23: `git checkout -- .` + удалить untracked
-   (`bullet-trail.*`, `src/shared/lib/animation/`). Issue #23 останется открыт — loop переделает.
-2. `git apply .claude/ralph/pending-review-improvements.patch` → проверить `node --check .claude/ralph/ralph.js`.
-3. Дописать в `ralph.js` фикс милстоуна: после `gate==='merged'` (~стр 805) закрывать milestone фазы
-   через `gh api -X PATCH .../milestones/{n} -f state=closed`.
-4. Закоммитить ralph.js в текущую ветку `feature/phase-6-juice` (уедет в PR Фазы 6) — дерево чистое.
-5. `node .claude/ralph/ralph.js` (фон) → продолжит Фазу 6 уже с улучшенным ревью.
-6. Мониторинг: `node .claude/ralph/monitor.js` (обновление 5 мин; в git-exclude, коммитить не нужно).
+1. `git status` — если грязно от прерванной работы: `git checkout -- .` + удалить untracked. Дерево чистое.
+2. `node .claude/ralph/ralph.js` (фон) → продолжит Фазу 6 уже с усиленным ревью и авто-закрытием милстоуна.
+3. Мониторинг: `node .claude/ralph/monitor.js` (обновление 5 мин).
+4. Loop сам сдаёт/мерджит фазы на зелёном гейте, стоит на красном/blocked. Финал после Фазы 9 — `/code-review ultra`.
 
 ## Open questions
 
-- C3 (public-репо + bypassPermissions на AFK) — прикрыт allowlist=[Pelmenya], операционный слой за Димой.
-- OPENAI_API_KEY для артов (если Фаза 6/juice потребует генерации) — Дима в .env.local по запросу.
+- C3 (public-репо + bypassPermissions на AFK) — код-слой прикрыт allowlist=[Pelmenya]; операционный слой за Димой.
+- OPENAI_API_KEY для артов (если juice потребует генерации) — Дима в .env.local по запросу.
