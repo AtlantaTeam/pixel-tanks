@@ -4,21 +4,22 @@
 
 ## Текущая задача
 
-Ralph, Фаза 1 («Детерминированная физика + seed»). **Issue #1 закрыт** — коммит `2d0bda9` в `feature/phase-1-seed`. Блокер коммитов снят: Дима перенёс `git add`/`git commit`/`git push` в `allow`.
+Ralph Loop, Фаза 1 («Детерминированная физика + seed»), ветка `feature/phase-1-seed`. **Issue #1 закрыт** (коммит `2d0bda9`), конвейер работает: реализация → тесты → коммит → закрытие issue → карточка в Done. Осталось: #2 (seed из URL), #3 (тесты физики), #4 (тесты террейна).
+
+## ⚡ ПЕРВЫМ ДЕЛОМ в новой сессии (Ralph умер вместе со старой сессией)
+
+1. Проверить хвост `.claude/ralph/ralph.log` и `gh issue list --milestone "Фаза 1: Детерминированная физика + seed" --state open`
+2. Если рабочее дерево грязное (HANDOFF.md и пр.) — закоммитить в ветку фазы (`chore:`), иначе preflight раннера упадёт
+3. Перезапустить: `node .claude/ralph/ralph.js` в фоне + монитор на `tail -f .claude/ralph/ralph.log`
+4. Счётчик итераций: сгорело 5/10 (4 — об permission-блок, устранён). Если сработает circuit breaker — перезапуск продолжит с места остановки
 
 ## Последние принятые решения
 
-- Seeded-random: mulberry32 в `src/shared/lib/random/`, инжектируется как `TRandomFn` в ground/wind/bullet/game-play.
-- Проп `seed` в `GameCanvas` уже заведён — задел под Issue #2.
-- Автономный цикл рабочий: коммит + закрытие Issue прошли без permission-блоков.
-
-## Следующие шаги
-
-1. Issue #2: seed из URL `/game?seed=...` — прокинуть searchParam в `GameCanvas`.
-2. Issue #3: детерминированные unit-тесты физики (траектория, столкновения).
-3. Issue #4: unit-тесты генерации террейна (частично покрыто в `ground.test.ts` — сверить с критериями Issue).
-4. После закрытия всех issues фазы — PR делает раннер, не сессия.
+- Ralph: кодер `claude-fable-5`, fallback sonnet-5, ревью PR — за супервизором (`reviewModel: none`), запуск НЕ трогать при живом раннере
+- Permission-блок устранён: `git add/commit/push` в `allow` проектного settings.json (коммит `ec5c87d` в ветке фазы)
+- Seeded-random: mulberry32 в `src/shared/lib/random/`, инжектируется в ground/wind/bullet/game-play; проп `seed` в GameCanvas — задел под #2
+- По завершении фазы раннер сам создаёт PR → супервизор: /code-review, тесты, смоук, доклад Диме перед мерджем
 
 ## Open questions
 
-- Известные мелочи вне скоупа фазы: favicon 404, unused `setPower`, ESLint-ошибки в `.claude/hooks/*.js`.
+- Мелочи вне скоупа: favicon 404, unused `setPower`, ESLint-ошибки в `.claude/hooks/*.js`
