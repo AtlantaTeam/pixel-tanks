@@ -3,6 +3,7 @@ import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas'
 import { getAudioEngine } from '@/shared/lib/audio';
 import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
+import { pickBotReply, resolveBotReplyCategory, type TBotReply } from '@/entities/bot-messages';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
@@ -38,6 +39,7 @@ export type TGamePlayCallbacks = {
     onGameOverCheck: (params: { leftWeapons: number; rightWeapons: number }) => void;
     onMovesChange: (delta: number) => void;
     onPowerChange: (delta: number) => void;
+    onBotReply: (reply: TBotReply) => void;
 };
 
 const GAME_ASSET_PATHS = {
@@ -74,6 +76,10 @@ export class GamePlay {
     damageAmount = 0;
     rafTimerId: number | undefined;
     private random: TSeededRandom;
+    // Кто стрелял последним: isActive у обоих танков уже false к моменту разрешения
+    // выстрела бота (см. animate — rightTank.isActive гасится до botFire), поэтому
+    // для определения самострела/адресата реплики шутер фиксируется явно в fire().
+    private lastShooterIsLeft = true;
     wind = 0;
     private resizeObserver: ResizeObserver | undefined;
     private resizeRafId: number | undefined;
@@ -513,6 +519,25 @@ export class GamePlay {
         });
     }
 
+    // Реплика бота по исходу выстрела: кто задет (никто/сам стрелявший/
+    // противник) определяет категорию, this.random выбирает конкретный текст —
+    // детерминировано на seed боя, как и остальная физика. На своём промахе
+    // или самостреле бот молчит (resolveBotReplyCategory → null).
+    private emitBotReply() {
+        if (!this.bullet || !this.leftTank || !this.rightTank) return;
+        const shooterIsBot = !this.lastShooterIsLeft;
+        const firedTank = this.lastShooterIsLeft ? this.leftTank : this.rightTank;
+        const hit = !this.bullet.isTankHit
+            ? 'none'
+            : this.bullet.hittedTank === firedTank
+              ? 'self'
+              : 'opponent';
+        const category = resolveBotReplyCategory({ shooterIsBot, hit });
+        // Свой промах/самострел бот не комментирует — resolve вернёт null.
+        if (!category) return;
+        this.callbacks.onBotReply(pickBotReply(category, this.random));
+    }
+
     moveBullet = (ctx: CanvasRenderingContext2D) => {
         if (!this.isFireMode || !this.bullet) return;
         this.bullet.move();
@@ -535,6 +560,7 @@ export class GamePlay {
                     // Промах по земле: только лёгкая тряска, без замедления.
                     this.camera.addTrauma(MISS_SHAKE_TRAUMA);
                 }
+                this.emitBotReply();
             }
             if (this.bullet.isTankHit && this.bullet.hittedTank) {
                 void this.audio.playSfx('hit');
@@ -660,6 +686,7 @@ export class GamePlay {
     };
 
     fire = (activeTank: Tank, targetTank: Tank, ground: Ground, weaponType: TWeapon) => {
+        this.lastShooterIsLeft = activeTank === this.leftTank;
         this.activateMode('fire');
         this.bullet = new Bullet(
             this.innerWidth,

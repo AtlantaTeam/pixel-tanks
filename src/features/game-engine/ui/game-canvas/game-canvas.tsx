@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { TWeapon } from '@/shared/model';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
+import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { useGameStore } from '../../model/game.store';
 import { GamePlay, type TTanksWeapons } from '../../lib/game-play';
 import { Bullet } from '../../lib/bullet';
@@ -41,6 +42,10 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     // После тач-жеста браузер шлёт синтетический click — глотаем его,
     // чтобы тап/оттяжка не приводили к повторному выстрелу мышиной схемой.
     const suppressClickRef = useRef(false);
+
+    const [botBubble, setBotBubble] = useState<{ reply: TBotReply; x: number; y: number } | null>(
+        null,
+    );
 
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
@@ -96,6 +101,17 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                     if (delta < 0) decrementMoves();
                 },
                 onPowerChange: (delta) => increasePower(delta),
+                onBotReply: (reply) => {
+                    const bot = game.rightTank;
+                    if (!bot) return;
+                    // Bubble всегда над танком бота (справа). Эмитится не на каждый
+                    // выстрел: свой промах/самострел бот молчит (см. game-play.emitBotReply).
+                    setBotBubble({
+                        reply,
+                        x: bot.x + bot.tankWidth / 2,
+                        y: bot.y - bot.tankHeight,
+                    });
+                },
             },
             createSeededRandom(seed ?? Date.now()),
         );
@@ -106,6 +122,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             game.destroy();
             gameRef.current = null;
             resetGame();
+            setBotBubble(null);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -212,86 +229,103 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     };
 
     return (
-        <canvas
-            ref={canvasRef}
-            className="game-canvas block h-full w-full touch-none bg-base-200"
-            onPointerDown={(e) => {
-                // Мышь оставляем на своей схеме (движение — угол, клик — выстрел);
-                // жест «оттяни и отпусти» — для touch/pen.
-                if (e.pointerType === 'mouse') {
-                    // Настоящий клик мыши всегда начинается с mouse-pointerdown —
-                    // снимаем возможное залипшее подавление: после полного драга
-                    // (не тапа) синтетический click не приходит и флаг остаётся true.
-                    suppressClickRef.current = false;
-                    return;
-                }
-                const game = gameRef.current;
-                if (!game?.leftTank?.isActive || game.isFireMode) return;
-                dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY };
-                game.setAimPreviewVisible(true);
-                try {
-                    e.currentTarget.setPointerCapture(e.pointerId);
-                } catch {
-                    // синтетические события (эмуляция) не имеют активного pointerId
-                }
-            }}
-            onPointerMove={(e) => {
-                const drag = dragRef.current;
-                if (!drag || drag.pointerId !== e.pointerId) return;
-                const aim = calculateDragAim(
-                    { x: drag.startX, y: drag.startY },
-                    { x: e.clientX, y: e.clientY },
-                );
-                if (!aim) return;
-                setAngle(aim.angle);
-                setPower(aim.power);
-            }}
-            onPointerUp={(e) => {
-                const drag = dragRef.current;
-                if (!drag || drag.pointerId !== e.pointerId) return;
-                dragRef.current = null;
-                suppressClickRef.current = true;
-                const game = gameRef.current;
-                game?.setAimPreviewVisible(false);
-                const aim = calculateDragAim(
-                    { x: drag.startX, y: drag.startY },
-                    { x: e.clientX, y: e.clientY },
-                );
-                if (!aim || !game?.leftTank || !game.rightTank) return;
-                // Движок обновляем напрямую: store-синк через useEffect может не
-                // успеть примениться до выстрела в этом же обработчике.
-                const [activeTank] = game.getActiveAndTargetTanks(game.leftTank, game.rightTank);
-                activeTank.gunpointAngle = aim.angle;
-                activeTank.power = aim.power;
-                setAngle(aim.angle);
-                setPower(aim.power);
-                fireSelectedWeapon();
-            }}
-            onPointerCancel={() => {
-                dragRef.current = null;
-                gameRef.current?.setAimPreviewVisible(false);
-            }}
-            onMouseMove={(e) => {
-                const game = gameRef.current;
-                if (!game || !game.leftTank?.isActive || game.isFireMode || !game.ctx) return;
-                const curAngle = Math.atan2(
-                    floor(e.clientY - e.currentTarget.offsetTop) - game.leftTank.gunpointY,
-                    floor(e.clientX - e.currentTarget.offsetLeft) - game.leftTank.gunpointX,
-                );
-                setAngle(curAngle);
-            }}
-            onWheel={(e) => gameRef.current?.changeTankPower(e.deltaY > 0 ? -1 : 1)}
-            onMouseLeave={() => {
-                const game = gameRef.current;
-                if (game?.isAngleMode) game.activateMode('idle');
-            }}
-            onClick={() => {
-                if (suppressClickRef.current) {
-                    suppressClickRef.current = false;
-                    return;
-                }
-                fireSelectedWeapon();
-            }}
-        />
+        <>
+            <canvas
+                ref={canvasRef}
+                className="game-canvas block h-full w-full touch-none bg-base-200"
+                onPointerDown={(e) => {
+                    // Мышь оставляем на своей схеме (движение — угол, клик — выстрел);
+                    // жест «оттяни и отпусти» — для touch/pen.
+                    if (e.pointerType === 'mouse') {
+                        // Настоящий клик мыши всегда начинается с mouse-pointerdown —
+                        // снимаем возможное залипшее подавление: после полного драга
+                        // (не тапа) синтетический click не приходит и флаг остаётся true.
+                        suppressClickRef.current = false;
+                        return;
+                    }
+                    const game = gameRef.current;
+                    if (!game?.leftTank?.isActive || game.isFireMode) return;
+                    dragRef.current = {
+                        pointerId: e.pointerId,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                    };
+                    game.setAimPreviewVisible(true);
+                    try {
+                        e.currentTarget.setPointerCapture(e.pointerId);
+                    } catch {
+                        // синтетические события (эмуляция) не имеют активного pointerId
+                    }
+                }}
+                onPointerMove={(e) => {
+                    const drag = dragRef.current;
+                    if (!drag || drag.pointerId !== e.pointerId) return;
+                    const aim = calculateDragAim(
+                        { x: drag.startX, y: drag.startY },
+                        { x: e.clientX, y: e.clientY },
+                    );
+                    if (!aim) return;
+                    setAngle(aim.angle);
+                    setPower(aim.power);
+                }}
+                onPointerUp={(e) => {
+                    const drag = dragRef.current;
+                    if (!drag || drag.pointerId !== e.pointerId) return;
+                    dragRef.current = null;
+                    suppressClickRef.current = true;
+                    const game = gameRef.current;
+                    game?.setAimPreviewVisible(false);
+                    const aim = calculateDragAim(
+                        { x: drag.startX, y: drag.startY },
+                        { x: e.clientX, y: e.clientY },
+                    );
+                    if (!aim || !game?.leftTank || !game.rightTank) return;
+                    // Движок обновляем напрямую: store-синк через useEffect может не
+                    // успеть примениться до выстрела в этом же обработчике.
+                    const [activeTank] = game.getActiveAndTargetTanks(
+                        game.leftTank,
+                        game.rightTank,
+                    );
+                    activeTank.gunpointAngle = aim.angle;
+                    activeTank.power = aim.power;
+                    setAngle(aim.angle);
+                    setPower(aim.power);
+                    fireSelectedWeapon();
+                }}
+                onPointerCancel={() => {
+                    dragRef.current = null;
+                    gameRef.current?.setAimPreviewVisible(false);
+                }}
+                onMouseMove={(e) => {
+                    const game = gameRef.current;
+                    if (!game || !game.leftTank?.isActive || game.isFireMode || !game.ctx) return;
+                    const curAngle = Math.atan2(
+                        floor(e.clientY - e.currentTarget.offsetTop) - game.leftTank.gunpointY,
+                        floor(e.clientX - e.currentTarget.offsetLeft) - game.leftTank.gunpointX,
+                    );
+                    setAngle(curAngle);
+                }}
+                onWheel={(e) => gameRef.current?.changeTankPower(e.deltaY > 0 ? -1 : 1)}
+                onMouseLeave={() => {
+                    const game = gameRef.current;
+                    if (game?.isAngleMode) game.activateMode('idle');
+                }}
+                onClick={() => {
+                    if (suppressClickRef.current) {
+                        suppressClickRef.current = false;
+                        return;
+                    }
+                    fireSelectedWeapon();
+                }}
+            />
+            {botBubble && (
+                <ChatBubble
+                    reply={botBubble.reply}
+                    x={botBubble.x}
+                    y={botBubble.y}
+                    onExpire={() => setBotBubble(null)}
+                />
+            )}
+        </>
     );
 }
