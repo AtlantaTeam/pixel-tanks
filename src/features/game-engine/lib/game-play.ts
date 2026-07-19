@@ -40,6 +40,23 @@ export type TGamePlayCallbacks = {
     onMovesChange: (delta: number) => void;
     onPowerChange: (delta: number) => void;
     onBotReply: (reply: TBotReply) => void;
+    /**
+     * Сообщает логический размер поля, на котором стартовал бой (CSS-пиксели).
+     * Живой бой пишет его в реплей — без размера воспроизведение на другом
+     * экране получит другой рельеф и другой счёт (см. `@/entities/replays`).
+     */
+    onFieldInit?: (size: { width: number; height: number }) => void;
+};
+
+/** Опции движка. `fixedLogicalSize` включает режим воспроизведения реплея. */
+export type TGamePlayOptions = {
+    /**
+     * Фиксированный логический размер поля. Задан → движок ведёт всю физику в
+     * этих пикселях независимо от размера canvas на экране (canvas вписывается
+     * CSS-масштабированием), а resize не пересчитывает мир. Так реплей
+     * воспроизводится один в один на любом устройстве.
+     */
+    fixedLogicalSize?: { width: number; height: number };
 };
 
 const GAME_ASSET_PATHS = {
@@ -76,6 +93,8 @@ export class GamePlay {
     damageAmount = 0;
     rafTimerId: number | undefined;
     private random: TSeededRandom;
+    /** Режим воспроизведения: физика идёт в этом фиксированном размере. */
+    private readonly fixedLogicalSize?: { width: number; height: number };
     // Кто стрелял последним: isActive у обоих танков уже false к моменту разрешения
     // выстрела бота (см. animate — rightTank.isActive гасится до botFire), поэтому
     // для определения самострела/адресата реплики шутер фиксируется явно в fire().
@@ -111,8 +130,10 @@ export class GamePlay {
         callbacks: TGamePlayCallbacks,
         random: TSeededRandom,
         fxRandom: TSeededRandom,
+        options?: TGamePlayOptions,
     ) {
         this.random = random;
+        this.fixedLogicalSize = options?.fixedLogicalSize;
         // Косметика (частицы, тряска) — на ОТДЕЛЬНОМ потоке random: CameraShake
         // берёт значения каждый кадр тряски, а число кадров зависит от FPS.
         // На общем потоке это недетерминированно сдвигало бы выборки бота
@@ -125,9 +146,14 @@ export class GamePlay {
         this.mousePos = null;
         this.allWeapons = allWeapons;
         this.callbacks = callbacks;
-        const rect = canvasRef.current?.getBoundingClientRect() ?? { width: 1000, height: 700 };
-        this.innerWidth = rect.width;
-        this.innerHeight = rect.height;
+        if (this.fixedLogicalSize) {
+            this.innerWidth = this.fixedLogicalSize.width;
+            this.innerHeight = this.fixedLogicalSize.height;
+        } else {
+            const rect = canvasRef.current?.getBoundingClientRect() ?? { width: 1000, height: 700 };
+            this.innerWidth = rect.width;
+            this.innerHeight = rect.height;
+        }
     }
 
     changeTankPosition = (delta: number) => {
@@ -206,10 +232,19 @@ export class GamePlay {
     fit = (): boolean => {
         const canvas = this.canvasRef.current;
         if (!canvas) return false;
-        const rect = canvas.getBoundingClientRect();
-        const cssWidth = floor(rect.width || canvas.offsetWidth || this.innerWidth);
-        const cssHeight = floor(rect.height || canvas.offsetHeight || this.innerHeight);
         const dpr = getDevicePixelRatio();
+        // Режим реплея: логический размер зафиксирован записью, экранный размер
+        // canvas игнорируем — картинку в экран вписывает CSS (object-contain).
+        let cssWidth: number;
+        let cssHeight: number;
+        if (this.fixedLogicalSize) {
+            cssWidth = this.fixedLogicalSize.width;
+            cssHeight = this.fixedLogicalSize.height;
+        } else {
+            const rect = canvas.getBoundingClientRect();
+            cssWidth = floor(rect.width || canvas.offsetWidth || this.innerWidth);
+            cssHeight = floor(rect.height || canvas.offsetHeight || this.innerHeight);
+        }
         const backingWidth = toDevicePixels(cssWidth, dpr);
         const backingHeight = toDevicePixels(cssHeight, dpr);
         // Смена только dpr (перенос окна между мониторами, зум) меняет бэкинг-стор
@@ -298,6 +333,8 @@ export class GamePlay {
             this.ctx = canvas.getContext('2d');
         }
         this.fit();
+        // Размер, на котором реально пойдёт физика этого боя, — его пишет реплей.
+        this.callbacks.onFieldInit?.({ width: this.innerWidth, height: this.innerHeight });
         const { leftTank, leftGunpoint, sand, rightTank, rightGunpoint } = GamePlay.images;
         const { leftTankWeapons, rightTankWeapons } = this.allWeapons;
         this.ground = new Ground(this.innerWidth, this.innerHeight, this.random, sand);

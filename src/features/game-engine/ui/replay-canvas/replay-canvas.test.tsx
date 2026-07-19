@@ -39,10 +39,12 @@ vi.mock('../../lib/game-play', () => ({
 
 const REPLAY: TReplay = {
     seed: 42,
+    width: 800,
+    height: 600,
     moves: [{ kind: 'fire', angle: -0.75, power: 12 }],
 };
 
-describe('ReplayCanvas', () => {
+describe('ReplayCanvas (воспроизведение реплея)', () => {
     beforeEach(() => {
         vi.useFakeTimers();
         captured.current = null;
@@ -52,7 +54,7 @@ describe('ReplayCanvas', () => {
         vi.useRealTimers();
     });
 
-    it('plays the recorded move through the engine without user input', () => {
+    it('проигрывает записанный ход через движок без ввода игрока', () => {
         render(<ReplayCanvas replay={REPLAY} />);
         const game = captured.current as unknown as {
             leftTank: { gunpointAngle: number; power: number; weapons: TWeaponStub[] };
@@ -70,7 +72,7 @@ describe('ReplayCanvas', () => {
         expect(game.onFire).toHaveBeenCalledWith(game.leftTank.weapons[0]);
     });
 
-    it('waits while the engine is busy instead of forcing the move', () => {
+    it('ждёт, пока движок занят, вместо форсирования хода', () => {
         render(<ReplayCanvas replay={REPLAY} />);
         const game = captured.current as unknown as {
             isFireMode: boolean;
@@ -85,7 +87,7 @@ describe('ReplayCanvas', () => {
         expect(game.onFire).not.toHaveBeenCalled();
     });
 
-    it('stops the playback timer and engine on unmount', () => {
+    it('останавливает таймер воспроизведения и движок при анмаунте', () => {
         const { unmount } = render(<ReplayCanvas replay={REPLAY} />);
         const game = captured.current as unknown as {
             destroy: ReturnType<typeof vi.fn>;

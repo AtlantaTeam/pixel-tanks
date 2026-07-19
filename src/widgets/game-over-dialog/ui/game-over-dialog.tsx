@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { isDailySeed, ShareDailyResultButton, submitDailyScore } from '@/features/daily-challenge';
 import { useGameStore } from '@/features/game-engine';
 import { ShareReplayButton } from '@/features/replays';
+import { BOT_NAME } from '@/shared/config';
 import { Button, Dialog } from '@/shared/ui';
 
 type TGameOverDialogProps = {
@@ -41,6 +42,7 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
     const playerPoints = useGameStore((s) => s.playerPoints);
     const enemyPoints = useGameStore((s) => s.enemyPoints);
     const battleSeed = useGameStore((s) => s.battleSeed);
+    const battleField = useGameStore((s) => s.battleField);
     const replayMoves = useGameStore((s) => s.replayMoves);
     const resetGame = useGameStore((s) => s.resetGame);
     const submittedRef = useRef(false);
@@ -51,7 +53,7 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
         if (!isGameOver || !seed || !isDailySeed(seed) || submittedRef.current) return;
         if (wasDailyScoreSubmitted(seed)) return;
         submittedRef.current = true;
-        submitDailyScore({ seed, points, opponent: 'Terminator' })
+        submitDailyScore({ seed, points, opponent: BOT_NAME })
             .then(() => markDailyScoreSubmitted(seed))
             .catch((error) => {
                 // Ошибку не глотаем: игрок иначе думает, что результат учтён.
@@ -77,8 +79,13 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
                     <ShareDailyResultButton points={points} seed={seed} />
                 </div>
             ) : null}
-            {battleSeed !== null ? (
-                <ShareReplayButton seed={battleSeed} moves={replayMoves} />
+            {battleSeed !== null && battleField !== null ? (
+                <ShareReplayButton
+                    seed={battleSeed}
+                    width={battleField.width}
+                    height={battleField.height}
+                    moves={replayMoves}
+                />
             ) : null}
             <div className="mt-6">
                 <Button

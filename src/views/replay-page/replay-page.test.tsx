@@ -4,17 +4,19 @@ import { ReplayPage } from './replay-page';
 
 const VALID_CODE = encodeReplay({
     seed: 42,
+    width: 800,
+    height: 600,
     moves: [{ kind: 'fire', angle: -0.75, power: 12 }],
 });
 
 describe('ReplayPage', () => {
-    it('renders the battle canvas for a valid replay code', () => {
+    it('рендерит canvas боя для валидного кода реплея', () => {
         const { container } = render(<ReplayPage code={VALID_CODE} />);
 
         expect(container.querySelector('canvas')).not.toBeNull();
     });
 
-    it('uses dvh viewport height and clips overflow like the game page', () => {
+    it('использует высоту dvh и обрезает overflow, как страница игры', () => {
         const { container } = render(<ReplayPage code={VALID_CODE} />);
         const main = container.querySelector('main');
 
@@ -23,7 +25,7 @@ describe('ReplayPage', () => {
         expect(main).toHaveClass('safe-area-inset');
     });
 
-    it('shows an error state with a link to the game for an invalid code', () => {
+    it('показывает error-state со ссылкой на игру для невалидного кода', () => {
         const { container, getByText, getByRole } = render(<ReplayPage code="***мусор***" />);
 
         expect(container.querySelector('canvas')).toBeNull();

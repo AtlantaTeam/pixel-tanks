@@ -7,16 +7,23 @@ afterEach(() => {
 });
 
 describe('ShareReplayButton', () => {
-    it('renders a "Поделиться боем" button', () => {
-        render(<ShareReplayButton seed={42} moves={[]} />);
+    it('рендерит кнопку «Поделиться боем»', () => {
+        render(<ShareReplayButton seed={42} width={800} height={600} moves={[]} />);
         expect(screen.getByRole('button', { name: /Поделиться боем/i })).toBeInTheDocument();
     });
 
-    it('calls the Web Share API with a link to the replay on click', async () => {
+    it('по клику вызывает Web Share API со ссылкой на реплей', async () => {
         const share = vi.fn().mockResolvedValue(undefined);
         vi.stubGlobal('navigator', { share, clipboard: { writeText: vi.fn() } });
 
-        render(<ShareReplayButton seed={42} moves={[{ kind: 'fire', angle: 1, power: 10 }]} />);
+        render(
+            <ShareReplayButton
+                seed={42}
+                width={800}
+                height={600}
+                moves={[{ kind: 'fire', angle: 1, power: 10 }]}
+            />,
+        );
         fireEvent.click(screen.getByRole('button', { name: /Поделиться боем/i }));
 
         await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
@@ -24,11 +31,11 @@ describe('ShareReplayButton', () => {
         expect(payload.url).toContain('/replay/');
     });
 
-    it('shows a confirmation when falling back to clipboard copy', async () => {
+    it('показывает подтверждение при откате на копирование в буфер', async () => {
         const writeText = vi.fn().mockResolvedValue(undefined);
         vi.stubGlobal('navigator', { clipboard: { writeText } });
 
-        render(<ShareReplayButton seed={42} moves={[]} />);
+        render(<ShareReplayButton seed={42} width={800} height={600} moves={[]} />);
         fireEvent.click(screen.getByRole('button', { name: /Поделиться боем/i }));
 
         await screen.findByText(/скопирован/i);

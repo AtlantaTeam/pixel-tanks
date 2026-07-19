@@ -24,7 +24,7 @@ const MOVES: TReplayMove[] = [
 ];
 
 describe('ReplayDriver', () => {
-    it('does not apply a move while the engine is busy', () => {
+    it('не применяет ход, пока движок занят', () => {
         const engine = createEngineMock(false);
         const driver = new ReplayDriver(MOVES, engine);
 
@@ -35,7 +35,7 @@ describe('ReplayDriver', () => {
         expect(engine.applyFire).not.toHaveBeenCalled();
     });
 
-    it('applies the first move only after the pause has elapsed since readiness', () => {
+    it('применяет первый ход только после выдержки паузы с момента готовности', () => {
         const engine = createEngineMock();
         const driver = new ReplayDriver(MOVES, engine, 500);
 
@@ -46,7 +46,7 @@ describe('ReplayDriver', () => {
         expect(engine.applyMove).toHaveBeenCalledWith(-150);
     });
 
-    it('restarts the pause when readiness is interrupted mid-wait', () => {
+    it('перезапускает паузу, когда готовность прервалась в середине ожидания', () => {
         const engine = createEngineMock();
         const driver = new ReplayDriver(MOVES, engine, 500);
 
@@ -60,7 +60,7 @@ describe('ReplayDriver', () => {
         expect(driver.tick(1300)).toBe(true);
     });
 
-    it('applies moves in recorded order with their payloads', () => {
+    it('применяет ходы в записанном порядке с их данными', () => {
         const engine = createEngineMock();
         const driver = new ReplayDriver(MOVES, engine, 0);
 
@@ -75,7 +75,7 @@ describe('ReplayDriver', () => {
         expect(engine.applyFire).toHaveBeenCalledWith(-0.75, 12);
     });
 
-    it('becomes finished after the last move and stops calling the engine', () => {
+    it('становится завершённым после последнего хода и перестаёт дёргать движок', () => {
         const engine = createEngineMock();
         const driver = new ReplayDriver([MOVES[1]], engine, 0);
 
@@ -88,7 +88,7 @@ describe('ReplayDriver', () => {
         expect(engine.applyFire).toHaveBeenCalledTimes(1);
     });
 
-    it('is immediately finished for an empty move list', () => {
+    it('сразу завершён для пустого списка ходов', () => {
         const engine = createEngineMock();
         const driver = new ReplayDriver([], engine, 0);
 
@@ -119,7 +119,7 @@ describe('createReplayEngineAdapter', () => {
         onFire: vi.fn(),
     });
 
-    it('is ready only when it is the idle turn of the left (player) tank', () => {
+    it('готов только в спокойный ход левого (игрокового) танка', () => {
         const game = createGameMock();
         const adapter = createReplayEngineAdapter(game);
 
@@ -127,30 +127,30 @@ describe('createReplayEngineAdapter', () => {
     });
 
     it.each([
-        ['tanks are not initialized yet', (g: TReplayGameSurface) => (g.leftTank = undefined)],
-        ['it is the bot turn', (g: TReplayGameSurface) => (g.leftTank!.isActive = false)],
-        ['a shot is in progress', (g: TReplayGameSurface) => (g.isFireMode = true)],
-        ['a tank move is in progress', (g: TReplayGameSurface) => (g.isMoveMode = true)],
-        ['a bullet is in flight', (g: TReplayGameSurface) => (g.bullet = {})],
-        ['the ground is falling', (g: TReplayGameSurface) => (g.ground!.isFalling = true)],
-        ['the left tank is still moving', (g: TReplayGameSurface) => (g.leftTank!.dx = 5)],
-        ['the left tank is falling', (g: TReplayGameSurface) => (g.leftTank!.dy = 2)],
-        ['the right tank is falling', (g: TReplayGameSurface) => (g.rightTank!.dy = 2)],
-    ])('is not ready when %s', (_label, mutate) => {
+        ['танки ещё не инициализированы', (g: TReplayGameSurface) => (g.leftTank = undefined)],
+        ['ход бота', (g: TReplayGameSurface) => (g.leftTank!.isActive = false)],
+        ['выстрел в процессе', (g: TReplayGameSurface) => (g.isFireMode = true)],
+        ['перемещение танка в процессе', (g: TReplayGameSurface) => (g.isMoveMode = true)],
+        ['снаряд в полёте', (g: TReplayGameSurface) => (g.bullet = {})],
+        ['земля осыпается', (g: TReplayGameSurface) => (g.ground!.isFalling = true)],
+        ['левый танк ещё движется', (g: TReplayGameSurface) => (g.leftTank!.dx = 5)],
+        ['левый танк падает', (g: TReplayGameSurface) => (g.leftTank!.dy = 2)],
+        ['правый танк падает', (g: TReplayGameSurface) => (g.rightTank!.dy = 2)],
+    ])('не готов, когда %s', (_label, mutate) => {
         const game = createGameMock();
         mutate(game);
 
         expect(createReplayEngineAdapter(game).isReadyForNextMove()).toBe(false);
     });
 
-    it('delegates applyMove to changeTankPosition', () => {
+    it('делегирует applyMove в changeTankPosition', () => {
         const game = createGameMock();
         createReplayEngineAdapter(game).applyMove(-150);
 
         expect(game.changeTankPosition).toHaveBeenCalledWith(-150);
     });
 
-    it('sets angle and power on the tank and fires its first weapon', () => {
+    it('ставит угол и мощность на танк и стреляет его первым оружием', () => {
         const game = createGameMock();
         createReplayEngineAdapter(game).applyFire(-0.75, 12);
 
@@ -159,7 +159,7 @@ describe('createReplayEngineAdapter', () => {
         expect(game.onFire).toHaveBeenCalledWith(game.leftTank?.weapons[0]);
     });
 
-    it('does not fire when the tank has no weapons left', () => {
+    it('не стреляет, когда у танка не осталось оружия', () => {
         const game = createGameMock();
         game.leftTank!.weapons = [];
         createReplayEngineAdapter(game).applyFire(-0.75, 12);

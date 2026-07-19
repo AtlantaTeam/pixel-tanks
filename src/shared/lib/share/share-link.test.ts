@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 describe('shareLink', () => {
-    it('uses the Web Share API when available and reports "shared"', async () => {
+    it('использует Web Share API, когда он доступен, и возвращает «shared»', async () => {
         const share = vi.fn().mockResolvedValue(undefined);
         vi.stubGlobal('navigator', { share, clipboard: { writeText: vi.fn() } });
 
@@ -22,7 +22,7 @@ describe('shareLink', () => {
         expect(status).toBe('shared');
     });
 
-    it('reports "cancelled" without touching the clipboard when the user aborts the share sheet', async () => {
+    it('возвращает «cancelled» без обращения к буферу, когда пользователь отменил шаринг', async () => {
         const share = vi.fn().mockRejectedValue(new DOMException('cancelled', 'AbortError'));
         const writeText = vi.fn();
         vi.stubGlobal('navigator', { share, clipboard: { writeText } });
@@ -33,7 +33,7 @@ describe('shareLink', () => {
         expect(writeText).not.toHaveBeenCalled();
     });
 
-    it('falls back to the clipboard when Web Share throws a non-abort error', async () => {
+    it('откатывается на буфер, когда Web Share бросает не-abort ошибку', async () => {
         const share = vi.fn().mockRejectedValue(new Error('not allowed'));
         const writeText = vi.fn().mockResolvedValue(undefined);
         vi.stubGlobal('navigator', { share, clipboard: { writeText } });
@@ -44,7 +44,7 @@ describe('shareLink', () => {
         expect(status).toBe('copied');
     });
 
-    it('copies to the clipboard when the Web Share API is unavailable', async () => {
+    it('копирует в буфер, когда Web Share API недоступен', async () => {
         const writeText = vi.fn().mockResolvedValue(undefined);
         vi.stubGlobal('navigator', { clipboard: { writeText } });
 
@@ -54,7 +54,7 @@ describe('shareLink', () => {
         expect(status).toBe('copied');
     });
 
-    it('reports "unavailable" when clipboard.writeText rejects (no focus / permission denied)', async () => {
+    it('возвращает «unavailable», когда clipboard.writeText отклонён (нет фокуса / нет прав)', async () => {
         const writeText = vi.fn().mockRejectedValue(new Error('Document is not focused'));
         vi.stubGlobal('navigator', { clipboard: { writeText } });
 
@@ -63,7 +63,7 @@ describe('shareLink', () => {
         expect(status).toBe('unavailable');
     });
 
-    it('reports "unavailable" when neither Web Share nor clipboard exist', async () => {
+    it('возвращает «unavailable», когда нет ни Web Share, ни буфера обмена', async () => {
         vi.stubGlobal('navigator', {});
 
         const status = await shareLink(payload);

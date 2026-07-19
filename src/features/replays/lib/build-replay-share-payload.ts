@@ -1,21 +1,18 @@
 import { encodeReplay, type TReplay } from '@/entities/replays';
 import { APP_NAME } from '@/shared/config';
+import type { TSharePayload } from '@/shared/lib/share';
 
 export type TBuildReplayShareInput = TReplay & { origin: string };
 
-export type TReplaySharePayload = {
-    title: string;
-    text: string;
-    url: string;
-};
-
 /** Собирает приглашение «Поделиться» с ссылкой на покадровый реплей боя. */
-export function buildReplayShareText({
+export function buildReplaySharePayload({
     seed,
+    width,
+    height,
     moves,
     origin,
-}: TBuildReplayShareInput): TReplaySharePayload {
-    const code = encodeReplay({ seed, moves });
+}: TBuildReplayShareInput): TSharePayload {
+    const code = encodeReplay({ seed, width, height, moves });
     return {
         title: `${APP_NAME} — Реплей боя`,
         text: `Смотри мой бой в ${APP_NAME}!`,

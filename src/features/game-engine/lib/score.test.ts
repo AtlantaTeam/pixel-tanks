@@ -1,28 +1,28 @@
 import { resolvePointsDelta } from './score';
 
 describe('resolvePointsDelta', () => {
-    it('rewards the player for hitting the bot', () => {
+    it('награждает игрока за попадание по боту', () => {
         expect(resolvePointsDelta({ hittedIsLeft: false, leftActive: true, power: 12 })).toEqual({
             isPlayer: true,
             delta: 12,
         });
     });
 
-    it('penalizes the player for a self-hit', () => {
+    it('штрафует игрока за самострел', () => {
         expect(resolvePointsDelta({ hittedIsLeft: true, leftActive: true, power: 8 })).toEqual({
             isPlayer: true,
             delta: -8,
         });
     });
 
-    it('rewards the bot for hitting the player', () => {
+    it('награждает бота за попадание по игроку', () => {
         expect(resolvePointsDelta({ hittedIsLeft: true, leftActive: false, power: 15 })).toEqual({
             isPlayer: false,
             delta: 15,
         });
     });
 
-    it('penalizes the bot for a self-hit', () => {
+    it('штрафует бота за самострел', () => {
         expect(resolvePointsDelta({ hittedIsLeft: false, leftActive: false, power: 5 })).toEqual({
             isPlayer: false,
             delta: -5,

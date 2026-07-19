@@ -1,6 +1,7 @@
 'use client';
 
 import { useGameStore } from '@/features/game-engine';
+import { BOT_NAME } from '@/shared/config';
 import { useMuteState } from '@/shared/lib/audio';
 import { useAnimatedValue } from '@/shared/lib/animation';
 import { Button, Select } from '@/shared/ui';
@@ -86,7 +87,7 @@ export function GameControls() {
                 </div>
 
                 <div className="flex flex-col items-center gap-2">
-                    <div className="font-pixel text-xs text-muted">Terminator</div>
+                    <div className="font-pixel text-xs text-muted">{BOT_NAME}</div>
                     <div className="font-pixel text-2xl text-danger">{displayedEnemyPoints}</div>
                 </div>
             </div>

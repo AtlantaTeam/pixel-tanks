@@ -6,7 +6,8 @@ import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import type { TReplay } from '@/entities/replays';
 import { useGameStore } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
-import { generateRandomWeapons } from '../../lib/weapons';
+import { dealWeapons } from '../../lib/weapons';
+import { createFxRandom } from '../../lib/fx-random';
 import { resolvePointsDelta } from '../../lib/score';
 import { createReplayEngineAdapter, ReplayDriver } from '../../lib/replay-driver';
 
@@ -45,7 +46,7 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
             canvasRef,
             // Та же детерминированная раздача оружия, что и в живом бою, —
             // арсеналы не записываются в реплей, а восстанавливаются.
-            generateRandomWeapons(),
+            dealWeapons(),
             {
                 onPointsCalc: (event) => {
                     const { isPlayer, delta } = resolvePointsDelta(event);
@@ -69,16 +70,37 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
                 },
             },
             createSeededRandom(replay.seed),
-            // Отдельный поток для косметики — как в GameCanvas (см. GamePlay).
-            createSeededRandom(`fx:${replay.seed}`),
+            // Отдельный поток для косметики — как в GameCanvas (см. createFxRandom).
+            createFxRandom(replay.seed),
+            // Воспроизведение идёт на логическом размере записи, а не экрана:
+            // физика в абсолютных пикселях, иначе рельеф/ветер/траектории разойдутся.
+            { fixedLogicalSize: { width: replay.width, height: replay.height } },
         );
         game.loadImages();
 
         const driver = new ReplayDriver(replay.moves, createReplayEngineAdapter(game));
+        // Движок «в покое»: снаряд не летит, земля не осыпается, танки стоят.
+        // По этому признаку и завершаем реплей, когда ходы кончились.
+        const isEngineSettled = () =>
+            !game.isFireMode &&
+            !game.bullet &&
+            !game.ground?.isFalling &&
+            !game.leftTank?.dx &&
+            !game.leftTank?.dy &&
+            !game.rightTank?.dx &&
+            !game.rightTank?.dy;
         // Date.now вместо performance.now: драйверу хватает мс-точности, а в
         // тестах fake timers гарантированно фейкают именно Date.
         const timerId = window.setInterval(() => {
             driver.tick(Date.now());
+            // Ходы кончились и последний доиграл — останавливаем таймер и явно
+            // помечаем конец. Иначе интервал тикал бы до анмаунта, а HUD навсегда
+            // застрял бы на «▶ Реплей», если запись не исчерпала оружие
+            // (обрезанная или сторонняя ссылка).
+            if (driver.isFinished && isEngineSettled()) {
+                window.clearInterval(timerId);
+                setGameOver(true);
+            }
         }, DRIVER_TICK_INTERVAL_MS);
 
         return () => {
@@ -93,8 +115,13 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
 
     return (
         <>
-            {/* Ввод не обрабатывается: реплей смотрят, а не играют. */}
-            <canvas ref={canvasRef} className="game-canvas block h-full w-full bg-base-200" />
+            {/* Ввод не обрабатывается: реплей смотрят, а не играют. Бэкинг-стор
+                canvas — фиксированного логического размера боя; object-contain
+                вписывает его в экран, сохраняя пропорции поля (см. fixedLogicalSize). */}
+            <canvas
+                ref={canvasRef}
+                className="game-canvas mx-auto block h-full w-full object-contain bg-base-200"
+            />
             {botBubble && (
                 <ChatBubble
                     reply={botBubble.reply}

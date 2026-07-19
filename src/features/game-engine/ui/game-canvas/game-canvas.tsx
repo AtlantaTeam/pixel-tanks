@@ -6,7 +6,8 @@ import { createSeededRandom } from '@/shared/lib/random';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { useGameStore } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
-import { generateRandomWeapons, WEAPONS_AMOUNT } from '../../lib/weapons';
+import { dealWeapons } from '../../lib/weapons';
+import { createFxRandom } from '../../lib/fx-random';
 import { resolvePointsDelta } from '../../lib/score';
 import { calculateDragAim } from '../../lib/drag-aim';
 import { attachGestureGuard } from '../../lib/gesture-guard';
@@ -53,6 +54,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const setGameOver = useGameStore((s) => s.setGameOver);
     const resetGame = useGameStore((s) => s.resetGame);
     const setBattleSeed = useGameStore((s) => s.setBattleSeed);
+    const setBattleField = useGameStore((s) => s.setBattleField);
     const recordMove = useGameStore((s) => s.recordMove);
     const recordFire = useGameStore((s) => s.recordFire);
 
@@ -63,7 +65,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         // Размер бэкинг-стора canvas (dpr, resize) полностью на стороне GamePlay.fit().
         const battleSeed = seed ?? Date.now();
         setBattleSeed(battleSeed);
-        const allWeapons = generateRandomWeapons(WEAPONS_AMOUNT);
+        const allWeapons = dealWeapons();
         setWeapons(allWeapons.leftTankWeapons);
         selectWeapon(allWeapons.leftTankWeapons[0]);
 
@@ -95,11 +97,13 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                         y: bot.y - bot.tankHeight,
                     });
                 },
+                // Логический размер поля этого боя — пишем в реплей вместе с seed.
+                onFieldInit: ({ width, height }) => setBattleField(width, height),
             },
             createSeededRandom(battleSeed),
             // Отдельный поток для косметики (частицы, тряска): их FPS-зависимое
             // потребление random не должно сдвигать выборки бота (см. GamePlay).
-            createSeededRandom(`fx:${battleSeed}`),
+            createFxRandom(battleSeed),
         );
         gameRef.current = game;
         game.loadImages();
@@ -199,7 +203,15 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                     // Как мышь/тач: не стреляем, пока снаряд в полёте (isFireMode) —
                     // иначе повторный Enter/Space до смены хода даёт двойной выстрел
                     // и лишний раз тратит оружие (конфликт клавиатурной схемы с собой).
-                    if (selectedWeapon && !game.isFireMode) {
+                    // И не стреляем, пока танк доезжает после перемещения
+                    // (isMoveMode / dx ≠ 0): снаряд иначе родится из промежуточной
+                    // позиции, а реплей применяет выстрел из конечной — счёт разойдётся.
+                    if (
+                        selectedWeapon &&
+                        !game.isFireMode &&
+                        !game.isMoveMode &&
+                        !game.leftTank.dx
+                    ) {
                         recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
                         game.onFire(selectedWeapon);
                         removeWeaponById(selectedWeapon.id);
@@ -223,7 +235,17 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
 
     const fireSelectedWeapon = () => {
         const game = gameRef.current;
-        if (!game || !selectedWeapon || game.isFireMode || !game.leftTank?.isActive) return;
+        // Не стреляем в полёте снаряда и пока танк доезжает после перемещения —
+        // иначе выстрел из промежуточной позиции разойдётся с реплеем (см. keyboard fire).
+        if (
+            !game ||
+            !selectedWeapon ||
+            game.isFireMode ||
+            game.isMoveMode ||
+            !game.leftTank?.isActive ||
+            game.leftTank.dx
+        )
+            return;
         recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
         game.onFire(selectedWeapon);
         removeWeaponById(selectedWeapon.id);

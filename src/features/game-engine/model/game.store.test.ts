@@ -6,10 +6,11 @@ describe('game.store — запись реплея', () => {
         useGameStore.getState().resetGame();
     });
 
-    it('изначально не имеет seed боя и ходов', () => {
+    it('изначально не имеет seed боя, размера поля и ходов', () => {
         const state = useGameStore.getState();
 
         expect(state.battleSeed).toBeNull();
+        expect(state.battleField).toBeNull();
         expect(state.replayMoves).toEqual([]);
     });
 
@@ -17,6 +18,12 @@ describe('game.store — запись реплея', () => {
         useGameStore.getState().setBattleSeed(42);
 
         expect(useGameStore.getState().battleSeed).toBe(42);
+    });
+
+    it('запоминает логический размер поля боя', () => {
+        useGameStore.getState().setBattleField(1440, 810);
+
+        expect(useGameStore.getState().battleField).toEqual({ width: 1440, height: 810 });
     });
 
     it('запоминает строковый seed боя', () => {
@@ -53,13 +60,15 @@ describe('game.store — запись реплея', () => {
         ]);
     });
 
-    it('resetGame очищает seed боя и записанные ходы', () => {
+    it('resetGame очищает seed боя, размер поля и записанные ходы', () => {
         useGameStore.getState().setBattleSeed('daily-2026-07-19');
+        useGameStore.getState().setBattleField(800, 600);
         useGameStore.getState().recordMove(150);
 
         useGameStore.getState().resetGame();
 
         expect(useGameStore.getState().battleSeed).toBeNull();
+        expect(useGameStore.getState().battleField).toBeNull();
         expect(useGameStore.getState().replayMoves).toEqual([]);
     });
 });

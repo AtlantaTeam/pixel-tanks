@@ -14,6 +14,11 @@ type TGameState = {
     isStarted: boolean;
     /** Seed текущего боя — нужен для сборки ссылки-реплея после его окончания. */
     battleSeed: number | string | null;
+    /**
+     * Логический размер поля текущего боя (CSS-пиксели). Записывается в реплей:
+     * без него воспроизведение на другом экране даст другой рельеф и счёт.
+     */
+    battleField: { width: number; height: number } | null;
     /** Ходы игрока текущего боя в порядке совершения (см. `@/entities/replays`). */
     replayMoves: TReplayMove[];
 };
@@ -36,6 +41,7 @@ type TGameActions = {
     startGame: () => void;
     resetGame: () => void;
     setBattleSeed: (seed: number | string) => void;
+    setBattleField: (width: number, height: number) => void;
     recordMove: (delta: number) => void;
     recordFire: (angle: number, power: number) => void;
 };
@@ -51,6 +57,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     isGameOver: false,
     isStarted: false,
     battleSeed: null,
+    battleField: null,
     replayMoves: [],
 
     setAngle: (angle) => set({ angle }),
@@ -86,9 +93,11 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             isGameOver: false,
             isStarted: false,
             battleSeed: null,
+            battleField: null,
             replayMoves: [],
         }),
     setBattleSeed: (battleSeed) => set({ battleSeed }),
+    setBattleField: (width, height) => set({ battleField: { width, height } }),
     recordMove: (delta) =>
         set((s) => ({ replayMoves: [...s.replayMoves, { kind: 'move', delta }] })),
     recordFire: (angle, power) =>

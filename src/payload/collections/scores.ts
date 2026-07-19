@@ -1,4 +1,5 @@
 import type { CollectionConfig } from 'payload';
+import { BOT_NAME } from '@/shared/config';
 
 /** Верхний предел очков за бой — синхронно с MAX_DAILY_POINTS в submit-daily-score. */
 const MAX_SCORE_POINTS = 100_000;
@@ -39,7 +40,7 @@ export const Scores: CollectionConfig = {
         {
             name: 'opponent',
             type: 'text',
-            defaultValue: 'Terminator',
+            defaultValue: BOT_NAME,
             admin: { description: 'Имя противника (бот или другой игрок)' },
         },
         {

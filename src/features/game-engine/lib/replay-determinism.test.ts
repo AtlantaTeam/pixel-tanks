@@ -31,6 +31,14 @@ import { resolvePointsDelta } from './score';
 const WIDTH = 800;
 const HEIGHT = 600;
 const WEAPON: TWeapon = { id: 0, name: 'Снаряд' };
+
+/** Собирает запись боя с размером поля по умолчанию (800×600). */
+const battle = (seed: number | string, moves: TReplay['moves']): TReplay => ({
+    seed,
+    width: WIDTH,
+    height: HEIGHT,
+    moves,
+});
 /** Предел шагов симуляции снаряда — страховка от зацикливания, не игровой лимит. */
 const MAX_BULLET_STEPS = 20000;
 
@@ -79,16 +87,19 @@ type TScore = { playerPoints: number; enemyPoints: number };
  * как движок в `GamePlay.moveBullet`. Возвращает итоговый счёт.
  */
 const simulateReplayScore = (replay: TReplay): TScore => {
+    // Физика идёт на логическом размере записи — как воспроизведение реплея.
+    const width = replay.width;
+    const height = replay.height;
     // Порядок расхода RNG совпадает с GamePlay.initPaint: сначала рельеф, потом ветер.
     const random = createSeededRandom(replay.seed);
-    const ground = new Ground(WIDTH, HEIGHT, random);
+    const ground = new Ground(width, height, random);
     const wind = generateWind(random);
 
-    const leftX = floor(WIDTH / 4);
-    const rightX = floor((WIDTH * 3) / 4);
-    const player = new Tank(leftX, HEIGHT - ground.heights[leftX], WIDTH, HEIGHT, 0, [WEAPON]);
+    const leftX = floor(width / 4);
+    const rightX = floor((width * 3) / 4);
+    const player = new Tank(leftX, height - ground.heights[leftX], width, height, 0, [WEAPON]);
     player.isActive = true;
-    const enemy = new Tank(rightX, HEIGHT - ground.heights[rightX], WIDTH, HEIGHT, Math.PI, [
+    const enemy = new Tank(rightX, height - ground.heights[rightX], width, height, Math.PI, [
         WEAPON,
     ]);
 
@@ -96,10 +107,11 @@ const simulateReplayScore = (replay: TReplay): TScore => {
 
     for (const move of replay.moves) {
         if (move.kind === 'move') {
-            // Чистый эффект слайда танка (Tank.move переносит на delta по кадрам),
-            // с тем же клампом «не выходить за края поля».
-            const nextX = player.x + move.delta;
-            player.x = Math.max(1, Math.min(nextX, WIDTH - player.tankWidth - 1));
+            // Гоняем настоящий Tank.move (тот же кламп краёв, что и в движке),
+            // а не переоткрываем логику перемещения — иначе тест «на тех же
+            // строительных блоках» не выполнялся бы для перемещения.
+            player.dx = move.delta;
+            while (player.dx) player.move();
             continue;
         }
 
@@ -108,7 +120,7 @@ const simulateReplayScore = (replay: TReplay): TScore => {
         refreshHitArea(player);
         refreshHitArea(enemy);
 
-        const bullet = new Bullet(WIDTH, HEIGHT, ground, player, enemy, wind);
+        const bullet = new Bullet(width, height, ground, player, enemy, wind);
         let steps = 0;
         bullet.move();
         while (!bullet.isHit(ctxStub) && steps < MAX_BULLET_STEPS) {
@@ -135,10 +147,7 @@ const move = (delta: number) => ({ kind: 'move' as const, delta });
 
 // Выстрел, гарантированно попадающий по вражескому танку на этом seed (подобран
 // перебором), — чтобы счёт был ненулевым и тест не выродился в «0 === 0».
-const HITTING_BATTLE: TReplay = {
-    seed: 42,
-    moves: [fire(-0.895, 8)],
-};
+const HITTING_BATTLE: TReplay = battle(42, [fire(-0.895, 8)]);
 
 describe('детерминизм реплея: сериализованный бой → идентичный счёт', () => {
     it('попадающий бой даёт ненулевой счёт игрока (тест не вырожденный)', () => {
@@ -159,14 +168,14 @@ describe('детерминизм реплея: сериализованный б
     });
 
     it.each<[string, TReplay]>([
-        ['числовой seed, только выстрелы', { seed: 42, moves: [fire(-0.895, 8), fire(-0.5, 14)] }],
-        ['строковый seed', { seed: 'daily-2026-07-19', moves: [fire(-0.96, 7)] }],
+        ['числовой seed, только выстрелы', battle(42, [fire(-0.895, 8), fire(-0.5, 14)])],
+        ['строковый seed', battle('daily-2026-07-19', [fire(-0.96, 7)])],
         [
             'перемещения между выстрелами',
-            { seed: 7, moves: [move(-40), fire(-0.96, 7), move(60), fire(-0.7, 11)] },
+            battle(7, [move(-40), fire(-0.96, 7), move(60), fire(-0.7, 11)]),
         ],
-        ['бой без ходов', { seed: 100, moves: [] }],
-        ['промах (счёт остаётся 0)', { seed: 42, moves: [fire(-1.4, 3)] }],
+        ['бой без ходов', battle(100, [])],
+        ['промах (счёт остаётся 0)', battle(42, [fire(-1.4, 3)])],
     ])('идентичный счёт после сериализации: %s', (_label, replay) => {
         const decoded = decodeReplay(encodeReplay(replay));
         expect(decoded).not.toBeNull();
@@ -178,15 +187,15 @@ describe('детерминизм реплея: сериализованный б
         // Записи с одинаковыми ходами, но разными seed: рельеф/ветер отличаются,
         // поэтому исход выстрела не обязан совпасть — иначе seed ни на что не влиял бы.
         const scores = [1, 2, 3, 4, 5].map((seed) =>
-            JSON.stringify(simulateReplayScore({ seed, moves: [fire(-0.895, 8), fire(-0.6, 12)] })),
+            JSON.stringify(simulateReplayScore(battle(seed, [fire(-0.895, 8), fire(-0.6, 12)]))),
         );
 
         expect(new Set(scores).size).toBeGreaterThan(1);
     });
 
     it('угол float64 не квантуется: соседние углы сериализуются раздельно', () => {
-        const a: TReplay = { seed: 42, moves: [fire(-0.8950000000000001, 8)] };
-        const b: TReplay = { seed: 42, moves: [fire(-0.895, 8)] };
+        const a: TReplay = battle(42, [fire(-0.8950000000000001, 8)]);
+        const b: TReplay = battle(42, [fire(-0.895, 8)]);
 
         // Оба угла проходят encode → decode бит-в-бит (см. replay-codec), значит их
         // прогоны воспроизводятся точно каждый по себе.

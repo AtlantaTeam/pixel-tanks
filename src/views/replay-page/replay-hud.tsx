@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useGameStore } from '@/features/game-engine';
+import { BOT_NAME } from '@/shared/config';
 import { useAnimatedValue } from '@/shared/lib/animation';
 
 /**
@@ -31,7 +32,7 @@ export function ReplayHud() {
                 <span className="font-pixel text-xs text-muted">:</span>
                 <div className="flex items-baseline gap-2">
                     <span className="font-pixel text-xl text-danger">{displayedEnemyPoints}</span>
-                    <span className="font-pixel text-xs text-muted">Terminator</span>
+                    <span className="font-pixel text-xs text-muted">{BOT_NAME}</span>
                 </div>
             </div>
 
