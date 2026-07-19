@@ -1,1 +1,1 @@
-export { APP_NAME } from './app';
+export { APP_NAME, BOT_NAME } from './app';

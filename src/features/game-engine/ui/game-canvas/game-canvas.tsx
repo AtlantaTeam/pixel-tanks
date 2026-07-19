@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { TWeapon } from '@/shared/model';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { useGameStore } from '../../model/game.store';
-import { GamePlay, type TTanksWeapons } from '../../lib/game-play';
-import { Bullet } from '../../lib/bullet';
+import { GamePlay } from '../../lib/game-play';
+import { dealWeapons } from '../../lib/weapons';
+import { createFxRandom } from '../../lib/fx-random';
+import { resolvePointsDelta } from '../../lib/score';
 import { calculateDragAim } from '../../lib/drag-aim';
 import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
@@ -16,19 +17,6 @@ type TDragState = {
     pointerId: number;
     startX: number;
     startY: number;
-};
-
-const WEAPONS_AMOUNT = 10;
-
-const generateRandomWeapons = (amount: number): TTanksWeapons => {
-    const weapons: TWeapon[] = [];
-    for (let i = 0; i < amount; i++) {
-        weapons[i] = { id: i, name: Bullet.label };
-    }
-    return {
-        leftTankWeapons: weapons.filter((_, index) => index % 2 === 0),
-        rightTankWeapons: weapons.filter((_, index) => index % 2 === 1),
-    };
 };
 
 type TGameCanvasProps = {
@@ -65,13 +53,19 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const removeWeaponById = useGameStore((s) => s.removeWeaponById);
     const setGameOver = useGameStore((s) => s.setGameOver);
     const resetGame = useGameStore((s) => s.resetGame);
+    const setBattleSeed = useGameStore((s) => s.setBattleSeed);
+    const setBattleField = useGameStore((s) => s.setBattleField);
+    const recordMove = useGameStore((s) => s.recordMove);
+    const recordFire = useGameStore((s) => s.recordFire);
 
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
 
         // Размер бэкинг-стора canvas (dpr, resize) полностью на стороне GamePlay.fit().
-        const allWeapons = generateRandomWeapons(WEAPONS_AMOUNT);
+        const battleSeed = seed ?? Date.now();
+        setBattleSeed(battleSeed);
+        const allWeapons = dealWeapons();
         setWeapons(allWeapons.leftTankWeapons);
         selectWeapon(allWeapons.leftTankWeapons[0]);
 
@@ -79,18 +73,9 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             canvasRef,
             allWeapons,
             {
-                onPointsCalc: ({ hittedIsLeft, leftActive, power: hitPower }) => {
-                    if (hittedIsLeft) {
-                        if (leftActive) {
-                            increasePlayerPoints(-hitPower);
-                        } else {
-                            increaseEnemyPoints(hitPower);
-                        }
-                    } else if (leftActive) {
-                        increasePlayerPoints(hitPower);
-                    } else {
-                        increaseEnemyPoints(-hitPower);
-                    }
+                onPointsCalc: (event) => {
+                    const { isPlayer, delta } = resolvePointsDelta(event);
+                    (isPlayer ? increasePlayerPoints : increaseEnemyPoints)(delta);
                 },
                 onGameOverCheck: ({ leftWeapons, rightWeapons }) => {
                     if (!leftWeapons && !rightWeapons && !game.isFireMode) {
@@ -112,8 +97,13 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                         y: bot.y - bot.tankHeight,
                     });
                 },
+                // Логический размер поля этого боя — пишем в реплей вместе с seed.
+                onFieldInit: ({ width, height }) => setBattleField(width, height),
             },
-            createSeededRandom(seed ?? Date.now()),
+            createSeededRandom(battleSeed),
+            // Отдельный поток для косметики (частицы, тряска): их FPS-зависимое
+            // потребление random не должно сдвигать выборки бота (см. GamePlay).
+            createFxRandom(battleSeed),
         );
         gameRef.current = game;
         game.loadImages();
@@ -198,18 +188,31 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                     if (!game.isFireMode) increaseAngle(Math.PI / 180);
                     break;
                 case 'move-left':
-                    if (!game.isFireMode && moves > 0 && !game.isMoveMode)
+                    if (!game.isFireMode && moves > 0 && !game.isMoveMode) {
                         game.changeTankPosition(-150);
+                        recordMove(-150);
+                    }
                     break;
                 case 'move-right':
-                    if (!game.isFireMode && moves > 0 && !game.isMoveMode)
+                    if (!game.isFireMode && moves > 0 && !game.isMoveMode) {
                         game.changeTankPosition(150);
+                        recordMove(150);
+                    }
                     break;
                 case 'fire':
                     // Как мышь/тач: не стреляем, пока снаряд в полёте (isFireMode) —
                     // иначе повторный Enter/Space до смены хода даёт двойной выстрел
                     // и лишний раз тратит оружие (конфликт клавиатурной схемы с собой).
-                    if (selectedWeapon && !game.isFireMode) {
+                    // И не стреляем, пока танк доезжает после перемещения
+                    // (isMoveMode / dx ≠ 0): снаряд иначе родится из промежуточной
+                    // позиции, а реплей применяет выстрел из конечной — счёт разойдётся.
+                    if (
+                        selectedWeapon &&
+                        !game.isFireMode &&
+                        !game.isMoveMode &&
+                        !game.leftTank.dx
+                    ) {
+                        recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
                         game.onFire(selectedWeapon);
                         removeWeaponById(selectedWeapon.id);
                     }
@@ -219,11 +222,31 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
 
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
-    }, [selectedWeapon, weapons, moves, selectWeapon, removeWeaponById, increaseAngle]);
+    }, [
+        selectedWeapon,
+        weapons,
+        moves,
+        selectWeapon,
+        removeWeaponById,
+        increaseAngle,
+        recordMove,
+        recordFire,
+    ]);
 
     const fireSelectedWeapon = () => {
         const game = gameRef.current;
-        if (!game || !selectedWeapon || game.isFireMode || !game.leftTank?.isActive) return;
+        // Не стреляем в полёте снаряда и пока танк доезжает после перемещения —
+        // иначе выстрел из промежуточной позиции разойдётся с реплеем (см. keyboard fire).
+        if (
+            !game ||
+            !selectedWeapon ||
+            game.isFireMode ||
+            game.isMoveMode ||
+            !game.leftTank?.isActive ||
+            game.leftTank.dx
+        )
+            return;
+        recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
         game.onFire(selectedWeapon);
         removeWeaponById(selectedWeapon.id);
     };

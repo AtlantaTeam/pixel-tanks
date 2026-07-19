@@ -21,7 +21,14 @@ describe('GameOverDialog', () => {
     beforeEach(() => {
         submitMock.mockClear();
         window.sessionStorage.clear();
-        useGameStore.setState({ isGameOver: false, playerPoints: 0, enemyPoints: 0 });
+        useGameStore.setState({
+            isGameOver: false,
+            playerPoints: 0,
+            enemyPoints: 0,
+            battleSeed: null,
+            battleField: null,
+            replayMoves: [],
+        });
     });
 
     it('shows the score when the game is over', () => {
@@ -85,6 +92,26 @@ describe('GameOverDialog', () => {
         render(<GameOverDialog />);
 
         expect(submitMock).not.toHaveBeenCalled();
+    });
+
+    it('shows a "Поделиться боем" replay-share button when a battle seed was recorded', () => {
+        setGameOver(10, 5);
+        useGameStore.setState({
+            battleSeed: 42,
+            battleField: { width: 800, height: 600 },
+            replayMoves: [],
+        });
+        render(<GameOverDialog seed="42" />);
+
+        expect(screen.getByRole('button', { name: /Поделиться боем/i })).toBeInTheDocument();
+    });
+
+    it('does not show a replay-share button when no battle seed was recorded', () => {
+        setGameOver(10, 5);
+        useGameStore.setState({ battleSeed: null, battleField: null, replayMoves: [] });
+        render(<GameOverDialog seed="42" />);
+
+        expect(screen.queryByRole('button', { name: /Поделиться боем/i })).not.toBeInTheDocument();
     });
 
     it('does not submit again for the same seed across a remount (reload guard)', async () => {
