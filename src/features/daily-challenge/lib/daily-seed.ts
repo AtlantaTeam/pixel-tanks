@@ -11,3 +11,6 @@ export const getDailySeed = (date: Date = new Date()): string => {
     const day = String(date.getUTCDate()).padStart(2, '0');
     return `${DAILY_SEED_PREFIX}-${year}-${month}-${day}`;
 };
+
+/** Отличает seed «Боя дня» от произвольного/случайного seed обычной игры. */
+export const isDailySeed = (seed: string): boolean => seed.startsWith(`${DAILY_SEED_PREFIX}-`);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getDailySeed } from './daily-seed';
+import { getDailySeed, isDailySeed } from './daily-seed';
 
 describe('getDailySeed', () => {
     it('returns the same seed for two moments within the same UTC day', () => {
@@ -26,5 +26,20 @@ describe('getDailySeed', () => {
 
     it('defaults to the current date when called without an argument', () => {
         expect(getDailySeed()).toBe(getDailySeed(new Date()));
+    });
+});
+
+describe('isDailySeed', () => {
+    it('returns true for a seed produced by getDailySeed', () => {
+        expect(isDailySeed(getDailySeed(new Date('2026-07-19T00:00:00.000Z')))).toBe(true);
+    });
+
+    it('returns false for a random/custom game seed', () => {
+        expect(isDailySeed('42')).toBe(false);
+        expect(isDailySeed('my-custom-seed')).toBe(false);
+    });
+
+    it('returns false for an empty string', () => {
+        expect(isDailySeed('')).toBe(false);
     });
 });

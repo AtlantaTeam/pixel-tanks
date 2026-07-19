@@ -4,12 +4,14 @@ export const Scores: CollectionConfig = {
     slug: 'scores',
     admin: {
         useAsTitle: 'id',
-        defaultColumns: ['user', 'points', 'opponent', 'createdAt'],
+        defaultColumns: ['user', 'points', 'opponent', 'dailySeed', 'createdAt'],
     },
     access: {
         // Чтение публично — это лидерборд
         read: () => true,
-        // Создавать может только авторизованный игрок
+        // Создавать может только авторизованный игрок. Записи «Боя дня» до
+        // появления auth идут через Local API (overrideAccess), которая этот
+        // гейт обходит — REST для анонимов остаётся закрыт.
         create: ({ req }) => Boolean(req.user),
         // Изменять / удалять — только админ
         update: ({ req }) => req.user?.role === 'admin',
@@ -20,7 +22,8 @@ export const Scores: CollectionConfig = {
             name: 'user',
             type: 'relationship',
             relationTo: 'users',
-            required: true,
+            // Опционально: до фазы Auth «Бой дня» пишет результат анонимно через Local API.
+            required: false,
             hasMany: false,
         },
         {
@@ -39,6 +42,13 @@ export const Scores: CollectionConfig = {
             name: 'durationSec',
             type: 'number',
             admin: { description: 'Длительность матча в секундах' },
+        },
+        {
+            name: 'dailySeed',
+            type: 'text',
+            admin: {
+                description: 'Seed «Боя дня» (daily-YYYY-MM-DD), если результат из daily challenge',
+            },
         },
     ],
     timestamps: true,
