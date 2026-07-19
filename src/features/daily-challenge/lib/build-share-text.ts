@@ -1,4 +1,5 @@
 import { APP_NAME } from '@/shared/config';
+import { pluralizeRu } from '@/shared/lib/plural';
 
 export type TBuildDailyShareTextInput = {
     points: number;
@@ -18,9 +19,12 @@ export function buildDailyShareText({
     seed,
     origin,
 }: TBuildDailyShareTextInput): TDailySharePayload {
+    // «Мой результат …» вместо «Я набрал …» — заодно уходим от жёсткого
+    // мужского рода (полноценная локализация рода/числа — фаза 10).
+    const pointsWord = pluralizeRu(points, ['очко', 'очка', 'очков']);
     return {
         title: `${APP_NAME} — Бой дня`,
-        text: `Я набрал ${points} очков в «Бое дня» ${APP_NAME}! Повтори с тем же ветром и террейном:`,
+        text: `Мой результат в «Бое дня» ${APP_NAME} — ${points} ${pointsWord}! Повтори с тем же ветром и террейном:`,
         url: `${origin}/game?seed=${seed}`,
     };
 }

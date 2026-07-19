@@ -11,6 +11,14 @@ describe('buildDailyShareText', () => {
         expect(text).toContain('42');
     });
 
+    it('declines the points word correctly (42 очка, 1 очко, 5 очков)', () => {
+        const build = (points: number) =>
+            buildDailyShareText({ points, seed: 'daily-2026-07-19', origin: 'https://x' }).text;
+        expect(build(42)).toContain('42 очка');
+        expect(build(1)).toContain('1 очко');
+        expect(build(5)).toContain('5 очков');
+    });
+
     it('builds a URL pointing to the game with the given seed', () => {
         const { url } = buildDailyShareText({
             points: 0,

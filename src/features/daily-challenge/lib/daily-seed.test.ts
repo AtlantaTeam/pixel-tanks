@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDailySeed, isDailySeed } from './daily-seed';
+
+afterEach(() => {
+    vi.useRealTimers();
+});
 
 describe('getDailySeed', () => {
     it('returns the same seed for two moments within the same UTC day', () => {
@@ -25,7 +29,11 @@ describe('getDailySeed', () => {
     });
 
     it('defaults to the current date when called without an argument', () => {
-        expect(getDailySeed()).toBe(getDailySeed(new Date()));
+        // Фиксируем «сейчас», иначе на границе полуночи два вызова new Date()
+        // могли бы прийтись на разные UTC-сутки и тест бы мигал.
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-07-19T12:00:00.000Z'));
+        expect(getDailySeed()).toBe('daily-2026-07-19');
     });
 });
 
@@ -41,5 +49,12 @@ describe('isDailySeed', () => {
 
     it('returns false for an empty string', () => {
         expect(isDailySeed('')).toBe(false);
+    });
+
+    it('rejects a prefix-only or malformed daily seed (strict daily-YYYY-MM-DD)', () => {
+        expect(isDailySeed('daily-')).toBe(false);
+        expect(isDailySeed('daily-anything')).toBe(false);
+        expect(isDailySeed('daily-2026-7-9')).toBe(false);
+        expect(isDailySeed('daily-2026-07-19-extra')).toBe(false);
     });
 });

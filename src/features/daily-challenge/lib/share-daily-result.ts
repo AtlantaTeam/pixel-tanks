@@ -21,8 +21,14 @@ export async function shareDailyResult(
     }
 
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
-        await navigator.clipboard.writeText(`${payload.text} ${payload.url}`);
-        return 'copied';
+        try {
+            // writeText тоже может отклониться: нет фокуса документа, отказ в
+            // разрешении, non-secure context — тогда честно возвращаем 'unavailable'.
+            await navigator.clipboard.writeText(`${payload.text} ${payload.url}`);
+            return 'copied';
+        } catch {
+            return 'unavailable';
+        }
     }
 
     return 'unavailable';

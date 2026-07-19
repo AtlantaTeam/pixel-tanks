@@ -1,5 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { submitDailyScore } from '@/features/daily-challenge';
 import { useGameStore } from '@/features/game-engine';
 import { GameOverDialog } from './game-over-dialog';
 
@@ -10,12 +11,16 @@ vi.mock('@/features/daily-challenge', async () => {
     return { ...actual, submitDailyScore: vi.fn().mockResolvedValue(undefined) };
 });
 
+const submitMock = vi.mocked(submitDailyScore);
+
 function setGameOver(playerPoints: number, enemyPoints: number) {
     useGameStore.setState({ isGameOver: true, playerPoints, enemyPoints });
 }
 
 describe('GameOverDialog', () => {
     beforeEach(() => {
+        submitMock.mockClear();
+        window.sessionStorage.clear();
         useGameStore.setState({ isGameOver: false, playerPoints: 0, enemyPoints: 0 });
     });
 
@@ -45,5 +50,57 @@ describe('GameOverDialog', () => {
         render(<GameOverDialog seed="daily-2026-07-19" />);
 
         expect(screen.getByRole('button', { name: /Поделиться/i })).toBeInTheDocument();
+    });
+
+    it('submits the daily score exactly once for a daily seed', () => {
+        setGameOver(30, 10);
+        render(<GameOverDialog seed="daily-2026-07-19" />);
+
+        expect(submitMock).toHaveBeenCalledTimes(1);
+        expect(submitMock).toHaveBeenCalledWith({
+            seed: 'daily-2026-07-19',
+            points: 30,
+            opponent: 'Terminator',
+        });
+    });
+
+    it('clamps negative player points to zero before submitting', () => {
+        setGameOver(-7, 10);
+        render(<GameOverDialog seed="daily-2026-07-19" />);
+
+        expect(submitMock).toHaveBeenCalledWith(
+            expect.objectContaining({ seed: 'daily-2026-07-19', points: 0 }),
+        );
+    });
+
+    it('does not submit for a regular (non-daily) seed', () => {
+        setGameOver(30, 10);
+        render(<GameOverDialog seed="42" />);
+
+        expect(submitMock).not.toHaveBeenCalled();
+    });
+
+    it('does not submit when there is no seed', () => {
+        setGameOver(30, 10);
+        render(<GameOverDialog />);
+
+        expect(submitMock).not.toHaveBeenCalled();
+    });
+
+    it('does not submit again for the same seed across a remount (reload guard)', async () => {
+        setGameOver(30, 10);
+        const { unmount } = render(<GameOverDialog seed="daily-2026-07-19" />);
+
+        // Ждём, пока успешная отправка пометит seed в sessionStorage.
+        await waitFor(() =>
+            expect(
+                window.sessionStorage.getItem('daily-submitted:daily-2026-07-19'),
+            ).not.toBeNull(),
+        );
+        unmount();
+
+        render(<GameOverDialog seed="daily-2026-07-19" />);
+
+        expect(submitMock).toHaveBeenCalledTimes(1);
     });
 });

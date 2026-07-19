@@ -54,6 +54,15 @@ describe('shareDailyResult', () => {
         expect(status).toBe('copied');
     });
 
+    it('reports "unavailable" when clipboard.writeText rejects (no focus / permission denied)', async () => {
+        const writeText = vi.fn().mockRejectedValue(new Error('Document is not focused'));
+        vi.stubGlobal('navigator', { clipboard: { writeText } });
+
+        const status = await shareDailyResult(payload);
+
+        expect(status).toBe('unavailable');
+    });
+
     it('reports "unavailable" when neither Web Share nor clipboard exist', async () => {
         vi.stubGlobal('navigator', {});
 
