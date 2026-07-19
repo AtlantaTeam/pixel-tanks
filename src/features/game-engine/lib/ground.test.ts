@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
 import { Ground } from './ground';
 
@@ -133,5 +133,89 @@ describe('Ground.resize', () => {
         ground.heights.forEach((height) => {
             expect(Number.isInteger(height)).toBe(true);
         });
+    });
+});
+
+const makeLayerCtx = () => ({
+    strokeStyle: '',
+    lineWidth: 0,
+    setTransform: vi.fn(),
+    clearRect: vi.fn(),
+    translate: vi.fn(),
+    beginPath: vi.fn(),
+    moveTo: vi.fn(),
+    lineTo: vi.fn(),
+    stroke: vi.fn(),
+});
+
+const makeDestCtx = () => ({
+    drawImage: vi.fn(),
+});
+
+describe('Ground: offscreen-кэш террейна (.claude/rules/canvas.md)', () => {
+    let layerCtxMock: ReturnType<typeof makeLayerCtx>;
+    const originalCreateElement = document.createElement.bind(document);
+
+    beforeEach(() => {
+        layerCtxMock = makeLayerCtx();
+        vi.spyOn(document, 'createElement').mockImplementation(((tagName: string) => {
+            if (tagName === 'canvas') {
+                return {
+                    width: 0,
+                    height: 0,
+                    getContext: () => layerCtxMock,
+                } as unknown as HTMLCanvasElement;
+            }
+            return originalCreateElement(tagName);
+        }) as typeof document.createElement);
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('draw() строит path в offscreen-слое один раз, пока рельеф не меняется', () => {
+        const ground = new Ground(100, 100, createSeededRandom(1));
+        const destCtx = makeDestCtx();
+
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+
+        expect(layerCtxMock.beginPath).toHaveBeenCalledTimes(1);
+        expect(destCtx.drawImage).toHaveBeenCalledTimes(3);
+    });
+
+    it('fall() снова помечает слой грязным — следующий draw() перестраивает path', () => {
+        const ground = new Ground(100, 100, createSeededRandom(1));
+        const destCtx = makeDestCtx();
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+
+        ground.fall(50, 10, 5);
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+
+        expect(layerCtxMock.beginPath).toHaveBeenCalledTimes(2);
+    });
+
+    it('beginFrame() помечает слой грязным, только пока isFalling', () => {
+        const ground = new Ground(100, 100, createSeededRandom(1));
+        const destCtx = makeDestCtx();
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+
+        ground.beginFrame();
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+
+        expect(layerCtxMock.beginPath).toHaveBeenCalledTimes(1);
+    });
+
+    it('draw() с частичным диапазоном тоже переиспользует закешированный слой', () => {
+        const ground = new Ground(100, 100, createSeededRandom(1));
+        const destCtx = makeDestCtx();
+
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D, 10, 40);
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D, 60, 90);
+
+        expect(layerCtxMock.beginPath).toHaveBeenCalledTimes(1);
+        expect(destCtx.drawImage).toHaveBeenCalledTimes(2);
     });
 });

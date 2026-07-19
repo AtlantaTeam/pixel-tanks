@@ -2,6 +2,7 @@
 
 import { useGameStore } from '@/features/game-engine';
 import { useMuteState } from '@/shared/lib/audio';
+import { useAnimatedValue } from '@/shared/lib/animation';
 import { Button, Select } from '@/shared/ui';
 import { KeyboardSchemeHint } from './keyboard-scheme-hint';
 
@@ -26,6 +27,12 @@ export function GameControls() {
 
     const { isMuted, toggle: toggleMute } = useMuteState();
 
+    // Счёт и ходы обновляются в сторе скачком (попадание, ход) — HUD плавно
+    // дотягивает отображаемое число к нему, а не дёргается мгновенно.
+    const displayedPlayerPoints = Math.round(useAnimatedValue(playerPoints));
+    const displayedEnemyPoints = Math.round(useAnimatedValue(enemyPoints));
+    const displayedMoves = Math.round(useAnimatedValue(moves));
+
     return (
         <div className="flex flex-col gap-2 p-2 sm:gap-4 sm:p-4">
             <div className="flex items-center justify-end">
@@ -43,7 +50,7 @@ export function GameControls() {
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center sm:gap-4">
                 <div className="flex flex-col items-center gap-2">
                     <div className="font-pixel text-xs text-muted">Игрок</div>
-                    <div className="font-pixel text-2xl text-primary">{playerPoints}</div>
+                    <div className="font-pixel text-2xl text-primary">{displayedPlayerPoints}</div>
                 </div>
 
                 <div className="flex flex-wrap items-end justify-center gap-2 sm:gap-4">
@@ -75,12 +82,12 @@ export function GameControls() {
                             </option>
                         ))}
                     </Select>
-                    <Counter label="Ходы" value={moves} />
+                    <Counter label="Ходы" value={displayedMoves} />
                 </div>
 
                 <div className="flex flex-col items-center gap-2">
                     <div className="font-pixel text-xs text-muted">Terminator</div>
-                    <div className="font-pixel text-2xl text-danger">{enemyPoints}</div>
+                    <div className="font-pixel text-2xl text-danger">{displayedEnemyPoints}</div>
                 </div>
             </div>
 

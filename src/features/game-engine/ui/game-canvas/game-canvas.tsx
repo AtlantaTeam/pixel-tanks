@@ -136,45 +136,57 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
 
     // Управление клавиатурой
     useEffect(() => {
+        const isInteractiveElementFocused = () => {
+            const active = document.activeElement;
+            if (!active) return false;
+            const tagName = active.tagName.toLowerCase();
+            return ['input', 'button', 'select', 'textarea'].includes(tagName);
+        };
+
         const onKeyDown = (e: KeyboardEvent) => {
             const game = gameRef.current;
             if (!game?.leftTank?.isActive || !game.rightTank) return;
             const intent = resolveKeyboardIntent(e.key, e.ctrlKey);
             if (!intent) return;
+
+            if (intent === 'fire' && isInteractiveElementFocused()) return;
+
             e.preventDefault();
 
             switch (intent) {
                 case 'power-down':
-                    game.changeTankPower(-1);
+                    if (!game.isFireMode) game.changeTankPower(-1);
                     break;
                 case 'power-up':
-                    game.changeTankPower(1);
+                    if (!game.isFireMode) game.changeTankPower(1);
                     break;
                 case 'weapon-next':
-                    if (weapons.length > 0 && selectedWeapon) {
+                    if (!game.isFireMode && weapons.length > 0 && selectedWeapon) {
                         const idx = weapons.findIndex((w) => w.id === selectedWeapon.id);
                         const next = idx + 1 > weapons.length - 1 ? 0 : idx + 1;
                         selectWeapon(weapons[next]);
                     }
                     break;
                 case 'weapon-prev':
-                    if (weapons.length > 0 && selectedWeapon) {
+                    if (!game.isFireMode && weapons.length > 0 && selectedWeapon) {
                         const idx = weapons.findIndex((w) => w.id === selectedWeapon.id);
                         const prev = idx - 1 < 0 ? weapons.length - 1 : idx - 1;
                         selectWeapon(weapons[prev]);
                     }
                     break;
                 case 'angle-left':
-                    increaseAngle(-Math.PI / 180);
+                    if (!game.isFireMode) increaseAngle(-Math.PI / 180);
                     break;
                 case 'angle-right':
-                    increaseAngle(Math.PI / 180);
+                    if (!game.isFireMode) increaseAngle(Math.PI / 180);
                     break;
                 case 'move-left':
-                    if (moves > 0 && !game.isMoveMode) game.changeTankPosition(-150);
+                    if (!game.isFireMode && moves > 0 && !game.isMoveMode)
+                        game.changeTankPosition(-150);
                     break;
                 case 'move-right':
-                    if (moves > 0 && !game.isMoveMode) game.changeTankPosition(150);
+                    if (!game.isFireMode && moves > 0 && !game.isMoveMode)
+                        game.changeTankPosition(150);
                     break;
                 case 'fire':
                     // Как мышь/тач: не стреляем, пока снаряд в полёте (isFireMode) —

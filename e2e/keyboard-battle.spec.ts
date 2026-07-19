@@ -23,13 +23,18 @@ async function weaponCount(page: Page): Promise<number> {
  * ровно один выстрел на ход, без двойных. Возвращает новое число оружия.
  */
 async function fireOne(page: Page, action: () => Promise<void>, before: number): Promise<number> {
-    for (let attempt = 0; attempt < 200; attempt++) {
-        await action();
-        await page.waitForTimeout(150);
-        const count = await weaponCount(page);
-        if (count < before) return count;
-    }
-    throw new Error('выстрел не прошёл за отведённое число попыток');
+    let count = before;
+    await expect
+        .poll(
+            async () => {
+                await action();
+                count = await weaponCount(page);
+                return count < before;
+            },
+            { timeout: 30_000, intervals: [50] },
+        )
+        .toBeTruthy();
+    return count;
 }
 
 /**
