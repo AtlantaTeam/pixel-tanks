@@ -22,11 +22,14 @@ describe('resolveKeyboardIntent', () => {
         expect(resolveKeyboardIntent('ArrowDown', true)).toBe('weapon-next');
     });
 
-    it('maps Space and Enter to fire, regardless of Ctrl', () => {
+    it('maps Space and Enter to fire without Ctrl', () => {
         expect(resolveKeyboardIntent(' ', false)).toBe('fire');
         expect(resolveKeyboardIntent('Enter', false)).toBe('fire');
-        expect(resolveKeyboardIntent(' ', true)).toBe('fire');
-        expect(resolveKeyboardIntent('Enter', true)).toBe('fire');
+    });
+
+    it('disables fire on Ctrl+Space and Ctrl+Enter', () => {
+        expect(resolveKeyboardIntent(' ', true)).toBeNull();
+        expect(resolveKeyboardIntent('Enter', true)).toBeNull();
     });
 
     it('returns null for keys outside the combat scheme', () => {

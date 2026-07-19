@@ -25,7 +25,7 @@ export function resolveKeyboardIntent(key: string, ctrlKey: boolean): TKeyboardI
             return ctrlKey ? 'weapon-next' : 'power-down';
         case ' ':
         case 'Enter':
-            return 'fire';
+            return ctrlKey ? null : 'fire';
         default:
             return null;
     }
