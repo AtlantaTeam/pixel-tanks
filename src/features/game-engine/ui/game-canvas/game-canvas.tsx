@@ -104,8 +104,8 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                 onBotReply: (reply) => {
                     const bot = game.rightTank;
                     if (!bot) return;
-                    // Bubble всегда над танком бота (справа) — реагирует на любой исход
-                    // выстрела, независимо от того, кто стрелял (см. game-play.emitBotReply).
+                    // Bubble всегда над танком бота (справа). Эмитится не на каждый
+                    // выстрел: свой промах/самострел бот молчит (см. game-play.emitBotReply).
                     setBotBubble({
                         reply,
                         x: bot.x + bot.tankWidth / 2,

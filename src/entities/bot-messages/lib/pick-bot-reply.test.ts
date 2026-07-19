@@ -31,4 +31,19 @@ describe('pickBotReply', () => {
 
         expect(seen.size).toBeGreaterThan(1);
     });
+
+    it('throws for a category with no replies instead of returning undefined', () => {
+        const emptyCategory = 'nonexistent' as EBotReplyCategory;
+
+        expect(() => pickBotReply(emptyCategory, createSeededRandom(1))).toThrow(/Нет реплик/);
+    });
+
+    it('clamps the index when random() returns exactly 1 (never undefined)', () => {
+        const alwaysOne = (() => 1) as ReturnType<typeof createSeededRandom>;
+
+        const reply = pickBotReply(EBotReplyCategory.Happy, alwaysOne);
+
+        expect(reply).toBeDefined();
+        expect(reply.category).toBe(EBotReplyCategory.Happy);
+    });
 });

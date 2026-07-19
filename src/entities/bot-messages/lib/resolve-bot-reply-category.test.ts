@@ -15,21 +15,18 @@ describe('resolveBotReplyCategory', () => {
         );
     });
 
-    it('returns Sarcasm on a self-hit, regardless of who fired', () => {
+    it('returns Sarcasm only when the player blows itself up', () => {
         expect(resolveBotReplyCategory({ shooterIsBot: false, hit: 'self' })).toBe(
-            EBotReplyCategory.Sarcasm,
-        );
-        expect(resolveBotReplyCategory({ shooterIsBot: true, hit: 'self' })).toBe(
             EBotReplyCategory.Sarcasm,
         );
     });
 
-    it('returns Sarcasm on a complete miss, regardless of who fired', () => {
-        expect(resolveBotReplyCategory({ shooterIsBot: false, hit: 'none' })).toBe(
-            EBotReplyCategory.Sarcasm,
-        );
-        expect(resolveBotReplyCategory({ shooterIsBot: true, hit: 'none' })).toBe(
-            EBotReplyCategory.Sarcasm,
-        );
+    it('stays silent (null) when the bot blows itself up — no taunt over its own head', () => {
+        expect(resolveBotReplyCategory({ shooterIsBot: true, hit: 'self' })).toBeNull();
+    });
+
+    it('stays silent (null) on a complete miss, regardless of who fired', () => {
+        expect(resolveBotReplyCategory({ shooterIsBot: false, hit: 'none' })).toBeNull();
+        expect(resolveBotReplyCategory({ shooterIsBot: true, hit: 'none' })).toBeNull();
     });
 });

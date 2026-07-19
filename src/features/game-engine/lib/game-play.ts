@@ -519,9 +519,10 @@ export class GamePlay {
         });
     }
 
-    // Реплика бота на каждый исход выстрела: кто задет (никто/сам стрелявший/
+    // Реплика бота по исходу выстрела: кто задет (никто/сам стрелявший/
     // противник) определяет категорию, this.random выбирает конкретный текст —
-    // детерминировано на seed боя, как и остальная физика.
+    // детерминировано на seed боя, как и остальная физика. На своём промахе
+    // или самостреле бот молчит (resolveBotReplyCategory → null).
     private emitBotReply() {
         if (!this.bullet || !this.leftTank || !this.rightTank) return;
         const shooterIsBot = !this.lastShooterIsLeft;
@@ -532,6 +533,8 @@ export class GamePlay {
               ? 'self'
               : 'opponent';
         const category = resolveBotReplyCategory({ shooterIsBot, hit });
+        // Свой промах/самострел бот не комментирует — resolve вернёт null.
+        if (!category) return;
         this.callbacks.onBotReply(pickBotReply(category, this.random));
     }
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, type CSSProperties } from 'react';
+import { useEffect, useRef, type CSSProperties } from 'react';
 import { clsx } from 'clsx';
 import { EBotReplyCategory, type TBotReply } from '../../t-bot-reply';
 
@@ -30,16 +30,26 @@ export function ChatBubble({
     onExpire,
     className,
 }: TChatBubbleProps) {
+    // onExpire держим в ref, чтобы его идентичность не пересоздавала таймер:
+    // родитель ре-рендерится десятками раз в секунду при прицеливании, а инлайн
+    // `() => setBotBubble(null)` без ref сбрасывал бы отсчёт и бабл не исчезал бы.
+    const onExpireRef = useRef(onExpire);
     useEffect(() => {
-        const timer = setTimeout(() => onExpire?.(), durationMs);
+        onExpireRef.current = onExpire;
+    }, [onExpire]);
+
+    useEffect(() => {
+        const timer = setTimeout(() => onExpireRef.current?.(), durationMs);
         return () => clearTimeout(timer);
         // reply в deps намеренно: смена реплики (даже на той же позиции) должна
         // перезапускать таймер жизни бабла, а не досчитывать старый.
-    }, [reply, durationMs, onExpire]);
+    }, [reply, durationMs]);
 
     return (
         <div
-            role="status"
+            // Декоративный тизер над танком, не aria-live: скринридеру незачем
+            // зачитывать реплику бота на каждый выстрел.
+            aria-hidden="true"
             className={clsx(
                 'pixel-border pointer-events-none absolute m-1 -translate-x-1/2 -translate-y-full',
                 'animate-bubble-pop motion-reduce:animate-none',

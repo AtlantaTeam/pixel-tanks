@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { BOT_REPLIES } from '../bot-messages.data';
-import { EBotReplyCategory } from '../t-bot-reply';
+import { BOT_REPLIES } from './bot-messages.data';
+import { EBotReplyCategory } from './t-bot-reply';
 
 describe('bot-messages', () => {
     it('has at least 15 replies', () => {

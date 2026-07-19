@@ -21,15 +21,21 @@ describe('ChatBubble', () => {
     });
 
     it('renders in pixel-border game style', () => {
-        const { getByRole } = render(<ChatBubble reply={happyReply} x={100} y={200} />);
+        const { getByText } = render(<ChatBubble reply={happyReply} x={100} y={200} />);
 
-        expect(getByRole('status')).toHaveClass('pixel-border', 'font-pixel');
+        expect(getByText('Hasta la vista, baby')).toHaveClass('pixel-border', 'font-pixel');
+    });
+
+    it('is hidden from assistive tech (decorative teaser, not aria-live)', () => {
+        const { getByText } = render(<ChatBubble reply={happyReply} x={100} y={200} />);
+
+        expect(getByText('Hasta la vista, baby')).toHaveAttribute('aria-hidden', 'true');
     });
 
     it('positions itself above the given coordinates', () => {
-        const { getByRole } = render(<ChatBubble reply={happyReply} x={100} y={200} />);
+        const { getByText } = render(<ChatBubble reply={happyReply} x={100} y={200} />);
 
-        const bubble = getByRole('status');
+        const bubble = getByText('Hasta la vista, baby');
         expect(bubble.style.left).toBe('100px');
         expect(bubble.style.top).toBe('200px');
     });
@@ -88,10 +94,8 @@ describe('ChatBubble', () => {
         [EBotReplyCategory.Angry, 'var(--color-danger)'],
         [EBotReplyCategory.Sarcasm, 'var(--color-primary)'],
     ])('maps %s category to its accent color', (category, expectedColor) => {
-        const { getByRole } = render(<ChatBubble reply={{ text: 'т', category }} x={0} y={0} />);
+        const { getByText } = render(<ChatBubble reply={{ text: 'т', category }} x={0} y={0} />);
 
-        expect(getByRole('status').style.getPropertyValue('--pixel-border-color')).toBe(
-            expectedColor,
-        );
+        expect(getByText('т').style.getPropertyValue('--pixel-border-color')).toBe(expectedColor);
     });
 });

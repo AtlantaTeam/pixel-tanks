@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
-import { resolveBotReplyCategory } from '../lib/resolve-bot-reply-category';
-import { pickBotReply } from '../lib/pick-bot-reply';
-import type { TBotReplyEvent } from '../lib/t-bot-reply-event';
+import { resolveBotReplyCategory } from './resolve-bot-reply-category';
+import { pickBotReply } from './pick-bot-reply';
+import type { TBotReplyEvent } from '../t-bot-reply-event';
 import { EBotReplyCategory } from '../t-bot-reply';
 
 /**
@@ -24,31 +24,39 @@ describe('bot reply pipeline (event -> category -> reply)', () => {
             category: EBotReplyCategory.Angry,
         },
         {
-            name: 'bot hits itself',
-            event: { shooterIsBot: true, hit: 'self' },
+            name: 'player blows itself up',
+            event: { shooterIsBot: false, hit: 'self' },
             category: EBotReplyCategory.Sarcasm,
         },
-        {
-            name: 'complete miss',
-            event: { shooterIsBot: false, hit: 'none' },
-            category: EBotReplyCategory.Sarcasm,
-        },
+    ];
+
+    const silentCases: Array<{ name: string; event: TBotReplyEvent }> = [
+        { name: 'bot hits itself', event: { shooterIsBot: true, hit: 'self' } },
+        { name: 'bot misses', event: { shooterIsBot: true, hit: 'none' } },
+        { name: 'player misses', event: { shooterIsBot: false, hit: 'none' } },
     ];
 
     it.each(cases)('$name -> reply of category $category', ({ event, category }) => {
         const random = createSeededRandom('pipeline-seed');
 
         const resolvedCategory = resolveBotReplyCategory(event);
-        const reply = pickBotReply(resolvedCategory, random);
-
         expect(resolvedCategory).toBe(category);
+
+        const reply = pickBotReply(resolvedCategory!, random);
         expect(reply.category).toBe(category);
+    });
+
+    it.each(silentCases)('$name -> bot stays silent (null category)', ({ event }) => {
+        expect(resolveBotReplyCategory(event)).toBeNull();
     });
 
     it('is fully deterministic for the same event sequence and seed', () => {
         const run = () => {
             const random = createSeededRandom('battle-42');
-            return cases.map(({ event }) => pickBotReply(resolveBotReplyCategory(event), random));
+            return cases.map(({ event }) => {
+                const category = resolveBotReplyCategory(event);
+                return pickBotReply(category!, random);
+            });
         };
 
         expect(run()).toEqual(run());
