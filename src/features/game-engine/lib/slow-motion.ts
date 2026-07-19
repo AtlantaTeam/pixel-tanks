@@ -22,6 +22,14 @@ export class SlowMotion {
     private remainingMs = 0;
     private durationMs = 0;
     private factor = 1;
+    private readonly reducedMotion: boolean;
+
+    constructor() {
+        this.reducedMotion =
+            typeof window !== 'undefined'
+                ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                : false;
+    }
 
     /** Запускает окно замедления. Повторный вызов перезапускает его целиком. */
     trigger(options: TSlowMotionOptions = {}): void {
@@ -38,10 +46,15 @@ export class SlowMotion {
     /**
      * Списывает `dtMs` реального времени и возвращает текущий масштаб времени:
      * `factor` на старте окна → плавно к `1` к его концу. Вне окна всегда `1`.
+     * При prefers-reduced-motion всегда возвращает 1, игнорируя окно замедления.
      */
     update(dtMs: number): number {
         if (this.remainingMs <= 0) {
             this.remainingMs = 0;
+            return 1;
+        }
+        if (this.reducedMotion) {
+            this.remainingMs = Math.max(0, this.remainingMs - dtMs);
             return 1;
         }
         const progress = 1 - this.remainingMs / this.durationMs;

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { SlowMotion } from './slow-motion';
 
 describe('SlowMotion', () => {
@@ -64,5 +64,29 @@ describe('SlowMotion', () => {
         slow.reset();
         expect(slow.isActive()).toBe(false);
         expect(slow.update(16)).toBe(1);
+    });
+
+    it('при prefers-reduced-motion масштаб всегда 1', () => {
+        const originalMatchMedia = window.matchMedia;
+        window.matchMedia = vi.fn(() => ({
+            matches: true,
+            media: '(prefers-reduced-motion: reduce)',
+            onchange: null,
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            dispatchEvent: vi.fn(),
+        })) as any;
+
+        try {
+            const slow = new SlowMotion();
+            slow.trigger({ factor: 0.3, durationMs: 100 });
+            expect(slow.isActive()).toBe(true);
+            expect(slow.update(16)).toBe(1);
+            expect(slow.update(16)).toBe(1);
+        } finally {
+            window.matchMedia = originalMatchMedia;
+        }
     });
 });

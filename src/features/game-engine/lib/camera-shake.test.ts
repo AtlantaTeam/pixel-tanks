@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
 import { CameraShake } from './camera-shake';
 
@@ -96,5 +96,30 @@ describe('CameraShake', () => {
         expect(shake.isActive()).toBe(false);
         expect(shake.offsetX).toBe(0);
         expect(shake.offsetY).toBe(0);
+    });
+
+    it('при prefers-reduced-motion смещение остаётся нулевым', () => {
+        const originalMatchMedia = window.matchMedia;
+        window.matchMedia = vi.fn(() => ({
+            matches: true,
+            media: '(prefers-reduced-motion: reduce)',
+            onchange: null,
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            dispatchEvent: vi.fn(),
+        })) as any;
+
+        try {
+            const shake = new CameraShake(createSeededRandom(1), { decayPerSecond: 0 });
+            shake.addTrauma(1);
+            shake.update(16);
+            expect(shake.isActive()).toBe(true);
+            expect(shake.offsetX).toBe(0);
+            expect(shake.offsetY).toBe(0);
+        } finally {
+            window.matchMedia = originalMatchMedia;
+        }
     });
 });

@@ -26,6 +26,7 @@ export class CameraShake {
     private readonly maxOffset: number;
     private readonly decayPerSecond: number;
     private readonly random: TSeededRandom;
+    private readonly reducedMotion: boolean;
     offsetX = 0;
     offsetY = 0;
 
@@ -33,6 +34,10 @@ export class CameraShake {
         this.random = random;
         this.maxOffset = options.maxOffset ?? DEFAULT_MAX_OFFSET;
         this.decayPerSecond = options.decayPerSecond ?? DEFAULT_DECAY_PER_SECOND;
+        this.reducedMotion =
+            typeof window !== 'undefined'
+                ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                : false;
     }
 
     /** Добавляет травму (сила удара). Итог клампится в [0, 1]. */
@@ -48,16 +53,19 @@ export class CameraShake {
     /**
      * Пересчитывает смещение из текущей травмы и продвигает затухание на `dtMs`
      * реального времени. Смещение по каждой оси ∈ [-maxOffset, maxOffset].
+     * При prefers-reduced-motion смещение остаётся нулевым, но травма затухает.
      */
     update(dtMs: number): void {
         if (this.trauma <= 0) {
             this.reset();
             return;
         }
-        const shake = this.trauma * this.trauma;
-        // random() ∈ [0, 1) → [-1, 1)
-        this.offsetX = this.maxOffset * shake * (this.random() * 2 - 1);
-        this.offsetY = this.maxOffset * shake * (this.random() * 2 - 1);
+        if (!this.reducedMotion) {
+            const shake = this.trauma * this.trauma;
+            // random() ∈ [0, 1) → [-1, 1)
+            this.offsetX = this.maxOffset * shake * (this.random() * 2 - 1);
+            this.offsetY = this.maxOffset * shake * (this.random() * 2 - 1);
+        }
         this.trauma = Math.max(0, this.trauma - (this.decayPerSecond * dtMs) / 1000);
     }
 
