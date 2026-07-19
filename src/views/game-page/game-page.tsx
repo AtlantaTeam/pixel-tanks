@@ -17,7 +17,7 @@ export function GamePage({ seed }: TGamePageProps = {}) {
             <div data-testid="game-hud" className="border-t border-base-300 bg-base-200">
                 <GameControls />
             </div>
-            <GameOverDialog />
+            <GameOverDialog seed={seed} />
         </main>
     );
 }
