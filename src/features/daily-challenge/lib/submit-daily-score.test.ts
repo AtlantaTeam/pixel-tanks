@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { MAX_DAILY_POINTS } from './daily-score-limits';
+
 const createMock = vi.fn();
 
 vi.mock('payload', () => ({
@@ -7,7 +9,7 @@ vi.mock('payload', () => ({
 }));
 vi.mock('@/payload.config', () => ({ default: {} }));
 
-const { submitDailyScore, MAX_DAILY_POINTS } = await import('./submit-daily-score');
+const { submitDailyScore } = await import('./submit-daily-score');
 
 // Фиксируем «сегодня», чтобы daily-2026-07-19 совпадал с getDailySeed().
 const TODAY_SEED = 'daily-2026-07-19';

@@ -4,13 +4,7 @@ import { getPayload } from 'payload';
 import { z } from 'zod';
 import config from '@/payload.config';
 import { DAILY_SEED_PATTERN, getDailySeed } from './daily-seed';
-
-/**
- * Верхний предел очков за один бой. До Auth сервер не может доверять клиенту,
- * поэтому кроме `min(0)` вводим здравый потолок — иначе аноним отправил бы
- * `Number.MAX_SAFE_INTEGER` и возглавил лидерборд дня.
- */
-export const MAX_DAILY_POINTS = 100_000;
+import { MAX_DAILY_POINTS } from './daily-score-limits';
 
 const submitDailyScoreSchema = z.object({
     // Seed обязан быть daily-формата И относиться к текущим UTC-суткам —
