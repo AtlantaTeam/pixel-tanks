@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { shareDailyResult } from './share-daily-result';
 
 const payload = {
-    title: 'Pocket Tanks — Бой дня',
+    title: 'Pixel Tanks — Бой дня',
     text: 'Я набрал 42 очка!',
     url: 'https://example.com/game?seed=daily-2026-07-19',
 };

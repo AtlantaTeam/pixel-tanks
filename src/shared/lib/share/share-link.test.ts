@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { shareLink } from './share-link';
 
 const payload = {
-    title: 'Pocket Tanks',
+    title: 'Pixel Tanks',
     text: 'Смотри мой бой!',
     url: 'https://example.com/replay/abc123',
 };

@@ -16,7 +16,7 @@ export default buildConfig({
             baseDir: path.resolve(dirname),
         },
         meta: {
-            title: 'Pocket Tanks Admin',
+            title: 'Pixel Tanks Admin',
             description: 'Управление пользователями и лидербордом',
         },
     },

@@ -19,7 +19,7 @@ const pressStart = Press_Start_2P({
 
 export const metadata: Metadata = {
     title: `${APP_NAME} — танковая дуэль на Canvas`,
-    description: 'Учебная игра Pocket Tanks. Стреляй, считай угол, ветер и силу — побеждай.',
+    description: `Учебная игра ${APP_NAME}. Стреляй, считай угол, ветер и силу — побеждай.`,
 };
 
 export const viewport: Viewport = {

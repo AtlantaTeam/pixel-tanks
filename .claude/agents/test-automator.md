@@ -30,7 +30,7 @@ When invoked:
 3. Write tests in same directory as source
 4. Run `npm test` to verify
 
-Test categories для Pocket Tanks:
+Test categories для Pixel Tanks:
 
 - **Физика игры:** траектория, гравитация, ветер, столкновения — детерминированные unit-тесты
 - **Zustand stores:** game state actions and selectors
