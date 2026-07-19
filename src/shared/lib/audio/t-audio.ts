@@ -2,4 +2,4 @@
 export type TSfxName = 'fire' | 'hit' | 'miss';
 
 /** Зацикленный музыкальный трек сцены. */
-export type TMusicTrack = 'menu' | 'battle';
+export type TMusicTrack = 'menu' | 'battle' | 'hero';

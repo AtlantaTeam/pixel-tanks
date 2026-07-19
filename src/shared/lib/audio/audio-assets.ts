@@ -11,6 +11,8 @@ export const SFX_SOURCES: Record<TSfxName, string> = {
 export const MUSIC_SOURCES: Record<TMusicTrack, string> = {
     menu: '/audio/game-menu.mp3',
     battle: '/audio/gameplay.mp3',
+    // Эпичная тема главной, сгенерирована Lyria 3 из hero-арта (см. docs/images).
+    hero: '/audio/main-battle.mp3',
 };
 
 // Музыка тише эффектов: фон не должен перекрывать выстрел/взрыв.
