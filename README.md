@@ -10,10 +10,9 @@
 [![Tailwind](https://img.shields.io/badge/Tailwind%204-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 [![Payload](https://img.shields.io/badge/Payload%20CMS%203-000000?style=for-the-badge&logo=payloadcms&logoColor=white)](https://payloadcms.com)
 
-![Ralph Loop — фазы игры коммитит автономный агент](docs/images/ralph-loop-git-graph.png)
+![Pocket Tanks — angle · power · wind · BOOM](docs/images/pocket-tanks-hero.png)
 
-_Два танка. Песчаные дюны. Ветер путает карты, а Терминатор никогда не промахивается дважды.
-Код фаз пишет автономный агент — выше его git-граф, люди занимаются геймдизайном и ревью._
+_Два танка. Песчаные дюны. Ветер путает карты, а Терминатор никогда не промахивается дважды._
 
 </div>
 
