@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { TWeapon } from '@/shared/model';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { useGameStore } from '../../model/game.store';
-import { GamePlay, type TTanksWeapons } from '../../lib/game-play';
-import { Bullet } from '../../lib/bullet';
+import { GamePlay } from '../../lib/game-play';
+import { generateRandomWeapons, WEAPONS_AMOUNT } from '../../lib/weapons';
+import { resolvePointsDelta } from '../../lib/score';
 import { calculateDragAim } from '../../lib/drag-aim';
 import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
@@ -16,19 +16,6 @@ type TDragState = {
     pointerId: number;
     startX: number;
     startY: number;
-};
-
-const WEAPONS_AMOUNT = 10;
-
-const generateRandomWeapons = (amount: number): TTanksWeapons => {
-    const weapons: TWeapon[] = [];
-    for (let i = 0; i < amount; i++) {
-        weapons[i] = { id: i, name: Bullet.label };
-    }
-    return {
-        leftTankWeapons: weapons.filter((_, index) => index % 2 === 0),
-        rightTankWeapons: weapons.filter((_, index) => index % 2 === 1),
-    };
 };
 
 type TGameCanvasProps = {
@@ -71,6 +58,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         if (!canvas) return;
 
         // Размер бэкинг-стора canvas (dpr, resize) полностью на стороне GamePlay.fit().
+        const battleSeed = seed ?? Date.now();
         const allWeapons = generateRandomWeapons(WEAPONS_AMOUNT);
         setWeapons(allWeapons.leftTankWeapons);
         selectWeapon(allWeapons.leftTankWeapons[0]);
@@ -79,18 +67,9 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             canvasRef,
             allWeapons,
             {
-                onPointsCalc: ({ hittedIsLeft, leftActive, power: hitPower }) => {
-                    if (hittedIsLeft) {
-                        if (leftActive) {
-                            increasePlayerPoints(-hitPower);
-                        } else {
-                            increaseEnemyPoints(hitPower);
-                        }
-                    } else if (leftActive) {
-                        increasePlayerPoints(hitPower);
-                    } else {
-                        increaseEnemyPoints(-hitPower);
-                    }
+                onPointsCalc: (event) => {
+                    const { isPlayer, delta } = resolvePointsDelta(event);
+                    (isPlayer ? increasePlayerPoints : increaseEnemyPoints)(delta);
                 },
                 onGameOverCheck: ({ leftWeapons, rightWeapons }) => {
                     if (!leftWeapons && !rightWeapons && !game.isFireMode) {
@@ -113,7 +92,10 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                     });
                 },
             },
-            createSeededRandom(seed ?? Date.now()),
+            createSeededRandom(battleSeed),
+            // Отдельный поток для косметики (частицы, тряска): их FPS-зависимое
+            // потребление random не должно сдвигать выборки бота (см. GamePlay).
+            createSeededRandom(`fx:${battleSeed}`),
         );
         gameRef.current = game;
         game.loadImages();

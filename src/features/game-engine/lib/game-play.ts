@@ -110,10 +110,15 @@ export class GamePlay {
         allWeapons: TTanksWeapons,
         callbacks: TGamePlayCallbacks,
         random: TSeededRandom,
+        fxRandom: TSeededRandom,
     ) {
         this.random = random;
-        this.particles = new ParticlePool(PARTICLE_CAPACITY, random);
-        this.camera = new CameraShake(random);
+        // Косметика (частицы, тряска) — на ОТДЕЛЬНОМ потоке random: CameraShake
+        // берёт значения каждый кадр тряски, а число кадров зависит от FPS.
+        // На общем потоке это недетерминированно сдвигало бы выборки бота
+        // (botAiming) и ломало воспроизведение реплея на другой машине.
+        this.particles = new ParticlePool(PARTICLE_CAPACITY, fxRandom);
+        this.camera = new CameraShake(fxRandom);
         this.slowMo = new SlowMotion();
         this.trail = new BulletTrail();
         this.canvasRef = canvasRef;
