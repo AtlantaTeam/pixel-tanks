@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
 import { CameraShake } from './camera-shake';
+import { mockReducedMotion } from './mock-reduced-motion';
 
 describe('CameraShake', () => {
     it('стартует без дрожания', () => {
@@ -98,28 +99,19 @@ describe('CameraShake', () => {
         expect(shake.offsetY).toBe(0);
     });
 
-    it('при prefers-reduced-motion смещение остаётся нулевым', () => {
-        const originalMatchMedia = window.matchMedia;
-        window.matchMedia = vi.fn(() => ({
-            matches: true,
-            media: '(prefers-reduced-motion: reduce)',
-            onchange: null,
-            addListener: vi.fn(),
-            removeListener: vi.fn(),
-            addEventListener: vi.fn(),
-            removeEventListener: vi.fn(),
-            dispatchEvent: vi.fn(),
-        })) as any;
-
+    it('при prefers-reduced-motion смещение нулевое и травма сразу гаснет', () => {
+        const restore = mockReducedMotion(true);
         try {
             const shake = new CameraShake(createSeededRandom(1), { decayPerSecond: 0 });
             shake.addTrauma(1);
+            // Первый же update под reduced-motion гасит травму: смещения нет и
+            // isActive() → false, чтобы animate не крутил пустые fullRedraw-кадры.
             shake.update(16);
-            expect(shake.isActive()).toBe(true);
+            expect(shake.isActive()).toBe(false);
             expect(shake.offsetX).toBe(0);
             expect(shake.offsetY).toBe(0);
         } finally {
-            window.matchMedia = originalMatchMedia;
+            restore();
         }
     });
 });

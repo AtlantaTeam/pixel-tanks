@@ -12,6 +12,11 @@
 const DEFAULT_FACTOR = 0.35;
 /** Длительность окна замедления, мс реального времени. */
 const DEFAULT_DURATION_MS = 320;
+/**
+ * Нижняя граница `factor`: строго > 0, иначе движок делит интервал кадра на
+ * timeScale ≈ 0 (`minInterval = BASE / timeScale`) и время «встаёт».
+ */
+const MIN_FACTOR = 0.05;
 
 export type TSlowMotionOptions = {
     factor?: number;
@@ -25,16 +30,22 @@ export class SlowMotion {
     private readonly reducedMotion: boolean;
 
     constructor() {
+        // Снимок настройки на бой (см. CameraShake): осознанно не подписываемся
+        // на `matchMedia change`, чтобы не держать слушатель без teardown.
         this.reducedMotion =
             typeof window !== 'undefined'
                 ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
                 : false;
     }
 
-    /** Запускает окно замедления. Повторный вызов перезапускает его целиком. */
+    /**
+     * Запускает окно замедления. Повторный вызов перезапускает его целиком.
+     * `factor` клампится в (0, 1], `durationMs` — в [0, ∞): защита от опечаток,
+     * ускоряющих время (`factor > 1`) или ломающих деление в движке (`factor ≤ 0`).
+     */
     trigger(options: TSlowMotionOptions = {}): void {
-        this.durationMs = options.durationMs ?? DEFAULT_DURATION_MS;
-        this.factor = options.factor ?? DEFAULT_FACTOR;
+        this.durationMs = Math.max(0, options.durationMs ?? DEFAULT_DURATION_MS);
+        this.factor = Math.min(1, Math.max(MIN_FACTOR, options.factor ?? DEFAULT_FACTOR));
         this.remainingMs = this.durationMs;
     }
 

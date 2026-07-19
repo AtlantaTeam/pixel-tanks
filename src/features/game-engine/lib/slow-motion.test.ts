@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { SlowMotion } from './slow-motion';
+import { mockReducedMotion } from './mock-reduced-motion';
 
 describe('SlowMotion', () => {
     it('вне окна масштаб равен 1 и не активно', () => {
@@ -66,19 +67,23 @@ describe('SlowMotion', () => {
         expect(slow.update(16)).toBe(1);
     });
 
-    it('при prefers-reduced-motion масштаб всегда 1', () => {
-        const originalMatchMedia = window.matchMedia;
-        window.matchMedia = vi.fn(() => ({
-            matches: true,
-            media: '(prefers-reduced-motion: reduce)',
-            onchange: null,
-            addListener: vi.fn(),
-            removeListener: vi.fn(),
-            addEventListener: vi.fn(),
-            removeEventListener: vi.fn(),
-            dispatchEvent: vi.fn(),
-        })) as any;
+    it('клампит factor > 1 до 1 (не ускоряет время)', () => {
+        const slow = new SlowMotion();
+        slow.trigger({ factor: 3, durationMs: 100 });
+        // factor должен схлопнуться в 1 → масштаб на старте окна не больше 1
+        expect(slow.update(0)).toBe(1);
+    });
 
+    it('клампит factor ≤ 0 до положительного минимума (нет деления на ~0)', () => {
+        const slow = new SlowMotion();
+        slow.trigger({ factor: 0, durationMs: 100 });
+        const scale = slow.update(0);
+        expect(scale).toBeGreaterThan(0);
+        expect(scale).toBeLessThanOrEqual(1);
+    });
+
+    it('при prefers-reduced-motion масштаб всегда 1', () => {
+        const restore = mockReducedMotion(true);
         try {
             const slow = new SlowMotion();
             slow.trigger({ factor: 0.3, durationMs: 100 });
@@ -86,7 +91,7 @@ describe('SlowMotion', () => {
             expect(slow.update(16)).toBe(1);
             expect(slow.update(16)).toBe(1);
         } finally {
-            window.matchMedia = originalMatchMedia;
+            restore();
         }
     });
 });

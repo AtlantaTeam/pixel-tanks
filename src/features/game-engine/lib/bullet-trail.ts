@@ -71,7 +71,13 @@ export class BulletTrail {
 
     /** Есть ли точки, которые ещё нужно рисовать или очищать — движок продолжает кадр ради них. */
     hasActive(): boolean {
-        return this.points.some((p) => p.active || p.drawn);
+        // Обычный for вместо .some((p)=>...): без аллокации замыкания на каждый
+        // кадр (правило .claude/rules/canvas.md — никаких аллокаций в кадре).
+        for (let i = 0; i < this.capacity; i++) {
+            const p = this.points[i];
+            if (p.active || p.drawn) return true;
+        }
+        return false;
     }
 
     /**

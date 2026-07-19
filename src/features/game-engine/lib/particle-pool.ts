@@ -48,7 +48,8 @@ export const DAMAGE_PARTICLE_COLORS = ['#ff004d', '#ffa300', '#ffec27', '#ffffff
 
 /**
  * Залп земли из воронки: комья летят вверх широким веером и падают обратно
- * под гравитацией. Меньший `count` — деградация для слабых устройств.
+ * под гравитацией. `count` — задел под деградацию на слабых устройствах (меньше
+ * частиц); сейчас всегда шлётся дефолт, провод device-tier → count в бэклоге (#53).
  */
 export function groundBurst(x: number, y: number, count = 24): TBurstConfig {
     return {
@@ -70,7 +71,8 @@ export function groundBurst(x: number, y: number, count = 24): TBurstConfig {
 
 /**
  * Вспышка урона при прямом попадании в танк: искры разлетаются радиально,
- * ярко и коротко, почти без гравитации.
+ * ярко и коротко, почти без гравитации. `count` — задел под деградацию на слабых
+ * устройствах (см. `groundBurst`); сейчас всегда дефолт, device-tier → count в бэклоге (#53).
  */
 export function damageFlashBurst(x: number, y: number, count = 26): TBurstConfig {
     return {
