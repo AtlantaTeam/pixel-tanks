@@ -55,6 +55,34 @@
     animation: bubble-pop 150ms ease-out forwards;
 }
 
+/* Аттракт-экран главной: пульс свечения + CRT-мерцание поверх hero-видео.
+   Каждый слой гасится motion-reduce:animate-none в месте использования. */
+@keyframes hero-glow {
+    0%,
+    100% {
+        opacity: 0.35;
+    }
+    50% {
+        opacity: 0.7;
+    }
+}
+@utility animate-hero-glow {
+    animation: hero-glow 3.5s ease-in-out infinite;
+}
+
+@keyframes crt-flicker {
+    0%,
+    100% {
+        opacity: 0.1;
+    }
+    50% {
+        opacity: 0.16;
+    }
+}
+@utility animate-crt {
+    animation: crt-flicker 2.4s steps(3, end) infinite;
+}
+
 /* Отступы под чёлку/скруглённые углы/жест-бар (iOS notch, Android gesture nav).
    viewport-fit: cover в metadata — без него env() всегда резолвится в 0. */
 @utility safe-area-inset {
