@@ -1,6 +1,6 @@
 ---
 name: playtest
-description: Прогон игры Pocket Tanks через Playwright MCP — smoke-тест игровой петли, консоль, FPS, скриншоты. Использовать после изменений в game-engine, физике или игровом UI.
+description: Прогон игры Pixel Tanks через Playwright MCP — smoke-тест игровой петли, консоль, FPS, скриншоты. Использовать после изменений в game-engine, физике или игровом UI.
 ---
 
 # Playtest: проверка игры в браузере

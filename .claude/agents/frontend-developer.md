@@ -34,7 +34,7 @@ You are a senior frontend developer specializing in Next.js 16 + React 19 + Type
 4. **Тесты:** для нового модуля — рядом `kebab-case.test.tsx`
 5. **Визуальная проверка:** Playwright MCP для скриншотов dev-сервера
 
-## Pocket Tanks specifics
+## Pixel Tanks specifics
 
 - Игра — Canvas API, в features/game-engine или entities/game как `'use client'` компонент
 - Физика снаряда: гравитация + ветер, обновляется через requestAnimationFrame

@@ -22,7 +22,7 @@
   Заготовки в memory: project_ralph_prod_prd_seeds, project_ralph_growth_vectors.
 - Blocked в прод-профиле вернётся человеку (blockedHealAttempts=0) — здесь
   учебный полигон, там нет.
-- README: hero-арт (docs/images/pocket-tanks-hero.png), PR #55.
+- README: hero-арт (docs/images/pixel-tanks-hero.png), PR #55.
 
 ## Следующие шаги
 
