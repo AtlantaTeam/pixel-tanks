@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { DailyChallengeLink } from '@/features/daily-challenge';
 import { APP_NAME } from '@/shared/config';
 import { SceneMusic } from '@/shared/lib/audio';
 import { buttonClasses } from '@/shared/ui';
@@ -13,9 +14,12 @@ export function MainPage() {
                 выстрел. Стрелки — точная настройка угла/мощности, Ctrl+стрелки — смена оружия /
                 перемещение танка, Enter или Space — выстрел.
             </p>
-            <Link href="/game" className={buttonClasses('primary', 'md')}>
-                Начать игру
-            </Link>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+                <Link href="/game" className={buttonClasses('primary', 'md')}>
+                    Начать игру
+                </Link>
+                <DailyChallengeLink />
+            </div>
         </main>
     );
 }
