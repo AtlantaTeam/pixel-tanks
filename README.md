@@ -10,17 +10,10 @@
 [![Tailwind](https://img.shields.io/badge/Tailwind%204-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 [![Payload](https://img.shields.io/badge/Payload%20CMS%203-000000?style=for-the-badge&logo=payloadcms&logoColor=white)](https://payloadcms.com)
 
-```
-                                ____
-      ____ _____            ___/    \___
-     |  _ \_   _|     =====[____________]=====      ____
-     | |_) || |        ( o  o  o  o  o  o )     ===/____\===
-     |  __/ | |         \________________/         ( o  o )
-     |_|    |_|     /\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\
-                       угол . мощность . ветер . BOOM
-```
+![Ralph Loop — фазы игры коммитит автономный агент](docs/images/ralph-loop-git-graph.png)
 
-_Два танка. Песчаные дюны. Ветер путает карты, а Терминатор никогда не промахивается дважды._
+_Два танка. Песчаные дюны. Ветер путает карты, а Терминатор никогда не промахивается дважды.
+Код фаз пишет автономный агент — выше его git-граф, люди занимаются геймдизайном и ревью._
 
 </div>
 

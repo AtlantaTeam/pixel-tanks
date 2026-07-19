@@ -37,7 +37,13 @@
  * человеком; раннер видимость репо не меняет.
  *
  * Circuit breaker: maxIterations (на фазу), maxTurns (на сессию),
+ * maxNoProgress (подряд итераций без коммита и без закрытого issue, дефолт 3),
  * maxTestAttempts — в ralph.md как правило для агента.
+ *
+ * API-лимит (идея из frankbria/ralph-claude-code): при падении сессии с маркером
+ * usage/rate-limit раннер спит до сброса окна (парсит «resets Nam/pm» из вывода,
+ * fallback apiLimitFallbackWaitMin, дефолт 30 мин) и повторяет команду, не более
+ * apiLimitMaxWaits раз (дефолт 3). Отключение: waitOnApiLimit=false в конфиге.
  *
  * Запуск:
  *   node .claude/ralph/ralph.js             AFK: до maxIterations итераций, авто-мердж фаз
@@ -131,14 +137,62 @@ function saveState(state) {
     fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
+// ── Детекция API-лимита (идея из frankbria/ralph-claude-code) ────────────────
+// Claude CLI при упирании в 5-часовое окно / usage limit пишет об этом в вывод и
+// завершается с ошибкой. Без обработки AFK-итерация фейлится, breaker сжигает
+// оставшиеся попытки об ту же стену и ночной прогон умирает. Вместо этого:
+// распознать маркер → распарсить время сброса → доспать до него → повторить.
+
+const API_LIMIT_RE =
+    /(usage limit|rate.?limit|5-hour limit|limit (?:reached|exceeded)|limit will reset|resets? at)/i;
+
+// «resets 3am» / «reset at 7:30pm» → мс до сброса (локальное время; прошедшее
+// время суток = завтра). Не распарсилось → null, вызывающий возьмёт fallback.
+function parseResetWaitMs(text) {
+    const m = /reset[s]?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(text);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const min = m[2] ? parseInt(m[2], 10) : 0;
+    const ap = m[3] ? m[3].toLowerCase() : null;
+    if (ap === 'pm' && h < 12) h += 12;
+    if (ap === 'am' && h === 12) h = 0;
+    if (h > 23 || min > 59) return null;
+    const now = new Date();
+    const target = new Date(now);
+    target.setHours(h, min, 0, 0);
+    if (target <= now) target.setDate(target.getDate() + 1);
+    return target.getTime() - now.getTime();
+}
+
 /**
  * Запуск claude -p. Возвращает exit-код процесса (0 = успех; DRY всегда 0).
  * H2: код возвращаем, а не глотаем, потому что фатальность решает ВЫЗЫВАЮЩИЙ:
  * для кодер-итераций ненулевой код не фатален (незакрытый issue возьмёт следующая
  * чистая сессия), а для шагов сдачи фазы — стоп fail-closed (упавшее ревью не
  * должно молча пропускать фазу в main).
+ *
+ * Вывод claude теперь захватывается (pipe), а не inherit: это цена за детекцию
+ * API-лимита в тексте. Потери живого стрима почти нет — `claude -p` печатает
+ * результат в конце сессии; захваченный вывод целиком уходит в консоль после.
+ * При маркере лимита: sleep до сброса (+2 мин буфер) и повтор той же команды,
+ * не более config.apiLimitMaxWaits раз (дефолт 3) — защита от вечного сна.
  */
-function runClaude(prompt, { model, maxTurns, noFallback }) {
+function runClaude(prompt, opts) {
+    const maxWaits = config.apiLimitMaxWaits ?? 3;
+    for (let attempt = 0; ; attempt++) {
+        const { code, output } = runClaudeOnce(prompt, opts);
+        const limitHit = code !== 0 && API_LIMIT_RE.test(output);
+        if (!limitHit || config.waitOnApiLimit === false || attempt >= maxWaits) return code;
+        const fallbackMs = (config.apiLimitFallbackWaitMin || 30) * 60 * 1000;
+        const waitMs = (parseResetWaitMs(output) ?? fallbackMs) + 2 * 60 * 1000;
+        log(
+            `⏳ API-лимит: сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`,
+        );
+        sleep(waitMs);
+    }
+}
+
+function runClaudeOnce(prompt, { model, maxTurns, noFallback }) {
     // Guard спецсимволов: prompt уходит в shell-строку в двойных кавычках.
     // " разорвёт строку; % на win32 (shell:true → cmd.exe) раскрывается как
     // env-переменная ДАЖЕ внутри кавычек и молча исказит промпт (L1).
@@ -151,16 +205,30 @@ function runClaude(prompt, { model, maxTurns, noFallback }) {
         (config.fallbackModel && !noFallback ? ` --fallback-model ${config.fallbackModel}` : '');
     const cmd = `claude -p "${prompt}" --max-turns ${maxTurns}${model ? ` --model ${model}` : ''}${extra}`;
     log(`▶ ${cmd.slice(0, 160)}...`);
-    if (DRY) return 0;
+    if (DRY) return { code: 0, output: '' };
     // timeout (M3): зависший claude (сетевой столл) иначе блокирует синхронный
     // loop навсегда — AFK-прогон молча стоит до утра.
     const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
-    const res = spawnSync(cmd, { stdio: 'inherit', shell: true, timeout });
+    // pipe вместо inherit — вывод нужен для детекции API-лимита (см. runClaude).
+    // maxBuffer 64 МБ: многочасовая сессия может быть многословной, обрезка вывода
+    // уронила бы spawnSync и замаскировала настоящий exit-код.
+    const res = spawnSync(cmd, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: true,
+        timeout,
+        encoding: 'utf-8',
+        maxBuffer: 64 * 1024 * 1024,
+    });
+    const output = `${res.stdout || ''}\n${res.stderr || ''}`;
+    // Захваченный вывод транслируем в консоль (файл фоновой задачи), как раньше
+    // делал inherit — просто постфактум, а не потоком.
+    if (res.stdout) process.stdout.write(res.stdout);
+    if (res.stderr) process.stderr.write(res.stderr);
     if (res.signal) {
         log(`⚠ claude убит по сигналу ${res.signal} (таймаут ${timeout}мс?)`);
-        return 1;
+        return { code: 1, output };
     }
-    return res.status ?? 1;
+    return { code: res.status ?? 1, output };
 }
 
 // ── Issues ───────────────────────────────────────────────────────────────────
@@ -499,7 +567,7 @@ function tryMergePhase(phase) {
 //               Полный повтор цикла сдачи — только явным флагом --resubmit.
 
 function defaultState() {
-    return { count: 0, milestone: config.phases[0].milestone, submitted: false };
+    return { count: 0, milestone: config.phases[0].milestone, submitted: false, noProgress: 0 };
 }
 
 function loadState() {
@@ -532,6 +600,7 @@ function advancePhase(st, idx) {
     st.milestone = next ? next.milestone : null;
     st.count = 0;
     st.submitted = false;
+    st.noProgress = 0;
     saveState(st);
 }
 
@@ -659,6 +728,16 @@ while (true) {
             `🔄 ${phase.milestone} | итерация ${state.count}/${maxIterations} | Issue #${next.number}: ${next.title} | модель: ${issueModel} | осталось: ${issues.length}`,
         );
 
+        // Breaker «нет прогресса» (идея из frankbria/ralph-claude-code): фиксируем
+        // HEAD и размер очереди ДО сессии — после сравним. Итерация без единого
+        // коммита И без закрытого issue = удар об стену; maxIterations поймал бы
+        // это только через 10 сожжённых сессий об одну и ту же проблему.
+        let headBefore = null;
+        try {
+            headBefore = sh('git rev-parse HEAD');
+        } catch {}
+        const openBefore = issues.length;
+
         const prompt = (config.prompt || '')
             // replaceAll (L5): .replace менял только первое вхождение — правка шаблона
             // с двумя {branch} молча оставила бы плейсхолдер в промпте.
@@ -672,6 +751,31 @@ while (true) {
             log(
                 `⚠ claude завершился с кодом ${code} — продолжаем (issue мог быть закрыт частично)`,
             );
+
+        // Оценка прогресса — только в AFK (в ONCE решает человек, в DRY сессии не было).
+        // Прогресс = сдвинулся HEAD (коммиты есть) ИЛИ очередь стала короче (issue
+        // закрыт). gh-чтение упало → прогресс считаем состоявшимся (fail-open:
+        // ложный стоп по сетевому чиху хуже, чем лишняя итерация).
+        if (!ONCE && !DRY && headBefore) {
+            let progressed = true;
+            try {
+                const headAfter = sh('git rev-parse HEAD');
+                const openAfter = openIssues(phase.milestone).length;
+                progressed = headAfter !== headBefore || openAfter < openBefore;
+            } catch {}
+            state.noProgress = progressed ? 0 : (state.noProgress || 0) + 1;
+            saveState(state);
+            const maxNoProgress = config.maxNoProgress || 3;
+            if (state.noProgress >= maxNoProgress) {
+                log(
+                    `⛔ Circuit breaker: ${maxNoProgress} итераций подряд без прогресса (ни коммита, ни закрытого issue) на фазе "${phase.milestone}". ` +
+                        `Loop стоит об стену — разбери Issue #${next.number} руками (или поставь label blocked) и перезапусти.`,
+                );
+                state.noProgress = 0;
+                saveState(state);
+                break;
+            }
+        }
 
         if (ONCE) {
             log('✋ HITL: одна итерация выполнена, стоп. Проверь результат и запусти снова.');
