@@ -12,6 +12,7 @@ import { ParticlePool, damageFlashBurst, groundBurst } from './particle-pool';
 import { CameraShake } from './camera-shake';
 import { SlowMotion } from './slow-motion';
 import { BulletTrail } from './bullet-trail';
+import { ENGINE_COLORS } from './engine-palette';
 
 /** Ёмкости пула хватает на одновременный залп земли и вспышку урона. */
 const PARTICLE_CAPACITY = 96;
@@ -93,6 +94,10 @@ export class GamePlay {
     // Тряска была в прошлом кадре — чтобы один раз «доосадить» сцену в базовое
     // положение, когда дрожание закончилось (иначе остаётся суб-пиксельный сдвиг).
     private wasShaking = false;
+    // Буферы линии прицела: переиспользуются каждый кадр драга вместо аллокации
+    // нового массива точек (правило .claude/rules/canvas.md).
+    private readonly aimPreviewFrom: TCoords = { x: 0, y: 0 };
+    private readonly aimPreviewDotsBuffer: TCoords[] = [];
 
     constructor(
         canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -134,13 +139,17 @@ export class GamePlay {
     private drawAimPreview(ctx: CanvasRenderingContext2D) {
         if (!this.leftTank || !this.rightTank) return;
         const [activeTank] = this.getActiveAndTargetTanks(this.leftTank, this.rightTank);
+        this.aimPreviewFrom.x = activeTank.gunpointX;
+        this.aimPreviewFrom.y = activeTank.gunpointY;
         const dots = calculateAimPreviewDots(
-            { x: activeTank.gunpointX, y: activeTank.gunpointY },
+            this.aimPreviewFrom,
             activeTank.gunpointAngle,
             activeTank.power,
+            undefined,
+            this.aimPreviewDotsBuffer,
         );
         const dotSize = 3;
-        ctx.fillStyle = '#ffcd75';
+        ctx.fillStyle = ENGINE_COLORS.primary;
         for (const dot of dots) {
             ctx.fillRect(dot.x - dotSize / 2, dot.y - dotSize / 2, dotSize, dotSize);
         }
@@ -342,6 +351,9 @@ export class GamePlay {
         // от throttle (иначе замедление/тряска «зависли» бы вместе с симуляцией).
         const frameDt = this.lastFrameTs ? now - this.lastFrameTs : 0;
         this.lastFrameTs = now;
+        // Ровно раз за тик: если кратер ещё осыпался в прошлом кадре, помечает
+        // offscreen-слой террейна снова грязным (см. Ground.beginFrame).
+        this.ground?.beginFrame();
         this.checkGameOver();
 
         // Slow-mo растягивает интервал шага: масштаб < 1 → шаги реже → взрыв,

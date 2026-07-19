@@ -57,4 +57,43 @@ describe('calculateAimPreviewDots', () => {
 
         expect(dots).toEqual([]);
     });
+
+    describe('пул буфера (out)', () => {
+        it('переиспользует переданный буфер — возвращает тот же массив', () => {
+            const buffer: ReturnType<typeof calculateAimPreviewDots> = [];
+
+            const result = calculateAimPreviewDots(gunpoint, 0, 10, undefined, buffer);
+
+            expect(result).toBe(buffer);
+        });
+
+        it('переиспользует существующие объекты-точки в буфере (нет новых аллокаций)', () => {
+            const buffer: ReturnType<typeof calculateAimPreviewDots> = [];
+            calculateAimPreviewDots(gunpoint, 0, 10, undefined, buffer);
+            const refsBefore = [...buffer];
+
+            calculateAimPreviewDots(gunpoint, 0.5, 10, undefined, buffer);
+
+            expect(buffer).toEqual(refsBefore);
+            buffer.forEach((dot, i) => expect(dot).toBe(refsBefore[i]));
+        });
+
+        it('усекает буфер, если новое число точек меньше прежнего', () => {
+            const buffer: ReturnType<typeof calculateAimPreviewDots> = [];
+            calculateAimPreviewDots(gunpoint, 0, 20, undefined, buffer);
+            const bigLength = buffer.length;
+
+            calculateAimPreviewDots(gunpoint, 0, 1, undefined, buffer);
+
+            expect(buffer.length).toBeLessThan(bigLength);
+        });
+
+        it('без буфера ведёт себя как чистая функция — каждый вызов даёт новый массив', () => {
+            const first = calculateAimPreviewDots(gunpoint, 0, 10);
+            const second = calculateAimPreviewDots(gunpoint, 0, 10);
+
+            expect(first).not.toBe(second);
+            expect(first).toEqual(second);
+        });
+    });
 });

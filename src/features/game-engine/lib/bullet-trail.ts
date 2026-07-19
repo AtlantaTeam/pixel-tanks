@@ -1,4 +1,5 @@
 import { floor } from '@/shared/lib/canvas';
+import { ENGINE_COLORS } from './engine-palette';
 
 /**
  * Точка следа снаряда. Неподвижна (в отличие от частиц ParticlePool) — только
@@ -20,7 +21,7 @@ export type TTrailPoint = {
 export const DEFAULT_TRAIL_CAPACITY = 16;
 export const DEFAULT_TRAIL_LIFE = 10;
 export const DEFAULT_TRAIL_SIZE = 3;
-export const TRAIL_COLOR = '#ffcd75';
+export const TRAIL_COLOR = ENGINE_COLORS.primary;
 
 /**
  * Затухающий след снаряда: кольцевой буфер снятых по пути точек, каждая живёт

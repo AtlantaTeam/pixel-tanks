@@ -1,4 +1,4 @@
-import { floor } from '@/shared/lib/canvas';
+import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
 import type { TSeededRandom } from '@/shared/lib/random';
 
 type TExplosion = {
@@ -20,6 +20,14 @@ export class Ground {
     private innerHeight: number;
     private random: TSeededRandom;
     isFalling = false;
+    // Статичный террейн — offscreen-слой (.claude/rules/canvas.md: «статичные
+    // слои — отдельный offscreen canvas, перерисовывать только при изменении»).
+    // draw() при чистом слое просто блитит закешированный битмап, не перестраивая
+    // path заново каждый кадр — критично для tankAreaRedraw во время оттяжки
+    // прицела, который раньше гонял fullRedraw → Ground.draw на каждый кадр драга.
+    private layerCanvas: HTMLCanvasElement | null = null;
+    private layerCtx: CanvasRenderingContext2D | null = null;
+    private layerDirty = true;
 
     constructor(
         innerWidth: number,
@@ -92,6 +100,7 @@ export class Ground {
             const frac = t - x0;
             this.heights[x] = floor((oldHeights[x0] * (1 - frac) + oldHeights[x1] * frac) * scaleY);
         }
+        this.layerDirty = true;
     };
 
     fall = (x: number, y: number, radius: number) => {
@@ -103,15 +112,57 @@ export class Ground {
             this.explosionHeights[x - radius + i] = { bulletY: y, delta: katetOpposite * 2 };
             this.explosionHeights[x + radius - i] = { bulletY: y, delta: katetOpposite * 2 };
         }
+        this.layerDirty = true;
+    };
+
+    // Вызывать РОВНО РАЗ в начале animate()-тика движка. Пока кратер осыпается
+    // (isFalling из прошлого кадра), помечает слой снова грязным — не более
+    // одного re-render/шага мутации heights за кадр, сколько бы раз ни позвали
+    // draw() в этом тике (взрыв и оба танка перерисовываются отдельными вызовами).
+    beginFrame = () => {
+        if (this.isFalling) this.layerDirty = true;
     };
 
     draw = (ctx: CanvasRenderingContext2D, xStart = 0, xEnd = this.innerWidth) => {
+        if (this.layerDirty || !this.layerCanvas) {
+            this.renderLayer();
+        }
+        this.blitLayer(ctx, xStart, xEnd);
+    };
+
+    private ensureLayerCtx(): CanvasRenderingContext2D | null {
+        const dpr = getDevicePixelRatio();
+        const width = toDevicePixels(this.innerWidth, dpr);
+        const height = toDevicePixels(this.innerHeight, dpr);
+        if (
+            !this.layerCanvas ||
+            this.layerCanvas.width !== width ||
+            this.layerCanvas.height !== height
+        ) {
+            this.layerCanvas = document.createElement('canvas');
+            this.layerCanvas.width = width;
+            this.layerCanvas.height = height;
+            this.layerCtx = this.layerCanvas.getContext('2d');
+        }
+        this.layerCtx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return this.layerCtx;
+    }
+
+    // Перестраивает path террейна и декор песка в offscreen-слой ЦЕЛИКОМ
+    // (0..innerWidth), независимо от того, какой диапазон запросил draw().
+    // Логика идентична прежнему draw(): смещение кратера (explosionHeights)
+    // мутирует heights по ходу построения path — единственное место, где
+    // рельеф физически меняется (осыпание кратера).
+    private renderLayer() {
+        const ctx = this.ensureLayerCtx();
+        if (!ctx) return;
         this.isFalling = false;
+        ctx.clearRect(0, 0, this.innerWidth, this.innerHeight);
         ctx.strokeStyle = this.color;
         ctx.lineWidth = 2;
         ctx.translate(0, this.innerHeight);
         ctx.beginPath();
-        for (let x = xStart; x <= xEnd; x += 1) {
+        for (let x = 0; x < this.innerWidth; x += 1) {
             if (typeof this.explosionHeights[x] === 'object') {
                 this.isFalling = true;
                 const { bulletY, delta } = this.explosionHeights[x] as TExplosion;
@@ -137,8 +188,34 @@ export class Ground {
         }
         ctx.stroke();
         ctx.translate(0, -this.innerHeight);
-        this.decorateWithSand(ctx, xStart, xEnd);
-    };
+        this.decorateWithSand(ctx, 0, this.innerWidth);
+        this.layerDirty = false;
+    }
+
+    // Копирует срез закешированного слоя [xStart, xEnd] на целевой ctx. Источник —
+    // в физических (device) пикселях слоя, назначение — в CSS-пикселях целевого
+    // ctx (он уже масштабирован на dpr текущим transform, включая сдвиг shake).
+    private blitLayer(ctx: CanvasRenderingContext2D, xStart: number, xEnd: number) {
+        if (!this.layerCanvas) return;
+        const clampedStart = Math.max(0, Math.min(xStart, this.innerWidth));
+        const clampedEnd = Math.max(0, Math.min(xEnd, this.innerWidth));
+        const width = clampedEnd - clampedStart;
+        if (width <= 0) return;
+        const dpr = getDevicePixelRatio();
+        const srcX = Math.round(clampedStart * dpr);
+        const srcWidth = Math.round(width * dpr);
+        ctx.drawImage(
+            this.layerCanvas,
+            srcX,
+            0,
+            srcWidth,
+            this.layerCanvas.height,
+            clampedStart,
+            0,
+            width,
+            this.innerHeight,
+        );
+    }
 
     private decorateWithSand(ctx: CanvasRenderingContext2D, xStart: number, xEnd: number) {
         if (!this.sandImage) return;
