@@ -52,6 +52,9 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const removeWeaponById = useGameStore((s) => s.removeWeaponById);
     const setGameOver = useGameStore((s) => s.setGameOver);
     const resetGame = useGameStore((s) => s.resetGame);
+    const setBattleSeed = useGameStore((s) => s.setBattleSeed);
+    const recordMove = useGameStore((s) => s.recordMove);
+    const recordFire = useGameStore((s) => s.recordFire);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -59,6 +62,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
 
         // Размер бэкинг-стора canvas (dpr, resize) полностью на стороне GamePlay.fit().
         const battleSeed = seed ?? Date.now();
+        setBattleSeed(battleSeed);
         const allWeapons = generateRandomWeapons(WEAPONS_AMOUNT);
         setWeapons(allWeapons.leftTankWeapons);
         selectWeapon(allWeapons.leftTankWeapons[0]);
@@ -180,18 +184,23 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                     if (!game.isFireMode) increaseAngle(Math.PI / 180);
                     break;
                 case 'move-left':
-                    if (!game.isFireMode && moves > 0 && !game.isMoveMode)
+                    if (!game.isFireMode && moves > 0 && !game.isMoveMode) {
                         game.changeTankPosition(-150);
+                        recordMove(-150);
+                    }
                     break;
                 case 'move-right':
-                    if (!game.isFireMode && moves > 0 && !game.isMoveMode)
+                    if (!game.isFireMode && moves > 0 && !game.isMoveMode) {
                         game.changeTankPosition(150);
+                        recordMove(150);
+                    }
                     break;
                 case 'fire':
                     // Как мышь/тач: не стреляем, пока снаряд в полёте (isFireMode) —
                     // иначе повторный Enter/Space до смены хода даёт двойной выстрел
                     // и лишний раз тратит оружие (конфликт клавиатурной схемы с собой).
                     if (selectedWeapon && !game.isFireMode) {
+                        recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
                         game.onFire(selectedWeapon);
                         removeWeaponById(selectedWeapon.id);
                     }
@@ -201,11 +210,21 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
 
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
-    }, [selectedWeapon, weapons, moves, selectWeapon, removeWeaponById, increaseAngle]);
+    }, [
+        selectedWeapon,
+        weapons,
+        moves,
+        selectWeapon,
+        removeWeaponById,
+        increaseAngle,
+        recordMove,
+        recordFire,
+    ]);
 
     const fireSelectedWeapon = () => {
         const game = gameRef.current;
         if (!game || !selectedWeapon || game.isFireMode || !game.leftTank?.isActive) return;
+        recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
         game.onFire(selectedWeapon);
         removeWeaponById(selectedWeapon.id);
     };
