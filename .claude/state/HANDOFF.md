@@ -1,40 +1,39 @@
 # Session Handoff
 
-**Дата**: 2026-07-18 (поздний вечер)
+**Дата**: 2026-07-19
 
 ## Текущая задача
 
-Game-next AFK через ralph loop. **Фаза 5 «Звук» смерджена** (#50, milestone закрыт).
-Идёт **Фаза 6 «Juice-пакет»** — 3/7 закрыто (#21 пул частиц, #22 shake+slow-mo,
-#23 трейл+HUD). Loop остановлен на паузу, рестарт завтра (новая сессия).
+**GAME-NEXT ЗАВЕРШЁН ЦЕЛИКОМ**: все 9 фаз смерджены, milestones закрыты, loop
+финишировал штатно («Все фазы завершены», `milestone: null` в state, рестарт
+идемпотентен). Открытых PR/blocked нет. Единственный открытый issue — #53
+(деградация juice, осознанный бэклог вне milestone). Следующий этап — финальный
+`/code-review ultra` на main (Дима запускает сам в новой сессии, лимиты).
 
-## Инфра-улучшение ralph — ГОТОВО и в main
+## Последние принятые решения
 
-По просьбе Димы «чинить всё вплоть до мелких»:
+- **Полная автономность loop** (PR #58, #59, #61): self-heal красного гейта и
+  blocked-label → чини-сессия → повторное ревью → гейт (лимиты попыток в state);
+  merge-retry со сверкой phaseMerged; auto-wait 5-часового лимита; husky
+  (pre-commit lint-staged+fsd+tsc, pre-push build+test); ревью маркирует
+  severity 🔴🟠🟡⚪ обязательно; fix-шаг резолвит ревью-треды (в PR #60 висели все 16).
+- **Прод-режим ralph**: после ultra — пишем PRD вместе (prd → plan-phase →
+  research → issues), работа ТОЛЬКО Дима+Fable вручную в консоли, не loop.
+  Заготовки в memory: project_ralph_prod_prd_seeds, project_ralph_growth_vectors.
+- Blocked в прод-профиле вернётся человеку (blockedHealAttempts=0) — здесь
+  учебный полигон, там нет.
+- README: hero-арт (docs/images/pocket-tanks-hero.png), PR #55.
 
-- Ревьюер маркирует severity `[blocker/major/minor/nit]`, выдаёт мелочи; fix-шаг чинит
-  КАЖДЫЙ комментарий доверенных авторов (пропуск — только с обоснованием в PR).
-- `closeMilestoneByTitle` — милстоун фазы закрывается сразу после мерджа, не ждёт свипа.
-- Прошло **ревью fable** (нашёл ослабление anti-injection C3 → сузили до «доверенных
-  авторов», фикс `90b5b34`). Смерджено в main через **PR #51** (`52ba9e9`),
-  и влито в рабочую `feature/phase-6-juice` → активно уже для ревью Фазы 6 и дальше.
+## Следующие шаги
 
-## Состояние на сейчас
-
-- Рабочая ветка: `feature/phase-6-juice`, дерево ЧИСТОЕ, `ralph.js` = улучшенная версия.
-- `main` = `origin/main` = `52ba9e9` (Фаза 5 + инфра #51).
-- `ralph.state.json` = `{count:3, milestone:"Фаза 6", submitted:false}` — рестарт продолжит Фазу 6.
-- `monitor.js` — git-excluded durable-утилита (не коммитим). Патч `pending-review-improvements.patch`
-  теперь ОБСОЛЕТ (влит в #51) — можно удалить.
-
-## Чеклист рестарта (завтра)
-
-1. `git status` — если грязно от прерванной работы: `git checkout -- .` + удалить untracked. Дерево чистое.
-2. `node .claude/ralph/ralph.js` (фон) → продолжит Фазу 6 уже с усиленным ревью и авто-закрытием милстоуна.
-3. Мониторинг: `node .claude/ralph/monitor.js` (обновление 5 мин).
-4. Loop сам сдаёт/мерджит фазы на зелёном гейте, стоит на красном/blocked. Финал после Фазы 9 — `/code-review ultra`.
+1. `/code-review ultra` на main (Дима, новая сессия) → блокеры чинить, мелочь → issues.
+2. PRD «прод-режим ralph» вместе с Димой (см. memory-заготовки).
+3. Фазы 7-10 корневого плана (auth, лидерборд, Яндекс ID, i18n): новый конфиг
+   phases + issues через скилл issues — вторая обкатка автономного loop.
+4. Бэклог: #53 (device-tier частицы); доска — включить workflow «Item closed → Done»
+   в UI (API не умеет; #13-15 двигал руками).
 
 ## Open questions
 
-- C3 (public-репо + bypassPermissions на AFK) — код-слой прикрыт allowlist=[Pelmenya]; операционный слой за Димой.
-- OPENAI_API_KEY для артов (если juice потребует генерации) — Дима в .env.local по запросу.
+- Недельный лимит подписки: сброс 20.07 17:59 МСК (Fable был на 69% в середине дня).
+- CLAUDE.md дрейф: husky теперь есть (докам нужен docs-reviewer прогон).
