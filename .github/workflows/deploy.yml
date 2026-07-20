@@ -1,0 +1,36 @@
+name: Deploy to production
+
+# Авто-деплой на прод-VDS (ralph-prod → https://pixeltanks.ru) при пуше в main.
+# GitHub-раннер заходит по SSH под пользователем deploy и запускает scripts/deploy-remote.sh
+# (git reset → build → restart → healthcheck → автооткат при провале).
+on:
+    push:
+        branches: [main]
+    workflow_dispatch: # ручной запуск из вкладки Actions
+
+# Деплои не должны накладываться друг на друга; текущий не отменяем, ждём его завершения.
+concurrency:
+    group: deploy-production
+    cancel-in-progress: false
+
+jobs:
+    deploy:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - name: Checkout (нужен только scripts/deploy-remote.sh)
+              uses: actions/checkout@v5
+
+            - name: Настроить SSH-ключ и known_hosts
+              run: |
+                  mkdir -p ~/.ssh
+                  echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+                  chmod 600 ~/.ssh/id_ed25519
+                  echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+                  chmod 644 ~/.ssh/known_hosts
+
+            - name: Деплой по SSH
+              run: |
+                  ssh -i ~/.ssh/id_ed25519 \
+                      "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+                      'bash -s' < scripts/deploy-remote.sh
