@@ -1,15 +1,24 @@
-// @vitest-environment node
-//
-// Юнит-тесты на чистые функции Linux-порта ralph.js (#66/#67 → #69).
+// Юнит-тесты на функции Linux-порта ralph.js (#66/#67 → #69).
 // Покрываем ровно то, что изменил порт: построение argv для claude (guard/путь —
-// вместо shell-строки), формат excerpt (вместо shell-санитизации) и парсинг
-// API-лимита. Тесты детерминированы: время мокается фейк-таймерами, платформо-
-// и TZ-независимы (deltas считаются между двумя локально-сконструированными Date).
+// вместо shell-строки), сам вызов spawn-функции с shell:false (граница anti-RCE
+// защиты, не только сборка argv), формат excerpt (вместо shell-санитизации) и
+// парсинг API-лимита. Тесты детерминированы: время мокается фейк-таймерами,
+// платформо- и TZ-независимы (deltas считаются между двумя локально-
+// сконструированными Date).
+// Окружение (node, без DOM-setupFiles приложения) задаёт project "ralph" в
+// vitest.config.ts — этому файлу отдельный докблок @vitest-environment не нужен.
+//
+// spawnClaude тестируем через явную инъекцию фейковой spawn-функции (3-й параметр),
+// НЕ через vi.mock('node:child_process'): мок модуля на границе CJS require()
+// (которым ralph.js подключает child_process) ненадёжен — при первой попытке тест
+// пробился до настоящего spawnSync и запустил живой процесс `claude` вместо фейка.
+// Явный параметр детерминирован независимо от того, как раннер загружен.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
 import ralph from './ralph.js';
 
-const { buildClaudeArgs, formatExcerpt, parseResetWaitMs, API_LIMIT_RE } = ralph;
+const { buildClaudeArgs, formatExcerpt, parseResetWaitMs, API_LIMIT_RE, spawnClaude } = ralph;
 
 describe('buildClaudeArgs — построение argv для claude -p (ядро порта)', () => {
     it('минимальный вызов: -p <prompt> --max-turns <n> и больше ничего при пустом конфиге', () => {
@@ -100,6 +109,70 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
         const snapshot = JSON.stringify(cfg);
         buildClaudeArgs('x', { maxTurns: 200 }, cfg);
         expect(JSON.stringify(cfg)).toBe(snapshot);
+    });
+});
+
+describe('spawnClaude — фактический вызов spawn-функции (граница anti-RCE защиты)', () => {
+    // buildClaudeArgs выше проверяет только сборку argv-массива. Здесь — что этот
+    // массив реально доходит до вызова ОДНИМ элементом на промпт и с shell:false:
+    // именно это, а не сама сборка массива, закрывает RCE-класс (#67). Регрессия вида
+    // «shell:false случайно потерялся при рефакторе» ловится только тут.
+    // Фейковую spawn-функцию передаём 3-м параметром явно (см. комментарий в шапке
+    // файла) — production-путь (без 3-го аргумента) здесь намеренно не трогаем,
+    // чтобы не дёргать настоящий claude.exe из юнит-теста.
+    let spawnFn;
+    beforeEach(() => {
+        spawnFn = vi.fn();
+        // log() на пути сигнала пишет в console.log и в файл ralph.log — глушим оба
+        // побочных эффекта, тестам чистых веток spawnClaude они не нужны.
+        vi.spyOn(console, 'log').mockImplementation(() => {});
+        vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {});
+        vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+        vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('вызывает spawnFn с бинарём claude, shell:false и ровно тем argv-массивом, что построил buildClaudeArgs', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+        const evil = 'вывод: `rm -rf /` и $(whoami) и %PATH%';
+        const argv = buildClaudeArgs(evil, { maxTurns: 200 }, {});
+
+        spawnClaude(argv, 60_000, spawnFn);
+
+        expect(spawnFn).toHaveBeenCalledTimes(1);
+        const [bin, calledArgs, opts] = spawnFn.mock.calls[0];
+        expect(bin).toBe('claude');
+        // Тот же массив, не пересобран и не сериализован в строку — промпт со
+        // спецсимволами доходит до вызова одним элементом argv, а не только до
+        // чистой сборки массива в buildClaudeArgs.
+        expect(calledArgs).toBe(argv);
+        expect(calledArgs[1]).toBe(evil);
+        expect(opts.shell).toBe(false);
+        expect(opts.timeout).toBe(60_000);
+    });
+
+    it('успешное завершение (status:0) → {code:0, output: stdout+stderr}', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'done', stderr: '', signal: null });
+        expect(spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn)).toEqual({
+            code: 0,
+            output: 'done\n',
+        });
+    });
+
+    it('ненулевой exit-код процесса пробрасывается как code', () => {
+        spawnFn.mockReturnValue({ status: 2, stdout: '', stderr: 'boom', signal: null });
+        expect(spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn)).toEqual({
+            code: 2,
+            output: '\nboom',
+        });
+    });
+
+    it('процесс убит по сигналу (таймаут) → code:1, не бросает исключение', () => {
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: 'SIGTERM' });
+        const result = spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn);
+        expect(result.code).toBe(1);
     });
 });
 

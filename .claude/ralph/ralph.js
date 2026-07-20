@@ -227,6 +227,45 @@ function buildClaudeArgs(prompt, { model, maxTurns, noFallback }, cfg) {
     return cmdArgs;
 }
 
+// Тонкая обвязка над реальным spawnSync (Linux-порт #67) — единственное место, где
+// действительно запускается процесс claude. Вынесена отдельно от runClaudeOnce и
+// экспортирована, чтобы проверить САМУ границу anti-RCE защиты: что shell:false и
+// argv от buildClaudeArgs реально доходят до вызова (не только собираются в массив,
+// но и уходят процессу как есть, одним элементом на промпт) — раньше это
+// подразумевалось, но ничем не было покрыто.
+//
+// spawnFn — инжектируемая точка вызова (дефолт: настоящий spawnSync модуля). В проде
+// параметр никогда не передают — работает как раньше. В тестах передают фейковую
+// функцию ЯВНО, а не через vi.mock('node:child_process'): мок модуля на границе
+// CJS require()/ESM import ненадёжен (в этом файле require() — до перехода на явную
+// инъекцию тест с vi.mock реально пробивался до настоящего spawnSync и один раз
+// запустил живой процесс `claude` вместо фейка). Явный параметр — детерминирован
+// независимо от того, как раннер загружен require'ом или через import.
+// Чистый вход (argv + timeout [+ spawnFn]) → {code, output}; чтение config — забота
+// вызывающего.
+function spawnClaude(cmdArgs, timeoutMs, spawnFn = spawnSync) {
+    // pipe вместо inherit — вывод нужен для детекции API-лимита (см. runClaude).
+    // maxBuffer 64 МБ: многочасовая сессия может быть многословной, обрезка вывода
+    // уронила бы spawnSync и замаскировала настоящий exit-код.
+    const res = spawnFn('claude', cmdArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+        timeout: timeoutMs,
+        encoding: 'utf-8',
+        maxBuffer: 64 * 1024 * 1024,
+    });
+    const output = `${res.stdout || ''}\n${res.stderr || ''}`;
+    // Захваченный вывод транслируем в консоль (файл фоновой задачи), как раньше
+    // делал inherit — просто постфактум, а не потоком.
+    if (res.stdout) process.stdout.write(res.stdout);
+    if (res.stderr) process.stderr.write(res.stderr);
+    if (res.signal) {
+        log(`⚠ claude убит по сигналу ${res.signal} (таймаут ${timeoutMs}мс?)`);
+        return { code: 1, output };
+    }
+    return { code: res.status ?? 1, output };
+}
+
 function runClaudeOnce(prompt, { model, maxTurns, noFallback }) {
     // Работает кроссплатформенно, т.к. `claude` — нативный бинарник (claude.exe на
     // Windows, бинарь/симлинк на Linux), а НЕ npm .cmd-shim (тот без shell даёт ENOENT).
@@ -238,26 +277,7 @@ function runClaudeOnce(prompt, { model, maxTurns, noFallback }) {
     // timeout (M3): зависший claude (сетевой столл) иначе блокирует синхронный
     // loop навсегда — AFK-прогон молча стоит до утра.
     const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
-    // pipe вместо inherit — вывод нужен для детекции API-лимита (см. runClaude).
-    // maxBuffer 64 МБ: многочасовая сессия может быть многословной, обрезка вывода
-    // уронила бы spawnSync и замаскировала настоящий exit-код.
-    const res = spawnSync('claude', cmdArgs, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: false,
-        timeout,
-        encoding: 'utf-8',
-        maxBuffer: 64 * 1024 * 1024,
-    });
-    const output = `${res.stdout || ''}\n${res.stderr || ''}`;
-    // Захваченный вывод транслируем в консоль (файл фоновой задачи), как раньше
-    // делал inherit — просто постфактум, а не потоком.
-    if (res.stdout) process.stdout.write(res.stdout);
-    if (res.stderr) process.stderr.write(res.stderr);
-    if (res.signal) {
-        log(`⚠ claude убит по сигналу ${res.signal} (таймаут ${timeout}мс?)`);
-        return { code: 1, output };
-    }
-    return { code: res.status ?? 1, output };
+    return spawnClaude(cmdArgs, timeout);
 }
 
 // ── Issues ───────────────────────────────────────────────────────────────────
@@ -464,10 +484,8 @@ function findOpenPr(branch) {
 }
 
 // Хвост вывода упавшего чека для heal-промпта. Чистая функция (вынесена для тестов):
-// берём последние 600 символов и сплющиваем любые пробелы/переводы строк в один
-// пробел. Спецсимволы (backtick/$/%/кавычки) СОХРАНЯЕМ дословно — промпт уходит в
-// claude argv-массивом (shell:false), шелл их не видит; прежняя shell-санитизация
-// под guard больше не нужна (см. buildClaudeArgs, #67).
+// последние 600 символов, пробелы/переводы строк схлопнуты в один. Спецсимволы вывода
+// сохраняются дословно — прежняя shell-санитизация не нужна, см. buildClaudeArgs (#67).
 function formatExcerpt(raw) {
     return raw.slice(-600).replace(/\s+/g, ' ');
 }
@@ -518,8 +536,7 @@ function checksGreen(branch, prNumber) {
         } catch (e) {
             log(`  ✗ ${name} — красный, авто-мердж отменён`);
             // Хвост вывода чека — топливо для чини-сессии гейта (self-heal): без
-            // текста ошибки агент чинил бы вслепую. Спецсимволы вывода безопасны
-            // (промпт уходит argv-массивом, shell:false) — см. formatExcerpt.
+            // текста ошибки агент чинил бы вслепую. Спецсимволы безопасны — см. formatExcerpt.
             const raw = `${e.stdout || ''}\n${e.stderr || ''}`.trim() || String(e.message);
             lastRedCheck = {
                 name,
@@ -1131,6 +1148,8 @@ function main() {
 // чистые функции ниже.
 if (require.main === module) main();
 
-// Экспорт чистых функций порта для юнит-тестов (#69). Раннерный код в них не лезет —
-// только детерминированные преобразования вход→выход.
-module.exports = { buildClaudeArgs, formatExcerpt, parseResetWaitMs, API_LIMIT_RE };
+// Экспорт функций порта для юнит-тестов (#69). buildClaudeArgs/formatExcerpt/
+// parseResetWaitMs/API_LIMIT_RE — чистые преобразования вход→выход. spawnClaude —
+// единственная точка реального spawnSync-вызова (её мокаем в тестах, а не остальной
+// раннерный код). Ничего из этого не читает module-level config напрямую.
+module.exports = { buildClaudeArgs, formatExcerpt, parseResetWaitMs, API_LIMIT_RE, spawnClaude };
