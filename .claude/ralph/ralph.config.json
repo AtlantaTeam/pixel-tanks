@@ -31,32 +31,8 @@
     "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
     "phases": [
         {
-            "milestone": "Фаза 3: Тач-управление «оттяни и отпусти»",
-            "branch": "feature/phase-3-touch"
-        },
-        {
-            "milestone": "Фаза 4: Клавиатурная схема",
-            "branch": "feature/phase-4-keyboard"
-        },
-        {
-            "milestone": "Фаза 5: Оригинальный звук",
-            "branch": "feature/phase-5-audio"
-        },
-        {
-            "milestone": "Фаза 6: Juice-пакет",
-            "branch": "feature/phase-6-juice"
-        },
-        {
-            "milestone": "Фаза 7: Бот-реплики (Терминатор 2.0)",
-            "branch": "feature/phase-7-bot-replies"
-        },
-        {
-            "milestone": "Фаза 8: Daily challenge",
-            "branch": "feature/phase-8-daily"
-        },
-        {
-            "milestone": "Фаза 9: Реплеи-ссылки",
-            "branch": "feature/phase-9-replays"
+            "milestone": "Прод-режим ralph · Долг: рефактор main() → preflight/runLoop",
+            "branch": "feature/ralph-main-split"
         }
     ]
 }

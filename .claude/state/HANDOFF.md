@@ -4,50 +4,51 @@
 
 ## Текущая задача
 
-Прод-режим ralph, **Фаза 1 (Linux-порт)**: #66, #67, #70, #69 — смерджены.
-**#92 (health-check туннеля) — реализован, открыт PR** (`feat/ralph-92-tunnel-healthcheck`).
-Смёрджится → Фаза 1 закрыта, дальше Фаза 2 (профили playground/prod).
+Прод-режим ralph, **Фаза 1 (Linux-порт + provisioning) — ЗАВЕРШЕНА и ЗАКРЫТА**
+(milestone #10, 6/6 issues: #66/#67/#70/#69/#92/#93). Смерджено в `main` (`f0aaece`).
+Дальше — **Фаза 2** (профили playground/prod).
 
-## Последние принятые решения
+## Прод-среда — LIVE (развёрнута 2026-07-20)
 
-- **#69 сделан (PR #97)**: ralph.js отрефакторен под тестируемость — вынесены
-  `buildClaudeArgs` (ядро порта, построение argv), `formatExcerpt` (хвост excerpt) и
-  `spawnClaude` (обвязка над spawnSync с инжектируемой spawn-функцией — 3-й параметр,
-  дефолт настоящий spawnSync; так тестируется САМА граница anti-RCE защиты, а не
-  только сборка argv, и не через `vi.mock('node:child_process')` — тот на границе
-  CJS require() ненадёжен). `config` → module-level `let`, весь exec (preflight+loop)
-  в `main()` под guard `require.main === module`. Тесты рядом:
-  `.claude/ralph/ralph.test.js` (37 тестов). vitest переведён на `test.projects`:
-  отдельный project `ralph` (environment node, без DOM-setupFiles приложения) для
-  `.claude/ralph/**/*.test.{js,ts}`, `app` — прежнее поведение для `src/**`.
-- **Прогон на Linux вживую (Docker node:24 Ubuntu, x86_64), на исходном коммите PR**:
-  полный `npm ci && npm run test` зелёный — 52 файла, 372 теста, включая ralph.
-  `parseResetWaitMs` детерминирован через фейк-таймеры (TZ-независим). После доразбора
-  ревью (spawnClaude + projects) прогнано локально на Windows — 52 файла, 376 тестов
-  зелёные; повторный Linux-прогон не делали, риска платформозависимости в добавленном
-  коде нет (те же паттерны, что уже были верифицированы на Linux).
-- **Linux-порт (#67)**: argv-массив (`shell:false`) — убирает win32-guard `%` И RCE на
-  /bin/sh. См. [[project-ralph-prod-env-timeweb]].
-- **Golden-образ с кодом порта**: `image_id=6eec16c4-9719-4477-85f2-a5e2144b9fcf`.
-  VDS/образ/IPv4 удаляются ТОЛЬКО через панель. Простой = 21₽/мес.
+VDS `ralph-prod` **id 8638987, IPv4 186.246.7.204**, Москва, из golden-образа. Туннель
+(ss-local+privoxy) жив, egress Франкфурт `79.133.42.198`, `claude -p` через туннель
+отвечает. Репо `/root/pixel-tanks` на `main`. `/root/.bashrc` авто-грузит `/root/ralph.env`
+→ в терминале VS Code сразу есть прокси/OAuth/GH_TOKEN/`RALPH_TUNNEL_CHECK=1`. Подключение:
+VS Code Remote-SSH хост `ralph-prod` (в `~/.ssh/config`), папка `/root/pixel-tanks`.
+Тарификация ~2001₽/мес — по завершении снять образ и удалить VDS+IPv4 через панель (→21₽).
+Детали: [[project-ralph-prod-env-timeweb]].
 
-## Последнее (#92)
+## Что сделано в Фазе 1
 
-Health-check в ralph.js: `ensureTunnel(config, deps)` перед КАЖДОЙ claude-сессией
-(единая точка — начало `runClaude`). Сверяет egress через прокси (`curl -x $HTTPS_PROXY
-api.ipify.org`) с ожидаемым IP (`RALPH_EXPECTED_EGRESS`/`SS_SERVER`). Красный →
-`systemctl restart ss-local+privoxy` → повторная сверка → всё ещё красный: `process.exit(1)`
-(fail-closed, не жжём лимит) + `pushEvent` (заглушка-лог, реальная доставка — Фаза 5).
-Чистые/DI-функции `tunnelHealthy`/`ensureTunnel`/`tunnelCheckEnabled` экспортированы,
-13 юнит-тестов. Включение: `config.tunnelCheck.enabled` (дефолт false, dev не ломается)
-ИЛИ env `RALPH_TUNNEL_CHECK=1` (в ralph.env на VDS — мост до профилей Фазы 2).
+- **Linux-порт (#67)**: `runClaudeOnce` → argv-массив (`shell:false`) вместо shell-строки:
+  убирает win32-guard `%` И закрывает RCE на /bin/sh. Проверено вживую на Linux VDS (#70)
+  и в Docker node:24 (полный `npm ci && npm test` зелёный).
+- **Юнит-тесты + рефактор под тестируемость (#69, PR #97)**: чистые/DI-функции
+  `buildClaudeArgs(cfg)`, `spawnClaude(spawnFn)`, `formatExcerpt`, `parseResetWaitMs`;
+  `config` → module-level `let`, весь exec в `main()` под guard `require.main === module`.
+  vitest `test.projects`: отдельный node-project `ralph` (без DOM-setupFiles).
+- **Health-check туннеля (#92, PR #98)**: `ensureTunnel(cfg, deps)` перед КАЖДОЙ
+  claude-сессией (начало `runClaude`, под `!DRY`-guard). Сверяет egress через прокси
+  (`execFileSync curl -4 -x $HTTPS_PROXY api.ipify.org`) с ожидаемым IP
+  (`RALPH_EXPECTED_EGRESS`/`SS_SERVER`, тримленный). Красный → `systemctl restart` →
+  повторная сверка → всё ещё красный: `process.exit(1)` (fail-closed) + `pushEvent`
+  (заглушка-лог, реальная доставка — Фаза 5). Включение: `config.tunnelCheck.enabled`
+  (дефолт false) ИЛИ env `RALPH_TUNNEL_CHECK=1` (на VDS).
+
+## Ключевые паттерны раннера (соблюдать в Фазе 2+)
+
+- Побочные вызовы (curl/systemctl/spawn) — через `execFileSync`/argv, НЕ `sh()`/shell
+  (anti-RCE, #67). Зависимости и `config` — параметрами функций (тестируемость + DI).
+- В тестах побочки мокать инъекцией функции, НЕ `vi.mock` — см. [[reference-ralph-test-di-not-vimock]].
+- Любой новый побочный вызов в раннерном пути — под `!DRY`-guard (dry-run строго read-only).
 
 ## Следующие шаги
 
-1. Смерджить PR #92-туннель → Фаза 1 закрыта.
+1. **Фаза 2 (#71-75)**: профили playground/prod, прод-milestone в ralph.config.json.
 2. Долг от ревью #97: issue на разбиение `main()` (~370 строк) на `preflight()`/`runLoop()`.
-3. Фаза 2 (#71-75): профили playground/prod, прод-milestone в ralph.config.json.
 
 ## Open questions
 
 - Ротировать ли токены (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN, ss-пароль прошли через чат)?
+- Инфра: [[project-ralph-prod-env-timeweb]] (VDS Москва + Shadowsocks к Франкфурту).
+  Golden-образ `image_id=6eec16c4-9719-4477-85f2-a5e2144b9fcf`.
