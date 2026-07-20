@@ -4,10 +4,9 @@
 
 ## Текущая задача
 
-Прод-режим ralph, **Фаза 1 (Linux-порт)**: #66, #67, #70 смерджены. **#69 (юнит-тесты)
-— открыт PR #97** (`test/ralph-port-unit-tests`), пройдено ревью, замечания разобраны —
-ждёт финального мерджа. Осталось #92 (health-check туннеля — вживую подтверждён).
-Дальше — Фаза 2 (профили playground/prod).
+Прод-режим ralph, **Фаза 1 (Linux-порт)**: #66, #67, #70, #69 — смерджены.
+**#92 (health-check туннеля) — реализован, открыт PR** (`feat/ralph-92-tunnel-healthcheck`).
+Смёрджится → Фаза 1 закрыта, дальше Фаза 2 (профили playground/prod).
 
 ## Последние принятые решения
 
@@ -32,11 +31,22 @@
 - **Golden-образ с кодом порта**: `image_id=6eec16c4-9719-4477-85f2-a5e2144b9fcf`.
   VDS/образ/IPv4 удаляются ТОЛЬКО через панель. Простой = 21₽/мес.
 
+## Последнее (#92)
+
+Health-check в ralph.js: `ensureTunnel(config, deps)` перед КАЖДОЙ claude-сессией
+(единая точка — начало `runClaude`). Сверяет egress через прокси (`curl -x $HTTPS_PROXY
+api.ipify.org`) с ожидаемым IP (`RALPH_EXPECTED_EGRESS`/`SS_SERVER`). Красный →
+`systemctl restart ss-local+privoxy` → повторная сверка → всё ещё красный: `process.exit(1)`
+(fail-closed, не жжём лимит) + `pushEvent` (заглушка-лог, реальная доставка — Фаза 5).
+Чистые/DI-функции `tunnelHealthy`/`ensureTunnel`/`tunnelCheckEnabled` экспортированы,
+13 юнит-тестов. Включение: `config.tunnelCheck.enabled` (дефолт false, dev не ломается)
+ИЛИ env `RALPH_TUNNEL_CHECK=1` (в ralph.env на VDS — мост до профилей Фазы 2).
+
 ## Следующие шаги
 
-1. Смерджить PR #97 (#69 закрывается им).
-2. #92: health-check туннеля в ralph.js перед итерацией (вживую подтверждён).
-3. Фаза 2 (#71-75): профили playground/prod, добавить прод-milestone в ralph.config.json.
+1. Смерджить PR #92-туннель → Фаза 1 закрыта.
+2. Долг от ревью #97: issue на разбиение `main()` (~370 строк) на `preflight()`/`runLoop()`.
+3. Фаза 2 (#71-75): профили playground/prod, прод-milestone в ralph.config.json.
 
 ## Open questions
 

@@ -57,7 +57,7 @@
  * Требования: gh CLI авторизован, git-репозиторий, ralph.config.json настроен, active: true.
  */
 
-const { execSync, spawnSync } = require('node:child_process');
+const { execSync, execFileSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -175,6 +175,128 @@ function parseResetWaitMs(text) {
     return target.getTime() - now.getTime();
 }
 
+// ── Health-check Shadowsocks-туннеля (#92) ───────────────────────────────────
+// Прод-режим: VDS в РФ ходит к Anthropic через Shadowsocks → privoxy (HTTPS_PROXY).
+// Если туннель ночью отвалится, claude-вызов упрётся в Cloudflare-403/таймаут, а
+// ralph зря сожжёт итерацию (а то и окно лимита) об мёртвый канал. Поэтому ПЕРЕД
+// каждой claude-сессией сверяем фактический egress-IP (через прокси) с ожидаемым
+// (IP Outline). Красный → перезапуск ss-local/privoxy → повторная сверка → если и
+// после этого красный, итерация не стартует (fail-closed) + пуш человеку.
+//
+// Юниты ss-local/privoxy уже с Restart=always (provision.sh) — это подстраховка
+// сверху: ловит и «сервис жив, но канал деградировал» (egress не тот), чего
+// systemd не видит.
+
+// Включён ли health-check. Локально/в dev туннеля нет — по умолчанию ВЫКЛ, чтобы не
+// ломать обычный запуск. Включается прод-профилем (config.tunnelCheck.enabled) или
+// env-флагом RALPH_TUNNEL_CHECK=1 (мост до профилей Фазы 2; ставится в ralph.env).
+function tunnelCheckEnabled(cfg) {
+    return process.env.RALPH_TUNNEL_CHECK === '1' || !!(cfg.tunnelCheck && cfg.tunnelCheck.enabled);
+}
+
+// Ожидаемый egress — публичный IP прокси-сервера (Франкфурт). Секрет-ish → из env,
+// НЕ из конфига в гите. SS_SERVER уже есть в ralph.env (его же сверяет provision.sh).
+// trim() (ревью #98): ralph.env часто редактируют/копируют с Windows-машины (CRLF) —
+// без обрезки хвостовой \r/пробел comparison с уже-трим'нутым egress НИКОГДА не
+// совпадёт, даже когда канал реально здоров, и health-check будет вечно красным.
+function expectedEgress() {
+    return (process.env.RALPH_EXPECTED_EGRESS || process.env.SS_SERVER || '').trim();
+}
+
+// Чистая функция (ядро проверки, юнит-тест «мок curl: совпал/не совпал IP»): туннель
+// здоров ⟺ фактический egress непуст И точно равен ожидаемому. Пустой ожидаемый или
+// пустой egress (ошибка curl) — НЕ здоров.
+function tunnelHealthy(egress, expected) {
+    return !!expected && egress === expected;
+}
+
+// Фактический egress-IP через прокси. Аргументы curl — МАССИВ через execFileSync
+// (ревью #98), не строка через sh()/execSync: тот же anti-RCE паттерн, которым #67
+// увёл spawnClaude от shell-интерполяции — proxy/ipUrl не проходят через шелл, так
+// спецсимволы в них не раскрываются. Сегодня оба значения из доверенных источников
+// (config.json в гите / env, который задаёт сам оператор VDS), но это тот класс
+// защиты, что ничего не стоит держать по умолчанию. -4 форсирует IPv4: ожидаемый
+// egress (SS_SERVER) — IPv4 Outline-сервера, а api.ipify.org на dual-stack хосте
+// без -4 мог бы отдать IPv6 и увести сравнение в ложный красный.
+// Пустая строка при любой ошибке (таймаут, мёртвый прокси) — вызывающий трактует
+// пустоту как «не здоров». execFn инжектируется для тестов; в проде — execFileSync.
+function probeEgress(cfg, execFn = execFileSync) {
+    const tc = cfg.tunnelCheck || {};
+    const proxy =
+        process.env.HTTPS_PROXY || process.env.HTTP_PROXY || tc.proxyUrl || 'http://127.0.0.1:8118';
+    const ipUrl = tc.ipCheckUrl || 'https://api.ipify.org';
+    try {
+        return execFn('curl', ['-4', '-s', '--max-time', '15', '-x', proxy, ipUrl], {
+            encoding: 'utf-8',
+        }).trim();
+    } catch {
+        return '';
+    }
+}
+
+// Перезапуск сервисов туннеля. restartCmd из конфига — простая команда без кавычек/
+// пайпов (бинарь + имена systemd-юнитов), поэтому безопасно разбить по пробелам и
+// выполнить через execFileSync (тот же anti-RCE паттерн, что и probeEgress выше),
+// а не execSync(cmd) строкой через шелл. Fail-open: сбой самого рестарта лишь
+// логируем — финальная повторная сверка egress всё равно решит, здоров канал или нет.
+function restartTunnel(cfg, execFn = execFileSync) {
+    const cmd =
+        (cfg.tunnelCheck && cfg.tunnelCheck.restartCmd) ||
+        'systemctl restart shadowsocks-libev-local@frankfurt privoxy';
+    const [bin, ...cmdArgs] = cmd.trim().split(/\s+/);
+    try {
+        execFn(bin, cmdArgs);
+    } catch (e) {
+        log(`⚠ Перезапуск сервисов туннеля упал: ${String(e.message).split('\n')[0]}`);
+    }
+}
+
+// Пуш-событие человеку. Полноценная доставка (ntfy/telegram) — Фаза 5; пока заметный
+// лог-маркер, чтобы событие не терялось в потоке. Отдельная функция — точка,
+// которую Фаза 5 заменит одним местом.
+function pushEvent(msg) {
+    log(`🔔 PUSH: ${msg}`);
+}
+
+// Оркестровка health-check. true = туннель здоров ИЛИ проверка выключена (можно
+// стартовать сессию); false = красный даже после перезапуска (стартовать нельзя).
+// Зависимости инжектируются (probe/restart/sleepFn/push) — для детерминированных
+// юнит-тестов без реального curl/systemctl/сна.
+function ensureTunnel(
+    cfg,
+    { probe = probeEgress, restart = restartTunnel, sleepFn = sleep, push = pushEvent } = {},
+) {
+    if (!tunnelCheckEnabled(cfg)) return true; // dev/локально — туннеля нет
+    const expected = expectedEgress();
+    if (!expected) {
+        // Проверка включена, но не задан ожидаемый egress — сверять не с чем. Fail-open
+        // с предупреждением: не блокируем прогон из-за неполной конфигурации канала.
+        log(
+            '⚠ Health-check туннеля включён, но не задан ожидаемый egress (RALPH_EXPECTED_EGRESS / SS_SERVER) — проверка пропущена.',
+        );
+        return true;
+    }
+    let egress = probe(cfg);
+    if (tunnelHealthy(egress, expected)) return true;
+    log(
+        `⚠ Туннель красный: egress='${egress || '—'}', ждали '${expected}'. Перезапуск ss-local/privoxy...`,
+    );
+    restart(cfg);
+    sleepFn((cfg.tunnelCheck && cfg.tunnelCheck.restartWaitMs) || 3000);
+    egress = probe(cfg);
+    if (tunnelHealthy(egress, expected)) {
+        log('✅ Туннель восстановлен после перезапуска сервисов.');
+        return true;
+    }
+    log(
+        `⛔ Туннель не восстановился (egress='${egress || '—'}', ждали '${expected}') — claude-сессия не стартует.`,
+    );
+    push(
+        `Ralph: Shadowsocks-туннель на VDS красный (egress='${egress || '—'}' != '${expected}') и не поднялся после перезапуска. Loop остановлен — почини канал.`,
+    );
+    return false;
+}
+
 /**
  * Запуск claude -p. Возвращает exit-код процесса (0 = успех; DRY всегда 0).
  * H2: код возвращаем, а не глотаем, потому что фатальность решает ВЫЗЫВАЮЩИЙ:
@@ -189,6 +311,21 @@ function parseResetWaitMs(text) {
  * не более config.apiLimitMaxWaits раз (дефолт 3) — защита от вечного сна.
  */
 function runClaude(prompt, opts) {
+    // #92: единая точка всех claude-сессий (кодер-итерации И шаги сдачи) — здесь же
+    // и единый health-check туннеля. Красный канал после перезапуска = fail-closed
+    // стоп всего loop: продолжать бессмысленно (следующая сессия упрётся в ту же
+    // мёртвую трубу и сожжёт итерации/лимит). Пуш человеку уже отправлен внутри.
+    //
+    // !DRY (ревью #98): C1 требует --dry-run строго read-only (см. saveState() и
+    // `if (!DRY && !ensureClean(...))` в main()) — DRY и так не спавнит настоящий
+    // claude (runClaudeOnce возвращает раньше), поэтому здоровье туннеля ему не
+    // нужно. Без этого guard'а --dry-run на VDS с RALPH_TUNNEL_CHECK=1 и красным
+    // каналом реально дёргал бы systemctl restart и убивал прогон process.exit(1) —
+    // ровно то живое побочное действие, которого dry-run обязан избегать.
+    if (!DRY && !ensureTunnel(config)) {
+        log('⛔ Health-check туннеля не прошёл — loop остановлен (fail-closed).');
+        process.exit(1);
+    }
     const maxWaits = config.apiLimitMaxWaits ?? 3;
     for (let attempt = 0; ; attempt++) {
         const { code, output } = runClaudeOnce(prompt, opts);
@@ -1151,5 +1288,22 @@ if (require.main === module) main();
 // Экспорт функций порта для юнит-тестов (#69). buildClaudeArgs/formatExcerpt/
 // parseResetWaitMs/API_LIMIT_RE — чистые преобразования вход→выход. spawnClaude —
 // единственная точка реального spawnSync-вызова (её мокаем в тестах, а не остальной
-// раннерный код). Ничего из этого не читает module-level config напрямую.
-module.exports = { buildClaudeArgs, formatExcerpt, parseResetWaitMs, API_LIMIT_RE, spawnClaude };
+// раннерный код). tunnelHealthy/ensureTunnel/tunnelCheckEnabled (#92) — health-check
+// туннеля, config и зависимости (probe/restart/sleep/push) передаются параметрами.
+// probeEgress/restartTunnel (#92, ревью #98) — единственные точки реального
+// execFileSync-вызова (curl/systemctl) для туннеля; экспортированы, чтобы, как и у
+// spawnClaude, проверить САМУ границу anti-RCE защиты (argv доходит до вызова
+// отдельными элементами, а не склеенной шелл-строкой), не только чистую сборку.
+// Ничего из этого не читает module-level config напрямую.
+module.exports = {
+    buildClaudeArgs,
+    formatExcerpt,
+    parseResetWaitMs,
+    API_LIMIT_RE,
+    spawnClaude,
+    tunnelHealthy,
+    ensureTunnel,
+    tunnelCheckEnabled,
+    probeEgress,
+    restartTunnel,
+};
