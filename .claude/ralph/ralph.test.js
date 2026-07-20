@@ -880,6 +880,30 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(logs.join('\n')).toMatch(/уже смерджена/);
     });
 
+    it('фаза смерджена при dry=true → advancePhase есть, но БЕЗ мутаций git (checkout/pull не зовутся)', () => {
+        const logs = [];
+        const shCmds = [];
+        const advancePhaseFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                dry: true,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => true,
+                shFn: (c) => {
+                    shCmds.push(c);
+                    return '';
+                },
+                advancePhaseFn,
+            }),
+        );
+        expect(shCmds).not.toContain('git checkout main');
+        expect(shCmds).not.toContain('git pull --ff-only');
+        expect(advancePhaseFn).toHaveBeenCalled();
+    });
+
     it('submitted=true → сразу к гейту, без PR/ревью/правок', () => {
         const logs = [];
         const runClaudeFn = vi.fn(() => 0);
