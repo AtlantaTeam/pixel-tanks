@@ -1,0 +1,20 @@
+# Нормализация переводов строк: LF в репозитории.
+# Windows-разработка + Linux-прод (ralph на Timeweb VDS) — CRLF в shell-скриптах
+# ломает shebang на Linux (env: bash\r: No such file). Держим LF везде.
+* text=auto eol=lf
+
+# Явно: shell-скрипты и раннер — строго LF.
+*.sh text eol=lf
+.claude/ralph/** text eol=lf
+
+# Бинарники — не трогать.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.mp3 binary
+*.mp4 binary
+*.woff binary
+*.woff2 binary
+*.ico binary
