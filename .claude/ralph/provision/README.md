@@ -73,6 +73,29 @@ npm run build && npm run test                # гейт-чеки
 | claude: `workspace has not been trusted`, игнорит permissions | нет trust-флага для папки                                                                            | `hasTrustDialogAccepted:true` в `~/.claude.json` |
 | VDS без публичного IPv4                                       | тариф Timeweb выдаёт IPv6-only                                                                       | `add_server_ip type=ipv4`                        |
 
+## Экономия между сессиями: свернуть VDS в образ
+
+Выключенный VDS у Timeweb **тарифицируется полностью** (ресурсы зарезервированы). Чтобы не платить
+~2000 ₽/мес в простое — снять образ и удалить сервер (простой = ~21 ₽/мес за хранение образа).
+
+**Свернуть:**
+
+1. Снять golden-образ: Timeweb MCP `create_image(server_id)` → дождаться `status=created`
+   (`get_image` / `list_images`). Образ хранит весь диск: env `600`, туннель, окружение, репо.
+2. Удалить VDS — **через панель** (https://timeweb.cloud/my/servers): MCP `delete_server` не умеет.
+3. Удалить публичный IPv4 — **отдельно** в панели, иначе висящий floating-IP капает ~180 ₽/мес.
+
+**Восстановить** (когда снова нужен раннер):
+
+1. `create_server` с `image_id=<образ>` (вместо `os_id`), preset тот же (`4803`, msk-1),
+   `ssh_keys_ids`, `is_backups=false`. OS/настройка — из образа.
+2. `add_server_ip type=ipv4` — публичный IPv4 будет **новый** (старый освободился при удалении).
+3. SSH на новый IP. Туннель (`ss-local`/`privoxy`, `Restart=always`) и env поднимутся сами —
+   проверить health-check: `curl -x http://127.0.0.1:8118 https://api.ipify.org` → egress вне РФ,
+   `claude -p 'OK'`. Если токены (`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`) протухли — обновить в env.
+
+> `image_id` актуального образа — в памяти проекта и `.claude/state/HANDOFF.md`, не хардкодим здесь.
+
 ## Осталось (не в этом скрипте — Фазы 1-2 плана)
 
 - **Linux-порт `ralph.js`** — писался под Windows (`spawnSync shell:true` → `/bin/sh`,
