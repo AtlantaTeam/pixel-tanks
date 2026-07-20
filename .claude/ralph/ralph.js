@@ -317,7 +317,7 @@ function runClaude(prompt, opts) {
     // мёртвую трубу и сожжёт итерации/лимит). Пуш человеку уже отправлен внутри.
     //
     // !DRY (ревью #98): C1 требует --dry-run строго read-only (см. saveState() и
-    // `if (!DRY && !ensureClean(...))` в main()) — DRY и так не спавнит настоящий
+    // `if (!DRY && !ensureClean(...))` в runLoop()) — DRY и так не спавнит настоящий
     // claude (runClaudeOnce возвращает раньше), поэтому здоровье туннеля ему не
     // нужно. Без этого guard'а --dry-run на VDS с RALPH_TUNNEL_CHECK=1 и красным
     // каналом реально дёргал бы systemctl restart и убивал прогон process.exit(1) —
