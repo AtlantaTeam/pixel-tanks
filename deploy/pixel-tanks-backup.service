@@ -1,0 +1,15 @@
+[Unit]
+Description=Бэкап БД pixel-tanks (SQLite online .backup + ротация)
+After=network.target
+# Документация: docs/deploy/backup.md, scripts/backup-db.sh
+
+[Service]
+Type=oneshot
+# Скрипт живёт в прод-клоне и обновляется штатным деплоем.
+# Путь к БД и параметры ротации — внутри скрипта (DATABASE_URI из EnvironmentFile).
+ExecStart=/opt/pixel-tanks/scripts/backup-db.sh
+# Запуск под root: нужен доступ на чтение БД (owner deploy) и запись в /var/backups
+# (700 root:root). Никаких сетевых прав скрипту не нужно.
+User=root
+Nice=10
+IOSchedulingClass=idle

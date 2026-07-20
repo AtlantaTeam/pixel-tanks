@@ -1,0 +1,14 @@
+[Unit]
+Description=Ежедневный бэкап БД pixel-tanks
+# Документация: docs/deploy/backup.md
+
+[Timer]
+OnCalendar=daily
+# Persistent: если VDS был выключен в момент срабатывания (или reboot) —
+# догнать пропущенный запуск при следующей загрузке. Ключ к «переживает reboot».
+Persistent=true
+# Разброс до 5 мин, чтобы бэкап не совпадал ровно с полуночью и прочей активностью.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
