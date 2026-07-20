@@ -19,18 +19,29 @@ jobs:
         timeout-minutes: 15
         steps:
             - name: Checkout (нужен только scripts/deploy-remote.sh)
-              uses: actions/checkout@v5
+              # Запиннено по SHA (supply chain); # v5.0.0
+              uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+              with:
+                  persist-credentials: false # GITHUB_TOKEN не нужен после checkout
 
             - name: Настроить SSH-ключ и known_hosts
+              env:
+                  DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+                  DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
               run: |
                   mkdir -p ~/.ssh
-                  echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+                  printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
                   chmod 600 ~/.ssh/id_ed25519
-                  echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+                  printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
                   chmod 644 ~/.ssh/known_hosts
 
             - name: Деплой по SSH
+              env:
+                  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+                  DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
               run: |
                   ssh -i ~/.ssh/id_ed25519 \
-                      "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+                      -o StrictHostKeyChecking=yes \
+                      -o BatchMode=yes \
+                      "$DEPLOY_USER@$DEPLOY_HOST" \
                       'bash -s' < scripts/deploy-remote.sh
