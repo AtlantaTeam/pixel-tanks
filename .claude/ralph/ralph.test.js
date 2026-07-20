@@ -507,18 +507,23 @@ describe('preflight — валидация конфига/среды и подг
     // свип milestones/проверка мерджа) параметрами — как ensureTunnel. Инжектируем их,
     // поэтому тут нет ни git/gh, ни process.exit, ни диска. failFn БРОСАЕТ (а не
     // process.exit) — так assert ловит нужную ветку и останавливает выполнение ровно
-    // там же, где в проде остановил бы exit(1). Тесты платформо-независимы: раннер
-    // запущен без --once/--dry-run/--resubmit, поэтому ONCE/DRY/RESUBMIT = false.
+    // там же, где в проде остановил бы exit(1). Флаги режима once/dry/resubmit тоже
+    // инжектируются в preflight (дефолты из module-level ONCE/DRY/RESUBMIT), поэтому их
+    // ветки (грязное дерево, свип milestones, бюджет итераций) тестируются явно, а не
+    // зависят от того, с какими аргументами запущен vitest.
     const throwingFail = (msg) => {
         throw new Error(msg);
     };
-    // Полный набор дефолтов «зелёного» пути: shFn — чистое дерево, свип/мердж — noop,
-    // фаза текущая (индекс 0, инвариант C4 не гоняется), state загружен фейком.
+    const fakeState = () => ({ count: 0, milestone: 'M1', submitted: false, noProgress: 0 });
+    // Дефолты «зелёного» пути: shFn — чистое дерево, свип/мердж — noop, фаза текущая
+    // (индекс 0, инвариант C4 не гоняется). loadStateFn ЗДЕСЬ намеренно НЕ задаём: где
+    // нужен фейк state — передаём loadStateFn: fakeState явно через overrides; где хотим
+    // проверить реальный loadState — не передаём, тогда сработает дефолт параметра
+    // (module-level loadState). Так не приходится удалять ключ из собранного объекта.
     const okDeps = (overrides = {}) => ({
         shFn: () => '',
         failFn: throwingFail,
         logFn: () => {},
-        loadStateFn: () => ({ count: 0, milestone: 'M1', submitted: false, noProgress: 0 }),
         closeMilestonesFn: () => {},
         phaseIndexOfFn: () => 0,
         phaseMergedFn: () => true,
@@ -559,10 +564,9 @@ describe('preflight — валидация конфига/среды и подг
         vi.spyOn(fs, 'readFileSync').mockReturnValue(
             JSON.stringify({ count: 3, phaseIndex: 0, submitted: false }),
         );
-        const deps = okDeps();
-        delete deps.loadStateFn; // дефолт = реальный loadState
+        // Не передаём loadStateFn → сработает дефолт параметра = реальный loadState.
         try {
-            expect(() => preflight(validCfg(), deps)).toThrow(/схем|phaseIndex/i);
+            expect(() => preflight(validCfg(), okDeps())).toThrow(/схем|phaseIndex/i);
         } finally {
             vi.restoreAllMocks();
         }
@@ -584,8 +588,124 @@ describe('preflight — валидация конфига/среды и подг
     });
 
     it('maxIterations/maxTurns берут дефолты (10/200), когда не заданы в конфиге', () => {
-        const ctx = preflight(validCfg(), okDeps());
+        const ctx = preflight(validCfg(), okDeps({ loadStateFn: fakeState }));
         expect(ctx.maxIterations).toBe(10);
         expect(ctx.maxTurns).toBe(200);
+    });
+
+    // ── Негативные ветки среды и инвариант зависимых фаз C4 (ревью PR #102) ──────
+    // Правила проекта требуют негативные сценарии. Раньше phaseIndexOfFn был всюду
+    // () => 0, поэтому тело C4 (for i < startIdx) ни разу не выполнялось, а ветки sh
+    // (не git-репо / gh не авторизован / грязное дерево) были непокрыты.
+
+    // shFn, который бросает только на команде, содержащей needle (иначе — чистый вывод).
+    const shThrowingOn = (needle) => (cmd) => {
+        if (cmd.includes(needle)) throw new Error(`fail: ${cmd}`);
+        return '';
+    };
+
+    it('C4: предыдущая фаза не смерджена (phaseMerged=false) → fail «Инвариант нарушен»', () => {
+        const cfg = validCfg({
+            phases: [
+                { milestone: 'M1', branch: 'feature/m1' },
+                { milestone: 'M2', branch: 'feature/m2' },
+            ],
+        });
+        // startIdx=1 → цикл проверяет фазу M1; phaseMergedFn=false → инвариант нарушен.
+        const deps = okDeps({
+            loadStateFn: () => ({ count: 0, milestone: 'M2', submitted: false, noProgress: 0 }),
+            phaseIndexOfFn: () => 1,
+            phaseMergedFn: () => false,
+        });
+        expect(() => preflight(cfg, deps)).toThrow(/Инвариант нарушен/);
+    });
+
+    it('C4: phaseMerged бросил исключение → fail «Не смог проверить мердж-статус»', () => {
+        const cfg = validCfg({
+            phases: [
+                { milestone: 'M1', branch: 'feature/m1' },
+                { milestone: 'M2', branch: 'feature/m2' },
+            ],
+        });
+        const deps = okDeps({
+            loadStateFn: () => ({ count: 0, milestone: 'M2', submitted: false, noProgress: 0 }),
+            phaseIndexOfFn: () => 1,
+            phaseMergedFn: () => {
+                throw new Error('gh недоступен');
+            },
+        });
+        expect(() => preflight(cfg, deps)).toThrow(/Не смог проверить мердж-статус/);
+    });
+
+    it('git rev-parse падает → fail «Не git-репозиторий»', () => {
+        const deps = okDeps({ loadStateFn: fakeState, shFn: shThrowingOn('rev-parse') });
+        expect(() => preflight(validCfg(), deps)).toThrow(/Не git-репозиторий/);
+    });
+
+    it('gh auth status падает → fail «gh CLI не авторизован»', () => {
+        const deps = okDeps({ loadStateFn: fakeState, shFn: shThrowingOn('gh auth status') });
+        expect(() => preflight(validCfg(), deps)).toThrow(/gh CLI не авторизован/);
+    });
+
+    it('грязное дерево при dry=false → fail «Рабочее дерево грязное»', () => {
+        const deps = okDeps({
+            loadStateFn: fakeState,
+            shFn: (cmd) => (cmd.includes('status --porcelain') ? ' M src/x.ts' : ''),
+            dry: false,
+        });
+        expect(() => preflight(validCfg(), deps)).toThrow(/Рабочее дерево грязное/);
+    });
+
+    it('грязное дерево при dry=true → НЕ падает (dry-run read-only, правки не требуются)', () => {
+        const deps = okDeps({
+            loadStateFn: fakeState,
+            shFn: (cmd) => (cmd.includes('status --porcelain') ? ' M src/x.ts' : ''),
+            dry: true,
+            // При dry=true свип milestones тоже пропускается — closeMilestonesFn не зовётся.
+            closeMilestonesFn: () => {
+                throw new Error('свип не должен вызываться при dry');
+            },
+        });
+        expect(() => preflight(validCfg(), deps)).not.toThrow();
+    });
+
+    it('once=true → maxIterations=1 (бюджет одной HITL-итерации), иначе дефолт конфига', () => {
+        const cfg = validCfg({ maxIterations: 9 });
+        const withOnce = preflight(cfg, okDeps({ loadStateFn: fakeState, once: true }));
+        expect(withOnce.maxIterations).toBe(1);
+        const withoutOnce = preflight(cfg, okDeps({ loadStateFn: fakeState, once: false }));
+        expect(withoutOnce.maxIterations).toBe(9);
+    });
+
+    it('resubmit=true → сбрасывает state.submitted и сохраняет через saveStateFn', () => {
+        const state = { count: 2, milestone: 'M1', submitted: true, noProgress: 0 };
+        const saveStateFn = vi.fn();
+        preflight(validCfg(), okDeps({ loadStateFn: () => state, saveStateFn, resubmit: true }));
+        expect(state.submitted).toBe(false);
+        expect(saveStateFn).toHaveBeenCalledWith(state);
+    });
+});
+
+describe('loadState — резолв state с диска (прямой тест, #99)', () => {
+    // Прямой тест экспортируемого loadState (а не только через preflight): валидный
+    // state возвращается как есть; state старой схемы (без milestone) зовёт инжектируемый
+    // failFn. Ветку «нет файла → defaultState()» тут не гоняем — defaultState читает
+    // глобальный config.phases[0], который в юнит-среде не инициализирован.
+    afterEach(() => vi.restoreAllMocks());
+
+    it('валидный state (с milestone) возвращается как есть', () => {
+        const state = { count: 5, milestone: 'M3', submitted: true, noProgress: 1 };
+        vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify(state));
+        expect(loadState()).toEqual(state);
+    });
+
+    it('state старой схемы (без milestone) → зовёт инжектированный failFn', () => {
+        vi.spyOn(fs, 'readFileSync').mockReturnValue(
+            JSON.stringify({ count: 3, phaseIndex: 0, submitted: false }),
+        );
+        const failFn = vi.fn();
+        loadState(failFn);
+        expect(failFn).toHaveBeenCalledTimes(1);
+        expect(failFn.mock.calls[0][0]).toMatch(/схем|phaseIndex/i);
     });
 });

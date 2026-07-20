@@ -857,17 +857,24 @@ function advancePhase(st, idx) {
 }
 
 // ── Preflight ────────────────────────────────────────────────────────────────
-// Весь исполняемый код (preflight + loop) — в main(), под guard require.main ===
-// module внизу. Так `require`/import файла в юнит-тестах НЕ запускает preflight,
-// process.exit и loop, а только подтягивает чистые функции из module.exports.
+// Исполняемый код раннера разбит на preflight() + runLoop(), которые оркеструет
+// main() под guard require.main === module внизу. Так `require`/import файла в
+// юнит-тестах НЕ запускает preflight, process.exit и loop, а только подтягивает
+// чистые функции из module.exports.
 
 // preflight: всё, что предшествует основному циклу — валидация конфига и среды,
 // свип milestones, загрузка state, инвариант зависимых фаз (C4), стартовый лог.
 // Возвращает контекст { state, maxIterations, maxTurns } для runLoop.
-// cfg передаётся ЯВНО (не читаем module-level config) — паттерн DI раннера (см.
-// ensureTunnel). Зависимости с побочками (sh/fail/log/загрузка state/свип milestones/
-// проверка мерджа) инжектируются с дефолтами, чтобы юнит-тест не дёргал git/gh и не
-// падал в process.exit — точно как ensureTunnel(cfg, deps).
+// ЯВНО передаются: поля cfg (cfg.active/phases/authorAllowlist/maxIterations/maxTurns
+// читаем из параметра, а не из module-level config) и флаги режима once/dry/resubmit
+// (дефолты из module-level ONCE/DRY/RESUBMIT) — так их ветки покрываются юнит-тестами.
+// Побочки (sh/fail/log/загрузка state/свип milestones/проверка мерджа) инжектируются
+// с дефолтами, чтобы юнит-тест не дёргал git/gh и не падал в process.exit — точно как
+// ensureTunnel(cfg, deps). ВАЖНО про границу DI: дефолтные коллабораторы
+// (phaseIndexOf/phaseMerged/closeCompletedMilestones/loadState/saveState) внутри всё
+// ещё читают ГЛОБАЛЬНЫЙ config, а не переданный cfg. В проде config === cfg (см. main()),
+// так что бага нет, но preflight(otherCfg) дал бы несогласованность (поля из otherCfg,
+// фазы/мердж-статусы из глобального config). Полный DI коллабораторов — отдельный долг.
 function preflight(
     cfg,
     {
@@ -879,6 +886,9 @@ function preflight(
         phaseIndexOfFn = phaseIndexOf,
         phaseMergedFn = phaseMerged,
         saveStateFn = saveState,
+        once = ONCE,
+        dry = DRY,
+        resubmit = RESUBMIT,
     } = {},
 ) {
     if (!cfg.active)
@@ -903,18 +913,18 @@ function preflight(
         failFn('gh CLI не авторизован (gh auth login).');
     }
     const dirty = shFn('git status --porcelain');
-    if (dirty && !DRY) {
+    if (dirty && !dry) {
         failFn(
             'Рабочее дерево грязное — закоммить или застэшь перед автономным запуском:\n' + dirty,
         );
     }
 
-    if (!DRY) closeMilestonesFn();
+    if (!dry) closeMilestonesFn();
 
-    const maxIterations = ONCE ? 1 : cfg.maxIterations || 10;
+    const maxIterations = once ? 1 : cfg.maxIterations || 10;
     const maxTurns = cfg.maxTurns || 200;
     const state = loadStateFn(failFn);
-    if (RESUBMIT) {
+    if (resubmit) {
         state.submitted = false;
         saveStateFn(state);
         logFn('🔁 --resubmit: цикл сдачи фазы (PR/ревью/правки) будет выполнен заново.');
@@ -947,7 +957,7 @@ function preflight(
     }
 
     logFn(
-        `🚀 Ralph start | mode=${ONCE ? 'HITL (1 итерация)' : 'AFK'} | dry=${DRY} | фаза "${state.milestone ?? '—'}" | submitted=${state.submitted} | итерация ${state.count}`,
+        `🚀 Ralph start | mode=${once ? 'HITL (1 итерация)' : 'AFK'} | dry=${dry} | фаза "${state.milestone ?? '—'}" | submitted=${state.submitted} | итерация ${state.count}`,
     );
 
     return { state, maxIterations, maxTurns };
@@ -955,6 +965,12 @@ function preflight(
 
 // runLoop: весь основной while-цикл (итерации кодера, цикл сдачи, гейт, self-heal,
 // разбор blocked) — как есть. cfg передаётся ЯВНО; ctx = результат preflight().
+// ЧЕСТНО про границу этого PR: в отличие от preflight, runLoop ещё БЕЗ DI —
+// внутри он дёргает phaseIndexOf/openIssues/pickModel/pickReviewModel/tryMergePhase/
+// advancePhase/runClaude/ensureClean/saveState, которые читают глобальный config,
+// lastRedCheck и флаги ONCE/DRY, поэтому пока не покрыт юнит-тестами (экспорт нужен
+// лишь для будущего DI). Разбиение main() под тестируемость на этом шаге закрыло
+// только preflight; DI и тесты для runLoop — отдельный долг (issue #104).
 function runLoop(cfg, { state, maxIterations, maxTurns }) {
     // ── Main loop ────────────────────────────────────────────────────────────────
 
@@ -1312,7 +1328,10 @@ function main() {
         process.exit(0);
     }
 
-    runLoop(config, preflight(config));
+    // Два шага, а не runLoop(config, preflight(config)): у preflight много побочек
+    // (свип milestones, saveState, логи), их порядок выполнения читается явнее так.
+    const ctx = preflight(config);
+    runLoop(config, ctx);
 }
 
 // Запуск loop — только когда файл исполнен как скрипт (node ralph.js). При import
