@@ -5,26 +5,29 @@
 
 ## Фазы реализации
 
-### Фаза 1: Раннер на Linux-сервере + provisioning (Tracer Bullet)
+### Фаза 1: Раннер на Timeweb-сервере (РФ) + provisioning + туннель (Tracer Bullet)
 
-**Цель:** `ralph.js`/`monitor.js` целиком работают на Ubuntu в текущем (playground) поведении.
-Обкатка сначала в **локальной VirtualBox Ubuntu-VM** (бесплатно, обратимо), затем тем же
-provisioning-скриптом — на Frankfurt-сервере. Тонкий сквозной срез: окружение поднято, раннер прогоняет итерацию.
-**Затрагивает:** runner (ralph.js, monitor.js), infra (provisioning-скрипт)
+**Цель:** `ralph.js`/`monitor.js` целиком работают на Ubuntu (Timeweb VDS, Москва) в текущем
+(playground) поведении. Обкатка provisioning — на **эфемерном Timeweb-VDS через MCP** (создал →
+провижн → снёс, почасовка; VirtualBox не нужна). Тонкий сквозной срез: окружение поднято, туннель
+к Anthropic жив, раннер прогоняет итерацию.
+**Затрагивает:** runner (ralph.js, monitor.js), infra (provisioning-скрипт, туннель)
 **Задачи:**
 
 - [ ] Аудит кросс-платформенных точек: guard `%`/`"` (заточен под cmd.exe), кавычки/экранирование
       промптов, разделители путей, detached-spawn монитора, вызовы `git`/`gh` под `/bin/sh`.
 - [ ] Адаптировать `spawnSync({shell:true})`-хореографию под `/bin/sh` без регресса поведения.
-- [ ] Provisioning-скрипт (bash): Node 24, gh, Claude CLI, Playwright+chromium, swap 8ГБ,
-      ufw SSH-only, systemd-юнит ralph, env-файл `600` (ANTHROPIC/GH), clone+`npm install`.
-      Один и тот же скрипт для VirtualBox-VM и боевого сервера.
+- [x] **Provisioning-скрипт** (`.claude/ralph/provision/`): Node 24, gh, Claude CLI,
+      Playwright+chromium, Shadowsocks-туннель (ss-local→privoxy), ufw SSH-only, env-файл `600`
+      (CLAUDE*CODE_OAUTH_TOKEN/GH/SS/HTTPS_PROXY), clone+`npm ci`. Идемпотентен, гоняется на
+      эфемерном Timeweb-VDS через MCP. *(готово 2026-07-20)\_
+- [x] **Туннель к Anthropic** (сервер в РФ): claude через `HTTPS_PROXY=http://127.0.0.1:8118` →
+      privoxy → ss-local → Outline вне РФ; health-check egress == прокси-IP. _(проверено вживую)_
 - [ ] Unit-тесты на изменённые чистые функции (guard/путь/парсинг) + прогон существующих тестов на Linux.
-- [ ] Прогон `--dry-run` и playground-итерации в VirtualBox-VM (живые claude-вызовы — через
-      прокси, РФ-IP), затем — на не-РФ сервере (там прокси не нужен).
+- [ ] Прогон `--dry-run` и playground-итерации на Timeweb-VDS (живые claude-вызовы идут через туннель).
 
-**Когда готова:** provisioning-скрипт из чистого Ubuntu (сначала VirtualBox, потом Frankfurt)
-разворачивает окружение, и `node ralph.js --dry-run` + playground-итерация проходят без регресса.
+**Когда готова:** provisioning-скрипт из чистого Ubuntu (эфемерный Timeweb-VDS) разворачивает
+окружение + туннель, и `node ralph.js --dry-run` + playground-итерация проходят без регресса.
 
 ### Фаза 2: Профили playground/prod + авто-старт монитора
 
@@ -96,7 +99,9 @@ playground сохраняет мердж=финал.
 **Задачи:**
 
 - [ ] Завести issues на каждый бэклог-вектор: Docker/E2B, параллелизм, durable-replay,
-      event-триггеры, фанаут-эскалация, мульти-критик, staging-smoke, двусторонний TG-бот.
+      event-триггеры, фанаут-эскалация, мульти-критик, staging-smoke, двусторонний TG-бот,
+      **S3-бэкап транскриптов (Timeweb S3), golden-образ VDS (create_image), мониторинг железа
+      (get_server_statistics)**.
 - [ ] Пометить label `backlog`, добавить на доску.
 
 **Когда готова:** каждый бэклог-пункт PRD имеет tracking-issue на доске проекта.
