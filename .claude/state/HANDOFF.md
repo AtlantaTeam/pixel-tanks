@@ -4,35 +4,40 @@
 
 ## Текущая задача
 
-Прод-режим ralph: **среда развёрнута и проверена вживую**. Открыт PR #93
-(provisioning + PRD/plan под Timeweb). Дальше — Фаза 1: Linux-порт `ralph.js`
-(#66-70) и фикс красного typecheck на main.
+Прод-режим ralph, **Фаза 1 (Linux-порт)**: #66, #67, #70 смерджены. **#69 (юнит-тесты)
+— открыт PR #97** (`test/ralph-port-unit-tests`), пройдено ревью, замечания разобраны —
+ждёт финального мерджа. Осталось #92 (health-check туннеля — вживую подтверждён).
+Дальше — Фаза 2 (профили playground/prod).
 
 ## Последние принятые решения
 
-- **Среда = Timeweb Cloud VDS в РФ** (Москва, id 8636157, 4CPU/8GB), НЕ зарубежный
-  UltaHost/Frankfurt. Управление через Timeweb MCP. Оплата с РФ-карт. См. память
-  [[project-ralph-prod-env-timeweb]].
-- **Инверсия прокси**: сервер в РФ → api.anthropic.com даёт Cloudflare-403 →
-  Shadowsocks-туннель к Outline Димы во Франкфурте (ss-local→privoxy→HTTPS_PROXY).
-  Проверено: claude под Max-подпиской ходит через туннель. IP/порт прокси НЕ светить.
-- **Auth claude на сервере** = подписка через `claude setup-token` (не API-ключ):
-  бесплатно, ночью не конкурирует с локальной работой, auto-wait страхует лимит.
-- **VirtualBox выкинута** — обкатка provisioning на эфемерном Timeweb-VDS через MCP.
-- Provisioning готов: `.claude/ralph/provision/` (provision.sh + env.example + README).
-- **typecheck красный на чистом clone** (208 ошибок, нет vitest/globals в tsconfig);
-  локально маскируется incremental-кэшем `.tsbuildinfo` → дыра в ralph-гейте.
-- **VDS гасится в golden-образ между сессиями** (простой = 21₽/мес vs 2001₽). Образ
-  `image_id=21e4be00-b788-4da4-baab-a6449fabbaf7` (20₽/мес). Удаление VDS — через панель
-  (MCP не умеет; IPv4 удалить отдельно). Восстановление: `create_server` с image_id + новый IPv4.
+- **#69 сделан (PR #97)**: ralph.js отрефакторен под тестируемость — вынесены
+  `buildClaudeArgs` (ядро порта, построение argv), `formatExcerpt` (хвост excerpt) и
+  `spawnClaude` (обвязка над spawnSync с инжектируемой spawn-функцией — 3-й параметр,
+  дефолт настоящий spawnSync; так тестируется САМА граница anti-RCE защиты, а не
+  только сборка argv, и не через `vi.mock('node:child_process')` — тот на границе
+  CJS require() ненадёжен). `config` → module-level `let`, весь exec (preflight+loop)
+  в `main()` под guard `require.main === module`. Тесты рядом:
+  `.claude/ralph/ralph.test.js` (37 тестов). vitest переведён на `test.projects`:
+  отдельный project `ralph` (environment node, без DOM-setupFiles приложения) для
+  `.claude/ralph/**/*.test.{js,ts}`, `app` — прежнее поведение для `src/**`.
+- **Прогон на Linux вживую (Docker node:24 Ubuntu, x86_64), на исходном коммите PR**:
+  полный `npm ci && npm run test` зелёный — 52 файла, 372 теста, включая ralph.
+  `parseResetWaitMs` детерминирован через фейк-таймеры (TZ-независим). После доразбора
+  ревью (spawnClaude + projects) прогнано локально на Windows — 52 файла, 376 тестов
+  зелёные; повторный Linux-прогон не делали, риска платформозависимости в добавленном
+  коде нет (те же паттерны, что уже были верифицированы на Linux).
+- **Linux-порт (#67)**: argv-массив (`shell:false`) — убирает win32-guard `%` И RCE на
+  /bin/sh. См. [[project-ralph-prod-env-timeweb]].
+- **Golden-образ с кодом порта**: `image_id=6eec16c4-9719-4477-85f2-a5e2144b9fcf`.
+  VDS/образ/IPv4 удаляются ТОЛЬКО через панель. Простой = 21₽/мес.
 
 ## Следующие шаги
 
-1. Смерджить PR #93, затем закрыть #68 (systemd-пункт — в Фазу 2).
-2. Фикс typecheck: `types:["vitest/globals"]` в tsconfig (отдельный PR).
-3. Фаза 1 (#66-70): прогнать `ralph.js --dry-run` на VDS, портировать под /bin/sh.
+1. Смерджить PR #97 (#69 закрывается им).
+2. #92: health-check туннеля в ralph.js перед итерацией (вживую подтверждён).
+3. Фаза 2 (#71-75): профили playground/prod, добавить прод-milestone в ralph.config.json.
 
 ## Open questions
 
 - Ротировать ли токены (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN, ss-пароль прошли через чат)?
-- systemd-запуск ralph упрётся в prod-профиль (Фаза 2) — его в коде ещё нет.
