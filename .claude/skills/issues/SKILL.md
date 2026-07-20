@@ -16,8 +16,8 @@ description: Создаёт GitHub milestones и issues из файла план
    `gh api repos/:owner/:repo/milestones --jq '.[].title'`
 3. Для каждой фазы создай milestone (если ещё нет):
    `gh api repos/:owner/:repo/milestones -f title="Фаза N: название"`
-4. Для каждой задачи фазы создай Issue **с label сложности** (см. раздел ниже):
-   `gh issue create --title "..." --body "..." --milestone "Фаза N: название" --label "complexity:<уровень>"`
+4. Для каждой задачи фазы создай Issue **с label сложности И label направления** (см. разделы ниже):
+   `gh issue create --title "..." --body "..." --milestone "Фаза N: название" --label "complexity:<уровень>" --label "area:<направление>"`
 5. **Доска (GitHub Projects, обязательно)** — issues должны попасть на доску проекта:
     - Найди доску: `gh project list --owner <owner>`; если нет — создай (`gh project create --owner <owner> --title "<имя проекта>"`) и привяжи к репо (`gh project link <number> --owner <owner> --repo <owner/repo>`)
     - Добавь каждый созданный issue: `gh project item-add <number> --owner <owner> --url <issue-url>`
@@ -35,6 +35,22 @@ description: Создаёт GitHub milestones и issues из файла план
 | `complexity:expert` | fable  | Критично для корректности всей системы: детерминизм, сериализация, ядро управления |
 
 Сомневаешься между двумя — бери более высокий уровень.
+
+## Label направления (area, обязательно, ровно один на issue)
+
+Чтобы с ходу было видно направление работ. Если label'ов ещё нет в репо — создай
+(`gh label create "area:<...>" --color <hex> --description "..."`), цвета — разные:
+
+| Label           | Цвет     | Когда ставить                                                                 |
+| --------------- | -------- | ----------------------------------------------------------------------------- |
+| `area:frontend` | `1d76db` | UI, layout, страницы, Canvas-рендер, React-компоненты                         |
+| `area:backend`  | `0e8a16` | Payload CMS, API, auth, работа с БД                                           |
+| `area:devops`   | `d93f0b` | ralph-раннер, CI, provisioning, инфра, деплой, тулинг                         |
+| `area:core`     | `5319e7` | Доменное ядро / бизнес-логика (в pixel-tanks — игр. движок, физика, геймплей) |
+| `area:docs`     | `fbca04` | Документация                                                                  |
+
+Одно направление на issue — primary. Сомневаешься между frontend и core: игровая
+механика/физика/движок → `core`; общий UI/layout/страницы/шеринг → `frontend`.
 
 ## Формат Issue
 
