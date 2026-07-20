@@ -197,18 +197,26 @@ function runClaude(prompt, opts) {
 }
 
 function runClaudeOnce(prompt, { model, maxTurns, noFallback }) {
-    // Guard спецсимволов: prompt уходит в shell-строку в двойных кавычках.
-    // " разорвёт строку; % на win32 (shell:true → cmd.exe) раскрывается как
-    // env-переменная ДАЖЕ внутри кавычек и молча исказит промпт (L1).
-    if (/["%]/.test(prompt)) fail('Prompt содержит " или % — упрости формулировку.');
-    const extra =
-        (config.permissionMode ? ` --permission-mode ${config.permissionMode}` : '') +
-        // M8: noFallback — для ревью fallback отключаем, иначе при overload
-        // «эскалированное ревью fable» молча деградирует в sonnet и в main уезжает
-        // фаза со слабым ревью. Пусть сессия честно упадёт → H2 остановит сдачу.
-        (config.fallbackModel && !noFallback ? ` --fallback-model ${config.fallbackModel}` : '');
-    const cmd = `claude -p "${prompt}" --max-turns ${maxTurns}${model ? ` --model ${model}` : ''}${extra}`;
-    log(`▶ ${cmd.slice(0, 160)}...`);
+    // Аргументы claude передаём МАССИВОМ (spawnSync без shell) — минуя шелл.
+    // Раньше был shell:true + интерполяция промпта в строку "claude -p \"${prompt}\"":
+    // на win32 (cmd.exe) % раскрывался как %VAR% ДАЖЕ внутри кавычек (L1), а на
+    // /bin/sh (Linux) backtick/$ внутри двойных кавычек = command substitution —
+    // вывод упавшего теста (excerpt в heal-промпте) с обратной кавычкой исполнился бы
+    // как команда (RCE). argv-массив снимает ВЕСЬ класс: шелл не участвует, спецсимволы
+    // не раскрываются — прежний guard /["%]/ и санитизация excerpt больше не нужны.
+    // См. docs/ralph-prod-mode/linux-port-audit.md (#66/#67).
+    // Работает кроссплатформенно, т.к. `claude` — нативный бинарник (claude.exe на
+    // Windows, бинарь/симлинк на Linux), а НЕ npm .cmd-shim (тот без shell даёт ENOENT).
+    const cmdArgs = ['-p', prompt, '--max-turns', String(maxTurns)];
+    if (model) cmdArgs.push('--model', model);
+    if (config.permissionMode) cmdArgs.push('--permission-mode', config.permissionMode);
+    // M8: noFallback — для ревью fallback отключаем, иначе при overload
+    // «эскалированное ревью fable» молча деградирует в sonnet и в main уезжает
+    // фаза со слабым ревью. Пусть сессия честно упадёт → H2 остановит сдачу.
+    if (config.fallbackModel && !noFallback) cmdArgs.push('--fallback-model', config.fallbackModel);
+    log(
+        `▶ claude -p "${prompt.slice(0, 80)}…" --max-turns ${maxTurns}${model ? ` --model ${model}` : ''}`,
+    );
     if (DRY) return { code: 0, output: '' };
     // timeout (M3): зависший claude (сетевой столл) иначе блокирует синхронный
     // loop навсегда — AFK-прогон молча стоит до утра.
@@ -216,9 +224,9 @@ function runClaudeOnce(prompt, { model, maxTurns, noFallback }) {
     // pipe вместо inherit — вывод нужен для детекции API-лимита (см. runClaude).
     // maxBuffer 64 МБ: многочасовая сессия может быть многословной, обрезка вывода
     // уронила бы spawnSync и замаскировала настоящий exit-код.
-    const res = spawnSync(cmd, {
+    const res = spawnSync('claude', cmdArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        shell: true,
+        shell: false,
         timeout,
         encoding: 'utf-8',
         maxBuffer: 64 * 1024 * 1024,
@@ -483,14 +491,15 @@ function checksGreen(branch, prNumber) {
             log(`  ✓ ${name}`);
         } catch (e) {
             log(`  ✗ ${name} — красный, авто-мердж отменён`);
-            // Хвост вывода чека — топливо для чини-сессии гейта (self-heal):
-            // без текста ошибки агент чинил бы вслепую. Санитизация под guard
-            // промпта (runClaudeOnce запрещает " и %) — вырезаем и сплющиваем.
+            // Хвост вывода чека — топливо для чини-сессии гейта (self-heal): без
+            // текста ошибки агент чинил бы вслепую. runClaudeOnce теперь передаёт
+            // промпт argv-массивом (shell:false) — спецсимволы вывода безопасны,
+            // санитизация под shell-guard не нужна; сплющиваем только пробелы.
             const raw = `${e.stdout || ''}\n${e.stderr || ''}`.trim() || String(e.message);
             lastRedCheck = {
                 name,
                 cmd,
-                excerpt: raw.slice(-600).replace(/["%]/g, "'").replace(/\s+/g, ' '),
+                excerpt: raw.slice(-600).replace(/\s+/g, ' '),
             };
             checkoutMainQuiet();
             return false;
