@@ -6,7 +6,9 @@ export default defineConfig({
         environment: 'happy-dom',
         globals: true,
         setupFiles: ['./src/test/setup.ts'],
-        include: ['src/**/*.test.{ts,tsx}'],
+        // src/** — приложение; .claude/ralph — Node-раннер (CommonJS-скрипт), тесты
+        // на его чистые функции живут рядом с ним, а не в src.
+        include: ['src/**/*.test.{ts,tsx}', '.claude/ralph/**/*.test.{js,ts}'],
         coverage: {
             provider: 'v8',
             include: ['src/**/*.{ts,tsx}'],
