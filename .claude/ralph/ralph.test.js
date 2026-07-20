@@ -30,6 +30,7 @@ const {
     probeEgress,
     restartTunnel,
     preflight,
+    runLoop,
     loadState,
 } = ralph;
 
@@ -707,5 +708,351 @@ describe('loadState — резолв state с диска (прямой тест,
         loadState(failFn);
         expect(failFn).toHaveBeenCalledTimes(1);
         expect(failFn.mock.calls[0][0]).toMatch(/схем|phaseIndex/i);
+    });
+});
+
+describe('runLoop — основной while-цикл: итерации кодера, сдача, гейт, self-heal (#104)', () => {
+    // runLoop получил DI (как preflight/ensureTunnel): коллабораторы с побочками
+    // (log/sh/saveState/openIssues/runClaude/tryMergePhase/…) и флаги once/dry —
+    // параметрами. Инжектируем фейки, поэтому здесь нет ни git/gh, ни спавна claude,
+    // ни диска. Терминация цикла: phaseIndexOfFn по умолчанию — счётчик, отдающий
+    // валидный индекс на 1-м проходе и «за концом» на 2-м, поэтому любой сценарий с
+    // continue гарантированно упирается в ветку «все фазы завершены» и не зациклится.
+    const mkState = (o = {}) => ({
+        count: 0,
+        milestone: 'M1',
+        submitted: false,
+        noProgress: 0,
+        gateHeals: 0,
+        blockedHeals: 0,
+        ...o,
+    });
+    const validCfg = (o = {}) => ({
+        model: 'claude-coder',
+        prompt: 'сделай {milestone} в ветке {branch}',
+        authorAllowlist: ['owner'],
+        phases: [{ milestone: 'M1', branch: 'feature/m1' }],
+        ...o,
+    });
+    // Дефолтные зависимости «пустого зелёного» прохода. logFn собирает строки в
+    // переданный массив (assert по тексту веток). Любой сценарий переопределяет нужное.
+    const deps = (logs, o = {}) => {
+        let idxCalls = 0;
+        return {
+            once: false,
+            dry: false,
+            logFn: (m) => logs.push(m),
+            shFn: () => '',
+            saveStateFn: () => {},
+            openIssuesFn: () => [],
+            allOpenIssuesFn: () => [],
+            // 1-й проход → фаза 0; 2-й и далее → «за концом» массива phases → break.
+            phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
+            pickModelFn: () => 'claude-picked',
+            pickReviewModelFn: () => 'none',
+            runClaudeFn: () => 0,
+            ensureCleanFn: () => true,
+            phaseMergedFn: () => false,
+            advancePhaseFn: () => {},
+            tryMergePhaseFn: () => 'not-merged',
+            closeMilestoneByTitleFn: () => {},
+            getLastRedCheck: () => null,
+            ...o,
+        };
+    };
+    const ctx = (state, o = {}) => ({ state, maxIterations: 10, maxTurns: 200, ...o });
+
+    it('фаза не резолвится (все пройдены) → лог «все фазы завершены» и выход', () => {
+        const logs = [];
+        runLoop(validCfg(), ctx(mkState()), deps(logs, { phaseIndexOfFn: () => 99 }));
+        expect(logs.join('\n')).toMatch(/Все фазы завершены/);
+    });
+
+    it('breaker maxIterations (AFK): count>=лимит → сброс count, saveState, стоп', () => {
+        const logs = [];
+        const state = mkState({ count: 10 });
+        const saveStateFn = vi.fn();
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg(),
+            ctx(state, { maxIterations: 10 }),
+            deps(logs, { phaseIndexOfFn: () => 0, saveStateFn, runClaudeFn }),
+        );
+        expect(logs.join('\n')).toMatch(/Circuit breaker: лимит итераций/);
+        expect(state.count).toBe(0);
+        expect(saveStateFn).toHaveBeenCalled();
+        expect(runClaudeFn).not.toHaveBeenCalled(); // до итерации не дошли
+    });
+
+    it('грязное дерево между итерациями (ensureClean=false, dry=false) → стоп до issues', () => {
+        const logs = [];
+        const openIssuesFn = vi.fn(() => []);
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, { phaseIndexOfFn: () => 0, ensureCleanFn: () => false, openIssuesFn }),
+        );
+        // Прервались на ensureClean — очередь issues даже не запрашивалась.
+        expect(openIssuesFn).not.toHaveBeenCalled();
+    });
+
+    it('кодер-итерация в ONCE: одна claude-сессия нужной моделью и стоп', () => {
+        const logs = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                once: true,
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [{ number: 5, title: 'задача', labels: [] }],
+                pickModelFn: () => 'claude-picked',
+                runClaudeFn,
+            }),
+        );
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        const [prompt, opts] = runClaudeFn.mock.calls[0];
+        // Плейсхолдеры промпта подставлены (replaceAll — оба {..}).
+        expect(prompt).toContain('M1');
+        expect(prompt).toContain('feature/m1');
+        expect(opts).toEqual({ model: 'claude-picked', maxTurns: 200 });
+        expect(state.count).toBe(1);
+        expect(logs.join('\n')).toMatch(/HITL: одна итерация/);
+    });
+
+    it('no-progress breaker (AFK): HEAD не сдвинулся и очередь та же → стоп', () => {
+        const logs = [];
+        const state = mkState({ noProgress: 2 }); // +1 на этой итерации = 3 = порог
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [{ number: 7, title: 't', labels: [] }],
+                shFn: () => 'SAME_HEAD', // headBefore === headAfter → нет коммитов
+                runClaudeFn: () => 0,
+            }),
+        );
+        expect(logs.join('\n')).toMatch(/Circuit breaker.*без прогресса/s);
+        expect(state.noProgress).toBe(0); // сброшен перед стопом
+    });
+
+    it('пустая очередь, но открыты blocked/чужие issues → сдача отложена, гейт не зовётся', () => {
+        const logs = [];
+        const tryMergePhaseFn = vi.fn(() => 'merged');
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [{ number: 9, author: { login: 'stranger' } }],
+                tryMergePhaseFn,
+            }),
+        );
+        expect(logs.join('\n')).toMatch(/вне очереди|отложена/);
+        expect(tryMergePhaseFn).not.toHaveBeenCalled();
+    });
+
+    it('фаза уже смерджена (идемпотентность, AFK): checkout+pull main, advancePhase, дальше', () => {
+        const logs = [];
+        const shCmds = [];
+        const advancePhaseFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                // counter-дефолт: 1-й проход фаза 0, 2-й → «за концом» → выход
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => true,
+                shFn: (c) => {
+                    shCmds.push(c);
+                    return '';
+                },
+                advancePhaseFn,
+            }),
+        );
+        expect(shCmds).toContain('git checkout main');
+        expect(shCmds).toContain('git pull --ff-only');
+        expect(advancePhaseFn).toHaveBeenCalledTimes(1);
+        expect(logs.join('\n')).toMatch(/уже смерджена/);
+    });
+
+    it('фаза смерджена при dry=true → advancePhase есть, но БЕЗ мутаций git (checkout/pull не зовутся)', () => {
+        const logs = [];
+        const shCmds = [];
+        const advancePhaseFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                dry: true,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => true,
+                shFn: (c) => {
+                    shCmds.push(c);
+                    return '';
+                },
+                advancePhaseFn,
+            }),
+        );
+        expect(shCmds).not.toContain('git checkout main');
+        expect(shCmds).not.toContain('git pull --ff-only');
+        expect(advancePhaseFn).toHaveBeenCalled();
+    });
+
+    it('submitted=true → сразу к гейту, без PR/ревью/правок', () => {
+        const logs = [];
+        const runClaudeFn = vi.fn(() => 0);
+        const tryMergePhaseFn = vi.fn(() => 'not-merged');
+        runLoop(
+            validCfg(),
+            ctx(mkState({ submitted: true })),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                runClaudeFn,
+                tryMergePhaseFn,
+            }),
+        );
+        expect(runClaudeFn).not.toHaveBeenCalled(); // сдача пропущена
+        expect(tryMergePhaseFn).toHaveBeenCalledTimes(1);
+        expect(logs.join('\n')).toMatch(/уже прошла PR\/ревью\/правки/);
+    });
+
+    it('полная сдача → гейт merged → закрыть milestone + advancePhase', () => {
+        const logs = [];
+        const closeMilestoneByTitleFn = vi.fn();
+        const advancePhaseFn = vi.fn();
+        const tryMergePhaseFn = vi.fn(() => 'merged');
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none', // ревью пропущено → сдача = PR + правки
+                runClaudeFn: () => 0,
+                tryMergePhaseFn,
+                closeMilestoneByTitleFn,
+                advancePhaseFn,
+            }),
+        );
+        expect(tryMergePhaseFn).toHaveBeenCalledTimes(1);
+        expect(closeMilestoneByTitleFn).toHaveBeenCalledWith('M1');
+        expect(advancePhaseFn).toHaveBeenCalledTimes(1);
+        expect(logs.join('\n')).toMatch(/Ревью PR — за супервизором/);
+    });
+
+    it('шаг создания PR упал (код≠0) → fail-closed стоп, гейт не зовётся', () => {
+        const logs = [];
+        const tryMergePhaseFn = vi.fn(() => 'merged');
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                runClaudeFn: () => 1, // PR-сессия упала
+                tryMergePhaseFn,
+            }),
+        );
+        expect(logs.join('\n')).toMatch(/Шаг создания PR упал/);
+        expect(tryMergePhaseFn).not.toHaveBeenCalled();
+    });
+
+    it('гейт blocked, бюджет есть → чини-сессия блокеров, инкремент blockedHeals, submitted=false', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 0 });
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                runClaudeFn,
+            }),
+        );
+        expect(state.blockedHeals).toBe(1);
+        expect(state.submitted).toBe(false); // сброс → повторное ревью на следующем проходе
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        expect(runClaudeFn.mock.calls[0][0]).toMatch(/blocked/);
+    });
+
+    it('гейт blocked, бюджет исчерпан → стоп без чини-сессии, сброс счётчика', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 3 });
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                runClaudeFn,
+            }),
+        );
+        expect(runClaudeFn).not.toHaveBeenCalled();
+        expect(state.blockedHeals).toBe(0);
+        expect(logs.join('\n')).toMatch(/blocked устоял/);
+    });
+
+    it('гейт red-checks → чини-сессия гейта с деталями чека из getLastRedCheck', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, gateHeals: 0 });
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({ gateHealAttempts: 2 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'red-checks',
+                getLastRedCheck: () => ({
+                    name: 'test',
+                    cmd: 'npm run test',
+                    excerpt: 'boom-fail',
+                }),
+                runClaudeFn,
+            }),
+        );
+        expect(state.gateHeals).toBe(1);
+        expect(state.submitted).toBe(false);
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        const healPrompt = runClaudeFn.mock.calls[0][0];
+        expect(healPrompt).toContain('test');
+        expect(healPrompt).toContain('npm run test');
+        expect(healPrompt).toContain('boom-fail');
+    });
+
+    it('гейт not-merged (нечинимая причина) → PR оставлен человеку, стоп', () => {
+        const logs = [];
+        runLoop(
+            validCfg(),
+            ctx(mkState({ submitted: true })),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'not-merged',
+            }),
+        );
+        expect(logs.join('\n')).toMatch(/не прошла авто-мердж/);
     });
 });
