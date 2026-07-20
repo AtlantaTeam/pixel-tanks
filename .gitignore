@@ -28,3 +28,6 @@ test-results/
 # Ralph runtime
 .claude/ralph/ralph.state.json
 .claude/ralph/ralph.log
+
+# Ralph provisioning — реальный env с секретами (только .example в git)
+.claude/ralph/provision/ralph.env
