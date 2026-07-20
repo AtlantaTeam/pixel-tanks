@@ -1,36 +1,38 @@
 # Session Handoff
 
-**Дата**: 2026-07-19
+**Дата**: 2026-07-20
 
 ## Текущая задача
 
-Прод-режим ralph: цепочка **prd → plan-phase → issues ПРОЙДЕНА**. Заведены 6 milestones +
-25 issues (#66-90) на `AtlantaTeam/pixel-tanks`, все на доске (проект #1). Docs:
-`docs/ralph-prod-mode/{prd.md, plan.md}`. Дальше — брать Фазу 1 руками (НЕ через loop).
+Прод-режим ralph: **среда развёрнута и проверена вживую**. Открыт PR #93
+(provisioning + PRD/plan под Timeweb). Дальше — Фаза 1: Linux-порт `ralph.js`
+(#66-70) и фикс красного typecheck на main.
 
 ## Последние принятые решения
 
-- **PRD переписан по факту кода `ralph.js`**: circuit breaker, self-heal, авторазбор blocked,
-  merge-retry, API-лимит auto-wait, роутинг, 5-чек гейт+LLM-ревью — УЖЕ есть, не todo.
-- **Среда прод-режима — удалённый Linux-сервер вне РФ** (Frankfurt): снимает прокси/Cloudflare-403,
-  разгружает комп. Обкатка Linux-порта сперва в **локальной VirtualBox** (бесплатно), тем же
-  provisioning-скриптом — на сервер. VDS: UltaHost Enterprise 4CPU/6GB/100GB, БЕЗ GPU.
-- **Канал пушей — Telegram-бот, односторонний** (бот→человек). Двусторонний контроль (read-only
-  → мутирующие команды) — в бэклог с event-триггерами.
-- **Milestone-префикс «Прод-режим ralph ·»** — чтобы не путать с game-next «Фаза 1-9».
-- **Фаза 1 = Linux-порт (входной билет)**: ralph.js гонялся только на Windows; spawnSync shell:true
-  → /bin/sh, guard %/" переосмыслить. #67 и #77 (shell/ветковая хореография) = expert→fable.
-- **merge→release**: деплой-таргета пока нет (pixel-tanks не деплоится) → release-стоп = «стоп+пуш»,
-  деплой no-op-плейсхолдер до боевого проекта.
+- **Среда = Timeweb Cloud VDS в РФ** (Москва, id 8636157, 4CPU/8GB), НЕ зарубежный
+  UltaHost/Frankfurt. Управление через Timeweb MCP. Оплата с РФ-карт. См. память
+  [[project-ralph-prod-env-timeweb]].
+- **Инверсия прокси**: сервер в РФ → api.anthropic.com даёт Cloudflare-403 →
+  Shadowsocks-туннель к Outline Димы во Франкфурте (ss-local→privoxy→HTTPS_PROXY).
+  Проверено: claude под Max-подпиской ходит через туннель. IP/порт прокси НЕ светить.
+- **Auth claude на сервере** = подписка через `claude setup-token` (не API-ключ):
+  бесплатно, ночью не конкурирует с локальной работой, auto-wait страхует лимит.
+- **VirtualBox выкинута** — обкатка provisioning на эфемерном Timeweb-VDS через MCP.
+- Provisioning готов: `.claude/ralph/provision/` (provision.sh + env.example + README).
+- **typecheck красный на чистом clone** (208 ошибок, нет vitest/globals в tsconfig);
+  локально маскируется incremental-кэшем `.tsbuildinfo` → дыра в ralph-гейте.
+- **VDS гасится в golden-образ между сессиями** (простой = 21₽/мес vs 2001₽). Образ
+  `image_id=21e4be00-b788-4da4-baab-a6449fabbaf7` (20₽/мес). Удаление VDS — через панель
+  (MCP не умеет; IPv4 удалить отдельно). Восстановление: `create_server` с image_id + новый IPv4.
 
 ## Следующие шаги
 
-1. Купить VDS (Quarterly, Frankfurt, Plain OS Ubuntu LTS; токен-поля НЕ заполнять).
-2. Начать Фазу 1 (#66→#70): аудит → shell-порт → provisioning-скрипт → тесты → прогон в VirtualBox.
-3. Позже: Фазы 7-10 корневого плана игры (auth, лидерборд, Яндекс ID, i18n) через скилл issues.
+1. Смерджить PR #93, затем закрыть #68 (systemd-пункт — в Фазу 2).
+2. Фикс typecheck: `types:["vitest/globals"]` в tsconfig (отдельный PR).
+3. Фаза 1 (#66-70): прогнать `ralph.js --dry-run` на VDS, портировать под /bin/sh.
 
 ## Open questions
 
-- **coverage-порог** (#82): жёсткое число или «покрытие не падает»? — решить в research.
-- **Оплата зарубежного VDS с РФ-карт** — реселлер/крипта (провайдер UltaHost).
-- **whichllm** — локальные модели для дешёвых задач ralph (нужен GPU-бокс, др. бюджет).
+- Ротировать ли токены (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN, ss-пароль прошли через чат)?
+- systemd-запуск ralph упрётся в prod-профиль (Фаза 2) — его в коде ещё нет.
