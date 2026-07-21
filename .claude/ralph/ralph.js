@@ -36,6 +36,12 @@
  * время AFK-прогонов и/или запуск в песочнице/VM, а не на рабочей машине) — за
  * человеком; раннер видимость репо не меняет.
  *
+ * Роутинг моделей: кодер — по метке complexity:* (modelRouting.labels); ревью
+ * фазы — review.default (opus), с эскалацией на review.escalated по ЗОНЕ РИСКА
+ * диффа (review.escalateOnPaths: деплой, права Payload, сам раннер), а не по
+ * сложности написания (#130). Бюджет ходов ревью — review.maxTurns (дефолт 80),
+ * отдельно от кодерского maxTurns: ревью не пишет код.
+ *
  * Circuit breaker: maxIterations (на фазу), maxTurns (на сессию),
  * maxNoProgress (подряд итераций без коммита и без закрытого issue, дефолт 3),
  * gateHealAttempts (чини-сессий на красный чек гейта, дефолт 2 — потом стоп),
@@ -44,8 +50,9 @@
  *
  * API-лимит (идея из frankbria/ralph-claude-code): при падении сессии с маркером
  * usage/rate-limit раннер спит до сброса окна (парсит «resets Nam/pm» из вывода,
- * fallback apiLimitFallbackWaitMin, дефолт 30 мин) и повторяет команду, не более
- * apiLimitMaxWaits раз (дефолт 3). Отключение: waitOnApiLimit=false в конфиге.
+ * fallback apiLimitFallbackWaitMin, дефолт 30 мин; сверху запас apiLimitGraceMin,
+ * дефолт 5 мин) и повторяет команду, не более apiLimitMaxWaits раз (дефолт 3).
+ * Отключение: waitOnApiLimit=false в конфиге.
  *
  * Запуск:
  *   node .claude/ralph/ralph.js             AFK: до maxIterations итераций, авто-мердж фаз
@@ -622,6 +629,39 @@ function syncDepsIfLockChanged({
     writeLockMarker('.', { readFn, writeFn });
 }
 
+// Сколько спать после маркера лимита: время до сброса окна (или fallback, если
+// время не распарсилось) плюс запас config.apiLimitGraceMin.
+//
+// #130: запас был захардкожен как 2 минуты и оказался слишком тонким — окно
+// сбрасывается не мгновенно, и повтор рискует уйти в ту же стену, сжигая попытку
+// из apiLimitMaxWaits (их всего 3). Дефолт поднят до 5 минут и вынесен в конфиг.
+//
+// minutesOrDefault, а не `??`: `??` пропускал бы любой мусор, а мусор здесь не
+// «странное число минут», а вечный сон. Atomics.wait(buf, 0, 0, NaN) трактует NaN
+// как +∞ — раннер вставал бы навсегда, молча, с записью «Жду NaN мин» в логе
+// (блокер ревью PR #132). Ноль при этом остаётся законным: «без запаса» —
+// осознанный выбор, его подменять дефолтом нельзя.
+// typeof number строго, без приведения: Number(null) и Number('') дают 0, и
+// пропущенный/пустой ключ читался бы как осознанный «нулевой запас» вместо
+// дефолта. Строку '5' тоже не принимаем — в JSON-конфиге минуты обязаны быть
+// числом, а тихое приведение прячет опечатку вместо того, чтобы её проявить.
+function minutesOrDefault(value, dflt) {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : dflt;
+}
+
+// То же для бюджета ходов, но строго > 0: maxTurns: 0 — не «без ограничения», а
+// сессия, которой не дали сделать ни хода. Прежний `||` молча ронял такое
+// значение на кодерские 200, что противоречило аргументации PR про `??`.
+function positiveIntOrDefault(value, dflt) {
+    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : dflt;
+}
+
+function apiLimitWaitMs(output, cfg) {
+    const fallbackMs = minutesOrDefault(cfg.apiLimitFallbackWaitMin, 30) * 60 * 1000;
+    const graceMs = minutesOrDefault(cfg.apiLimitGraceMin, 5) * 60 * 1000;
+    return (parseResetWaitMs(output) ?? fallbackMs) + graceMs;
+}
+
 /**
  * Запуск claude -p. Возвращает exit-код процесса (0 = успех; DRY всегда 0).
  * H2: код возвращаем, а не глотаем, потому что фатальность решает ВЫЗЫВАЮЩИЙ:
@@ -632,9 +672,10 @@ function syncDepsIfLockChanged({
  * Вывод claude теперь захватывается (pipe), а не inherit: это цена за детекцию
  * API-лимита в тексте. Потери живого стрима почти нет — `claude -p` печатает
  * результат в конце сессии; захваченный вывод целиком уходит в консоль после.
- * При маркере лимита: sleep до сброса (+2 мин буфер) и повтор той же команды,
- * не более config.apiLimitMaxWaits раз (дефолт 3) — защита от вечного сна.
+ * При маркере лимита: sleep до сброса (+ apiLimitGraceMin запаса) и повтор той же
+ * команды, не более config.apiLimitMaxWaits раз (дефолт 3) — защита от вечного сна.
  */
+
 function runClaude(prompt, opts) {
     // #92: единая точка всех claude-сессий (кодер-итерации И шаги сдачи) — здесь же
     // и единый health-check туннеля. Красный канал после перезапуска = fail-closed
@@ -656,8 +697,7 @@ function runClaude(prompt, opts) {
         const { code, output } = runClaudeOnce(prompt, opts);
         const limitHit = code !== 0 && API_LIMIT_RE.test(output);
         if (!limitHit || config.waitOnApiLimit === false || attempt >= maxWaits) return code;
-        const fallbackMs = (config.apiLimitFallbackWaitMin || 30) * 60 * 1000;
-        const waitMs = (parseResetWaitMs(output) ?? fallbackMs) + 2 * 60 * 1000;
+        const waitMs = apiLimitWaitMs(output, config);
         log(
             `⏳ API-лимит: сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`,
         );
@@ -788,8 +828,9 @@ function allOpenIssues(milestone) {
 // ── Роутинг моделей по сложности ─────────────────────────────────────────────
 // Issue помечается одним label complexity:{low|medium|high|expert}.
 // Кодер: label → модель из config.modelRouting.labels (haiku/sonnet/opus/fable).
-// Ревью фазы: config.review.default (opus), но если в фазе был хоть один issue
-// с label из config.review.escalateOn — эскалация на config.review.escalated (fable).
+// Ревью фазы: config.review.default (opus); эскалация на config.review.escalated
+// (fable) — по ЗОНЕ РИСКА диффа (config.review.escalateOnPaths), а не по сложности
+// написания. Подробности и мотивация — в докблоке pickReviewModel (#130).
 
 const COMPLEXITY_PRIORITY = [
     'complexity:expert',
@@ -808,22 +849,159 @@ function pickModel(issue) {
     return routing.default || config.model;
 }
 
-function pickReviewModel(milestone) {
-    const review = config.review;
-    if (!review) return config.reviewModel; // легаси-конфиг без блока review
-    const escalateOn = review.escalateOn || [];
-    let all = [];
-    try {
-        all = ghJson(
-            `gh issue list --milestone "${milestone}" --state all --json labels --limit 100`,
-        );
-    } catch (e) {
-        // Не фатально: неизвестная сложность → ревью дефолтной моделью (opus), это
-        // всё ещё полноценное ревью; фатальный стоп тут дал бы ложные простои.
-        log(`⚠ Не смог получить labels фазы для выбора ревью-модели: ${e.message}`);
+// ── #130: зоны риска для эскалации ревью ─────────────────────────────────────
+// Глоб → RegExp. Поддерживаем ровно то, что нужно для путей репозитория:
+// `**` (любая вложенность, включая /), `*` (в пределах одного сегмента), `?`.
+// Всё остальное экранируется дословно — в путях реально встречаются символы,
+// значимые для regexp: `src/app/(payload)/` — route-группа Next.js, а точка в
+// `next.config.ts` не должна читаться как «любой символ».
+function globToRegExp(glob) {
+    let re = '';
+    for (let i = 0; i < glob.length; i++) {
+        const c = glob[i];
+        if (c === '*') {
+            if (glob[i + 1] === '*') {
+                i++;
+                // `**/` — ноль или больше каталогов: матчит и `middleware.ts`,
+                // и `src/middleware.ts` одним паттерном.
+                if (glob[i + 1] === '/') {
+                    i++;
+                    re += '(?:.*/)?';
+                } else {
+                    re += '.*';
+                }
+            } else {
+                re += '[^/]*';
+            }
+        } else if (c === '?') {
+            re += '[^/]';
+        } else {
+            re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+        }
     }
-    const hasComplex = all.some((i) => (i.labels || []).some((l) => escalateOn.includes(l.name)));
-    return hasComplex ? review.escalated : review.default;
+    return new RegExp(`^${re}$`);
+}
+
+// Первый файл диффа, попавший в зону риска, или null. Возвращаем именно файл, а
+// не булево: он уходит в лог — по нему видно, ЧТО вызвало дорогое ревью.
+// Array.isArray, а не просто .length: escalateOnPaths строкой (частая опечатка в
+// JSON — забыть скобки вокруг одного паттерна) давал бы .map is not a function
+// прямо в цикле сдачи фазы, уже после ревью (находка ревью PR #132).
+function matchRiskPaths(files, patterns) {
+    if (!Array.isArray(patterns) || !patterns.length) return null;
+    if (!Array.isArray(files) || !files.length) return null;
+    const res = patterns.map(globToRegExp);
+    return files.find((f) => res.some((re) => re.test(f))) ?? null;
+}
+
+// Имя ветки уходит в sh(), а sh() исполняет СТРОКУ через шелл — значит имя обязано
+// быть провалидировано до подстановки, иначе `$(...)`/`;`/бэктик из конфига
+// исполнятся. git и так запрещает эти символы в refname, поэтому строгий фильтр
+// ничего легального не отсекает.
+const SAFE_BRANCH_RE = /^[A-Za-z0-9._\-/]+$/;
+
+// Файлы, которые фаза меняет относительно main. Сравниваем remote-ссылки
+// (origin/main...origin/<branch>), а не локальные: дерево раннера живёт в detached
+// HEAD, а локальный main — ветка человека, к состоянию фазы отношения не имеет.
+//
+// fetch перед диффом обязателен (находка ревью PR #132): без него решение о цене
+// ревью принимается по протухшим remote-ссылкам — ровно та же мотивация, по
+// которой фетчит checksGreen(). --no-renames — тоже не косметика: при
+// переименовании git отдаёт ТОЛЬКО новый путь, и перенос файла ИЗ зоны риска
+// (например .github/workflows/deploy.yml → docs/old-deploy.yml) прошёл бы мимо
+// эскалации. core.quotePath=false — тоже про полноту охвата: по умолчанию git
+// оборачивает пути с не-ASCII в кавычки и экранирует байты (`"\321\204.ts"`), и
+// такой путь не совпал бы ни с одним глобом зоны риска.
+function phaseDiffFiles(branch, { shFn = sh, logFn = log } = {}) {
+    if (!branch) {
+        logFn('⚠ Ветка фазы не задана — дифф для выбора ревью-модели не считаю.');
+        return null;
+    }
+    if (!SAFE_BRANCH_RE.test(branch)) {
+        logFn(`⚠ Небезопасное имя ветки "${branch}" — дифф для выбора ревью-модели не считаю.`);
+        return null;
+    }
+    try {
+        shFn(`git fetch origin main ${branch} --quiet`);
+        const out = shFn(
+            `git -c core.quotePath=false diff --name-only --no-renames origin/main...origin/${branch}`,
+        );
+        const files = out
+            ? out
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+            : [];
+        // Пустой дифф — не то же самое, что «зоны риска не задеты»: у фазы всегда
+        // есть изменения, поэтому пусто = ветка не запушена, ушла не туда или
+        // сравнение поехало. Молча ревьюить дешёвой моделью в такой ситуации
+        // нельзя — пусть в логе останется след.
+        if (!files.length) {
+            logFn(`⚠ Дифф ${branch} против origin/main пуст — зоны риска определить не по чему.`);
+        }
+        return files;
+    } catch (e) {
+        logFn(`⚠ Не смог получить дифф фазы для выбора ревью-модели: ${e.message}`);
+        return null;
+    }
+}
+
+// Модель ревью фазы. Дефолт — review.default (opus).
+//
+// #130: эскалация решается по ЦЕНЕ ОШИБКИ, а не по сложности написания. Раньше
+// триггером была метка complexity:expert — но это свойство issue («тяжело писать»),
+// а ревью должно усиливаться там, где ошибка дорого стоит: деплой (мердж в main
+// катит прод автоматически), права доступа Payload, сам раннер (автономный агент
+// с bypassPermissions). Метки как триггер сохранены для обратной совместимости,
+// но в конфиге по умолчанию пусты.
+//
+// Ошибка получения диффа/меток — не фатальна: ревьюим дефолтной моделью. Это
+// по-прежнему полноценное ревью плюс гейт мерджа впереди, а fail-closed стоп тут
+// дал бы ложные ночные простои.
+function pickReviewModel(
+    milestone,
+    branch,
+    { cfg = config, ghJsonFn = ghJson, shFn = sh, logFn = log } = {},
+) {
+    const review = cfg.review;
+    if (!review) return cfg.reviewModel; // легаси-конфиг без блока review
+
+    // Эскалация без заданной escalated-модели вернула бы undefined, а runLoop
+    // трактует «нет модели» как «ревью за супервизором» и пропускает ревью ЦЕЛИКОМ
+    // — fail-open ровно на самых опасных фазах (находка ревью PR #132). Поэтому
+    // деградируем на default: полноценное ревью, просто не усиленное.
+    const escalatedModel = () => {
+        if (review.escalated) return review.escalated;
+        logFn('⚠ review.escalated не задан — эскалация невозможна, ревьюю моделью по умолчанию.');
+        return review.default;
+    };
+
+    const escalateOn = Array.isArray(review.escalateOn) ? review.escalateOn : [];
+    if (escalateOn.length) {
+        let all = [];
+        try {
+            all = ghJsonFn(
+                `gh issue list --milestone "${milestone}" --state all --json labels --limit 100`,
+            );
+        } catch (e) {
+            logFn(`⚠ Не смог получить labels фазы для выбора ревью-модели: ${e.message}`);
+        }
+        const hasComplex = all.some((i) =>
+            (i.labels || []).some((l) => escalateOn.includes(l.name)),
+        );
+        if (hasComplex) {
+            logFn('🔺 Ревью эскалировано: в фазе есть issue с меткой из review.escalateOn.');
+            return escalatedModel();
+        }
+    }
+
+    const files = phaseDiffFiles(branch, { shFn, logFn });
+    const hit = files && matchRiskPaths(files, review.escalateOnPaths);
+    if (hit) {
+        logFn(`🔺 Ревью эскалировано: дифф фазы трогает зону риска (${hit}).`);
+        return escalatedModel();
+    }
+    return review.default;
 }
 
 // ── Закрытие milestones ──────────────────────────────────────────────────────
@@ -1634,13 +1812,20 @@ function runLoop(
                 }
 
                 // 2. Ревью отдельной моделью. Блокеры → label blocked на PR (гейт поймает).
-                const reviewModel = pickReviewModelFn(phase.milestone);
+                const reviewModel = pickReviewModelFn(phase.milestone, phase.branch);
                 if (reviewModel && reviewModel !== 'none') {
                     logFn(`🔍 Ревью фазы моделью: ${reviewModel}`);
                     const reviewCode = runClaudeFn(
                         `Найди последний открытый PR из ветки ${phase.branch} в main и проведи детальное code review: архитектура, безопасность, производительность, соответствие PRD, а также читаемость, нейминг, типизация, дубли, покрытие тестами и мелкие огрехи. Оставь inline-комментарии в PR через gh cli на КАЖДУЮ найденную проблему любого масштаба — не только критичные; мелочи (nit/style) тоже комментируй, их не пропускать. Каждый комментарий ОБЯЗАТЕЛЬНО начинай с пометки серьёзности строго в формате эмодзи+тег: 🔴 [blocker] / 🟠 [major] / 🟡 [minor] / ⚪ [nit] — без исключений, и сводный обзорный комментарий размечай теми же значками; комментарий без такой пометки — нарушение формата. Если есть БЛОКИРУЮЩИЕ проблемы (баги, дыры безопасности, сломанная физика или сборка) — поставь на PR label blocked. Не мерджи PR и не пушь в main.`,
                         // noFallback (M8): без тихой деградации ревью-модели, см. runClaude.
-                        { model: reviewModel, maxTurns, noFallback: true },
+                        // #130: у ревью свой бюджет ходов (review.maxTurns, дефолт 80).
+                        // Кодерские 200 ему не нужны — ревью не пишет код, и лишний
+                        // бюджет уходит на перечитывание уже прочитанного.
+                        {
+                            model: reviewModel,
+                            maxTurns: positiveIntOrDefault(cfg.review?.maxTurns, maxTurns),
+                            noFallback: true,
+                        },
                     );
                     if (reviewCode !== 0) {
                         logFn(
@@ -2085,6 +2270,13 @@ module.exports = {
     buildClaudeArgs,
     formatExcerpt,
     parseResetWaitMs,
+    apiLimitWaitMs,
+    minutesOrDefault,
+    positiveIntOrDefault,
+    globToRegExp,
+    matchRiskPaths,
+    phaseDiffFiles,
+    pickReviewModel,
     API_LIMIT_RE,
     spawnClaude,
     tunnelHealthy,

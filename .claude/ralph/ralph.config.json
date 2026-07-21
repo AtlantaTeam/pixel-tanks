@@ -12,6 +12,7 @@
         "blockedHealAttempts": 3,
         "gateHealAttempts": 2,
         "apiLimitMaxWaits": 3,
+        "apiLimitGraceMin": 5,
         "modelRouting": {
             "default": "claude-opus-4-8",
             "labels": {
@@ -24,7 +25,19 @@
         "review": {
             "default": "claude-opus-4-8",
             "escalated": "claude-fable-5",
-            "escalateOn": ["complexity:expert"]
+            "escalateOn": [],
+            "escalateOnPaths": [
+                ".github/workflows/**",
+                ".claude/ralph/**",
+                "deploy/**",
+                "scripts/**",
+                "src/payload.config.ts",
+                "src/payload/**",
+                "src/app/(payload)/**",
+                "**/middleware.ts",
+                "next.config.ts"
+            ],
+            "maxTurns": 80
         },
         "tunnelCheck": {
             "enabled": false,
