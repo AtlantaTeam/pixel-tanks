@@ -53,8 +53,10 @@
  *   node .claude/ralph/ralph.js --dry-run   показать что будет сделано; строго read-only
  *   node .claude/ralph/ralph.js --reset     сбросить state на первую фазу конфига
  *   node .claude/ralph/ralph.js --resubmit  повторить полный цикл сдачи фазы (PR/ревью/правки)
+ *   node .claude/ralph/ralph.js --profile <name>   профиль конфига (по умолчанию defaultProfile)
  *
  * Требования: gh CLI авторизован, git-репозиторий, ralph.config.json настроен, active: true.
+ * Конфиг профильный: общие поля в `common`, дельта режима — в `profiles.<name>`.
  */
 
 const { execSync, execFileSync, spawnSync } = require('node:child_process');
@@ -177,6 +179,30 @@ function deepMerge(base, override, failFn = fail, path = 'common') {
         out[k] = merged;
     }
     return out;
+}
+
+// Флаг --profile <name> | --profile=<name> (#72). Нет флага → null, дальше решает
+// defaultProfile из конфига. Флаг БЕЗ имени — стоп: это почти всегда оборванная
+// команда, а «молча ушёл в playground, когда просили prod» — ровно тот тихий сдвиг
+// режима, против которого затевались профили.
+function parseProfileFlag(argv, failFn = fail) {
+    // Обе формы собираем разом: при дубле (`--profile a --profile=b`) «кто победит»
+    // решал бы порядок веток кода, а не намерение человека — тихий уход не в тот
+    // профиль. Дубль — стоп, даже с одинаковыми именами: команда явно собрана криво.
+    const hits = argv.filter((a) => a === '--profile' || a.startsWith('--profile='));
+    if (hits.length === 0) return null;
+    if (hits.length > 1) {
+        return failFn(`Флаг --profile указан ${hits.length} раза — оставь один.`);
+    }
+    if (hits[0].startsWith('--profile=')) {
+        return hits[0].slice('--profile='.length) || failFn('Флаг --profile= без имени профиля.');
+    }
+    const value = argv[argv.indexOf('--profile') + 1];
+    // Следующий флаг вместо имени (`--profile --once`) — тоже пропущенное имя.
+    if (!value || value.startsWith('--')) {
+        return failFn('Флаг --profile требует имя профиля: --profile <name>.');
+    }
+    return value;
 }
 
 // Fail-closed: любой изъян схемы — стоп с внятным сообщением, а не тихий дефолт.
@@ -1437,9 +1463,13 @@ function runLoop(
 function main() {
     const raw = loadJson(CONFIG_PATH, null);
     if (!raw) fail(`Не найден/не парсится ${CONFIG_PATH}`);
-    // Пока без --profile (флаг — #72): берём defaultProfile. Резолв уже здесь, чтобы
-    // весь раннер с этого момента читал ПЛОСКИЙ конфиг и не знал про профили вовсе.
-    config = resolveProfile(raw, null);
+    // Резолв здесь, до preflight/runLoop: весь раннер дальше читает ПЛОСКИЙ конфиг и
+    // про профили не знает вовсе. Парсим флаг в main(), а не рядом с ONCE/DRY на
+    // module-level — иначе кривой argv ронял бы process.exit при простом import в тестах.
+    config = resolveProfile(raw, parseProfileFlag(args));
+    // Режим в лог первой строкой: разбирая утренний ralph.log, надо видеть, в каком
+    // профиле шёл прогон, не сверяясь с историей команд.
+    log(`⚙️  Профиль: ${config.profileName}`);
 
     if (RESET) {
         saveState(defaultState());
@@ -1477,6 +1507,7 @@ if (require.main === module) main();
 module.exports = {
     resolveProfile,
     deepMerge,
+    parseProfileFlag,
     buildClaudeArgs,
     formatExcerpt,
     parseResetWaitMs,

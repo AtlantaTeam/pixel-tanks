@@ -21,6 +21,7 @@ import ralph from './ralph.js';
 const {
     resolveProfile,
     deepMerge,
+    parseProfileFlag,
     buildClaudeArgs,
     formatExcerpt,
     parseResetWaitMs,
@@ -1212,5 +1213,72 @@ describe('resolveProfile — сборка итогового конфига из
         expect(resolveProfile(null, null, softFail)).toBe(null);
         expect(resolveProfile({ common: {} }, null, softFail)).toBe(null);
         expect(resolveProfile(raw(), 'staging', softFail)).toBe(null);
+    });
+});
+
+describe('parseProfileFlag — выбор профиля из argv (#72)', () => {
+    const boom = (m) => {
+        throw new Error(m);
+    };
+
+    it('--profile <name> отдаёт имя', () => {
+        expect(parseProfileFlag(['--profile', 'prod'], boom)).toBe('prod');
+    });
+
+    it('--profile=<name> отдаёт имя', () => {
+        expect(parseProfileFlag(['--profile=prod'], boom)).toBe('prod');
+    });
+
+    it('без флага → null: решать будет defaultProfile конфига', () => {
+        expect(parseProfileFlag(['--once', '--dry-run'], boom)).toBe(null);
+    });
+
+    it('имя не путается с соседними флагами', () => {
+        expect(parseProfileFlag(['--dry-run', '--profile', 'prod', '--once'], boom)).toBe('prod');
+    });
+
+    // Оборванная команда не должна тихо уводить в playground.
+    it('--profile без имени → стоп', () => {
+        expect(() => parseProfileFlag(['--profile'], boom)).toThrow(/требует имя/);
+    });
+
+    it('--profile перед другим флагом → стоп, а не имя "--once"', () => {
+        expect(() => parseProfileFlag(['--profile', '--once'], boom)).toThrow(/требует имя/);
+    });
+
+    it('--profile= с пустым значением → стоп', () => {
+        expect(() => parseProfileFlag(['--profile='], boom)).toThrow(/без имени/);
+    });
+
+    // Дубль с разными именами: «кто победит» нельзя решать порядком веток парсера —
+    // это тихий уход не в тот профиль. Только стоп.
+    it('дубль флага в разных формах → стоп', () => {
+        expect(() => parseProfileFlag(['--profile', 'prod', '--profile=playground'], boom)).toThrow(
+            /указан 2 раза/,
+        );
+    });
+
+    it('дубль флага в одной форме → стоп, даже с одинаковым именем', () => {
+        expect(() => parseProfileFlag(['--profile', 'prod', '--profile', 'prod'], boom)).toThrow(
+            /указан 2 раза/,
+        );
+    });
+
+    it('связка с резолвом: флаг важнее defaultProfile', () => {
+        const raw = {
+            defaultProfile: 'playground',
+            common: { maxTurns: 200 },
+            profiles: { playground: {}, prod: { maxTurns: 50 } },
+        };
+        const name = parseProfileFlag(['--profile', 'prod'], boom);
+        const cfg = resolveProfile(raw, name, boom);
+        expect(cfg.profileName).toBe('prod');
+        expect(cfg.maxTurns).toBe(50);
+    });
+
+    it('связка с резолвом: неизвестное имя из флага → стоп', () => {
+        const raw = { defaultProfile: 'playground', common: {}, profiles: { playground: {} } };
+        const name = parseProfileFlag(['--profile', 'staging'], boom);
+        expect(() => resolveProfile(raw, name, boom)).toThrow(/Неизвестный профиль/);
     });
 });
