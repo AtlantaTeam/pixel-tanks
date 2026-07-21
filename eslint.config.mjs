@@ -10,7 +10,22 @@ const eslintConfig = defineConfig([
             '@typescript-eslint/no-explicit-any': 'error',
         },
     },
-    globalIgnores(['.next/**', 'out/**', 'build/**', 'next-env.d.ts', '.claude/**']),
+    // playwright-report/** и test-results/** — артефакты e2e-прогона (#81); coverage/** —
+    // артефакт coverage-чека (#82, istanbul-ассеты prettify.js/sorter.js/block-navigation.js).
+    // Все три стабильно появляются на раннере в прод-гейте, это чужой сгенерированный код —
+    // без игнора следующий чек `lint` линтил бы вендорный бандл (сотни ложных ошибок в
+    // трейс-вьюере, warning про unused eslint-disable в istanbul). Все каталоги в
+    // .gitignore — линтить их нечего.
+    globalIgnores([
+        '.next/**',
+        'out/**',
+        'build/**',
+        'next-env.d.ts',
+        '.claude/**',
+        'playwright-report/**',
+        'test-results/**',
+        'coverage/**',
+    ]),
 ]);
 
 export default eslintConfig;
