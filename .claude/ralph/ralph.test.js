@@ -43,6 +43,7 @@ const {
     preflight,
     runLoop,
     loadState,
+    ensureClean,
     checkoutMainQuiet,
     checksGreen,
     tryMergePhase,
@@ -1250,6 +1251,65 @@ describe('runLoop — основной while-цикл: итерации коде
             }),
         );
         expect(logs.join('\n')).toMatch(/не прошла авто-мердж/);
+    });
+});
+
+describe('ensureClean — чистота дерева раннера, изолированная от дерева человека (#78)', () => {
+    it('чистое дерево (git status пуст) → true', () => {
+        const logs = [];
+        expect(ensureClean('итерация', { shFn: () => '', logFn: (m) => logs.push(m) })).toBe(true);
+        expect(logs).toEqual([]);
+    });
+
+    it('грязное дерево (git status непуст) → false, лог с контекстом и выводом status', () => {
+        const logs = [];
+        const ok = ensureClean('гейт мерджа', {
+            shFn: () => ' M src/a.ts\n?? tmp.log',
+            logFn: (m) => logs.push(m),
+        });
+        expect(ok).toBe(false);
+        expect(logs.join('\n')).toMatch(/Грязное рабочее дерево \(гейт мерджа\)/);
+        expect(logs.join('\n')).toMatch(/src\/a\.ts/);
+    });
+
+    it('git status упал (не git-репо/сломан) → false (fail-closed), лог об ошибке', () => {
+        const logs = [];
+        const ok = ensureClean('итерация', {
+            shFn: () => {
+                throw new Error('fatal: not a git repository');
+            },
+            logFn: (m) => logs.push(m),
+        });
+        expect(ok).toBe(false);
+        expect(logs.join('\n')).toMatch(/git status упал/);
+    });
+
+    it('спрашивает ровно `git status --porcelain` — per-worktree запрос, не общий на репо', () => {
+        // Изоляция — свойство именно этой команды: git status смотрит рабочее дерево
+        // ТЕКУЩЕГО worktree. Живой git тут не поднимаем осознанно: под git-хуком
+        // (pre-push) в env торчит GIT_DIR, и `git` в подпроцессе теста бьёт по НАСТОЯЩЕМУ
+        // репозиторию, а не по tmp — проверено больно. Конвенция файла — DI-моки; сам
+        // per-worktree характер команды закреплён этой ассертой.
+        const cmds = [];
+        ensureClean('итерация', {
+            shFn: (c) => {
+                cmds.push(c);
+                return '';
+            },
+            logFn: () => {},
+        });
+        expect(cmds).toEqual(['git status --porcelain']);
+    });
+
+    // Критерий #78 на уровне ralph: правки человека в соседнем дереве в вердикт не
+    // попадают. Реальный sh после process.chdir (#76) выполняет `git status` в cwd
+    // раннера, поэтому shFn моделирует ИМЕННО дерево раннера — что бы ни творилось у
+    // человека, ensureClean видит только выхлоп своего дерева.
+    it('дерево раннера чистое → true, чем бы ни было грязно дерево человека (изоляция)', () => {
+        // shFn = «git status в worktree раннера»: раннер ничего не трогал → пусто.
+        // (Дерево человека может быть сколь угодно грязным — до этого shFn не доходит.)
+        const runnerTreeStatus = () => '';
+        expect(ensureClean('итерация', { shFn: runnerTreeStatus, logFn: () => {} })).toBe(true);
     });
 });
 

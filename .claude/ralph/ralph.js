@@ -787,16 +787,25 @@ const GATE_CHECKS = [
 // на полуслове). Preflight ловит грязь только на старте; эта проверка зовётся перед
 // каждой итерацией и перед гейтом, чтобы новая сессия не стартовала поверх чужой
 // полу-работы, а чеки не гонялись на смеси веток.
-function ensureClean(context) {
+//
+// Изоляция от дерева человека (#78): `git status --porcelain` смотрит рабочее дерево
+// и индекс ТЕКУЩЕГО worktree, а раннер с #76 живёт в выделенном worktree (cwd
+// переставлен в main() до всего цикла). Правки/коммиты человека в соседнем главном
+// дереве в этот вывод не попадают — worktree'ы держат отдельные working tree и index.
+// Раньше (общее дерево) ручная правка посреди AFK-прогона ложно роняла ensureClean и
+// стопила всю ночь. shFn/logFn инжектируемы — как у сиблингов гейта из #77 (для тестов
+// изоляции и единообразия); по умолчанию это глобальные sh/log, работающие в cwd
+// раннера.
+function ensureClean(context, { shFn = sh, logFn = log } = {}) {
     let dirtyNow = '';
     try {
-        dirtyNow = sh('git status --porcelain');
+        dirtyNow = shFn('git status --porcelain');
     } catch (e) {
-        log(`⚠ git status упал (${context}): ${e.message}`);
+        logFn(`⚠ git status упал (${context}): ${e.message}`);
         return false;
     }
     if (dirtyNow) {
-        log(`⛔ Грязное рабочее дерево (${context}) — стоп, разбери руками:\n${dirtyNow}`);
+        logFn(`⛔ Грязное рабочее дерево (${context}) — стоп, разбери руками:\n${dirtyNow}`);
         return false;
     }
     return true;
@@ -1884,6 +1893,8 @@ if (require.main === module) main();
 // ветки не занимаются; побочки (sh/gh/log/park/sleep) и dry — инжектируемые.
 // getLastRedCheck — геттер module-level lastRedCheck для ассертов red-check в тестах
 // (то же, что runLoop получает дефолтным getLastRedCheck-депом).
+// ensureClean (#78) — проверка чистоты дерева раннера; shFn/logFn инжектируемы, что
+// даёт прямой тест изоляции от правок человека в соседнем worktree.
 module.exports = {
     resolveProfile,
     deepMerge,
@@ -1909,6 +1920,7 @@ module.exports = {
     preflight,
     runLoop,
     loadState,
+    ensureClean,
     checkoutMainQuiet,
     checksGreen,
     tryMergePhase,
