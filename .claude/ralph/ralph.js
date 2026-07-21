@@ -72,6 +72,7 @@ const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
+const { sendTelegramMessage } = require('./telegram-notifier.js');
 
 const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
@@ -451,11 +452,17 @@ function restartTunnel(cfg, execFn = execFileSync) {
     }
 }
 
-// Пуш-событие человеку. Полноценная доставка (ntfy/telegram) — Фаза 5; пока заметный
-// лог-маркер, чтобы событие не терялось в потоке. Отдельная функция — точка,
-// которую Фаза 5 заменит одним местом.
-function pushEvent(msg) {
-    log(`🔔 PUSH: ${msg}`);
+// Пуш-событие человеку (#86) — единая точка для всех 4 событий прод-режима
+// (release-стоп #87, blocked отдан человеку, circuit breaker, rate-limit) и
+// health-check туннеля (#92). Лог-маркер печатается ВСЕГДА (виден в monitor.js
+// даже без Telegram); реальная доставка — только в prod: playground остаётся
+// публичным учебным полигоном, боту там шуметь некуда (PRD: «Пуш-уведомления в
+// Telegram (prod)»). sendFn инжектируется (как probe/restart у ensureTunnel) —
+// юнит-тесты мокают сам вызов, не токен/сеть.
+function pushEvent(msg, cfg = config, { sendFn = sendTelegramMessage, logFn = log } = {}) {
+    logFn(`🔔 PUSH: ${msg}`);
+    if (!cfg || cfg.profileName !== 'prod') return false;
+    return sendFn(msg, { logFn });
 }
 
 // Оркестровка health-check. true = туннель здоров ИЛИ проверка выключена (можно
@@ -493,6 +500,7 @@ function ensureTunnel(
     );
     push(
         `Ralph: Shadowsocks-туннель на VDS красный (egress='${egress || '—'}' != '${expected}') и не поднялся после перезапуска. Loop остановлен — почини канал.`,
+        cfg,
     );
     return false;
 }
@@ -781,7 +789,7 @@ function apiLimitWaitMs(output, cfg) {
  * команды, не более config.apiLimitMaxWaits раз (дефолт 3) — защита от вечного сна.
  */
 
-function runClaude(prompt, opts) {
+function runClaude(prompt, opts, { pushEventFn = pushEvent } = {}) {
     // #92: единая точка всех claude-сессий (кодер-итерации И шаги сдачи) — здесь же
     // и единый health-check туннеля. Красный канал после перезапуска = fail-closed
     // стоп всего loop: продолжать бессмысленно (следующая сессия упрётся в ту же
@@ -803,9 +811,9 @@ function runClaude(prompt, opts) {
         const limitHit = code !== 0 && API_LIMIT_RE.test(output);
         if (!limitHit || config.waitOnApiLimit === false || attempt >= maxWaits) return code;
         const waitMs = apiLimitWaitMs(output, config);
-        log(
-            `⏳ API-лимит: сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`,
-        );
+        const limitMsg = `⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`;
+        log(limitMsg);
+        pushEventFn(limitMsg, config);
         sleep(waitMs);
     }
 }
@@ -1876,6 +1884,7 @@ function runLoop(
         tryMergePhaseFn = tryMergePhase,
         closeMilestoneByTitleFn = closeMilestoneByTitle,
         getLastRedCheck = () => lastRedCheck,
+        pushEventFn = pushEvent,
     } = {},
 ) {
     // ── Main loop ────────────────────────────────────────────────────────────────
@@ -1895,9 +1904,9 @@ function runLoop(
         }
 
         if (!once && state.count >= maxIterations) {
-            logFn(
-                `⛔ Circuit breaker: лимит итераций (${maxIterations}) на фазу "${phase.milestone}". Проверь лог и issues, перезапусти для продолжения.`,
-            );
+            const breakerMsg = `⛔ Circuit breaker: лимит итераций (${maxIterations}) на фазу "${phase.milestone}". Проверь лог и issues, перезапусти для продолжения.`;
+            logFn(breakerMsg);
+            pushEventFn(breakerMsg, cfg);
             state.count = 0;
             saveStateFn(state);
             break;
@@ -1963,10 +1972,11 @@ function runLoop(
                 saveStateFn(state);
                 const maxNoProgress = cfg.maxNoProgress || 3;
                 if (state.noProgress >= maxNoProgress) {
-                    logFn(
+                    const noProgressMsg =
                         `⛔ Circuit breaker: ${maxNoProgress} итераций подряд без прогресса (ни коммита, ни закрытого issue) на фазе "${phase.milestone}". ` +
-                            `Loop стоит об стену — разбери Issue #${next.number} руками (или поставь label blocked) и перезапусти.`,
-                    );
+                        `Loop стоит об стену — разбери Issue #${next.number} руками (или поставь label blocked) и перезапусти.`;
+                    logFn(noProgressMsg);
+                    pushEventFn(noProgressMsg, cfg);
                     state.noProgress = 0;
                     saveStateFn(state);
                     break;
@@ -2144,6 +2154,9 @@ function runLoop(
             logFn('🚦 Гейт мерджа: проверка label blocked + сверка HEAD + прогон чеков...');
             const gate = tryMergePhaseFn(phase, { profileName: cfg.profileName });
             if (gate === 'merged') {
+                const mergedMsg = `✅ Ralph: фаза "${phase.milestone}" смерджена в main — готова к релизу.`;
+                logFn(mergedMsg);
+                pushEventFn(mergedMsg, cfg);
                 closeMilestoneByTitleFn(phase.milestone); // закрыть milestone сразу, не ждать свипа
                 advancePhaseFn(state, idx);
                 // continue → следующая фаза стартует с обновлённого main (полный AFK)
@@ -2168,14 +2181,15 @@ function runLoop(
                 const bMax = cfg.blockedHealAttempts ?? 3;
                 const bDone = state.blockedHeals || 0;
                 if (bDone >= bMax) {
-                    logFn(
+                    // Профиль prod (#73) выключает авто-разбор целиком. Без этой ветки
+                    // в лог шло «устоял после 0 разборов» — читается как сбой, хотя
+                    // это штатное прод-поведение: блокер сразу уходит человеку.
+                    const blockedMsg =
                         bMax === 0
-                            ? // Профиль prod (#73) выключает авто-разбор целиком. Без этой ветки
-                              // в лог шло «устоял после 0 разборов» — читается как сбой, хотя
-                              // это штатное прод-поведение: блокер сразу уходит человеку.
-                              `⛔ Разбор blocked выключен профилем "${cfg.profileName}" — PR с label blocked оставлен человеку.`
-                            : `⛔ Label blocked устоял после ${bDone} разборов — PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`,
-                    );
+                            ? `⛔ Ralph: фаза "${phase.milestone}" — разбор blocked выключен профилем "${cfg.profileName}", PR с label blocked оставлен человеку.`
+                            : `⛔ Ralph: фаза "${phase.milestone}" — label blocked устоял после ${bDone} разборов, PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`;
+                    logFn(blockedMsg);
+                    pushEventFn(blockedMsg, cfg);
                     state.blockedHeals = 0;
                     saveStateFn(state);
                     break;
@@ -2516,6 +2530,9 @@ if (require.main === module) main();
 // единственная точка реального spawnSync-вызова (её мокаем в тестах, а не остальной
 // раннерный код). tunnelHealthy/ensureTunnel/tunnelCheckEnabled (#92) — health-check
 // туннеля, config и зависимости (probe/restart/sleep/push) передаются параметрами.
+// pushEvent (#86) — единая точка доставки событий в Telegram (prod-only, playground
+// молчит); sendFn инжектируется, реальный sendTelegramMessage — единственная точка
+// curl-вызова (см. telegram-notifier.js).
 // probeEgress/restartTunnel (#92, ревью #98) — единственные точки реального
 // execFileSync-вызова (curl/systemctl) для туннеля; экспортированы, чтобы, как и у
 // spawnClaude, проверить САМУ границу anti-RCE защиты (argv доходит до вызова
@@ -2573,6 +2590,7 @@ module.exports = {
     tunnelHealthy,
     ensureTunnel,
     tunnelCheckEnabled,
+    pushEvent,
     probeEgress,
     restartTunnel,
     resolveWorktreePath,

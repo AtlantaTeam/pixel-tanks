@@ -35,6 +35,7 @@ const {
     tunnelHealthy,
     ensureTunnel,
     tunnelCheckEnabled,
+    pushEvent,
     probeEgress,
     restartTunnel,
     resolveWorktreePath,
@@ -424,6 +425,49 @@ describe('ensureTunnel — оркестровка health-check (мок curl: с�
         const push = vi.fn();
         expect(ensureTunnel({}, { probe, restart: vi.fn(), sleepFn: vi.fn(), push })).toBe(false);
         expect(push).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('pushEvent — доставка событий в Telegram, prod-only (#86)', () => {
+    it('лог-маркер печатается ВСЕГДА, независимо от профиля', () => {
+        const logFn = vi.fn();
+        const sendFn = vi.fn();
+        pushEvent('событие', { profileName: 'playground' }, { sendFn, logFn });
+        expect(logFn).toHaveBeenCalledWith(expect.stringContaining('событие'));
+    });
+
+    it('playground (или профиль не задан) — sendFn НЕ зовётся, событие не улетает', () => {
+        const sendFn = vi.fn();
+        const logFn = vi.fn();
+        expect(pushEvent('релиз готов', { profileName: 'playground' }, { sendFn, logFn })).toBe(
+            false,
+        );
+        expect(pushEvent('релиз готов', {}, { sendFn, logFn })).toBe(false);
+        expect(pushEvent('релиз готов', undefined, { sendFn, logFn })).toBe(false);
+        expect(sendFn).not.toHaveBeenCalled();
+    });
+
+    it('prod — sendFn зовётся с текстом сообщения, результат прокидывается наружу', () => {
+        const sendFn = vi.fn().mockReturnValue(true);
+        const logFn = vi.fn();
+        const result = pushEvent(
+            'фаза готова к релизу',
+            { profileName: 'prod' },
+            { sendFn, logFn },
+        );
+        expect(result).toBe(true);
+        expect(sendFn).toHaveBeenCalledTimes(1);
+        expect(sendFn.mock.calls[0][0]).toBe('фаза готова к релизу');
+    });
+
+    it('prod, но доставка не удалась (fail-open sendFn=false) — pushEvent тоже false, не бросает', () => {
+        const sendFn = vi.fn().mockReturnValue(false);
+        expect(() =>
+            pushEvent('событие', { profileName: 'prod' }, { sendFn, logFn: vi.fn() }),
+        ).not.toThrow();
+        expect(pushEvent('событие', { profileName: 'prod' }, { sendFn, logFn: vi.fn() })).toBe(
+            false,
+        );
     });
 });
 
@@ -1112,6 +1156,11 @@ describe('runLoop — основной while-цикл: итерации коде
             tryMergePhaseFn: () => 'not-merged',
             closeMilestoneByTitleFn: () => {},
             getLastRedCheck: () => null,
+            // #86: безопасный дефолт-заглушка — без него тест, не переопределивший
+            // pushEventFn явно, звал бы НАСТОЯЩИЙ pushEvent (реальный log() + попытка
+            // sendTelegramMessage в prod-сценариях). Сценарии, проверяющие сам пуш,
+            // подменяют его явно.
+            pushEventFn: () => false,
             ...o,
         };
     };
@@ -1123,20 +1172,24 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(logs.join('\n')).toMatch(/Все фазы завершены/);
     });
 
-    it('breaker maxIterations (AFK): count>=лимит → сброс count, saveState, стоп', () => {
+    it('breaker maxIterations (AFK): count>=лимит → сброс count, saveState, стоп, пуш', () => {
         const logs = [];
         const state = mkState({ count: 10 });
         const saveStateFn = vi.fn();
         const runClaudeFn = vi.fn(() => 0);
+        const pushEventFn = vi.fn();
         runLoop(
             validCfg(),
             ctx(state, { maxIterations: 10 }),
-            deps(logs, { phaseIndexOfFn: () => 0, saveStateFn, runClaudeFn }),
+            deps(logs, { phaseIndexOfFn: () => 0, saveStateFn, runClaudeFn, pushEventFn }),
         );
         expect(logs.join('\n')).toMatch(/Circuit breaker: лимит итераций/);
         expect(state.count).toBe(0);
         expect(saveStateFn).toHaveBeenCalled();
         expect(runClaudeFn).not.toHaveBeenCalled(); // до итерации не дошли
+        // #86: событие «circuit breaker открылся» уходит пушем.
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/Circuit breaker: лимит итераций/);
     });
 
     it('грязное дерево между итерациями (ensureClean=false, dry=false) → стоп до issues', () => {
@@ -1176,9 +1229,10 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(logs.join('\n')).toMatch(/HITL: одна итерация/);
     });
 
-    it('no-progress breaker (AFK): HEAD не сдвинулся и очередь та же → стоп', () => {
+    it('no-progress breaker (AFK): HEAD не сдвинулся и очередь та же → стоп, пуш', () => {
         const logs = [];
         const state = mkState({ noProgress: 2 }); // +1 на этой итерации = 3 = порог
+        const pushEventFn = vi.fn();
         runLoop(
             validCfg(),
             ctx(state),
@@ -1187,10 +1241,14 @@ describe('runLoop — основной while-цикл: итерации коде
                 openIssuesFn: () => [{ number: 7, title: 't', labels: [] }],
                 shFn: () => 'SAME_HEAD', // headBefore === headAfter → нет коммитов
                 runClaudeFn: () => 0,
+                pushEventFn,
             }),
         );
         expect(logs.join('\n')).toMatch(/Circuit breaker.*без прогресса/s);
         expect(state.noProgress).toBe(0); // сброшен перед стопом
+        // #86: событие «circuit breaker открылся» уходит пушем.
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/Circuit breaker.*без прогресса/s);
     });
 
     it('пустая очередь, но открыты blocked/чужие issues → сдача отложена, гейт не зовётся', () => {
@@ -1284,11 +1342,12 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(logs.join('\n')).toMatch(/уже прошла PR\/ревью\/правки/);
     });
 
-    it('полная сдача → гейт merged → закрыть milestone + advancePhase', () => {
+    it('полная сдача → гейт merged → закрыть milestone + advancePhase + пуш «готова к релизу»', () => {
         const logs = [];
         const closeMilestoneByTitleFn = vi.fn();
         const advancePhaseFn = vi.fn();
         const tryMergePhaseFn = vi.fn(() => 'merged');
+        const pushEventFn = vi.fn();
         runLoop(
             validCfg(),
             ctx(mkState()),
@@ -1301,12 +1360,16 @@ describe('runLoop — основной while-цикл: итерации коде
                 tryMergePhaseFn,
                 closeMilestoneByTitleFn,
                 advancePhaseFn,
+                pushEventFn,
             }),
         );
         expect(tryMergePhaseFn).toHaveBeenCalledTimes(1);
         expect(closeMilestoneByTitleFn).toHaveBeenCalledWith('M1');
         expect(advancePhaseFn).toHaveBeenCalledTimes(1);
         expect(logs.join('\n')).toMatch(/Ревью PR — за супервизором/);
+        // #86: событие «релиз-готовность» уходит пушем при успешном мердже фазы.
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/готова к релизу/);
     });
 
     it('шаг создания PR упал (код≠0) → fail-closed стоп, гейт не зовётся', () => {
@@ -1349,10 +1412,11 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(runClaudeFn.mock.calls[0][0]).toMatch(/blocked/);
     });
 
-    it('гейт blocked, бюджет исчерпан → стоп без чини-сессии, сброс счётчика', () => {
+    it('гейт blocked, бюджет исчерпан → стоп без чини-сессии, сброс счётчика, пуш человеку', () => {
         const logs = [];
         const state = mkState({ submitted: true, blockedHeals: 3 });
         const runClaudeFn = vi.fn(() => 0);
+        const pushEventFn = vi.fn();
         runLoop(
             validCfg({ blockedHealAttempts: 3 }),
             ctx(state),
@@ -1363,19 +1427,24 @@ describe('runLoop — основной while-цикл: итерации коде
                 phaseMergedFn: () => false,
                 tryMergePhaseFn: () => 'blocked',
                 runClaudeFn,
+                pushEventFn,
             }),
         );
         expect(runClaudeFn).not.toHaveBeenCalled();
         expect(state.blockedHeals).toBe(0);
         expect(logs.join('\n')).toMatch(/blocked устоял/);
+        // #86: событие «blocked отдан человеку» уходит пушем.
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/blocked устоял/);
     });
 
     // Ключевое поведенческое обещание профиля prod (#73): не «в конфиге стоит 0», а
     // «чини-сессия не запускается вовсе». Регресс `?? 3` → `|| 3` ловится только так.
-    it('профиль prod (blockedHealAttempts=0) → блокер сразу человеку, чини-сессия НЕ зовётся', () => {
+    it('профиль prod (blockedHealAttempts=0) → блокер сразу человеку, чини-сессия НЕ зовётся, пуш уходит', () => {
         const logs = [];
         const state = mkState({ submitted: true, blockedHeals: 0 });
         const runClaudeFn = vi.fn(() => 0);
+        const pushEventFn = vi.fn();
         runLoop(
             validCfg({ blockedHealAttempts: 0, profileName: 'prod' }),
             ctx(state),
@@ -1386,12 +1455,16 @@ describe('runLoop — основной while-цикл: итерации коде
                 phaseMergedFn: () => false,
                 tryMergePhaseFn: () => 'blocked',
                 runClaudeFn,
+                pushEventFn,
             }),
         );
         expect(runClaudeFn).not.toHaveBeenCalled();
         // Сообщение говорит «выключено профилем», а не «устоял после 0 разборов».
         expect(logs.join('\n')).toMatch(/выключен профилем "prod"/);
         expect(logs.join('\n')).not.toMatch(/устоял после 0/);
+        // #86: даже при 0 попытках разбора событие «blocked отдан человеку» уходит пушем.
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/выключен профилем "prod"/);
     });
 
     it('гейт red-checks → чини-сессия гейта с деталями чека из getLastRedCheck', () => {
