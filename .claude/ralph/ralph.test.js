@@ -1696,21 +1696,27 @@ describe('ветковая хореография в worktree раннера (#7
             );
         });
 
-        it('#80: красный прод-чек блокирует так же, как базовый (fail-closed на всём наборе)', () => {
-            const { deps } = mkDeps({
-                checks: gateChecksFor('prod'),
-                shImpl: (cmd) => {
-                    if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
-                    if (cmd === 'CI=1 npm run test:e2e') throw new Error('e2e упал');
-                    return '';
-                },
-            });
-            expect(checksGreen('feature/m1', 42, deps)).toBe(false);
-            expect(getLastRedCheck()).toMatchObject({
-                name: 'e2e',
-                cmd: 'CI=1 npm run test:e2e',
-            });
-        });
+        // #84: каждый толстый чек по отдельности — не только e2e (было покрыто одним
+        // тестом при #80) — должен блокировать мердж так же, как базовый. it.each вместо
+        // трёх копипаст-тестов: разница между сценариями — ровно (name, cmd), падение
+        // остальных чеков в shImpl проверять не нужно — они и так возвращают ''.
+        const thickChecks = gateChecksFor('prod').slice(gateChecksFor('playground').length);
+
+        it.each(thickChecks)(
+            '#84: красный прод-чек %s блокирует так же, как базовый (fail-closed на каждом толстом чеке)',
+            (name, cmd) => {
+                const { deps } = mkDeps({
+                    checks: gateChecksFor('prod'),
+                    shImpl: (c) => {
+                        if (c.startsWith('git rev-parse --verify')) return SHA_A;
+                        if (c === cmd) throw new Error(`${name} упал`);
+                        return '';
+                    },
+                });
+                expect(checksGreen('feature/m1', 42, deps)).toBe(false);
+                expect(getLastRedCheck()).toMatchObject({ name, cmd });
+            },
+        );
     });
 
     describe('gateChecksFor — состав гейта по профилю (#80)', () => {
