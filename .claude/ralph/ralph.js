@@ -418,6 +418,98 @@ function ensureTunnel(
     return false;
 }
 
+// ── Изоляция раннера в git worktree (#76) ────────────────────────────────────
+// Раннер работает в ВЫДЕЛЕННОМ дереве, соседнем с рабочим деревом человека: без
+// этого git-хореография гейта (checkout ветки фазы/main) утаскивала бы за собой
+// и дерево человека — правки/коммиты вручную посреди AFK-прогона рвали ensureClean
+// (см. docs/ralph-prod-mode/prd.md, feedback-ralph-shared-worktree). Путь — СОСЕД
+// репозитория (`../pixel-tanks-ralph`), не поддиректория внутри него: иначе он
+// либо игнорится .gitignore-правилами родителя, либо норовит закоммититься как
+// вложенный git-репозиторий.
+const DEFAULT_WORKTREE_DIRNAME = 'pixel-tanks-ralph';
+
+// cfg.runnerWorktreePath (явный конфиг) важнее RALPH_WORKTREE_PATH (env) — молчаливая
+// перебивка явной настройки переменной окружения была бы тем же тихим сдвигом режима,
+// от которого fail-closed уже защищает профили (см. resolveProfile). Both отсутствуют →
+// дефолт-сосед. repoRoot — параметр (не process.cwd() внутри resolve), чтобы функция
+// оставалась чистой и тестируемой без реального cwd.
+function resolveWorktreePath(cfg = {}, repoRoot = process.cwd()) {
+    const override = cfg.runnerWorktreePath || process.env.RALPH_WORKTREE_PATH;
+    return override
+        ? path.resolve(repoRoot, override)
+        : path.resolve(repoRoot, '..', DEFAULT_WORKTREE_DIRNAME);
+}
+
+// `git worktree list --porcelain`: блоки разделены пустой строкой, первая строка
+// блока — "worktree <абсолютный путь>". Достаточно собрать все такие строки.
+function parseWorktreeList(raw) {
+    return raw
+        .split('\n')
+        .filter((l) => l.startsWith('worktree '))
+        .map((l) => l.slice('worktree '.length).trim());
+}
+
+/**
+ * Гарантирует существование выделенного worktree раннера. Идемпотентно: уже
+ * зарегистрированный worktree переиспользуется без побочных эффектов (M2-стиль —
+ * не пересоздаём то, что уже есть).
+ *
+ * Fail-closed (тот же принцип, что во всём файле — C1/M2): если путь ЗАНЯТ чем-то,
+ * что не зарегистрировано как worktree этого репозитория (чужая папка, мусор от
+ * ручного `rm -rf` вместо `git worktree remove`), НЕ трогаем и НЕ угадываем —
+ * останавливаем раннер, разбор за человеком.
+ *
+ * Свежий worktree создаётся `--detach` (детач, не ветка): на этом шаге раннер ещё
+ * не знает, какая ветка фазы понадобится, а `main` почти всегда уже занят деревом
+ * человека — git не даёт одну и ту же ветку в двух worktree одновременно.
+ * Переключение на нужную ветку — забота git-хелперов гейта (#77).
+ *
+ * `npm ci` сразу после создания: `git worktree add` линкует только git-отслеживаемые
+ * файлы, `node_modules` (в .gitignore) в новом дереве нет — без установки первый же
+ * GATE_CHECKS упал бы на отсутствующих зависимостях.
+ */
+function ensureRunnerWorktree(
+    worktreePath,
+    {
+        shFn = sh,
+        logFn = log,
+        failFn = fail,
+        existsFn = fs.existsSync,
+        installFn = (dir) => execSync('npm ci', { cwd: dir, stdio: 'inherit' }),
+    } = {},
+) {
+    let list = '';
+    try {
+        list = shFn('git worktree list --porcelain');
+    } catch (e) {
+        return failFn(`git worktree list упал: ${e.message}`);
+    }
+    if (parseWorktreeList(list).includes(worktreePath)) {
+        logFn(`🌳 Worktree раннера уже поднят: ${worktreePath}`);
+        return worktreePath;
+    }
+    if (existsFn(worktreePath)) {
+        return failFn(
+            `${worktreePath} существует, но не зарегистрирован как git worktree этого репозитория — ` +
+                `возможно, ручной rm -rf вместо "git worktree remove" оставил мусор. Разберись руками ` +
+                `(перенеси/удали папку или "git worktree prune") и перезапусти.`,
+        );
+    }
+    logFn(`🌳 Создаю выделенный worktree раннера: ${worktreePath}`);
+    try {
+        shFn(`git worktree add ${worktreePath} --detach`);
+    } catch (e) {
+        return failFn(`git worktree add ${worktreePath} упал: ${e.message}`);
+    }
+    logFn('📦 npm ci в новом worktree (git worktree add не копирует node_modules)...');
+    try {
+        installFn(worktreePath);
+    } catch (e) {
+        return failFn(`npm ci в ${worktreePath} упал: ${e.message}`);
+    }
+    return worktreePath;
+}
+
 /**
  * Запуск claude -p. Возвращает exit-код процесса (0 = успех; DRY всегда 0).
  * H2: код возвращаем, а не глотаем, потому что фатальность решает ВЫЗЫВАЮЩИЙ:
@@ -1649,6 +1741,18 @@ function main() {
     // профиле шёл прогон, не сверяясь с историей команд.
     log(`⚙️  Профиль: ${config.profileName}`);
 
+    // #76: раннер переезжает в выделенный worktree ДО всего остального (включая
+    // --reset — state теперь тоже живёт в worktree, см. STATE_PATH ниже как
+    // CLAUDE_DIR-относительный путь). C1: --dry-run строго read-only — ни
+    // worktree не создаём, ни cwd не трогаем, dry-показ идёт в текущем дереве,
+    // как и раньше.
+    if (!DRY) {
+        const worktreePath = resolveWorktreePath(config);
+        ensureRunnerWorktree(worktreePath);
+        process.chdir(worktreePath);
+    }
+    log(`📂 Рабочее дерево раннера: ${process.cwd()}`);
+
     if (RESET) {
         saveState(defaultState());
         console.log('✅ State сброшен на первую фазу конфига.');
@@ -1708,6 +1812,9 @@ if (require.main === module) main();
 // красный чек (getLastRedCheck) — тоже инжектируемые.
 // resolveProfile/deepMerge (#71) — чистый config-слой: сборка итогового конфига из
 // common + профиль. failFn инжектируется, поэтому отказы тестируются без process.exit.
+// resolveWorktreePath/parseWorktreeList/ensureRunnerWorktree (#76) — изоляция раннера
+// в выделенный git worktree, соседний с деревом человека; побочки (git/npm/fs/log/fail)
+// инжектируются, как и везде выше, поэтому тестируются без реального git/npm.
 module.exports = {
     resolveProfile,
     deepMerge,
@@ -1727,6 +1834,9 @@ module.exports = {
     tunnelCheckEnabled,
     probeEgress,
     restartTunnel,
+    resolveWorktreePath,
+    parseWorktreeList,
+    ensureRunnerWorktree,
     preflight,
     runLoop,
     loadState,
