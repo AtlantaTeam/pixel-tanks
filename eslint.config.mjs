@@ -10,7 +10,19 @@ const eslintConfig = defineConfig([
             '@typescript-eslint/no-explicit-any': 'error',
         },
     },
-    globalIgnores(['.next/**', 'out/**', 'build/**', 'next-env.d.ts', '.claude/**']),
+    // playwright-report/** и test-results/** — артефакты e2e-прогона (#81). С e2e в
+    // прод-гейте они стабильно появляются на сервере (минифицированный вендор трейс-
+    // вьюера), и без игнора следующий чек `lint` захлебнулся бы сотнями ложных ошибок
+    // в чужом бандле. Оба каталога в .gitignore — линтить их нечего.
+    globalIgnores([
+        '.next/**',
+        'out/**',
+        'build/**',
+        'next-env.d.ts',
+        '.claude/**',
+        'playwright-report/**',
+        'test-results/**',
+    ]),
 ]);
 
 export default eslintConfig;

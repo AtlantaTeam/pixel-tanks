@@ -10,7 +10,11 @@ export default defineConfig({
     fullyParallel: true,
     forbidOnly: !!process.env.CI,
     retries: process.env.CI ? 2 : 0,
-    reporter: 'html',
+    // Репортёр обязан быть НЕблокирующим (#81): html-репортёр по умолчанию на падении
+    // поднимает веб-сервер отчёта и висит до Ctrl+C. В прод-гейте ralph (headless, без
+    // человека) это превратило бы «красный e2e» в «зависший гейт». open:'never' —
+    // отчёт пишется на диск, но не сервируется; list даёт читаемый лог падения в stdout.
+    reporter: [['list'], ['html', { open: 'never' }]],
     use: {
         baseURL: 'http://localhost:3050',
         trace: 'on-first-retry',

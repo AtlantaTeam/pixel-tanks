@@ -1689,7 +1689,7 @@ describe('ветковая хореография в worktree раннера (#7
             expect(shCmds).toEqual(
                 expect.arrayContaining([
                     'npm run build',
-                    'npm run test:e2e',
+                    'CI=1 npm run test:e2e',
                     'npm run test:coverage',
                     'npm audit --audit-level=high',
                 ]),
@@ -1701,12 +1701,15 @@ describe('ветковая хореография в worktree раннера (#7
                 checks: gateChecksFor('prod'),
                 shImpl: (cmd) => {
                     if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
-                    if (cmd === 'npm run test:e2e') throw new Error('e2e упал');
+                    if (cmd === 'CI=1 npm run test:e2e') throw new Error('e2e упал');
                     return '';
                 },
             });
             expect(checksGreen('feature/m1', 42, deps)).toBe(false);
-            expect(getLastRedCheck()).toMatchObject({ name: 'e2e', cmd: 'npm run test:e2e' });
+            expect(getLastRedCheck()).toMatchObject({
+                name: 'e2e',
+                cmd: 'CI=1 npm run test:e2e',
+            });
         });
     });
 
@@ -1755,6 +1758,14 @@ describe('ветковая хореография в worktree раннера (#7
                 expect(typeof cmd).toBe('string');
                 expect(cmd.length).toBeGreaterThan(0);
             }
+        });
+
+        it('#81: e2e-чек гоняется в детерминированном headless-режиме (CI=1)', () => {
+            const [name, cmd] = gateChecksFor('prod').find(([n]) => n === 'e2e');
+            expect(name).toBe('e2e');
+            // CI=1 переводит Playwright в гейт-режим: forbidOnly + свежий webServer +
+            // retries. Без него `.only` протащил бы подмножество как зелёный гейт.
+            expect(cmd).toBe('CI=1 npm run test:e2e');
         });
     });
 
