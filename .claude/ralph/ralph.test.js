@@ -3200,3 +3200,152 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
         expect(cmds.some((c) => c.includes(`'origin/main...origin/feature/x'`))).toBe(true);
     });
 });
+
+// ── #135: проводка контекста диффа до промпта ревью ─────────────────────────
+// Ревью PR #135 вскрыло дыру в покрытии: сам reviewDiffContext был протестирован,
+// а вот факт, что его результат ДОХОДИТ до промпта, — нет. Удаление ${diffContext}
+// из шаблона оставляло все тесты зелёными.
+
+describe('runLoop → промпт ревью получает контекст диффа (#135)', () => {
+    const { runLoop } = ralph;
+
+    const mkState = () => ({
+        count: 0,
+        milestone: 'M1',
+        submitted: false,
+        noProgress: 0,
+        gateHeals: 0,
+        blockedHeals: 0,
+    });
+    const cfg = () => ({
+        model: 'claude-coder',
+        prompt: 'сделай {milestone} в ветке {branch}',
+        authorAllowlist: ['owner'],
+        phases: [{ milestone: 'M1', branch: 'feature/m1' }],
+        review: { default: 'claude-reviewer', maxTurns: 80 },
+    });
+
+    // Сдача фазы: issues кончились → PR → ревью → правки. Ловим все промпты.
+    const runWithReview = (over = {}) => {
+        const prompts = [];
+        let idxCalls = 0;
+        runLoop(
+            cfg(),
+            { state: mkState(), maxIterations: 10, maxTurns: 200 },
+            {
+                once: false,
+                dry: false,
+                logFn: () => {},
+                shFn: () => '',
+                saveStateFn: () => {},
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
+                pickModelFn: () => 'claude-picked',
+                pickReviewModelFn: () => 'claude-reviewer',
+                runClaudeFn: (prompt) => {
+                    prompts.push(prompt);
+                    return 0;
+                },
+                ensureCleanFn: () => true,
+                phaseMergedFn: () => false,
+                advancePhaseFn: () => {},
+                tryMergePhaseFn: () => 'not-merged',
+                closeMilestoneByTitleFn: () => {},
+                getLastRedCheck: () => null,
+                phaseDiffFilesFn: () => ['src/a.ts'],
+                reviewDiffContextFn: () => '\n\nМАРКЕР-КОНТЕКСТА-ДИФФА',
+                ...over,
+            },
+        );
+        return prompts;
+    };
+
+    it('промпт ревью содержит контекст, отданный reviewDiffContext', () => {
+        const reviewPrompt = runWithReview().find((p) => p.includes('code review'));
+        expect(reviewPrompt).toBeDefined();
+        expect(reviewPrompt).toContain('МАРКЕР-КОНТЕКСТА-ДИФФА');
+    });
+
+    it('дифф собирается ОДИН раз и переиспользуется выбором модели и контекстом', () => {
+        let diffCalls = 0;
+        const seen = {};
+        runWithReview({
+            phaseDiffFilesFn: () => {
+                diffCalls++;
+                return ['src/a.ts'];
+            },
+            pickReviewModelFn: (_m, _b, opts) => {
+                seen.pick = opts?.files;
+                return 'claude-reviewer';
+            },
+            reviewDiffContextFn: (_b, opts) => {
+                seen.ctx = opts?.files;
+                return '\n\nМАРКЕР-КОНТЕКСТА-ДИФФА';
+            },
+        });
+        expect(diffCalls).toBe(1);
+        expect(seen.pick).toEqual(['src/a.ts']);
+        expect(seen.ctx).toEqual(['src/a.ts']);
+    });
+
+    it('пустой контекст не ломает промпт ревью', () => {
+        const reviewPrompt = runWithReview({ reviewDiffContextFn: () => '' }).find((p) =>
+            p.includes('code review'),
+        );
+        expect(reviewPrompt).toContain('Не мерджи PR');
+    });
+});
+
+describe('safeBranch — argument injection через имя ветки (#135)', () => {
+    const { safeBranch, phaseDiffFiles } = ralph;
+
+    // Квотирование спасает от ИСПОЛНЕНИЯ, но не от argument injection:
+    // '--upload-pack=…' остаётся отдельным словом, и git читает его как опцию.
+    it.each([
+        ['ведущий дефис', '-branch'],
+        ['опция git', '--upload-pack=touch /tmp/pwned'],
+        ['короткая опция', '-o'],
+    ])('%s отвергается', (_name, branch) => {
+        expect(safeBranch(branch, { logFn: () => {} })).toBe(false);
+    });
+
+    it.each([
+        ['обычная ветка', 'feature/m1'],
+        ['дефис внутри', 'chore/ralph-review-routing'],
+        ['точки и подчёркивания', 'release/v1.2.3_rc'],
+    ])('%s принимается', (_name, branch) => {
+        expect(safeBranch(branch, { logFn: () => {} })).toBe(true);
+    });
+
+    it('ветка-опция не доходит до git', () => {
+        const cmds = [];
+        const files = phaseDiffFiles('--upload-pack=evil', {
+            shFn: (c) => {
+                cmds.push(c);
+                return '';
+            },
+            logFn: () => {},
+        });
+        expect(files).toBe(null);
+        expect(cmds).toEqual([]);
+    });
+});
+
+describe('sliceWholeChars — обрезка не рубит суррогатную пару (#135)', () => {
+    const { reviewDiffContext } = ralph;
+
+    it('на границе лимита не остаётся половины эмодзи', () => {
+        // 💥 = суррогатная пара: обрезка по символам ровно между ними даёт
+        // невалидный код-юнит.
+        const diff = 'a'.repeat(9) + '💥' + 'b'.repeat(100);
+        const ctx = reviewDiffContext('feature/x', {
+            shFn: (c) => (c.includes('--name-only') ? 'src/a.ts' : diff),
+            logFn: () => {},
+            limit: 10,
+        });
+        const body = ctx.split('=====')[2];
+        expect(body).not.toMatch(/[\uD800-\uDBFF]$/);
+        expect([...body].every((ch) => ch.codePointAt(0) !== 0xfffd)).toBe(true);
+    });
+});
