@@ -45,7 +45,9 @@ export default defineConfig({
                     globals: true,
                     include: [
                         '.claude/ralph/**/*.test.{js,ts}',
-                        'coverage-thresholds.test.ts',
+                        // *.config.test.ts в корне — тесты корневых конфигов (vitest.config
+                        // и т.п.), по конвенции «тест рядом с модулем и по его имени».
+                        '*.config.test.ts',
                         'scripts/**/*.test.{js,ts}',
                     ],
                 },

@@ -24,4 +24,15 @@ describe('coverage thresholds в vitest.config (#82)', () => {
             expect(value).toBeLessThanOrEqual(100);
         }
     });
+
+    // Страж не только против УДАЛЕНИЯ порога, но и против его РАЗМЫВАНИЯ: снижение до
+    // {lines: 1, ...} прошло бы прошлые проверки зелёным, а это по сути тот же «откат в
+    // режим всегда-зелёный», от которого тест защищает. Полы — с запасом под осознанный
+    // пересмотр (ниже текущих 70/70/60/85), но так, чтобы бессмысленно низкий порог падал.
+    it('порог не размыт ниже минимальных полов', () => {
+        expect(thresholds?.lines ?? 0).toBeGreaterThanOrEqual(60);
+        expect(thresholds?.statements ?? 0).toBeGreaterThanOrEqual(60);
+        expect(thresholds?.functions ?? 0).toBeGreaterThanOrEqual(50);
+        expect(thresholds?.branches ?? 0).toBeGreaterThanOrEqual(75);
+    });
 });

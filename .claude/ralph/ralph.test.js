@@ -1700,7 +1700,10 @@ describe('ветковая хореография в worktree раннера (#7
         // тестом при #80) — должен блокировать мердж так же, как базовый. it.each вместо
         // трёх копипаст-тестов: разница между сценариями — ровно (name, cmd), падение
         // остальных чеков в shImpl проверять не нужно — они и так возвращают ''.
-        const thickChecks = gateChecksFor('prod').slice(gateChecksFor('playground').length);
+        // Толстые = прод-чеки, которых нет в playground (prod дедупит базовый `test`
+        // в пользу coverage, поэтому берём разницу по имени, а не slice по длине).
+        const playgroundNames = new Set(gateChecksFor('playground').map(([n]) => n));
+        const thickChecks = gateChecksFor('prod').filter(([n]) => !playgroundNames.has(n));
 
         it.each(thickChecks)(
             '#84: красный прод-чек %s блокирует так же, как базовый (fail-closed на каждом толстом чеке)',
@@ -1732,23 +1735,33 @@ describe('ветковая хореография в worktree раннера (#7
             ]);
         });
 
-        it('prod = база + e2e/coverage/security', () => {
+        it('prod = база (без дубля test) + fail-fast security/coverage/e2e', () => {
             expect(names(gateChecksFor('prod'))).toEqual([
                 'build',
                 'lint',
                 'lint:fsd',
                 'typecheck',
-                'test',
-                'e2e',
-                'coverage',
                 'security',
+                'coverage',
+                'e2e',
             ]);
         });
 
-        it('прод-набор — надмножество базового: playground целиком входит в prod', () => {
+        it('prod дедупит базовый test в пользу coverage (строгое надмножество)', () => {
+            const prod = names(gateChecksFor('prod'));
+            // Базовый `test` в prod не гоняется — его заменяет coverage (тот же прогон +
+            // инструментация): двойной vitest run был бы лишними минутами в гейте.
+            expect(prod).not.toContain('test');
+            expect(prod).toContain('coverage');
+        });
+
+        it('прод-набор покрывает всю базу кроме test и добавляет толстые чеки', () => {
             const base = names(gateChecksFor('playground'));
             const prod = names(gateChecksFor('prod'));
-            expect(prod.slice(0, base.length)).toEqual(base);
+            for (const name of base) {
+                if (name === 'test') continue;
+                expect(prod).toContain(name);
+            }
             expect(prod.length).toBeGreaterThan(base.length);
         });
 

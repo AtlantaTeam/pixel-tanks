@@ -10,10 +10,12 @@ const eslintConfig = defineConfig([
             '@typescript-eslint/no-explicit-any': 'error',
         },
     },
-    // playwright-report/** и test-results/** — артефакты e2e-прогона (#81). С e2e в
-    // прод-гейте они стабильно появляются на сервере (минифицированный вендор трейс-
-    // вьюера), и без игнора следующий чек `lint` захлебнулся бы сотнями ложных ошибок
-    // в чужом бандле. Оба каталога в .gitignore — линтить их нечего.
+    // playwright-report/** и test-results/** — артефакты e2e-прогона (#81); coverage/** —
+    // артефакт coverage-чека (#82, istanbul-ассеты prettify.js/sorter.js/block-navigation.js).
+    // Все три стабильно появляются на раннере в прод-гейте, это чужой сгенерированный код —
+    // без игнора следующий чек `lint` линтил бы вендорный бандл (сотни ложных ошибок в
+    // трейс-вьюере, warning про unused eslint-disable в istanbul). Все каталоги в
+    // .gitignore — линтить их нечего.
     globalIgnores([
         '.next/**',
         'out/**',
@@ -22,6 +24,7 @@ const eslintConfig = defineConfig([
         '.claude/**',
         'playwright-report/**',
         'test-results/**',
+        'coverage/**',
     ]),
 ]);
 

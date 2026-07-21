@@ -33,7 +33,14 @@ export function exceedsThreshold(counts, thresholds = THRESHOLDS) {
 // поэтому spawnSync (не execSync: тот бросает на ненулевом коде). Сбой самого запуска
 // (нет сети до registry и т.п.) — stdout пуст, тогда fail-closed через throw ниже.
 export function runAudit(spawnFn = spawnSync) {
-    const result = spawnFn('npm', ['audit', '--json'], { encoding: 'utf8' });
+    // maxBuffer 16 МБ: дефолт spawnSync — 1 МБ, при переполнении child убивается
+    // (ENOBUFS), stdout обрезается и JSON.parse бросает → ложный красный гейт. Сегодня
+    // вывод ~14 КБ, но растёт с деревом и числом находок. Те же грабли уже чинили в
+    // sh() ralph.js. Дешёвая страховка.
+    const result = spawnFn('npm', ['audit', '--json'], {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+    });
     if (!result.stdout) {
         throw new Error(
             `npm audit не вернул вывод (${result.error?.message ?? `код ${result.status}`})`,

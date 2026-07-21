@@ -68,7 +68,7 @@ describe('runAudit', () => {
         expect(spawnFn).toHaveBeenCalledWith(
             'npm',
             ['audit', '--json'],
-            expect.objectContaining({ encoding: 'utf8' }),
+            expect.objectContaining({ encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }),
         );
     });
 
