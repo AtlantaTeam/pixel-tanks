@@ -48,7 +48,7 @@ const CONFIG_PATH =
 const PROFILE = parseProfileFlag(args, () => null);
 
 // Строки лога, которые считаем «значимыми» (маркеры этапов AFK-цикла).
-const SIGNAL_RE = /🚀|🔄|✅|🔍|🔧|🛑|⛔|🏁|❌|⚠|🔀|💤/u;
+const SIGNAL_RE = /🚀|🔄|✅|🔍|🔧|🛑|⛔|🏁|❌|⚠|🔀|💤|🔔/u;
 
 function sh(cmd) {
     try {

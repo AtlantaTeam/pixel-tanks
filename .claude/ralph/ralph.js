@@ -72,6 +72,7 @@ const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
+const { sendTelegramMessage, telegramConfigFromEnv } = require('./telegram-notifier.js');
 
 const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
@@ -451,11 +452,28 @@ function restartTunnel(cfg, execFn = execFileSync) {
     }
 }
 
-// Пуш-событие человеку. Полноценная доставка (ntfy/telegram) — Фаза 5; пока заметный
-// лог-маркер, чтобы событие не терялось в потоке. Отдельная функция — точка,
-// которую Фаза 5 заменит одним местом.
-function pushEvent(msg) {
-    log(`🔔 PUSH: ${msg}`);
+// Пуш-событие человеку (#86) — единая точка для всех 4 событий прод-режима
+// (release-стоп #87, blocked отдан человеку, circuit breaker, rate-limit) и
+// health-check туннеля (#92). Лог-маркер печатается ВСЕГДА (виден в monitor.js
+// даже без Telegram); реальная доставка — только в prod: playground остаётся
+// публичным учебным полигоном, боту там шуметь некуда (PRD: «Пуш-уведомления в
+// Telegram (prod)»). sendFn инжектируется (как probe/restart у ensureTunnel) —
+// юнит-тесты мокают сам вызов, не токен/сеть.
+function pushEvent(
+    msg,
+    cfg = config,
+    { sendFn = sendTelegramMessage, logFn = log, execFn, dry = DRY } = {},
+) {
+    logFn(`🔔 PUSH: ${msg}`);
+    // C1: --dry-run строго read-only. Доставка пуша — тоже побочка, а guard ЗДЕСЬ,
+    // в единственной точке доставки (как у saveState), закрывает и достижимый в dry
+    // путь — breaker maxIterations проверяется до первого dry-guard'а в loop.
+    if (dry) return false;
+    if (!cfg || cfg.profileName !== 'prod') return false;
+    // execFn пробрасывается в дефолтный sendTelegramMessage (curl) — так один тест
+    // закрывает интеграционный шов pushEvent→нотифаер без реальной сети. undefined в
+    // проде = сработает realExecFn нотифаера.
+    return sendFn(msg, { logFn, execFn });
 }
 
 // Оркестровка health-check. true = туннель здоров ИЛИ проверка выключена (можно
@@ -493,6 +511,7 @@ function ensureTunnel(
     );
     push(
         `Ralph: Shadowsocks-туннель на VDS красный (egress='${egress || '—'}' != '${expected}') и не поднялся после перезапуска. Loop остановлен — почини канал.`,
+        cfg,
     );
     return false;
 }
@@ -781,7 +800,17 @@ function apiLimitWaitMs(output, cfg) {
  * команды, не более config.apiLimitMaxWaits раз (дефолт 3) — защита от вечного сна.
  */
 
-function runClaude(prompt, opts) {
+function runClaude(
+    prompt,
+    opts,
+    {
+        pushEventFn = pushEvent,
+        cfg = config,
+        runClaudeOnceFn = runClaudeOnce,
+        ensureTunnelFn = ensureTunnel,
+        sleepFn = sleep,
+    } = {},
+) {
     // #92: единая точка всех claude-сессий (кодер-итерации И шаги сдачи) — здесь же
     // и единый health-check туннеля. Красный канал после перезапуска = fail-closed
     // стоп всего loop: продолжать бессмысленно (следующая сессия упрётся в ту же
@@ -793,20 +822,21 @@ function runClaude(prompt, opts) {
     // нужно. Без этого guard'а --dry-run на VDS с RALPH_TUNNEL_CHECK=1 и красным
     // каналом реально дёргал бы systemctl restart и убивал прогон process.exit(1) —
     // ровно то живое побочное действие, которого dry-run обязан избегать.
-    if (!DRY && !ensureTunnel(config)) {
+    if (!DRY && !ensureTunnelFn(cfg)) {
         log('⛔ Health-check туннеля не прошёл — loop остановлен (fail-closed).');
         process.exit(1);
     }
-    const maxWaits = config.apiLimitMaxWaits ?? 3;
+    const maxWaits = cfg.apiLimitMaxWaits ?? 3;
     for (let attempt = 0; ; attempt++) {
-        const { code, output } = runClaudeOnce(prompt, opts);
+        const { code, output } = runClaudeOnceFn(prompt, opts);
         const limitHit = code !== 0 && API_LIMIT_RE.test(output);
-        if (!limitHit || config.waitOnApiLimit === false || attempt >= maxWaits) return code;
-        const waitMs = apiLimitWaitMs(output, config);
-        log(
-            `⏳ API-лимит: сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`,
-        );
-        sleep(waitMs);
+        if (!limitHit || cfg.waitOnApiLimit === false || attempt >= maxWaits) return code;
+        const waitMs = apiLimitWaitMs(output, cfg);
+        const limitMsg = `⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`;
+        // pushEvent — единственный логгер события (маркер 🔔 PUSH печатается всегда,
+        // даже без Telegram): парный log() выше давал двойную строку в логе.
+        pushEventFn(limitMsg, cfg);
+        sleepFn(waitMs);
     }
 }
 
@@ -1669,6 +1699,18 @@ function tryMergePhase(
     return 'merged';
 }
 
+// Деплой фазы (#87) — явный no-op-плейсхолдер. Боевой прод уже раскатывается
+// САМ CI (.github/workflows/deploy.yml → scripts/deploy-remote.sh) по факту пуша
+// в main — squash-мердж внутри tryMergePhase выше его и запускает. Раннеру
+// незачем дублировать деплой или дожидаться его статуса; эта функция — только
+// маркер точки цикла, где prod-loop логически передаёт фазу релизу и
+// останавливается (см. runLoop, gate === 'merged'), не читая исход CI-раскатки.
+function deployPhasePlaceholder(phase, { logFn = log } = {}) {
+    logFn(
+        `🚀 Деплой фазы "${phase.milestone}": плейсхолдер — раскатку уже делает CI по пушу в main, раннер её не дублирует.`,
+    );
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 // Схема: { count, milestone, submitted }.
 //   milestone — ИМЯ текущей фазы (M7). Позиционный phaseIndex ломался при любой
@@ -1775,6 +1817,36 @@ function preflight(
             'ralph.config.json: authorAllowlist пуст или отсутствует. Публичный репо + bypassPermissions = инъекция инструкций через чужие issues. Укажи gh-логины доверенных авторов.',
         );
 
+    // Фаза 5 (#85–88): в prod пуш-события (release/blocked/breaker/rate-limit) —
+    // единственный канал «раннер зовёт человека». Пустые RALPH_TG_* деградируют молча
+    // (fail-open sendTelegramMessage лишь пишет warn-строку в лог), и о пропущенном
+    // стопе человек узнаёт постфактум. Профиль prod требует канал — fail-closed на
+    // старте, как authorAllowlist выше. playground молчит по замыслу, там проверки нет.
+    if (cfg.profileName === 'prod') {
+        const tg = telegramConfigFromEnv();
+        if (!tg.token || !tg.chatId)
+            failFn(
+                'Профиль prod: не заданы RALPH_TG_BOT_TOKEN/RALPH_TG_CHAT_ID — пуш-события фазы 5 ' +
+                    '(release/blocked/breaker/rate-limit) молча ушли бы только в лог. Заполни их в ralph.env.',
+            );
+        // Проверяем не только наличие, но и ФОРМУ: правдоподобный плейсхолдер из
+        // ralph.env.example, скопированный без правки, прошёл бы presence-проверку и
+        // дал бы 401 на каждый пуш, а fail-open молча съел бы все 4 события. Заодно
+        // мусор с кавычками/пробелами/переводами строк не доедет до интерполяции в
+        // curl-конфиг нотифаера. Токен бота — `\d+:[A-Za-z0-9_-]{30,}`, chat_id —
+        // целое (может быть отрицательным для групп).
+        if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(tg.token))
+            failFn(
+                'Профиль prod: RALPH_TG_BOT_TOKEN не похож на токен бота (ожидается \\d+:[A-Za-z0-9_-]{30,}). ' +
+                    'Похоже, в ralph.env остался плейсхолдер — подставь реальный токен от @BotFather.',
+            );
+        if (!/^-?\d+$/.test(tg.chatId))
+            failFn(
+                'Профиль prod: RALPH_TG_CHAT_ID не похож на chat_id (ожидается целое число, для групп — со знаком минус). ' +
+                    'Проверь значение в ralph.env.',
+            );
+    }
+
     try {
         shFn('git rev-parse --is-inside-work-tree');
     } catch {
@@ -1876,6 +1948,8 @@ function runLoop(
         tryMergePhaseFn = tryMergePhase,
         closeMilestoneByTitleFn = closeMilestoneByTitle,
         getLastRedCheck = () => lastRedCheck,
+        pushEventFn = pushEvent,
+        deployPhaseFn = deployPhasePlaceholder,
     } = {},
 ) {
     // ── Main loop ────────────────────────────────────────────────────────────────
@@ -1895,9 +1969,8 @@ function runLoop(
         }
 
         if (!once && state.count >= maxIterations) {
-            logFn(
-                `⛔ Circuit breaker: лимит итераций (${maxIterations}) на фазу "${phase.milestone}". Проверь лог и issues, перезапусти для продолжения.`,
-            );
+            const breakerMsg = `⛔ Ralph: circuit breaker — лимит итераций (${maxIterations}) на фазу "${phase.milestone}". Проверь лог и issues, перезапусти для продолжения.`;
+            pushEventFn(breakerMsg, cfg, { logFn });
             state.count = 0;
             saveStateFn(state);
             break;
@@ -1963,10 +2036,10 @@ function runLoop(
                 saveStateFn(state);
                 const maxNoProgress = cfg.maxNoProgress || 3;
                 if (state.noProgress >= maxNoProgress) {
-                    logFn(
-                        `⛔ Circuit breaker: ${maxNoProgress} итераций подряд без прогресса (ни коммита, ни закрытого issue) на фазе "${phase.milestone}". ` +
-                            `Loop стоит об стену — разбери Issue #${next.number} руками (или поставь label blocked) и перезапусти.`,
-                    );
+                    const noProgressMsg =
+                        `⛔ Ralph: circuit breaker — ${maxNoProgress} итераций подряд без прогресса (ни коммита, ни закрытого issue) на фазе "${phase.milestone}". ` +
+                        `Loop стоит об стену — разбери Issue #${next.number} руками (или поставь label blocked) и перезапусти.`;
+                    pushEventFn(noProgressMsg, cfg, { logFn });
                     state.noProgress = 0;
                     saveStateFn(state);
                     break;
@@ -2144,9 +2217,21 @@ function runLoop(
             logFn('🚦 Гейт мерджа: проверка label blocked + сверка HEAD + прогон чеков...');
             const gate = tryMergePhaseFn(phase, { profileName: cfg.profileName });
             if (gate === 'merged') {
+                const mergedMsg = `✅ Ralph: фаза "${phase.milestone}" смерджена в main — готова к релизу.`;
+                pushEventFn(mergedMsg, cfg, { logFn });
                 closeMilestoneByTitleFn(phase.milestone); // закрыть milestone сразу, не ждать свипа
                 advancePhaseFn(state, idx);
-                // continue → следующая фаза стартует с обновлённого main (полный AFK)
+                // #87: prod — стоп перед деплоем. Деплой уже в руках CI (мердж его и
+                // запустил), но loop не должен тут же хвататься за следующую фазу без
+                // паузы на релиз человеком. playground: мердж остаётся финалом —
+                // continue как раньше, следующая фаза стартует с обновлённого main.
+                if (cfg.profileName === 'prod') {
+                    deployPhaseFn(phase, { logFn });
+                    logFn(
+                        `⏸ Ralph: фаза "${phase.milestone}" — loop остановлен перед деплоем (prod). Следующая фаза начнётся со следующего запуска.`,
+                    );
+                    break;
+                }
                 continue;
             }
             if (gate === 'merged-local-stale') {
@@ -2168,14 +2253,14 @@ function runLoop(
                 const bMax = cfg.blockedHealAttempts ?? 3;
                 const bDone = state.blockedHeals || 0;
                 if (bDone >= bMax) {
-                    logFn(
+                    // Профиль prod (#73) выключает авто-разбор целиком. Без этой ветки
+                    // в лог шло «устоял после 0 разборов» — читается как сбой, хотя
+                    // это штатное прод-поведение: блокер сразу уходит человеку.
+                    const blockedMsg =
                         bMax === 0
-                            ? // Профиль prod (#73) выключает авто-разбор целиком. Без этой ветки
-                              // в лог шло «устоял после 0 разборов» — читается как сбой, хотя
-                              // это штатное прод-поведение: блокер сразу уходит человеку.
-                              `⛔ Разбор blocked выключен профилем "${cfg.profileName}" — PR с label blocked оставлен человеку.`
-                            : `⛔ Label blocked устоял после ${bDone} разборов — PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`,
-                    );
+                            ? `⛔ Ralph: фаза "${phase.milestone}" — разбор blocked выключен профилем "${cfg.profileName}", PR с label blocked оставлен человеку.`
+                            : `⛔ Ralph: фаза "${phase.milestone}" — label blocked устоял после ${bDone} разборов, PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`;
+                    pushEventFn(blockedMsg, cfg, { logFn });
                     state.blockedHeals = 0;
                     saveStateFn(state);
                     break;
@@ -2516,6 +2601,9 @@ if (require.main === module) main();
 // единственная точка реального spawnSync-вызова (её мокаем в тестах, а не остальной
 // раннерный код). tunnelHealthy/ensureTunnel/tunnelCheckEnabled (#92) — health-check
 // туннеля, config и зависимости (probe/restart/sleep/push) передаются параметрами.
+// pushEvent (#86) — единая точка доставки событий в Telegram (prod-only, playground
+// молчит); sendFn инжектируется, реальный sendTelegramMessage — единственная точка
+// curl-вызова (см. telegram-notifier.js).
 // probeEgress/restartTunnel (#92, ревью #98) — единственные точки реального
 // execFileSync-вызова (curl/systemctl) для туннеля; экспортированы, чтобы, как и у
 // spawnClaude, проверить САМУ границу anti-RCE защиты (argv доходит до вызова
@@ -2570,9 +2658,11 @@ module.exports = {
     pickReviewModel,
     API_LIMIT_RE,
     spawnClaude,
+    runClaude,
     tunnelHealthy,
     ensureTunnel,
     tunnelCheckEnabled,
+    pushEvent,
     probeEgress,
     restartTunnel,
     resolveWorktreePath,
@@ -2590,6 +2680,7 @@ module.exports = {
     gateChecksFor,
     checksGreen,
     tryMergePhase,
+    deployPhasePlaceholder,
     getLastRedCheck: () => lastRedCheck,
     getVerifiedHead: () => lastVerifiedHead,
 };
