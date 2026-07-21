@@ -1282,3 +1282,39 @@ describe('parseProfileFlag — выбор профиля из argv (#72)', () =>
         expect(() => resolveProfile(raw, name, boom)).toThrow(/Неизвестный профиль/);
     });
 });
+
+describe('боевой ralph.config.json — профили playground/prod (#73)', () => {
+    // Читаем НАСТОЯЩИЙ конфиг, а не синтетику: смысл issue в том, что прод-значения
+    // лежат в файле, а не в дефолтах кода, и что playground не съехал.
+    const raw = JSON.parse(fs.readFileSync('.claude/ralph/ralph.config.json', 'utf-8'));
+    const boom = (m) => {
+        throw new Error(m);
+    };
+
+    it('без флага резолвится playground', () => {
+        expect(resolveProfile(raw, null, boom).profileName).toBe('playground');
+    });
+
+    it('playground сохраняет прежнее поведение: крутилки равны дефолтам кода', () => {
+        const cfg = resolveProfile(raw, 'playground', boom);
+        // Ровно те значения, что стояли в `cfg.X ?? N` до переезда в конфиг.
+        expect(cfg.blockedHealAttempts).toBe(3);
+        expect(cfg.gateHealAttempts).toBe(2);
+        expect(cfg.apiLimitMaxWaits).toBe(3);
+    });
+
+    it('prod: blocked-разбор выключен — блокер ревью уходит человеку, не чинится сам', () => {
+        expect(resolveProfile(raw, 'prod', boom).blockedHealAttempts).toBe(0);
+    });
+
+    it('prod наследует всё остальное из common, не дублируя его', () => {
+        const pg = resolveProfile(raw, 'playground', boom);
+        const prod = resolveProfile(raw, 'prod', boom);
+        expect(prod.modelRouting).toEqual(pg.modelRouting);
+        expect(prod.review).toEqual(pg.review);
+        expect(prod.phases).toEqual(pg.phases);
+        expect(prod.authorAllowlist).toEqual(pg.authorAllowlist);
+        // Дельта prod в файле — ровно то, что заявлено, без случайных дублей.
+        expect(Object.keys(raw.profiles.prod)).toEqual(['blockedHealAttempts']);
+    });
+});

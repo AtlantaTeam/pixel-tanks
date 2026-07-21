@@ -9,6 +9,9 @@
         "model": "claude-opus-4-8",
         "fallbackModel": "claude-sonnet-5",
         "permissionMode": "bypassPermissions",
+        "blockedHealAttempts": 3,
+        "gateHealAttempts": 2,
+        "apiLimitMaxWaits": 3,
         "modelRouting": {
             "default": "claude-opus-4-8",
             "labels": {
@@ -40,6 +43,8 @@
     },
     "profiles": {
         "playground": {},
-        "prod": {}
+        "prod": {
+            "blockedHealAttempts": 0
+        }
     }
 }
