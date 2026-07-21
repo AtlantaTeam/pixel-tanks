@@ -789,7 +789,17 @@ function apiLimitWaitMs(output, cfg) {
  * команды, не более config.apiLimitMaxWaits раз (дефолт 3) — защита от вечного сна.
  */
 
-function runClaude(prompt, opts, { pushEventFn = pushEvent } = {}) {
+function runClaude(
+    prompt,
+    opts,
+    {
+        pushEventFn = pushEvent,
+        cfg = config,
+        runClaudeOnceFn = runClaudeOnce,
+        ensureTunnelFn = ensureTunnel,
+        sleepFn = sleep,
+    } = {},
+) {
     // #92: единая точка всех claude-сессий (кодер-итерации И шаги сдачи) — здесь же
     // и единый health-check туннеля. Красный канал после перезапуска = fail-closed
     // стоп всего loop: продолжать бессмысленно (следующая сессия упрётся в ту же
@@ -801,20 +811,20 @@ function runClaude(prompt, opts, { pushEventFn = pushEvent } = {}) {
     // нужно. Без этого guard'а --dry-run на VDS с RALPH_TUNNEL_CHECK=1 и красным
     // каналом реально дёргал бы systemctl restart и убивал прогон process.exit(1) —
     // ровно то живое побочное действие, которого dry-run обязан избегать.
-    if (!DRY && !ensureTunnel(config)) {
+    if (!DRY && !ensureTunnelFn(cfg)) {
         log('⛔ Health-check туннеля не прошёл — loop остановлен (fail-closed).');
         process.exit(1);
     }
-    const maxWaits = config.apiLimitMaxWaits ?? 3;
+    const maxWaits = cfg.apiLimitMaxWaits ?? 3;
     for (let attempt = 0; ; attempt++) {
-        const { code, output } = runClaudeOnce(prompt, opts);
+        const { code, output } = runClaudeOnceFn(prompt, opts);
         const limitHit = code !== 0 && API_LIMIT_RE.test(output);
-        if (!limitHit || config.waitOnApiLimit === false || attempt >= maxWaits) return code;
-        const waitMs = apiLimitWaitMs(output, config);
+        if (!limitHit || cfg.waitOnApiLimit === false || attempt >= maxWaits) return code;
+        const waitMs = apiLimitWaitMs(output, cfg);
         const limitMsg = `⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`;
         log(limitMsg);
-        pushEventFn(limitMsg, config);
-        sleep(waitMs);
+        pushEventFn(limitMsg, cfg);
+        sleepFn(waitMs);
     }
 }
 
@@ -2610,6 +2620,7 @@ module.exports = {
     pickReviewModel,
     API_LIMIT_RE,
     spawnClaude,
+    runClaude,
     tunnelHealthy,
     ensureTunnel,
     tunnelCheckEnabled,

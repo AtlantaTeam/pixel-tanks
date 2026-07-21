@@ -471,6 +471,114 @@ describe('pushEvent — доставка событий в Telegram, prod-only (
     });
 });
 
+describe('runClaude — 4-е событие (#88): API-лимит пушит уведомление и повторяет попытку', () => {
+    const { runClaude } = ralph;
+
+    it('маркер лимита в выводе → pushEventFn с текстом попытки/ожидания, sleepFn ждёт, повтор runClaudeOnceFn', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValueOnce({ code: 1, output: "You've hit your session limit · resets 11am" })
+            .mockReturnValueOnce({ code: 0, output: 'ok' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+        const ensureTunnelFn = vi.fn(() => true);
+        const cfg = { apiLimitMaxWaits: 3, apiLimitGraceMin: 0 };
+
+        const code = runClaude(
+            'промпт',
+            { model: 'sonnet' },
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn,
+                runClaudeOnceFn,
+                cfg,
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(2);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        // Форматирование сообщения: попытка (N/maxWaits) и время ожидания читаемы без консоли.
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/API-лимит/);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/попытка 1\/3/);
+        expect(pushEventFn.mock.calls[0][1]).toBe(cfg);
+        expect(sleepFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('без маркера лимита (обычный сбой) — pushEventFn не зовётся, повтора нет', () => {
+        const runClaudeOnceFn = vi.fn().mockReturnValue({ code: 1, output: 'просто упало' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { apiLimitMaxWaits: 3 },
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn).not.toHaveBeenCalled();
+        expect(sleepFn).not.toHaveBeenCalled();
+    });
+
+    it('лимит попыток исчерпан (apiLimitMaxWaits) — не уходит в вечный цикл, возвращает последний код', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValue({ code: 1, output: 'session limit resets 11am' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { apiLimitMaxWaits: 2 },
+            },
+        );
+
+        expect(code).toBe(1);
+        // attempt: 0 и 1 — пуш+сон, на attempt=2 (>= maxWaits) выход без ещё одного пуша.
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(3);
+        expect(pushEventFn).toHaveBeenCalledTimes(2);
+        expect(sleepFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('cfg.waitOnApiLimit === false — маркер лимита есть, но повтор/пуш выключены явно', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValue({ code: 1, output: 'session limit resets 11am' });
+        const pushEventFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn: vi.fn(),
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { waitOnApiLimit: false },
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+});
+
 describe('probeEgress — фактический вызов curl (граница anti-RCE защиты, ревью #98)', () => {
     // Как и spawnClaude (#67): execFileSync без shell — здесь проверяем ГРАНИЦУ, не
     // только чистую сборку. execFn инжектируем явно (не vi.mock('node:child_process') —
