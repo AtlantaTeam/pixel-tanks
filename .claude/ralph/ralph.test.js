@@ -43,6 +43,10 @@ const {
     preflight,
     runLoop,
     loadState,
+    checkoutMainQuiet,
+    checksGreen,
+    tryMergePhase,
+    getLastRedCheck,
 } = ralph;
 
 describe('buildClaudeArgs — построение argv для claude -p (ядро порта)', () => {
@@ -1019,7 +1023,7 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(tryMergePhaseFn).not.toHaveBeenCalled();
     });
 
-    it('фаза уже смерджена (идемпотентность, AFK): checkout+pull main, advancePhase, дальше', () => {
+    it('фаза уже смерджена (идемпотентность, AFK): fetch + detach origin/main, advancePhase, дальше', () => {
         const logs = [];
         const shCmds = [];
         const advancePhaseFn = vi.fn();
@@ -1038,8 +1042,12 @@ describe('runLoop — основной while-цикл: итерации коде
                 advancePhaseFn,
             }),
         );
-        expect(shCmds).toContain('git checkout main');
-        expect(shCmds).toContain('git pull --ff-only');
+        // #77: worktree-модель — раннер обновляется через origin/main (fetch + detach),
+        // локальный main не трогает вовсе: его ref держит дерево человека.
+        expect(shCmds).toContain('git fetch origin main');
+        expect(shCmds).toContain('git checkout --detach origin/main');
+        expect(shCmds).not.toContain('git checkout main');
+        expect(shCmds).not.toContain('git pull --ff-only');
         expect(advancePhaseFn).toHaveBeenCalledTimes(1);
         expect(logs.join('\n')).toMatch(/уже смерджена/);
     });
@@ -1063,8 +1071,8 @@ describe('runLoop — основной while-цикл: итерации коде
                 advancePhaseFn,
             }),
         );
-        expect(shCmds).not.toContain('git checkout main');
-        expect(shCmds).not.toContain('git pull --ff-only');
+        expect(shCmds).not.toContain('git fetch origin main');
+        expect(shCmds).not.toContain('git checkout --detach origin/main');
         expect(advancePhaseFn).toHaveBeenCalled();
     });
 
@@ -1242,6 +1250,287 @@ describe('runLoop — основной while-цикл: итерации коде
             }),
         );
         expect(logs.join('\n')).toMatch(/не прошла авто-мердж/);
+    });
+});
+
+describe('ветковая хореография в worktree раннера (#77)', () => {
+    // Модель после #76: раннер живёт в выделенном worktree, а git не даёт занять один
+    // ref двум worktree сразу. Поэтому гейт НЕ занимает именованных веток вовсе:
+    // чеки — на detached PR-head sha, парковка/обновление — detached origin/main.
+    // Локальный main (ref человека) раннер не трогает никогда.
+    const SHA_A = 'a'.repeat(40);
+    const SHA_B = 'b'.repeat(40);
+
+    describe('checkoutMainQuiet — парковка дерева раннера', () => {
+        it('паркует detached на origin/main, НЕ занимая ветку main', () => {
+            const shCmds = [];
+            checkoutMainQuiet({ shFn: (c) => shCmds.push(c), logFn: () => {} });
+            expect(shCmds).toEqual(['git checkout --detach origin/main']);
+        });
+
+        it('best-effort: сбой checkout не бросает, только лог', () => {
+            const logs = [];
+            expect(() =>
+                checkoutMainQuiet({
+                    shFn: () => {
+                        throw new Error('нет origin/main');
+                    },
+                    logFn: (m) => logs.push(m),
+                }),
+            ).not.toThrow();
+            expect(logs.join('\n')).toMatch(/origin\/main/);
+        });
+    });
+
+    describe('checksGreen — чеки гейта на detached PR-голове', () => {
+        // Фабрика шаблонного зелёного окружения. Запись команд — всегда в обёртке
+        // (shCmds наполняется при любом сценарии); сценарий переопределяет только
+        // ПОВЕДЕНИЕ команд через shImpl (вернуть/бросить) — одну грань за раз.
+        const mkDeps = ({ shImpl, ...rest } = {}) => {
+            const shCmds = [];
+            const parkFn = vi.fn();
+            const deps = {
+                shFn: (cmd) => {
+                    shCmds.push(cmd);
+                    if (shImpl) return shImpl(cmd);
+                    if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
+                    return '';
+                },
+                ghJsonFn: () => ({ headRefOid: SHA_A }),
+                logFn: () => {},
+                parkFn,
+                ...rest,
+            };
+            return { shCmds, parkFn, deps };
+        };
+
+        it('зелёный путь: fetch → сверка → detach на sha PR → все чеки → true', () => {
+            const { shCmds, parkFn, deps } = mkDeps();
+            expect(checksGreen('feature/m1', 42, deps)).toBe(true);
+            expect(shCmds).toContain('git fetch origin feature/m1');
+            expect(shCmds).toContain(`git checkout --detach ${SHA_A}`);
+            expect(shCmds).toEqual(
+                expect.arrayContaining([
+                    'npm run build',
+                    'npm run lint',
+                    'npm run lint:fsd',
+                    'npm run typecheck',
+                    'npm run test --silent',
+                ]),
+            );
+            // Именованные ветки не занимаем: ветку фазы держат кодер-сессии,
+            // main — дерево человека.
+            expect(shCmds).not.toContain('git checkout feature/m1');
+            expect(shCmds).not.toContain('git checkout main');
+            // На зелёном дерево остаётся на PR-голове (её и мерджим) — парковки нет.
+            expect(parkFn).not.toHaveBeenCalled();
+        });
+
+        it('H3 в worktree: локальная ветка (общий ref кодер-сессий) != голова PR → false, чеки не гонялись', () => {
+            const { shCmds, parkFn, deps } = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd.startsWith('git rev-parse --verify')) return SHA_B;
+                    return '';
+                },
+            });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(false);
+            expect(shCmds).not.toContain('npm run build');
+            expect(shCmds).not.toContain(`git checkout --detach ${SHA_A}`);
+            expect(parkFn).toHaveBeenCalled();
+        });
+
+        it('локальной ветки нет (rev-parse падает) — не фатально: чеки идут на PR-голове', () => {
+            const { shCmds, deps } = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd.startsWith('git rev-parse --verify'))
+                        throw new Error('unknown revision');
+                    return '';
+                },
+            });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(true);
+            expect(shCmds).toContain(`git checkout --detach ${SHA_A}`);
+        });
+
+        it('git fetch упал → false fail-closed, до gh и чеков не дошли', () => {
+            const ghJsonFn = vi.fn();
+            const { shCmds, parkFn, deps } = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd.startsWith('git fetch')) throw new Error('сеть умерла');
+                    return '';
+                },
+                ghJsonFn,
+            });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(false);
+            expect(ghJsonFn).not.toHaveBeenCalled();
+            expect(shCmds).not.toContain('npm run build');
+            expect(parkFn).toHaveBeenCalled();
+        });
+
+        it('headRefOid не 40-hex sha → false ДО интерполяции в git-команду (fail-closed)', () => {
+            const { shCmds, parkFn, deps } = mkDeps({
+                ghJsonFn: () => ({ headRefOid: 'main; rm -rf /' }),
+            });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(false);
+            expect(shCmds.some((c) => c.includes('rm -rf'))).toBe(false);
+            expect(shCmds).not.toContain('npm run build');
+            expect(parkFn).toHaveBeenCalled();
+        });
+
+        it('красный чек → false, lastRedCheck заполнен именем чека, дерево припарковано', () => {
+            const { parkFn, deps } = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
+                    if (cmd === 'npm run lint')
+                        throw Object.assign(new Error('lint упал'), {
+                            stdout: 'no-explicit-any: error',
+                            stderr: '',
+                        });
+                    return '';
+                },
+            });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(false);
+            expect(getLastRedCheck()).toMatchObject({ name: 'lint', cmd: 'npm run lint' });
+            expect(getLastRedCheck().excerpt).toContain('no-explicit-any');
+            expect(parkFn).toHaveBeenCalled();
+        });
+
+        it('lastRedCheck сбрасывается В НАЧАЛЕ прогона: сбой fetch не маскируется под red-checks прошлого раунда', () => {
+            // Раунд 1: красный чек — lastRedCheck заполнен.
+            const red = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
+                    if (cmd === 'npm run build') throw new Error('build упал');
+                    return '';
+                },
+            });
+            checksGreen('feature/m1', 42, red.deps);
+            expect(getLastRedCheck()).toMatchObject({ name: 'build' });
+            // Раунд 2: гейт падает ДО чеков (fetch) — старый red-check не должен выжить,
+            // иначе tryMergePhase запустил бы чини-сессию по устаревшей ошибке.
+            const fetchFail = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd.startsWith('git fetch')) throw new Error('сеть');
+                    return '';
+                },
+            });
+            expect(checksGreen('feature/m1', 42, fetchFail.deps)).toBe(false);
+            expect(getLastRedCheck()).toBeNull();
+        });
+    });
+
+    describe('tryMergePhase — гейт мерджа в worktree-модели', () => {
+        const phase = { milestone: 'M1', branch: 'feature/m1' };
+        // Зелёное окружение по умолчанию: открытый PR без blocked, зелёные чеки,
+        // мердж и пост-мердж git проходят. Сценарии переопределяют одну грань;
+        // поведение sh-команд — через shImpl, запись в shCmds всегда в обёртке.
+        const mkDeps = ({ shImpl, ...rest } = {}) => {
+            const shCmds = [];
+            const parkFn = vi.fn();
+            const deps = {
+                dry: false,
+                shFn: (cmd) => {
+                    shCmds.push(cmd);
+                    return shImpl ? shImpl(cmd) : '';
+                },
+                logFn: () => {},
+                ensureCleanFn: () => true,
+                findOpenPrFn: () => ({ number: 5, labels: [] }),
+                checksGreenFn: () => true,
+                phaseMergedFn: () => false,
+                sleepFn: () => {},
+                parkFn,
+                getLastRedCheckFn: () => null,
+                ...rest,
+            };
+            return { shCmds, parkFn, deps };
+        };
+
+        it('зелёный гейт: squash-merge, затем fetch + detach origin/main → merged', () => {
+            const { shCmds, deps } = mkDeps();
+            expect(tryMergePhase(phase, deps)).toBe('merged');
+            const mergeIdx = shCmds.findIndex(
+                (c) => c === 'gh pr merge 5 --squash --delete-branch',
+            );
+            expect(mergeIdx).toBeGreaterThanOrEqual(0);
+            // Обновление раннера — строго через origin/main и ПОСЛЕ мерджа.
+            expect(shCmds.indexOf('git fetch origin main')).toBeGreaterThan(mergeIdx);
+            expect(shCmds).toContain('git checkout --detach origin/main');
+            expect(shCmds).not.toContain('git checkout main');
+            expect(shCmds).not.toContain('git pull --ff-only');
+        });
+
+        it('пост-мердж fetch/detach упал → merged-local-stale (PR влит, дерево раннера отстало)', () => {
+            const { deps } = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd === 'git fetch origin main') throw new Error('сеть');
+                    return '';
+                },
+            });
+            expect(tryMergePhase(phase, deps)).toBe('merged-local-stale');
+        });
+
+        it('PR с label blocked → blocked, чеки не гонялись', () => {
+            const checksGreenFn = vi.fn();
+            const { deps } = mkDeps({
+                findOpenPrFn: () => ({ number: 5, labels: [{ name: 'blocked' }] }),
+                checksGreenFn,
+            });
+            expect(tryMergePhase(phase, deps)).toBe('blocked');
+            expect(checksGreenFn).not.toHaveBeenCalled();
+        });
+
+        it('красный гейт: checksGreen=false + red-check → red-checks; без red-check → not-merged', () => {
+            const red = mkDeps({
+                checksGreenFn: () => false,
+                getLastRedCheckFn: () => ({ name: 'test', cmd: 'npm run test --silent' }),
+            });
+            expect(tryMergePhase(phase, red.deps)).toBe('red-checks');
+            const preChecks = mkDeps({ checksGreenFn: () => false, getLastRedCheckFn: () => null });
+            expect(tryMergePhase(phase, preChecks.deps)).toBe('not-merged');
+        });
+
+        it('мердж упал дважды и PR не влит → not-merged, парковка на origin/main', () => {
+            const sleepFn = vi.fn();
+            const { shCmds, parkFn, deps } = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd.startsWith('gh pr merge')) throw new Error('merge отвергнут');
+                    return '';
+                },
+                sleepFn,
+            });
+            expect(tryMergePhase(phase, deps)).toBe('not-merged');
+            expect(shCmds.filter((c) => c.startsWith('gh pr merge'))).toHaveLength(2);
+            expect(sleepFn).toHaveBeenCalledTimes(1); // пауза только между попытками
+            expect(parkFn).toHaveBeenCalled();
+            expect(shCmds).not.toContain('git fetch origin main'); // до пост-мерджа не дошли
+        });
+
+        it('мердж «упал», но phaseMerged подтверждает влитие → продолжаем как merged', () => {
+            const { deps } = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd.startsWith('gh pr merge')) throw new Error('оборванный ответ');
+                    return '';
+                },
+                phaseMergedFn: () => true,
+            });
+            expect(tryMergePhase(phase, deps)).toBe('merged');
+        });
+
+        it('dry=true → not-merged, ни одной git/gh-команды (C1 read-only)', () => {
+            const shFn = vi.fn();
+            const ensureCleanFn = vi.fn();
+            const { deps } = mkDeps({ dry: true, shFn, ensureCleanFn });
+            expect(tryMergePhase(phase, deps)).toBe('not-merged');
+            expect(shFn).not.toHaveBeenCalled();
+            expect(ensureCleanFn).not.toHaveBeenCalled();
+        });
+
+        it('грязное дерево раннера (ensureClean=false) → not-merged до поиска PR', () => {
+            const findOpenPrFn = vi.fn();
+            const { deps } = mkDeps({ ensureCleanFn: () => false, findOpenPrFn });
+            expect(tryMergePhase(phase, deps)).toBe('not-merged');
+            expect(findOpenPrFn).not.toHaveBeenCalled();
+        });
     });
 });
 

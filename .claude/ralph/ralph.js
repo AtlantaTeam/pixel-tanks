@@ -462,7 +462,8 @@ function parseWorktreeList(raw) {
  * Свежий worktree создаётся `--detach` (детач, не ветка): на этом шаге раннер ещё
  * не знает, какая ветка фазы понадобится, а `main` почти всегда уже занят деревом
  * человека — git не даёт одну и ту же ветку в двух worktree одновременно.
- * Переключение на нужную ветку — забота git-хелперов гейта (#77).
+ * Ветку фазы дальше занимают кодер-сессии в этом дереве; git-хелперы гейта (#77)
+ * работают строго детачем (PR-голова / origin/main), именованных веток не занимая.
  *
  * `npm ci` сразу после создания: `git worktree add` линкует только git-отслеживаемые
  * файлы, `node_modules` (в .gitignore) в новом дереве нет — без установки первый же
@@ -801,13 +802,16 @@ function ensureClean(context) {
     return true;
 }
 
-// L2: после красного гейта не бросаем репо на фичевой ветке — человек и следующий
-// запуск ожидают старт с main. Best-effort: неудача не критична, только лог.
-function checkoutMainQuiet() {
+// L2 → worktree-модель (#77): после гейта не бросаем дерево раннера на PR-голове —
+// паркуем его на origin/main. Именно ДЕТАЧЕМ на origin/main, а не `git checkout main`:
+// ветку main почти всегда держит соседнее дерево человека, git не даёт занять один
+// ref двум worktree, и прежний checkout падал бы всякий раз. --detach на ref вообще
+// не претендует. Best-effort: неудача не критична, только лог.
+function checkoutMainQuiet({ shFn = sh, logFn = log } = {}) {
     try {
-        sh('git checkout main');
+        shFn('git checkout --detach origin/main');
     } catch (e) {
-        log(`⚠ Не смог вернуться на main: ${e.message}`);
+        logFn(`⚠ Не смог припарковать дерево раннера на origin/main: ${e.message}`);
     }
 }
 
@@ -840,51 +844,83 @@ function formatExcerpt(raw) {
     return raw.slice(-600).replace(/\s+/g, ' ');
 }
 
-// Чеки прогоняются на коде ветки — переключаемся на неё. true только если ВСЕ зелёные.
-function checksGreen(branch, prNumber) {
+// gh отдаёт headRefOid как 40-hex sha; всё прочее — повод остановиться ДО подстановки
+// значения в git-команду (та же гигиена, что anti-RCE argv в spawnClaude: значение из
+// внешнего API не должно доехать до шелл-строки непроверенным).
+const SHA40_RE = /^[0-9a-f]{40}$/;
+
+// Чеки гейта в worktree-модели (#77): прогоняются В ДЕРЕВЕ РАННЕРА на detached
+// checkout ТОЧНОГО sha PR-головы — именованную ветку не занимаем вовсе. Причина:
+// git не даёт один ref двум worktree, ветку фазы между сессиями держит это же
+// дерево (кодер-сессии), а main — дерево человека; прежние `git checkout <branch>`
+// / `git checkout main` падали бы в зависимости от того, где стоит человек. Детач
+// на PR-голову заодно усиливает H3: тестируем БУКВАЛЬНО тот коммит, который уедет
+// в main, а не локальную ветку, похожую на него.
+// true только если ВСЕ чеки зелёные.
+function checksGreen(
+    branch,
+    prNumber,
+    { shFn = sh, ghJsonFn = ghJson, logFn = log, parkFn = checkoutMainQuiet } = {},
+) {
+    // Сброс СРАЗУ: любой выход из этого раунда до чеков не должен носить red-check
+    // прошлого раунда — tryMergePhase иначе вернул бы 'red-checks' с устаревшей
+    // ошибкой и чини-сессия чинила бы уже починенное.
+    lastRedCheck = null;
     try {
-        sh(`git checkout ${branch}`);
+        shFn(`git fetch origin ${branch}`);
     } catch (e) {
-        log(`⚠ Не смог переключиться на ${branch} для прогонки чеков: ${e.message}`);
-        return false;
-    }
-    // H3: гейт тестирует ЛОКАЛЬНУЮ ветку, а gh pr merge мерджит REMOTE-голову PR.
-    // Если они разошлись (push агента упал; допушено с другой машины) — в main
-    // уехал бы код, который никто не прогонял. Поэтому: fetch (свежий remote) +
-    // сверка локального HEAD с headRefOid PR. Не совпало → не мерджим.
-    try {
-        sh(`git fetch origin ${branch}`);
-    } catch (e) {
-        log(
+        logFn(
             `⛔ git fetch origin ${branch} упал (${e.message}) — без свежего remote нельзя убедиться, что тестируем то, что мерджим. Авто-мердж отменён.`,
         );
-        checkoutMainQuiet();
+        parkFn();
+        return false;
+    }
+    let remoteHead;
+    try {
+        remoteHead = ghJsonFn(`gh pr view ${prNumber} --json headRefOid`).headRefOid;
+    } catch (e) {
+        logFn(`⛔ Не смог получить голову PR #${prNumber}: ${e.message} — авто-мердж отменён.`);
+        parkFn();
+        return false;
+    }
+    if (!SHA40_RE.test(String(remoteHead))) {
+        logFn(
+            `⛔ headRefOid PR #${prNumber} не похож на sha коммита ('${remoteHead}') — авто-мердж отменён.`,
+        );
+        parkFn();
+        return false;
+    }
+    // H3 в worktree-модели: чеки идут на remote-голове, но незапушенная работа не
+    // должна молча теряться. refs/heads/<branch> ОБЩИЙ для всех worktree репозитория —
+    // это тот самый ref, куда коммитили кодер-сессии; разошёлся с PR (push агента
+    // упал; допушено с другой машины) → в main уехала бы фаза без части работы или
+    // непрогнанный код. Не совпало → не мерджим. Ветки нет локально (свежая машина,
+    // хвост после --delete-branch) — локальной работы нет, сверять нечего: гоняем
+    // чеки на PR-голове как есть.
+    let localHead = null;
+    try {
+        localHead = shFn(`git rev-parse --verify --quiet refs/heads/${branch}`);
+    } catch {}
+    if (localHead && localHead !== remoteHead) {
+        logFn(
+            `⛔ Локальная ветка ${branch} (${localHead.slice(0, 8)}) != голова PR #${prNumber} (${remoteHead.slice(0, 8)}) — в main уехал бы не тот код, что лежит локально. Синхронизируй ветку (push/pull) и перезапусти.`,
+        );
+        parkFn();
         return false;
     }
     try {
-        const remoteHead = ghJson(`gh pr view ${prNumber} --json headRefOid`).headRefOid;
-        const localHead = sh('git rev-parse HEAD');
-        if (remoteHead !== localHead) {
-            log(
-                `⛔ Локальный HEAD (${localHead.slice(0, 8)}) != голова PR #${prNumber} (${String(remoteHead).slice(0, 8)}) — тестировали бы не тот код, что уедет в main. Синхронизируй ветку (push/pull) и перезапусти.`,
-            );
-            checkoutMainQuiet();
-            return false;
-        }
+        shFn(`git checkout --detach ${remoteHead}`);
     } catch (e) {
-        log(
-            `⛔ Не смог сверить HEAD с головой PR #${prNumber}: ${e.message} — авто-мердж отменён.`,
-        );
-        checkoutMainQuiet();
+        logFn(`⛔ Не смог встать на голову PR #${prNumber} (${e.message}) — авто-мердж отменён.`);
+        parkFn();
         return false;
     }
-    lastRedCheck = null;
     for (const [name, cmd] of GATE_CHECKS) {
         try {
-            sh(cmd);
-            log(`  ✓ ${name}`);
+            shFn(cmd);
+            logFn(`  ✓ ${name}`);
         } catch (e) {
-            log(`  ✗ ${name} — красный, авто-мердж отменён`);
+            logFn(`  ✗ ${name} — красный, авто-мердж отменён`);
             // Хвост вывода чека — топливо для чини-сессии гейта (self-heal): без
             // текста ошибки агент чинил бы вслепую. Спецсимволы безопасны — см. formatExcerpt.
             const raw = `${e.stdout || ''}\n${e.stderr || ''}`.trim() || String(e.message);
@@ -893,14 +929,14 @@ function checksGreen(branch, prNumber) {
                 cmd,
                 excerpt: formatExcerpt(raw),
             };
-            checkoutMainQuiet();
+            parkFn();
             return false;
         }
     }
     return true;
 }
 
-// Последний упавший ЧЕК гейта (null = гейт падал не на чеках: checkout/fetch/HEAD).
+// Последний упавший ЧЕК гейта (null = гейт падал не на чеках: fetch/HEAD/detach).
 // Разделение важно: чини-сессия имеет смысл только для красных чеков — сетевые
 // и git-проблемы кодом не лечатся.
 let lastRedCheck = null;
@@ -920,8 +956,8 @@ function phaseMerged(phase) {
 
 /**
  * Гейт мерджа фазы. Возвращает:
- *   'merged'             — смерджено, локальный main обновлён → к следующей фазе;
- *   'merged-local-stale' — PR СМЕРДЖЕН, но checkout main / pull упал (H4). Раньше
+ *   'merged'             — смерджено, дерево раннера на свежем origin/main → к следующей фазе;
+ *   'merged-local-stale' — PR СМЕРДЖЕН, но fetch/detach origin/main упал (H4). Раньше
  *                          merge и пост-мердж шаги жили в одном try, и лог ВРАЛ
  *                          «мердж не удался» при уже влитом PR — состояние надо
  *                          различать: восстановление другое (руками + рестарт);
@@ -931,37 +967,57 @@ function phaseMerged(phase) {
  *                          чинится кодом → цикл запустит чини-сессию (self-heal);
  *   'not-merged'         — не мерджили по нечинимой причине (нет PR / blocked /
  *                          сеть-git проблемы / merge упал).
+ *
+ * DI (#77): коллабораторы с побочками и флаг dry — параметрами с дефолтами из
+ * module-level ссылок, как у preflight/runLoop; в проде зовётся без deps.
+ * getLastRedCheckFn — геттер, а не снимок: red-check ставится как побочка ВНУТРИ
+ * checksGreen и читается после её вызова (та же причина, что у runLoop).
  */
-function tryMergePhase(phase) {
+function tryMergePhase(
+    phase,
+    {
+        dry = DRY,
+        shFn = sh,
+        logFn = log,
+        ensureCleanFn = ensureClean,
+        findOpenPrFn = findOpenPr,
+        checksGreenFn = checksGreen,
+        phaseMergedFn = phaseMerged,
+        sleepFn = sleep,
+        parkFn = checkoutMainQuiet,
+        getLastRedCheckFn = () => lastRedCheck,
+    } = {},
+) {
     // C1: dry-run строго read-only. Основной guard стоит в цикле ДО вызова гейта;
     // этот — defense in depth: даже если будущая правка цикла потеряет внешний
-    // guard, dry-run всё равно не смерджит и не тронет ветки.
-    if (DRY) {
-        log('💤 DRY: гейт мерджа пропущен — ничего не мерджим и не переключаем ветки.');
+    // guard, dry-run всё равно не смерджит и не тронет дерево раннера.
+    if (dry) {
+        logFn('💤 DRY: гейт мерджа пропущен — ничего не мерджим и не переключаем ветки.');
         return 'not-merged';
     }
-    // M2: checkout с грязью либо упадёт, либо утащит полу-работу между ветками.
-    if (!ensureClean('гейт мерджа')) return 'not-merged';
-    const pr = findOpenPr(phase.branch);
+    // M2: checkout с грязью либо упадёт, либо утащит полу-работу между коммитами.
+    if (!ensureCleanFn('гейт мерджа')) return 'not-merged';
+    const pr = findOpenPrFn(phase.branch);
     if (!pr) {
-        log(`⛔ Гейт: открытый PR ветки ${phase.branch} в main не найден — мердж невозможен.`);
+        logFn(`⛔ Гейт: открытый PR ветки ${phase.branch} в main не найден — мердж невозможен.`);
         return 'not-merged';
     }
     if ((pr.labels || []).some((l) => l.name === 'blocked')) {
-        log(`⛔ Гейт: PR #${pr.number} помечен 'blocked'.`);
+        logFn(`⛔ Гейт: PR #${pr.number} помечен 'blocked'.`);
         return 'blocked';
     }
-    if (!checksGreen(phase.branch, pr.number)) {
-        if (lastRedCheck) {
-            log(`⛔ Гейт: чек ${lastRedCheck.name} красный на PR #${pr.number}.`);
+    if (!checksGreenFn(phase.branch, pr.number)) {
+        const redCheck = getLastRedCheckFn();
+        if (redCheck) {
+            logFn(`⛔ Гейт: чек ${redCheck.name} красный на PR #${pr.number}.`);
             return 'red-checks';
         }
-        log(`⛔ Гейт: не прошёл до чеков (checkout/fetch/HEAD) на PR #${pr.number}.`);
+        logFn(`⛔ Гейт: не прошёл до чеков (fetch/HEAD/detach) на PR #${pr.number}.`);
         return 'not-merged';
     }
     // H4: merge и пост-мердж шаги — РАЗНЫЕ try. Упал сам merge → PR цел, честное
-    // «не удался». Merge прошёл, а checkout/pull упал → это НЕ «мердж не удался»,
-    // а «смерджено, локалка отстала»: другой статус, другое восстановление.
+    // «не удался». Merge прошёл, а обновление дерева раннера упало → это НЕ «мердж
+    // не удался», а «смерджено, локалка отстала»: другой статус, другое восстановление.
     //
     // Ретрай мутации (боевой случай 2026-07-19): локальный прокси оборвал соединение
     // с GitHub API на зелёном гейте, и ночь встала из-за одного сетевого чиха.
@@ -970,42 +1026,48 @@ function tryMergePhase(phase) {
     let mergedOk = false;
     for (let attempt = 1; attempt <= 2 && !mergedOk; attempt++) {
         try {
-            sh(`gh pr merge ${pr.number} --squash --delete-branch`);
+            shFn(`gh pr merge ${pr.number} --squash --delete-branch`);
             mergedOk = true;
         } catch (e) {
             try {
-                if (phaseMerged(phase)) {
-                    log(`⚠ gh pr merge #${pr.number} вернул ошибку, но PR уже влит — продолжаем.`);
+                if (phaseMergedFn(phase)) {
+                    logFn(
+                        `⚠ gh pr merge #${pr.number} вернул ошибку, но PR уже влит — продолжаем.`,
+                    );
                     mergedOk = true;
                     break;
                 }
             } catch {}
             if (attempt < 2) {
-                log(
+                logFn(
                     `⚠ Мердж PR #${pr.number} не удался (${String(e.message).split('\n')[0]}) — повтор через 30с.`,
                 );
-                sleep(30_000);
+                sleepFn(30_000);
             } else {
-                log(
+                logFn(
                     `⛔ Гейт: мердж PR #${pr.number} не удался (${e.message}) — оставлен человеку.`,
                 );
-                checkoutMainQuiet();
+                parkFn();
                 return 'not-merged';
             }
         }
     }
+    // #77: локальный main не трогаем ВООБЩЕ — его ref держит дерево человека, git не
+    // даст ни занять его вторым worktree, ни обновить из-под чужого checkout.
+    // «Обновлённый main» раннера = свежий origin/main + detach на нём: следующая
+    // фаза стартует ровно от этого коммита.
     try {
-        sh('git checkout main');
-        sh('git pull --ff-only');
+        shFn('git fetch origin main');
+        shFn('git checkout --detach origin/main');
     } catch (e) {
-        log(
-            `⚠ PR #${pr.number} СМЕРДЖЕН, но локальный main не обновился (${e.message}). ` +
-                `Почини руками: git checkout main && git pull --ff-only — затем перезапусти loop ` +
-                `(рестарт увидит фазу смердженной и продолжит со следующей).`,
+        logFn(
+            `⚠ PR #${pr.number} СМЕРДЖЕН, но дерево раннера не обновилось (${e.message}). ` +
+                `Почини руками в дереве раннера: git fetch origin main && git checkout --detach origin/main — ` +
+                `затем перезапусти loop (рестарт увидит фазу смердженной и продолжит со следующей).`,
         );
         return 'merged-local-stale';
     }
-    log(`✅ PR #${pr.number} смерджен (squash), main обновлён.`);
+    logFn(`✅ PR #${pr.number} смерджен (squash), дерево раннера на свежем origin/main.`);
     return 'merged';
 }
 
@@ -1352,24 +1414,26 @@ function runLoop(
                 break;
             }
             if (merged) {
-                // H1: и в ЭТОМ пути обязателен pull локального main — после ручного мерджа
-                // локалка о нём не знает; без pull следующая фаза строилась бы от
-                // устаревшего main (тот же класс бага, что чинил весь этот флоу).
-                // Fail-stop: строить следующую фазу на непонятном main хуже, чем встать.
+                // H1: и в ЭТОМ пути обязательно обновление дерева раннера — после ручного
+                // мерджа локалка о нём не знает; без него следующая фаза строилась бы от
+                // устаревшего кода (тот же класс бага, что чинил весь этот флоу).
+                // Worktree-модель (#77): свежий origin/main + detach, локальный main
+                // (ref человека) не трогаем — git и не даст занять его вторым worktree.
+                // Fail-stop: строить следующую фазу на непонятной базе хуже, чем встать.
                 if (!dry) {
                     try {
-                        shFn('git checkout main');
-                        shFn('git pull --ff-only');
+                        shFn('git fetch origin main');
+                        shFn('git checkout --detach origin/main');
                     } catch (e) {
                         logFn(
-                            `⛔ Фаза "${phase.milestone}" смерджена, но локальный main не обновился (${e.message}). ` +
-                                `Почини руками: git checkout main && git pull --ff-only — затем перезапусти loop.`,
+                            `⛔ Фаза "${phase.milestone}" смерджена, но дерево раннера не обновилось (${e.message}). ` +
+                                `Почини руками в дереве раннера: git fetch origin main && git checkout --detach origin/main — затем перезапусти loop.`,
                         );
                         break;
                     }
                 }
                 logFn(
-                    `✅ Фаза "${phase.milestone}" уже смерджена — main обновлён, переход к следующей.`,
+                    `✅ Фаза "${phase.milestone}" уже смерджена — дерево раннера на свежем origin/main, переход к следующей.`,
                 );
                 advancePhaseFn(state, idx);
                 if (once || dry) break;
@@ -1815,6 +1879,11 @@ if (require.main === module) main();
 // resolveWorktreePath/parseWorktreeList/ensureRunnerWorktree (#76) — изоляция раннера
 // в выделенный git worktree, соседний с деревом человека; побочки (git/npm/fs/log/fail)
 // инжектируются, как и везде выше, поэтому тестируются без реального git/npm.
+// checkoutMainQuiet/checksGreen/tryMergePhase (#77) — ветковая хореография гейта в
+// worktree-модели: только detached checkout (PR-голова / origin/main), именованные
+// ветки не занимаются; побочки (sh/gh/log/park/sleep) и dry — инжектируемые.
+// getLastRedCheck — геттер module-level lastRedCheck для ассертов red-check в тестах
+// (то же, что runLoop получает дефолтным getLastRedCheck-депом).
 module.exports = {
     resolveProfile,
     deepMerge,
@@ -1840,4 +1909,8 @@ module.exports = {
     preflight,
     runLoop,
     loadState,
+    checkoutMainQuiet,
+    checksGreen,
+    tryMergePhase,
+    getLastRedCheck: () => lastRedCheck,
 };
