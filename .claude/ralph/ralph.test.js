@@ -1346,14 +1346,14 @@ describe('monitorAlive — жив ли процесс монитора (#74)', (
 
 describe('isMonitorProcess — за pid действительно monitor.js (#74)', () => {
     it('в /proc/<pid>/cmdline есть monitor.js → это наш монитор', () => {
-        const readFn = vi.fn(() => 'node .claude/ralph/monitor.js ');
+        const readFn = vi.fn(() => 'node\0.claude/ralph/monitor.js\0');
         expect(isMonitorProcess(99, readFn)).toBe(true);
         expect(readFn).toHaveBeenCalledWith('/proc/99/cmdline', 'utf-8');
     });
 
     // ОС переиспользовала pid: живой процесс есть, но это не монитор — kill нельзя.
     it('чужой процесс под тем же pid → false', () => {
-        expect(isMonitorProcess(99, () => 'nginx -g daemon off; ')).toBe(false);
+        expect(isMonitorProcess(99, () => 'nginx\0-g\0daemon off;\0')).toBe(false);
     });
 
     it('процесса нет (чтение /proc упало) → false', () => {
