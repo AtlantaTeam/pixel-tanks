@@ -104,9 +104,28 @@ const RESUBMIT = args.includes('--resubmit');
 // после присваивания.
 let config;
 
+// #138: предохранитель от побочек в тестах. Раннерные функции берут коллабораторов
+// (shFn/logFn/…) через DI, но у каждого есть ДЕФОЛТ — настоящие sh/log. Тест, забывший
+// подменить хоть один, молча уходил в реальный git и дописывал строки в ralph.log
+// ЖИВОГО прогона: в логе фазы 4 так и появилось `git fetch origin main 'feature/m1'` —
+// имя ветки из фикстуры тестов. Симптом молчаливый и читается как проблема раннера.
+// Поэтому в тестовом окружении (vitest.config.ts выставляет переменную проекту "ralph")
+// sh() падает с внятным текстом, а log() не трогает файл: забытый мок обязан быть
+// ГРОМКОЙ красной ошибкой в том же тесте, а не мусором в логе через неделю.
+//
+// Одного throw мало: половина вызовов sh() стоит внутри try/catch (phaseDiffFiles,
+// checksGreen, refreshRunnerWorktree — им нельзя ронять ночной прогон из-за одной
+// git-ошибки), и такой catch проглотит предохранитель — тест снова зелёный, побочка
+// снова невидима. Поэтому каждая попытка ещё и записывается в журнал, а общий
+// afterEach в тестах валит тест, если журнал не пуст. Журнал наполняется ТОЛЬКО под
+// предохранителем: в бою массив всегда пуст и не растёт.
+const NO_SIDE_EFFECTS = process.env.RALPH_NO_SIDE_EFFECTS === '1';
+const sideEffectAttempts = [];
+
 function log(msg) {
     const line = `[${new Date().toISOString()}] ${msg}`;
     console.log(line);
+    if (NO_SIDE_EFFECTS) return;
     try {
         fs.appendFileSync(logTarget, line + '\n');
     } catch {}
@@ -139,6 +158,17 @@ function shq(value) {
 }
 
 function sh(cmd) {
+    // #138: см. NO_SIDE_EFFECTS выше — в тестах реальный шелл запрещён. Команду
+    // печатаем в тексте ошибки: по ней сразу видно, какой именно дефолт не подменили.
+    if (NO_SIDE_EFFECTS) {
+        sideEffectAttempts.push(cmd);
+        throw new Error(
+            `sh() вызван в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1): ${cmd}\n` +
+                `Тест дошёл до настоящего шелла — значит, где-то не передан shFn (или ` +
+                `коллаборатор, который его использует: phaseDiffFilesFn, checksGreenFn, …). ` +
+                `Подмени зависимость в deps теста.`,
+        );
+    }
     // maxBuffer 16 МБ (дефолт 1 МБ) — L4: многословный вывод npm/vitest переполнял
     // буфер и ронял sh() даже на ЗЕЛЁНЫХ чеках. Fail-closed безопасно, но ложные
     // красные стопы съедают смысл AFK-прогона.
@@ -2500,6 +2530,12 @@ module.exports = {
     isMonitorProcess,
     buildClaudeArgs,
     shq,
+    // sh/log/sideEffectAttempts экспортируются только ради предохранителя #138: проверить,
+    // что в тестовом окружении шелл запрещён и лог не пишется, можно лишь дёрнув их
+    // напрямую, а журнал попыток читает общий afterEach тестов.
+    sh,
+    log,
+    sideEffectAttempts,
     formatExcerpt,
     parseResetWaitMs,
     apiLimitWaitMs,
