@@ -50,8 +50,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Прод-режим ralph · Фаза 3: Изоляция в worktree",
-                "branch": "feature/ralph-worktree"
+                "milestone": "Прод-режим ralph · Фаза 5: TG-пуши + merge→release",
+                "branch": "feature/ralph-tg-release"
             }
         ]
     },
