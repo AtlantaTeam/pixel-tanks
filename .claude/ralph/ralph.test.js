@@ -2675,3 +2675,205 @@ describe('Изоляция раннера в worktree — сценарии и м
         });
     });
 });
+
+// ── #130: роутинг ревью по зоне риска, запас после лимита, бюджет ходов ───────
+// Мотивация из прогона 21.07.2026: ревью фазы 3 на fable выело окно лимита и
+// остановило цикл на 21 минуту. Разбор показал две отдельные проблемы —
+// эскалация решалась по метке СЛОЖНОСТИ issue (а должна — по цене ошибки), и
+// ревью получало бюджет ходов кодера, хотя кода не пишет.
+
+describe('globToRegExp — глобы зон риска (#130)', () => {
+    const { globToRegExp } = ralph;
+
+    it('** матчит вложенные сегменты', () => {
+        const re = globToRegExp('.claude/ralph/**');
+        expect(re.test('.claude/ralph/ralph.js')).toBe(true);
+        expect(re.test('.claude/ralph/provision/provision.sh')).toBe(true);
+    });
+
+    it('** не выходит за пределы своего префикса', () => {
+        const re = globToRegExp('.claude/ralph/**');
+        expect(re.test('src/app/page.tsx')).toBe(false);
+        expect(re.test('docs/.claude/ralph/x.js')).toBe(false);
+    });
+
+    it('одиночная * не перепрыгивает через /', () => {
+        const re = globToRegExp('src/*.ts');
+        expect(re.test('src/middleware.ts')).toBe(true);
+        expect(re.test('src/payload/collections/users.ts')).toBe(false);
+    });
+
+    it('**/ матчит и корень, и вложенность', () => {
+        const re = globToRegExp('**/middleware.ts');
+        expect(re.test('middleware.ts')).toBe(true);
+        expect(re.test('src/middleware.ts')).toBe(true);
+        expect(re.test('src/middleware.test.ts')).toBe(false);
+    });
+
+    it('спецсимволы regexp в пути экранируются, а не исполняются', () => {
+        // src/app/(payload) — реальный путь route-группы Next.js: скобки обязаны
+        // читаться дословно, иначе это regexp-группа и матч поедет.
+        const re = globToRegExp('src/app/(payload)/**');
+        expect(re.test('src/app/(payload)/admin/page.tsx')).toBe(true);
+        expect(re.test('src/app/payload/admin/page.tsx')).toBe(false);
+        // Точка — тоже дословно, а не «любой символ».
+        expect(globToRegExp('next.config.ts').test('nextXconfig.ts')).toBe(false);
+    });
+});
+
+describe('matchRiskPaths — попадание диффа в зону риска (#130)', () => {
+    const { matchRiskPaths } = ralph;
+    const ZONES = ['.github/workflows/**', '.claude/ralph/**', 'src/payload/**'];
+
+    it('возвращает первый файл из зоны риска', () => {
+        const files = ['README.md', 'src/payload/collections/users.ts', 'src/app/page.tsx'];
+        expect(matchRiskPaths(files, ZONES)).toBe('src/payload/collections/users.ts');
+    });
+
+    it('возвращает null, когда дифф целиком вне зон', () => {
+        expect(matchRiskPaths(['src/app/page.tsx', 'README.md'], ZONES)).toBe(null);
+    });
+
+    it('пустой список зон никогда не эскалирует', () => {
+        expect(matchRiskPaths(['.github/workflows/deploy.yml'], [])).toBe(null);
+    });
+
+    it('пустой дифф не эскалирует', () => {
+        expect(matchRiskPaths([], ZONES)).toBe(null);
+    });
+});
+
+describe('apiLimitWaitMs — сон до сброса окна лимита (#130)', () => {
+    const { apiLimitWaitMs } = ralph;
+    const MIN = 60 * 1000;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        // Полдень: «resets 1pm» → ровно час, без переползания через полночь.
+        vi.setSystemTime(new Date(2026, 6, 21, 12, 0, 0));
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it('к распарсенному времени сброса добавляет запас из конфига', () => {
+        expect(apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: 5 })).toBe(60 * MIN + 5 * MIN);
+    });
+
+    it('без ключа в конфиге запас — 5 минут (новый дефолт вместо 2)', () => {
+        expect(apiLimitWaitMs('resets 1pm', {})).toBe(60 * MIN + 5 * MIN);
+    });
+
+    it('когда время сброса не распарсилось — fallback-ожидание плюс тот же запас', () => {
+        expect(apiLimitWaitMs('лимит, но без времени', { apiLimitFallbackWaitMin: 30 })).toBe(
+            30 * MIN + 5 * MIN,
+        );
+    });
+
+    it('нулевой запас уважается и не подменяется дефолтом', () => {
+        expect(apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: 0 })).toBe(60 * MIN);
+    });
+});
+
+describe('pickReviewModel — эскалация ревью (#130)', () => {
+    const { pickReviewModel } = ralph;
+
+    const CFG = {
+        review: {
+            default: 'claude-opus-4-8',
+            escalated: 'claude-fable-5',
+            escalateOn: [],
+            escalateOnPaths: ['.github/workflows/**', '.claude/ralph/**'],
+        },
+    };
+    const deps = (over = {}) => ({
+        cfg: CFG,
+        logFn: () => {},
+        ghJsonFn: () => [],
+        shFn: () => '',
+        ...over,
+    });
+
+    it('дифф вне зон риска — ревьюит дефолтная модель', () => {
+        const model = pickReviewModel(
+            'Фаза X',
+            'feature/x',
+            deps({ shFn: () => 'src/app/page.tsx\nREADME.md' }),
+        );
+        expect(model).toBe('claude-opus-4-8');
+    });
+
+    it('дифф трогает деплой — эскалация на дорогую модель', () => {
+        const model = pickReviewModel(
+            'Фаза X',
+            'feature/x',
+            deps({ shFn: () => 'src/app/page.tsx\n.github/workflows/deploy.yml' }),
+        );
+        expect(model).toBe('claude-fable-5');
+    });
+
+    it('метка сложности сама по себе больше НЕ эскалирует', () => {
+        // Ровно та регрессия, ради которой заведён #130: complexity:expert
+        // описывает трудность написания, а не цену ошибки.
+        const model = pickReviewModel(
+            'Фаза X',
+            'feature/x',
+            deps({
+                ghJsonFn: () => [{ labels: [{ name: 'complexity:expert' }] }],
+                shFn: () => 'src/app/page.tsx',
+            }),
+        );
+        expect(model).toBe('claude-opus-4-8');
+    });
+
+    it('escalateOn всё ещё работает, если его осознанно заполнили', () => {
+        const cfg = { review: { ...CFG.review, escalateOn: ['complexity:expert'] } };
+        const model = pickReviewModel(
+            'Фаза X',
+            'feature/x',
+            deps({ cfg, ghJsonFn: () => [{ labels: [{ name: 'complexity:expert' }] }] }),
+        );
+        expect(model).toBe('claude-fable-5');
+    });
+
+    it('сбой git при получении диффа не роняет сдачу — ревью дефолтной моделью', () => {
+        const logs = [];
+        const model = pickReviewModel(
+            'Фаза X',
+            'feature/x',
+            deps({
+                logFn: (m) => logs.push(m),
+                shFn: () => {
+                    throw new Error('fatal: no upstream');
+                },
+            }),
+        );
+        expect(model).toBe('claude-opus-4-8');
+        expect(logs.join('\n')).toMatch(/дифф/i);
+    });
+
+    it('имя ветки со спецсимволами шелла не уходит в git — эскалации нет, есть предупреждение', () => {
+        // sh() исполняет СТРОКУ через шелл, поэтому ветка из конфига обязана быть
+        // провалидирована до подстановки: `$(...)`/`;` внутри имени иначе исполнятся.
+        const shCmds = [];
+        const logs = [];
+        const model = pickReviewModel(
+            'Фаза X',
+            'feature/x;$(id)',
+            deps({
+                logFn: (m) => logs.push(m),
+                shFn: (cmd) => {
+                    shCmds.push(cmd);
+                    return '.github/workflows/deploy.yml';
+                },
+            }),
+        );
+        expect(shCmds).toEqual([]);
+        expect(model).toBe('claude-opus-4-8');
+        expect(logs.join('\n')).toMatch(/ветк/i);
+    });
+
+    it('легаси-конфиг без блока review — прежнее поле reviewModel', () => {
+        expect(pickReviewModel('Фаза X', 'feature/x', deps({ cfg: { reviewModel: 'none' } }))).toBe(
+            'none',
+        );
+    });
+});
