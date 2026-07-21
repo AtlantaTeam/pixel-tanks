@@ -520,6 +520,43 @@ function runnerWorktreeReady(worktreePath, { shFn = sh, existsFn = fs.existsSync
  * файлы, `node_modules` (в .gitignore) в новом дереве нет — без установки первый же
  * GATE_CHECKS упал бы на отсутствующих зависимостях.
  */
+// Обновление УЖЕ существующего worktree на свежий origin/main.
+//
+// Без этого раннер подхватывал дерево в том состоянии, в каком его оставил прошлый
+// прогон, — на коммите, который мог устареть на несколько мерджей. Симптом
+// неочевидный: раннер работает и выглядит здоровым, но кодер-сессия внутри читает
+// СТАРЫЕ .claude/ralph/ralph.md и ralph.js, то есть работает по отменённым правилам.
+// Ручной шаг «обновить перед запуском» держать в голове нельзя — забудется молча.
+//
+// Грязное дерево не трогаем: там может лежать незакоммиченная работа прошлой
+// сессии, и checkout её снесёт. Молча пропустить тоже нельзя — пишем в лог, а
+// остановит цикл дальше ensureClean с внятным сообщением (fail-closed уже есть).
+function refreshRunnerWorktree(worktreePath, { shFn = sh, logFn = log } = {}) {
+    let dirty = '';
+    try {
+        dirty = shFn(`git -C ${shq(worktreePath)} status --porcelain`);
+    } catch (e) {
+        logFn(`⚠ Не смог проверить чистоту worktree раннера: ${e.message} — обновление пропущено.`);
+        return false;
+    }
+    if (dirty) {
+        logFn(
+            `⚠ В worktree раннера есть незакоммиченные правки — на свежий origin/main НЕ перевожу ` +
+                `(снесло бы работу). Разбери руками: ${worktreePath}`,
+        );
+        return false;
+    }
+    try {
+        shFn(`git -C ${shq(worktreePath)} fetch origin main --quiet`);
+        shFn(`git -C ${shq(worktreePath)} checkout --detach origin/main --quiet`);
+    } catch (e) {
+        logFn(`⚠ Не смог обновить worktree раннера на origin/main: ${e.message}`);
+        return false;
+    }
+    logFn('🌳 Worktree раннера переведён на свежий origin/main.');
+    return true;
+}
+
 function ensureRunnerWorktree(
     worktreePath,
     {
@@ -527,6 +564,7 @@ function ensureRunnerWorktree(
         logFn = log,
         failFn = fail,
         existsFn = fs.existsSync,
+        refreshFn = refreshRunnerWorktree,
         // Путь в argv (execFile без shell), а не в шелл-строку: пробел/спецсимвол из
         // cfg.runnerWorktreePath/RALPH_WORKTREE_PATH не разваливает команду на аргументы
         // и не доезжает до шелла (та же гигиена, что spawnClaude/probeEgress) (#SiaUP).
@@ -568,6 +606,7 @@ function ensureRunnerWorktree(
             );
         }
         logFn(`🌳 Worktree раннера уже поднят: ${worktreePath}`);
+        refreshFn(worktreePath, { shFn, logFn });
         return worktreePath;
     }
     if (existsFn(worktreePath)) {
@@ -1027,8 +1066,7 @@ function reviewDiffContext(
     // именами ещё до самого диффа (находка ревью #135).
     const MAX_LISTED = 100;
     const listed = files.slice(0, MAX_LISTED);
-    const more =
-        files.length > MAX_LISTED ? `\n- …и ещё ${files.length - MAX_LISTED} файлов` : '';
+    const more = files.length > MAX_LISTED ? `\n- …и ещё ${files.length - MAX_LISTED} файлов` : '';
     const head = `\n\nИзменения фазы — ${files.length} файлов:\n${listed.map((f) => `- ${f}`).join('\n')}${more}`;
     if (!diff)
         return `${head}\n\nТекст диффа получить не удалось — возьми его сам: gh pr diff <номер>.`;
@@ -2413,6 +2451,7 @@ module.exports = {
     restartTunnel,
     resolveWorktreePath,
     parseWorktreeList,
+    refreshRunnerWorktree,
     runnerWorktreeReady,
     ensureRunnerWorktree,
     lockHash,
