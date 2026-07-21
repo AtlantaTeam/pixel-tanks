@@ -98,6 +98,27 @@ alias ralph-env='set -a; . /root/ralph.env; set +a; echo "ralph.env загруж
 > `.bashrc` лежит вне git: при пересоздании VDS из образа он приезжает вместе с диском,
 > но при чистом провижне правку надо внести руками.
 
+### `unset` действует только на новые шеллы
+
+Правка `.bashrc` и ротация токена меняют **файлы**, а не окружение уже работающих
+процессов — env запущенного процесса извне не переписывается. Долгоживущие процессы
+(tmux-сервер, vscode-server, открытая сессия `claude`), поднятые до правки, продолжают
+держать в памяти старый токен и раздают его всем своим потомкам: tmux-сервер наследует
+env один раз, от создавшего его клиента, и отдаёт этот снимок каждому новому окну — до
+`tmux kill-server`.
+
+Поэтому после правки `.bashrc` или ротации токена — **пересоздать сессию**, а не открывать
+новое окно в старой:
+
+```bash
+tmux kill-session -t work && w      # заново, уже с чистым env
+# диагностика конкретного процесса:
+tr '\0' '\n' < /proc/<pid>/environ | grep CLAUDE_CODE_OAUTH_TOKEN
+```
+
+Разовый обход без пересоздания — `env -u CLAUDE_CODE_OAUTH_TOKEN claude`, но это лечение
+симптома: соседние процессы остаются с протухшим токеном.
+
 ### Ротация headless-токена
 
 Токен `sk-ant-oat01-…` статичен и не отзывается из CLI — ротируем вручную:
@@ -118,13 +139,14 @@ bash .claude/ralph/provision/update-token.sh           # вклеить в ralph
 
 ## Подводные камни (уже учтены в provision.sh)
 
-| Симптом                                                       | Причина                                                                                                                      | Решение                                                                 |
-| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `ss-local`: `Invalid config path`, юнит `failed`              | пакетный юнит `shadowsocks-libev-local@` с `DynamicUser=true` → случайный uid не читает конфиг `600`                         | drop-in override: `User=root` + `Restart=always`                        |
-| `npm ci`: postinstall не выполнены (esbuild/sharp)            | npm 11 блокирует lifecycle-скрипты (allow-scripts)                                                                           | `npm rebuild esbuild sharp unrs-resolver`                               |
-| claude: `workspace has not been trusted`, игнорит permissions | нет trust-флага для папки                                                                                                    | `hasTrustDialogAccepted:true` в `~/.claude.json`                        |
-| claude каждое утро просит логин, хотя вчера логинился         | `ralph.env` в `.bashrc` экспортирует статичный `CLAUDE_CODE_OAUTH_TOKEN`, он перебивает авто-обновляемые `.credentials.json` | `unset CLAUDE_CODE_OAUTH_TOKEN` в `.bashrc` — см. «Аутентификация» выше |
-| VDS без публичного IPv4                                       | тариф Timeweb выдаёт IPv6-only                                                                                               | `add_server_ip type=ipv4`                                               |
+| Симптом                                                       | Причина                                                                                                                                      | Решение                                                                 |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `ss-local`: `Invalid config path`, юнит `failed`              | пакетный юнит `shadowsocks-libev-local@` с `DynamicUser=true` → случайный uid не читает конфиг `600`                                         | drop-in override: `User=root` + `Restart=always`                        |
+| `npm ci`: postinstall не выполнены (esbuild/sharp)            | npm 11 блокирует lifecycle-скрипты (allow-scripts)                                                                                           | `npm rebuild esbuild sharp unrs-resolver`                               |
+| claude: `workspace has not been trusted`, игнорит permissions | нет trust-флага для папки                                                                                                                    | `hasTrustDialogAccepted:true` в `~/.claude.json`                        |
+| claude каждое утро просит логин, хотя вчера логинился         | `ralph.env` в `.bashrc` экспортирует статичный `CLAUDE_CODE_OAUTH_TOKEN`, он перебивает авто-обновляемые `.credentials.json`                 | `unset CLAUDE_CODE_OAUTH_TOKEN` в `.bashrc` — см. «Аутентификация» выше |
+| `/model`: Fable недоступен, предлагает купить usage credits   | сессия поднята со старым `CLAUDE_CODE_OAUTH_TOKEN` в env: токен статичен и несёт снимок прав на момент выпуска — новых entitlement в нём нет | пересоздать сессию tmux — см. «`unset` действует только на новые шеллы» |
+| VDS без публичного IPv4                                       | тариф Timeweb выдаёт IPv6-only                                                                                                               | `add_server_ip type=ipv4`                                               |
 
 ## Экономия между сессиями: свернуть VDS в образ
 

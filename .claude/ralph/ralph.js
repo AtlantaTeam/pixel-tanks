@@ -138,6 +138,84 @@ function loadJson(p, fallback) {
     }
 }
 
+// --- Профили конфига (#71) ------------------------------------------------
+// Конфиг разделён на `common` (общее) и `profiles` (дельта). Профиль НЕ дублирует
+// общие поля — иначе профили разъезжаются молча: правку modelRouting внесли в один,
+// забыли во втором, и прод неделю ходит на старой модели.
+
+function isPlainObject(v) {
+    return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+// Объекты сливаются вглубь (профиль правит ОДНУ метку modelRouting.labels, не
+// переписывая блок), массивы и скаляры заменяются целиком. Частичный мердж массивов
+// сознательно не делаем: для phases/authorAllowlist «дописать или заменить?» не имеет
+// однозначного ответа, а неверная догадка в authorAllowlist — дыра в защите от инъекций.
+// JSON.parse создаёт "__proto__" СОБСТВЕННЫМ ключом, но присваивание out[k] дёргает
+// сеттер и подменяет прототип результата — в конфиге всплывают фантомные поля, которых
+// в файле визуально нет. Легитимных полей с такими именами у нас не бывает, поэтому
+// это либо опечатка, либо чужая рука — и то и другое для раннера с bypassPermissions
+// повод остановиться, а не тихо нейтрализовать (fail-closed, как и вся схема профилей).
+const FORBIDDEN_KEYS = ['__proto__', 'constructor', 'prototype'];
+
+function deepMerge(base, override, failFn = fail, path = 'common') {
+    const bad = [...Object.keys(base), ...Object.keys(override)].find((k) =>
+        FORBIDDEN_KEYS.includes(k),
+    );
+    if (bad) return failFn(`ralph.config.json: запрещённый ключ "${bad}" в блоке "${path}".`);
+
+    const out = { ...base };
+    for (const [k, v] of Object.entries(override)) {
+        if (!isPlainObject(v) || !isPlainObject(base[k])) {
+            out[k] = v;
+            continue;
+        }
+        const merged = deepMerge(base[k], v, failFn, `${path}.${k}`);
+        // failFn мог не бросить (монитор передаёт `() => null`) — тогда обрываем мердж
+        // и прокидываем его результат наверх, а не собираем конфиг из полуфабриката.
+        if (!isPlainObject(merged)) return merged;
+        out[k] = merged;
+    }
+    return out;
+}
+
+// Fail-closed: любой изъян схемы — стоп с внятным сообщением, а не тихий дефолт.
+// Автономный раннер с bypassPermissions не имеет права УГАДЫВАТЬ, в каком режиме он
+// работает: «молча свалился в playground, думая что он prod» — худший исход из всех.
+// failFn инжектируется (как в preflight) — тесты проверяют отказы без process.exit.
+function resolveProfile(raw, name, failFn = fail) {
+    if (!isPlainObject(raw)) return failFn('ralph.config.json: ожидался JSON-объект.');
+    if (!isPlainObject(raw.common)) {
+        return failFn('ralph.config.json: нет блока "common" — общие поля профилей.');
+    }
+    if (!isPlainObject(raw.profiles)) {
+        return failFn('ralph.config.json: нет блока "profiles".');
+    }
+
+    const available = Object.keys(raw.profiles);
+    if (!available.length) return failFn('ralph.config.json: "profiles" пуст.');
+
+    // name (флаг --profile, #72) важнее defaultProfile; нет ни того ни другого — стоп.
+    const wanted = name ?? raw.defaultProfile;
+    if (!wanted) {
+        return failFn(
+            `ralph.config.json: профиль не задан и нет "defaultProfile". Доступны: ${available.join(', ')}.`,
+        );
+    }
+    if (!Object.prototype.hasOwnProperty.call(raw.profiles, wanted)) {
+        return failFn(`Неизвестный профиль "${wanted}". Доступны: ${available.join(', ')}.`);
+    }
+    if (!isPlainObject(raw.profiles[wanted])) {
+        return failFn(`ralph.config.json: профиль "${wanted}" — не объект.`);
+    }
+
+    // profileName в итоговом конфиге: раннеру и логам нужно знать режим, а исходный
+    // raw после резолва никто не таскает.
+    const merged = deepMerge(raw.common, raw.profiles[wanted], failFn, wanted);
+    if (!isPlainObject(merged)) return merged; // мягкий failFn — наверх как есть
+    return { ...merged, profileName: wanted };
+}
+
 function saveState(state) {
     // C1: --dry-run обязан быть строго read-only. Guard ЗДЕСЬ, в единственной точке
     // записи, а не у каждого вызова — невозможно забыть обернуть новый вызов в !DRY
@@ -1357,8 +1435,11 @@ function runLoop(
 // main: тонкая оркестровка — загрузка конфига в module-level config (его читают
 // runClaude/openIssues/pickModel и др.), обработка --reset, затем preflight → runLoop.
 function main() {
-    config = loadJson(CONFIG_PATH, null);
-    if (!config) fail(`Не найден/не парсится ${CONFIG_PATH}`);
+    const raw = loadJson(CONFIG_PATH, null);
+    if (!raw) fail(`Не найден/не парсится ${CONFIG_PATH}`);
+    // Пока без --profile (флаг — #72): берём defaultProfile. Резолв уже здесь, чтобы
+    // весь раннер с этого момента читал ПЛОСКИЙ конфиг и не знал про профили вовсе.
+    config = resolveProfile(raw, null);
 
     if (RESET) {
         saveState(defaultState());
@@ -1391,7 +1472,11 @@ if (require.main === module) main();
 // принимают cfg и зависимости с побочками параметрами (как ensureTunnel), поэтому
 // тестируются без git/gh/спавна claude/exit. У runLoop флаги режима once/dry и
 // красный чек (getLastRedCheck) — тоже инжектируемые.
+// resolveProfile/deepMerge (#71) — чистый config-слой: сборка итогового конфига из
+// common + профиль. failFn инжектируется, поэтому отказы тестируются без process.exit.
 module.exports = {
+    resolveProfile,
+    deepMerge,
     buildClaudeArgs,
     formatExcerpt,
     parseResetWaitMs,

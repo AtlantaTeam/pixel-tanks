@@ -19,6 +19,8 @@ import fs from 'node:fs';
 import ralph from './ralph.js';
 
 const {
+    resolveProfile,
+    deepMerge,
     buildClaudeArgs,
     formatExcerpt,
     parseResetWaitMs,
@@ -1054,5 +1056,161 @@ describe('runLoop — основной while-цикл: итерации коде
             }),
         );
         expect(logs.join('\n')).toMatch(/не прошла авто-мердж/);
+    });
+});
+
+describe('deepMerge — наследование общих полей профилем (#71)', () => {
+    it('вложенные объекты сливаются вглубь: профиль правит одну метку, блок сохраняется', () => {
+        const merged = deepMerge(
+            { modelRouting: { default: 'opus', labels: { low: 'haiku', high: 'opus' } } },
+            { modelRouting: { labels: { high: 'fable' } } },
+        );
+        expect(merged.modelRouting).toEqual({
+            default: 'opus',
+            labels: { low: 'haiku', high: 'fable' },
+        });
+    });
+
+    it('массивы заменяются целиком, а не дописываются', () => {
+        expect(deepMerge({ phases: ['A', 'B'] }, { phases: ['C'] }).phases).toEqual(['C']);
+    });
+
+    it('скаляр профиля перебивает объект общего блока (и наоборот) без слияния', () => {
+        expect(deepMerge({ x: { a: 1 } }, { x: 0 }).x).toBe(0);
+        expect(deepMerge({ x: 0 }, { x: { a: 1 } }).x).toEqual({ a: 1 });
+    });
+
+    it('не мутирует исходные объекты — общий блок переиспользуется между профилями', () => {
+        const common = { a: { x: 1 } };
+        deepMerge(common, { a: { x: 2 } });
+        expect(common.a.x).toBe(1);
+    });
+
+    it('null в профиле затирает значение (осознанное «выключить», не пропуск)', () => {
+        expect(
+            deepMerge({ tunnelCheck: { enabled: true } }, { tunnelCheck: null }).tunnelCheck,
+        ).toBe(null);
+    });
+
+    // Опасные ключи — стоп, а не тихая нейтрализация: легитимных полей с такими
+    // именами нет, значит это опечатка или чужая рука в конфиге раннера.
+    const boom = (m) => {
+        throw new Error(m);
+    };
+
+    it('ключ __proto__ в профиле → стоп (иначе подменил бы прототип результата)', () => {
+        // JSON.parse — как реальный конфиг: "__proto__" становится собственным ключом
+        const evil = JSON.parse('{"__proto__": {"active": false}, "maxTurns": 5}');
+        expect(() => deepMerge({ maxTurns: 200 }, evil, boom)).toThrow(/запрещённый ключ/);
+    });
+
+    it('опасный ключ на вложенном уровне тоже роняет мердж, с путём в сообщении', () => {
+        const nested = JSON.parse('{"modelRouting": {"__proto__": {"evil": 1}}}');
+        expect(() => deepMerge({ modelRouting: { labels: {} } }, nested, boom)).toThrow(
+            /common\.modelRouting/,
+        );
+    });
+
+    it('опасный ключ в общем блоке ловится так же, как в профиле', () => {
+        const base = JSON.parse('{"constructor": {"x": 1}}');
+        expect(() => deepMerge(base, {}, boom)).toThrow(/constructor/);
+    });
+
+    it('мягкий failFn (монитор) обрывает мердж, а не собирает полуфабрикат', () => {
+        const evil = JSON.parse('{"a": {"__proto__": {"x": 1}}, "b": 2}');
+        expect(deepMerge({ a: { y: 1 } }, evil, () => null)).toBe(null);
+    });
+});
+
+describe('resolveProfile — сборка итогового конфига из common + профиль (#71)', () => {
+    const raw = () => ({
+        defaultProfile: 'playground',
+        common: {
+            maxIterations: 10,
+            blockedHealAttempts: 3,
+            modelRouting: { labels: { high: 'opus' } },
+            phases: [{ milestone: 'M', branch: 'b' }],
+        },
+        profiles: { playground: {}, prod: { blockedHealAttempts: 0 } },
+    });
+    // failFn инжектируется — отказы проверяем как исключение, без process.exit.
+    const boom = (m) => {
+        throw new Error(m);
+    };
+
+    it('без имени берётся defaultProfile, общие поля наследуются', () => {
+        const cfg = resolveProfile(raw(), null, boom);
+        expect(cfg.profileName).toBe('playground');
+        expect(cfg.maxIterations).toBe(10);
+        expect(cfg.phases).toEqual([{ milestone: 'M', branch: 'b' }]);
+    });
+
+    it('пустой профиль playground не меняет общие значения (регресса нет)', () => {
+        const cfg = resolveProfile(raw(), 'playground', boom);
+        expect(cfg.blockedHealAttempts).toBe(3);
+    });
+
+    it('профиль переопределяет только свою дельту, остальное — из common', () => {
+        const cfg = resolveProfile(raw(), 'prod', boom);
+        expect(cfg.blockedHealAttempts).toBe(0);
+        expect(cfg.maxIterations).toBe(10);
+        expect(cfg.modelRouting.labels.high).toBe('opus');
+    });
+
+    it('явное имя важнее defaultProfile', () => {
+        expect(resolveProfile(raw(), 'prod', boom).profileName).toBe('prod');
+    });
+
+    it('резолв одного профиля не протекает в соседний (общий блок не мутируется)', () => {
+        const cfgRaw = raw();
+        resolveProfile(cfgRaw, 'prod', boom);
+        expect(resolveProfile(cfgRaw, 'playground', boom).blockedHealAttempts).toBe(3);
+    });
+
+    // Fail-closed: раннер с bypassPermissions не имеет права угадывать режим.
+    it('неизвестный профиль → стоп, в сообщении перечислены доступные', () => {
+        expect(() => resolveProfile(raw(), 'staging', boom)).toThrow(/staging.*playground, prod/s);
+    });
+
+    it('нет defaultProfile и профиль не задан → стоп, а не молчаливый playground', () => {
+        const cfg = raw();
+        delete cfg.defaultProfile;
+        expect(() => resolveProfile(cfg, null, boom)).toThrow(/defaultProfile/);
+    });
+
+    it('нет блока common → стоп', () => {
+        expect(() => resolveProfile({ profiles: { p: {} } }, 'p', boom)).toThrow(/common/);
+    });
+
+    it('нет блока profiles → стоп', () => {
+        expect(() => resolveProfile({ common: {} }, null, boom)).toThrow(/profiles/);
+    });
+
+    it('profiles пуст → стоп', () => {
+        expect(() => resolveProfile({ common: {}, profiles: {} }, null, boom)).toThrow(/пуст/);
+    });
+
+    it('профиль не объект (массив/строка) → стоп', () => {
+        expect(() => resolveProfile({ common: {}, profiles: { p: [] } }, 'p', boom)).toThrow(
+            /не объект/,
+        );
+    });
+
+    it('конфиг не объект (null/массив) → стоп', () => {
+        expect(() => resolveProfile(null, null, boom)).toThrow(/объект/);
+        expect(() => resolveProfile([], null, boom)).toThrow(/объект/);
+    });
+
+    it('имя профиля из прототипа (constructor/toString) не считается существующим', () => {
+        expect(() => resolveProfile(raw(), 'constructor', boom)).toThrow(/Неизвестный профиль/);
+    });
+
+    // Контракт монитора: failFn может НЕ бросать, а вернуть sentinel (null) —
+    // resolveProfile обязан вернуть его сразу, не продолжая работу с кривым raw.
+    it('с невыбрасывающим failFn возвращает его результат, а не падает дальше по коду', () => {
+        const softFail = () => null;
+        expect(resolveProfile(null, null, softFail)).toBe(null);
+        expect(resolveProfile({ common: {} }, null, softFail)).toBe(null);
+        expect(resolveProfile(raw(), 'staging', softFail)).toBe(null);
     });
 });
