@@ -55,24 +55,6 @@ const {
     getVerifiedHead,
 } = ralph;
 
-// #138: общий предохранитель на весь файл. Раннерные функции берут коллабораторов через
-// DI, но с дефолтами в виде настоящих sh/log — тест, забывший подменить хоть один, уходил
-// в реальный git и дописывал в ralph.log ЖИВОГО прогона (так в логе фазы 4 появилось
-// `git fetch origin main 'feature/m1'` — ветка из фикстур этого файла). ralph.js под
-// RALPH_NO_SIDE_EFFECTS=1 (выставляет vitest.config.ts) такие вызовы не исполняет, но
-// молчаливым отказом не отделаешься: половина вызовов sh() стоит внутри try/catch, и
-// предохранитель был бы проглочен вместе с ошибкой. Поэтому сверяем журнал попыток —
-// тест, дошедший до настоящего шелла, обязан покраснеть сам, а не через неделю в логе.
-afterEach(() => {
-    const attempts = ralph.sideEffectAttempts.splice(0);
-    expect(
-        attempts,
-        `Тест дошёл до настоящего sh(): ${attempts.join(' | ')}\n` +
-            `Подмени зависимость в deps (shFn или коллаборатор, который его зовёт: ` +
-            `phaseDiffFilesFn, reviewDiffContextFn, checksGreenFn, …).`,
-    ).toEqual([]);
-});
-
 describe('buildClaudeArgs — построение argv для claude -p (ядро порта)', () => {
     it('минимальный вызов: -p <prompt> --max-turns <n> и больше ничего при пустом конфиге', () => {
         const argv = buildClaudeArgs('привет', { maxTurns: 200 }, {});
@@ -3085,8 +3067,8 @@ describe('предохранитель побочек в тестах: RALPH_NO_
         // обёрнут в try/catch. Здесь sh() вызван НАМЕРЕННО, поэтому журнал забираем
         // сами: иначе afterEach уронил бы этот же тест.
         expect(sideEffectAttempts.splice(0)).toEqual([
-            'git fetch origin main',
-            'git fetch origin main',
+            'sh(git fetch origin main)',
+            'sh(git fetch origin main)',
         ]);
     });
 
@@ -3096,8 +3078,29 @@ describe('предохранитель побочек в тестах: RALPH_NO_
         const files = ralph.phaseDiffFiles('feature/m1', { logFn: () => {} });
         expect(files).toBe(null);
         expect(sideEffectAttempts.splice(0)).toEqual([
-            "git fetch origin main 'feature/m1' --quiet",
+            "sh(git fetch origin main 'feature/m1' --quiet)",
         ]);
+    });
+
+    it('дефолтный installFn (настоящий npm ci) тоже под предохранителем', () => {
+        // Не только шелл: забытый installFn переустановил бы node_modules прямо во
+        // время прогона тестов. Расширение предохранителя по ревью PR #141.
+        expect(() =>
+            ralph.syncDepsIfLockChanged({
+                logFn: () => {},
+                existsFn: () => true,
+                readFn: (file) => (String(file).endsWith('.sha') ? 'старый-хэш' : 'lock'),
+                writeFn: () => {},
+            }),
+        ).toThrow(/RALPH_NO_SIDE_EFFECTS/);
+        expect(sideEffectAttempts.splice(0)).toEqual(['npm ci (syncDepsIfLockChanged)']);
+    });
+
+    it('дефолтный spawnFn (живая claude-сессия) тоже под предохранителем', () => {
+        // Однажды тест уже пробился до настоящего spawnSync и запустил claude —
+        // см. докблок spawnClaude. Теперь это громкая ошибка.
+        expect(() => ralph.spawnClaude(['-p', 'привет'], 1000)).toThrow(/RALPH_NO_SIDE_EFFECTS/);
+        expect(sideEffectAttempts.splice(0)).toEqual(['spawnClaude(claude)']);
     });
 
     it('log() пишет в консоль, но не трогает файл лога', () => {

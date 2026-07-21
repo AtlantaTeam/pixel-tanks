@@ -4,6 +4,7 @@ import {
     countBySeverity,
     diffBaseline,
     loadBaseline,
+    looksBlind,
     runAudit,
 } from './security-audit.mjs';
 
@@ -68,6 +69,15 @@ describe('collectAdvisories', () => {
         expect(() => collectAdvisories(json)).toThrow(/без source-id/);
     });
 
+    it('неизвестная severity — исключение: формат отчёта изменился, сверке верить нельзя', () => {
+        // Молча отбросить такую запись = выронить находку и остаться зелёным
+        // (ревью PR #141): это fail-open в скрипте, от которого зависит автомердж.
+        const json = auditWith({
+            pkg: { severity: 'high', via: [{ source: 1, severity: 'severe', title: 'новый уровень' }] },
+        });
+        expect(() => collectAdvisories(json)).toThrow(/неизвестной severity/);
+    });
+
     it('пустой отчёт — пустой список, без падения', () => {
         expect(collectAdvisories({})).toEqual([]);
         expect(collectAdvisories({ vulnerabilities: {} })).toEqual([]);
@@ -93,8 +103,48 @@ describe('diffBaseline', () => {
         expect(fresh).toEqual([]);
     });
 
+    it('severity выросла у известного id — changed (обоснование в baseline устарело)', () => {
+        // Запись принималась как high с обоснованием «SOCKS5 в проде не используем».
+        // Переоценка в critical это обоснование обнуляет, а сверка по одному id
+        // проглотила бы её молча.
+        const { changed, fresh } = diffBaseline(
+            [{ id: 1, severity: 'critical' }],
+            [{ id: 1, severity: 'high' }],
+        );
+        expect(changed.map((c) => c.id)).toEqual([1]);
+        expect(fresh).toEqual([]);
+    });
+
+    it('severity та же — не changed', () => {
+        expect(diffBaseline([{ id: 1, severity: 'high' }], [{ id: 1, severity: 'high' }]).changed)
+            .toEqual([]);
+    });
+
+    it('severity УПАЛА — не changed: апстрим переоценил в меньшую сторону, это не регресс', () => {
+        expect(
+            diffBaseline([{ id: 1, severity: 'high' }], [{ id: 1, severity: 'critical' }]).changed,
+        ).toEqual([]);
+    });
+
     it('пустой baseline: любая гейтимая находка — fresh', () => {
         expect(diffBaseline([{ id: 7 }], []).fresh.map((f) => f.id)).toEqual([7]);
+    });
+});
+
+describe('looksBlind — ослепший сканер не должен быть зелёным', () => {
+    it('ноль находок при непустом baseline — красный: это не «починили всё», а «скан не работает»', () => {
+        // Зеркало/прокси registry, отдающее пустой advisory-фид, для npm выглядит как
+        // «0 vulnerabilities». Единственный найденный ревью реалистичный путь к
+        // ложно-зелёному гейту, поэтому fail-closed.
+        expect(looksBlind([], [{ id: 1 }])).toBe(true);
+    });
+
+    it('находки есть — не ослеп', () => {
+        expect(looksBlind([{ id: 1 }], [{ id: 1 }])).toBe(false);
+    });
+
+    it('пустой baseline и ноль находок — законно зелёно: сверять нечего и не с чем', () => {
+        expect(looksBlind([], [])).toBe(false);
     });
 });
 

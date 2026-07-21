@@ -122,6 +122,21 @@ let config;
 const NO_SIDE_EFFECTS = process.env.RALPH_NO_SIDE_EFFECTS === '1';
 const sideEffectAttempts = [];
 
+// Один вход для всех боевых дефолтов, а не только для sh(). Ревью PR #141 показало,
+// что защищать один канал мало: тест, забывший подменить, например, saveStateFn или
+// installFn, перезаписал бы ralph.state.json (фазовый указатель ЖИВОГО прогона — гейт
+// гоняет npm run test прямо в worktree раннера) или запустил бы настоящий npm ci.
+// Последствия хуже мусора в логе, а предохранитель их не видел.
+function guardSideEffect(what) {
+    if (!NO_SIDE_EFFECTS) return;
+    sideEffectAttempts.push(what);
+    throw new Error(
+        `${what} — побочка в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1).\n` +
+            `Тест дошёл до боевого дефолта. Подмени зависимость в deps теста ` +
+            `(shFn, saveStateFn, installFn, spawnFn, …).`,
+    );
+}
+
 function log(msg) {
     const line = `[${new Date().toISOString()}] ${msg}`;
     console.log(line);
@@ -158,17 +173,9 @@ function shq(value) {
 }
 
 function sh(cmd) {
-    // #138: см. NO_SIDE_EFFECTS выше — в тестах реальный шелл запрещён. Команду
-    // печатаем в тексте ошибки: по ней сразу видно, какой именно дефолт не подменили.
-    if (NO_SIDE_EFFECTS) {
-        sideEffectAttempts.push(cmd);
-        throw new Error(
-            `sh() вызван в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1): ${cmd}\n` +
-                `Тест дошёл до настоящего шелла — значит, где-то не передан shFn (или ` +
-                `коллаборатор, который его использует: phaseDiffFilesFn, checksGreenFn, …). ` +
-                `Подмени зависимость в deps теста.`,
-        );
-    }
+    // #138: см. guardSideEffect выше — в тестах реальный шелл запрещён. Команду
+    // печатаем целиком: по ней сразу видно, какой именно дефолт не подменили.
+    guardSideEffect(`sh(${cmd})`);
     // maxBuffer 16 МБ (дефолт 1 МБ) — L4: многословный вывод npm/vitest переполнял
     // буфер и ронял sh() даже на ЗЕЛЁНЫХ чеках. Fail-closed безопасно, но ложные
     // красные стопы съедают смысл AFK-прогона.
@@ -333,6 +340,9 @@ function saveState(state) {
     // записи, а не у каждого вызова — невозможно забыть обернуть новый вызов в !DRY
     // (именно так dry-run и начал когда-то двигать phaseIndex).
     if (DRY) return;
+    // Тот же guard, что у sh(): забытый saveStateFn в тесте перезаписал бы state
+    // ЖИВОГО прогона — гейт мерджа гоняет npm run test прямо в worktree раннера.
+    guardSideEffect(`saveState(${STATE_PATH})`);
     fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
@@ -705,7 +715,12 @@ function syncDepsIfLockChanged({
     existsFn = fs.existsSync,
     readFn = fs.readFileSync,
     writeFn = fs.writeFileSync,
-    installFn = () => execSync('npm ci', { stdio: 'inherit' }),
+    installFn = () => {
+        // Забытый installFn в тесте запустил бы настоящий npm ci в дереве, где идут
+        // тесты, — переустановка node_modules посреди прогона (ревью PR #141).
+        guardSideEffect('npm ci (syncDepsIfLockChanged)');
+        return execSync('npm ci', { stdio: 'inherit' });
+    },
 } = {}) {
     const current = lockHash('.', readFn);
     if (!current) return; // нет package-lock.json — сверять нечего
@@ -836,6 +851,9 @@ function buildClaudeArgs(prompt, { model, maxTurns, noFallback }, cfg) {
 // Чистый вход (argv + timeout [+ spawnFn]) → {code, output}; чтение config — забота
 // вызывающего.
 function spawnClaude(cmdArgs, timeoutMs, spawnFn = spawnSync) {
+    // Дефолт — настоящий spawnSync: забытый мок запустил бы живую claude-сессию
+    // (это уже случалось, см. докблок выше). Guard делает промах громким.
+    if (spawnFn === spawnSync) guardSideEffect('spawnClaude(claude)');
     // pipe вместо inherit — вывод нужен для детекции API-лимита (см. runClaude).
     // maxBuffer 64 МБ: многочасовая сессия может быть многословной, обрезка вывода
     // уронила бы spawnSync и замаскировала настоящий exit-код.

@@ -48,6 +48,10 @@ export default defineConfig({
                     // дефолтного коллаборатора, падает громко, вместо того чтобы
                     // сходить в реальный git и засорить лог живого прогона.
                     env: { RALPH_NO_SIDE_EFFECTS: '1' },
+                    // Сверка журнала побочек — общим afterEach на весь проект, а не в
+                    // одном тест-файле: include ниже покрывает и scripts/**, и будущие
+                    // файлы рядом с раннером (ревью PR #141).
+                    setupFiles: ['./.claude/ralph/test-setup.js'],
                     include: [
                         '.claude/ralph/**/*.test.{js,ts}',
                         // *.config.test.ts в корне — тесты корневых конфигов (vitest.config
