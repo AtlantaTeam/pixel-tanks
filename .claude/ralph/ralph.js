@@ -117,6 +117,26 @@ function fail(msg) {
     process.exit(1);
 }
 
+// #133: sh() исполняет СТРОКУ через /bin/sh, поэтому любое значение, попадающее
+// в неё, обязано быть заквотировано. Раньше значения подставлялись голыми либо в
+// двойных кавычках — а внутри двойных кавычек `$( )`, обратные кавычки и `\`
+// раскрываются шеллом. Источники не гипотетические: milestone и branch приходят
+// из конфига, номера PR и заголовки — из ответов gh, то есть с публичного
+// GitHub, где заголовок issue пишет кто угодно.
+//
+// Одинарные кавычки в POSIX sh не интерпретируют ВООБЩЕ ничего, поэтому
+// достаточно закрыть-экранировать-открыть на каждой одинарной кавычке внутри
+// значения: don't → 'don'\''t'. Это снимает весь класс разом, в отличие от
+// валидации по списку разрешённых символов — та отсекала бы легальные milestone
+// с кириллицей, скобками и «·».
+//
+// Стратегически правильнее вообще уйти от шелла на execFileSync с argv — так уже
+// сделано для claude (см. buildClaudeArgs, #66/#67). Здесь это отдельный крупный
+// рефактор всех вызовов sh(); квотирование закрывает дыру сейчас.
+function shq(value) {
+    return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
 function sh(cmd) {
     // maxBuffer 16 МБ (дефолт 1 МБ) — L4: многословный вывод npm/vitest переполнял
     // буфер и ронял sh() даже на ЗЕЛЁНЫХ чеках. Fail-closed безопасно, но ложные
@@ -801,7 +821,7 @@ function openIssues(milestone) {
         const allow = config.authorAllowlist;
         return (
             ghJson(
-                `gh issue list --milestone "${milestone}" --state open --json number,title,labels,author`,
+                `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
             )
                 .filter((i) => !(i.labels || []).some((l) => l.name === 'blocked'))
                 .filter((i) => allow.includes(i.author && i.author.login))
@@ -821,7 +841,7 @@ function openIssues(milestone) {
 // Бросает исключение при недоступности gh — вызывающий обязан остановиться.
 function allOpenIssues(milestone) {
     return ghJson(
-        `gh issue list --milestone "${milestone}" --state open --json number,title,labels,author`,
+        `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
     );
 }
 
@@ -922,9 +942,9 @@ function phaseDiffFiles(branch, { shFn = sh, logFn = log } = {}) {
         return null;
     }
     try {
-        shFn(`git fetch origin main ${branch} --quiet`);
+        shFn(`git fetch origin main ${shq(branch)} --quiet`);
         const out = shFn(
-            `git -c core.quotePath=false diff --name-only --no-renames origin/main...origin/${branch}`,
+            `git -c core.quotePath=false diff --name-only --no-renames ${shq(`origin/main...origin/${branch}`)}`,
         );
         const files = out
             ? out
@@ -944,6 +964,39 @@ function phaseDiffFiles(branch, { shFn = sh, logFn = log } = {}) {
         logFn(`⚠ Не смог получить дифф фазы для выбора ревью-модели: ${e.message}`);
         return null;
     }
+}
+
+// #133: ревью получает дифф фазы прямо в промпт — вторая половина пункта про
+// бюджет ходов. Со срезанным до review.maxTurns бюджетом блуждание по репозиторию
+// в поисках того, что можно подать сразу, стоит слишком дорого.
+//
+// Обрезка ОБЯЗАТЕЛЬНО помечается в тексте: молча обрезанный дифф — худший из
+// исходов, ревью будет считать, что видело всё, и промолчит про непрочитанное.
+const REVIEW_DIFF_LIMIT = 60000;
+
+function reviewDiffContext(branch, { shFn = sh, logFn = log, limit = REVIEW_DIFF_LIMIT } = {}) {
+    const files = phaseDiffFiles(branch, { shFn, logFn });
+    if (!files || !files.length) return '';
+
+    let diff = '';
+    try {
+        diff = shFn(
+            `git -c core.quotePath=false diff --no-renames ${shq(`origin/main...origin/${branch}`)}`,
+        );
+    } catch (e) {
+        logFn(`⚠ Не смог получить текст диффа для промпта ревью: ${e.message}`);
+    }
+
+    const head = `\n\nИзменения фазы — ${files.length} файлов:\n${files.map((f) => `- ${f}`).join('\n')}`;
+    if (!diff)
+        return `${head}\n\nТекст диффа получить не удалось — возьми его сам: gh pr diff <номер>.`;
+
+    const truncated = diff.length > limit;
+    const body = truncated ? diff.slice(0, limit) : diff;
+    const note = truncated
+        ? `\n\n[ДИФФ ОБРЕЗАН: показано ${limit} из ${diff.length} символов. Остаток ОБЯЗАТЕЛЬНО дочитай через gh pr diff <номер> — иначе часть изменений останется без ревью.]`
+        : '';
+    return `${head}\n\nПолный дифф фазы:\n\`\`\`diff\n${body}\n\`\`\`${note}`;
 }
 
 // Модель ревью фазы. Дефолт — review.default (opus).
@@ -981,7 +1034,7 @@ function pickReviewModel(
         let all = [];
         try {
             all = ghJsonFn(
-                `gh issue list --milestone "${milestone}" --state all --json labels --limit 100`,
+                `gh issue list --milestone ${shq(milestone)} --state all --json labels --limit 100`,
             );
         } catch (e) {
             logFn(`⚠ Не смог получить labels фазы для выбора ревью-модели: ${e.message}`);
@@ -1032,7 +1085,7 @@ function closeCompletedMilestones() {
         );
         if (!merged) continue;
         try {
-            sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${ms.number} -f state=closed`);
+            sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${shq(ms.number)} -f state=closed`);
             log(`🏁 Milestone закрыт: "${ms.title}" (issues разобраны, PR смерджен)`);
         } catch (e) {
             log(`⚠ Не смог закрыть milestone "${ms.title}": ${e.message}`);
@@ -1048,7 +1101,7 @@ function closeMilestoneByTitle(title) {
         const open = ghJson('gh api "repos/{owner}/{repo}/milestones?state=open"');
         const ms = open.find((m) => m.title === title);
         if (!ms) return; // уже закрыт или не найден — не критично
-        sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${ms.number} -f state=closed`);
+        sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${shq(ms.number)} -f state=closed`);
         log(`🏁 Milestone закрыт: "${title}" (фаза смерджена)`);
     } catch (e) {
         log(`⚠ Не смог закрыть milestone "${title}" сразу (свип подберёт на старте): ${e.message}`);
@@ -1132,7 +1185,7 @@ function findOpenPr(branch) {
         // --base main (M5): PR из этой же ветки в ДРУГУЮ базу мерджить нельзя —
         // фаза «сдалась» бы мимо main, а следующая строилась бы без неё.
         const prs = ghJson(
-            `gh pr list --head ${branch} --base main --state open --json number,labels`,
+            `gh pr list --head ${shq(branch)} --base main --state open --json number,labels`,
         );
         if (prs.length > 1) {
             // M5: несколько открытых PR на одну ветку — prs[0] был бы произвольным
@@ -1187,7 +1240,7 @@ function checksGreen(
     lastRedCheck = null;
     lastVerifiedHead = null;
     try {
-        shFn(`git fetch origin ${branch}`);
+        shFn(`git fetch origin ${shq(branch)}`);
     } catch (e) {
         logFn(
             `⛔ git fetch origin ${branch} упал (${e.message}) — без свежего remote нельзя убедиться, что тестируем то, что мерджим. Авто-мердж отменён.`,
@@ -1197,7 +1250,7 @@ function checksGreen(
     }
     let remoteHead;
     try {
-        remoteHead = ghJsonFn(`gh pr view ${prNumber} --json headRefOid`).headRefOid;
+        remoteHead = ghJsonFn(`gh pr view ${shq(prNumber)} --json headRefOid`).headRefOid;
     } catch (e) {
         logFn(`⛔ Не смог получить голову PR #${prNumber}: ${e.message} — авто-мердж отменён.`);
         parkFn();
@@ -1219,7 +1272,7 @@ function checksGreen(
     // чеки на PR-голове как есть.
     let localHead = null;
     try {
-        localHead = shFn(`git rev-parse --verify --quiet refs/heads/${branch}`);
+        localHead = shFn(`git rev-parse --verify --quiet ${shq('refs/heads/' + branch)}`);
     } catch {}
     if (localHead && localHead !== remoteHead) {
         logFn(
@@ -1281,7 +1334,7 @@ let lastRedCheck = null;
 // а loop — пересоздавать PR уже смердженной фазы.
 function phaseMerged(phase) {
     const merged = ghJson(
-        `gh pr list --head ${phase.branch} --base main --state merged --json number --limit 1`,
+        `gh pr list --head ${shq(phase.branch)} --base main --state merged --json number --limit 1`,
     );
     return merged.length > 0;
 }
@@ -1368,7 +1421,7 @@ function tryMergePhase(
     let mergedOk = false;
     for (let attempt = 1; attempt <= 2 && !mergedOk; attempt++) {
         try {
-            shFn(`gh pr merge ${pr.number} --squash --delete-branch${matchArg}`);
+            shFn(`gh pr merge ${shq(pr.number)} --squash --delete-branch${matchArg}`);
             mergedOk = true;
         } catch (e) {
             try {
@@ -1614,6 +1667,7 @@ function runLoop(
         phaseIndexOfFn = phaseIndexOf,
         pickModelFn = pickModel,
         pickReviewModelFn = pickReviewModel,
+        reviewDiffContextFn = reviewDiffContext,
         runClaudeFn = runClaude,
         ensureCleanFn = ensureClean,
         phaseMergedFn = phaseMerged,
@@ -1815,8 +1869,12 @@ function runLoop(
                 const reviewModel = pickReviewModelFn(phase.milestone, phase.branch);
                 if (reviewModel && reviewModel !== 'none') {
                     logFn(`🔍 Ревью фазы моделью: ${reviewModel}`);
+                    // #133: дифф подаём сразу — с урезанным бюджетом ходов искать
+                    // его самому дорого. Смотреть окружающий код это не отменяет:
+                    // стыки с существующей логикой по одному диффу не видны.
+                    const diffContext = reviewDiffContextFn(phase.branch);
                     const reviewCode = runClaudeFn(
-                        `Найди последний открытый PR из ветки ${phase.branch} в main и проведи детальное code review: архитектура, безопасность, производительность, соответствие PRD, а также читаемость, нейминг, типизация, дубли, покрытие тестами и мелкие огрехи. Оставь inline-комментарии в PR через gh cli на КАЖДУЮ найденную проблему любого масштаба — не только критичные; мелочи (nit/style) тоже комментируй, их не пропускать. Каждый комментарий ОБЯЗАТЕЛЬНО начинай с пометки серьёзности строго в формате эмодзи+тег: 🔴 [blocker] / 🟠 [major] / 🟡 [minor] / ⚪ [nit] — без исключений, и сводный обзорный комментарий размечай теми же значками; комментарий без такой пометки — нарушение формата. Если есть БЛОКИРУЮЩИЕ проблемы (баги, дыры безопасности, сломанная физика или сборка) — поставь на PR label blocked. Не мерджи PR и не пушь в main.`,
+                        `Найди последний открытый PR из ветки ${phase.branch} в main и проведи детальное code review: архитектура, безопасность, производительность, соответствие PRD, а также читаемость, нейминг, типизация, дубли, покрытие тестами и мелкие огрехи. Дифф фазы приложен ниже — не трать ходы на его сбор; но обязательно читай и ОКРУЖАЮЩИЙ код по месту правок: стыки с существующей логикой по одному диффу не видны.${diffContext} Оставь inline-комментарии в PR через gh cli на КАЖДУЮ найденную проблему любого масштаба — не только критичные; мелочи (nit/style) тоже комментируй, их не пропускать. Каждый комментарий ОБЯЗАТЕЛЬНО начинай с пометки серьёзности строго в формате эмодзи+тег: 🔴 [blocker] / 🟠 [major] / 🟡 [minor] / ⚪ [nit] — без исключений, и сводный обзорный комментарий размечай теми же значками; комментарий без такой пометки — нарушение формата. Если есть БЛОКИРУЮЩИЕ проблемы (баги, дыры безопасности, сломанная физика или сборка) — поставь на PR label blocked. Не мерджи PR и не пушь в main.`,
                         // noFallback (M8): без тихой деградации ревью-модели, см. runClaude.
                         // #130: у ревью свой бюджет ходов (review.maxTurns, дефолт 80).
                         // Кодерские 200 ему не нужны — ревью не пишет код, и лишний
@@ -2268,6 +2326,7 @@ module.exports = {
     monitorAlive,
     isMonitorProcess,
     buildClaudeArgs,
+    shq,
     formatExcerpt,
     parseResetWaitMs,
     apiLimitWaitMs,
@@ -2276,6 +2335,7 @@ module.exports = {
     globToRegExp,
     matchRiskPaths,
     phaseDiffFiles,
+    reviewDiffContext,
     pickReviewModel,
     API_LIMIT_RE,
     spawnClaude,

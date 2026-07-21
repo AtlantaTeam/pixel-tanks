@@ -1544,7 +1544,7 @@ describe('ветковая хореография в worktree раннера (#7
         it('зелёный путь: fetch → сверка → detach на sha PR → все чеки → true', () => {
             const { shCmds, parkFn, deps } = mkDeps();
             expect(checksGreen('feature/m1', 42, deps)).toBe(true);
-            expect(shCmds).toContain('git fetch origin feature/m1');
+            expect(shCmds).toContain("git fetch origin 'feature/m1'");
             expect(shCmds).toContain(`git checkout --detach ${SHA_A}`);
             expect(shCmds).toEqual(
                 expect.arrayContaining([
@@ -1712,7 +1712,7 @@ describe('ветковая хореография в worktree раннера (#7
             const { shCmds, deps } = mkDeps();
             expect(tryMergePhase(phase, deps)).toBe('merged');
             const mergeIdx = shCmds.findIndex(
-                (c) => c === 'gh pr merge 5 --squash --delete-branch',
+                (c) => c === "gh pr merge '5' --squash --delete-branch",
             );
             expect(mergeIdx).toBeGreaterThanOrEqual(0);
             // Обновление раннера — строго через origin/main и ПОСЛЕ мерджа.
@@ -1727,14 +1727,14 @@ describe('ветковая хореография в worktree раннера (#7
             const { shCmds, deps } = mkDeps({ getVerifiedHeadFn: () => sha });
             expect(tryMergePhase(phase, deps)).toBe('merged');
             expect(shCmds).toContain(
-                `gh pr merge 5 --squash --delete-branch --match-head-commit ${sha}`,
+                `gh pr merge '5' --squash --delete-branch --match-head-commit ${sha}`,
             );
         });
 
         it('#SiaTz: sha головы не 40-hex → мерджим без --match-head-commit (не подставляем мусор)', () => {
             const { shCmds, deps } = mkDeps({ getVerifiedHeadFn: () => 'not-a-sha' });
             expect(tryMergePhase(phase, deps)).toBe('merged');
-            expect(shCmds).toContain('gh pr merge 5 --squash --delete-branch');
+            expect(shCmds).toContain("gh pr merge '5' --squash --delete-branch");
             expect(shCmds.some((c) => c.includes('--match-head-commit'))).toBe(false);
         });
 
@@ -2483,10 +2483,10 @@ describe('Изоляция раннера в worktree — сценарии и м
         it('пропускает детачи и служебные команды раннера', () => {
             expect(() =>
                 assertNoForbiddenGit([
-                    'git fetch origin feature/m1',
+                    "git fetch origin 'feature/m1'",
                     'git checkout --detach ' + 'a'.repeat(40),
                     'git checkout --detach origin/main',
-                    'git rev-parse --verify --quiet refs/heads/feature/m1',
+                    "git rev-parse --verify --quiet 'refs/heads/feature/m1'",
                     'git status --porcelain',
                     'npm run build',
                 ]),
@@ -2610,14 +2610,14 @@ describe('Изоляция раннера в worktree — сценарии и м
             expect(tryMergePhase(phase, deps)).toBe('merged');
 
             // Позитив: раннер ходил строго детачем — на PR-голову и на origin/main.
-            expect(shCmds).toContain('git fetch origin feature/m1');
+            expect(shCmds).toContain("git fetch origin 'feature/m1'");
             expect(shCmds).toContain(`git checkout --detach ${SHA_HEAD}`);
             expect(shCmds).toContain('git fetch origin main');
             expect(shCmds).toContain('git checkout --detach origin/main');
             // #SiaTz: мердж привязан к ТОЙ ЖЕ голове, что прогнал реальный checksGreen —
             // --match-head-commit закрывает TOCTOU-окно между чеками и мерджем.
             expect(shCmds).toContain(
-                `gh pr merge 5 --squash --delete-branch --match-head-commit ${SHA_HEAD}`,
+                `gh pr merge '5' --squash --delete-branch --match-head-commit ${SHA_HEAD}`,
             );
 
             // Инвариант: ни одного занятия именованной ветки / правки дерева человека.
@@ -2628,7 +2628,7 @@ describe('Изоляция раннера в worktree — сценарии и м
             const { shCmds, deps } = mkWiring();
             expect(tryMergePhase(phase, deps)).toBe('merged');
             // Сверка HEAD==PR идёт read-only обращением к ref — не update-ref/branch -f.
-            expect(shCmds).toContain('git rev-parse --verify --quiet refs/heads/feature/m1');
+            expect(shCmds).toContain("git rev-parse --verify --quiet 'refs/heads/feature/m1'");
             expect(shCmds.some((c) => /^git (update-ref|branch)\b/.test(c))).toBe(false);
         });
 
@@ -2670,7 +2670,7 @@ describe('Изоляция раннера в worktree — сценарии и м
             expect(getLastRedCheck()).toMatchObject({ name: 'test' });
             // Парковка после красного — тоже строго детачем, инвариант держится.
             expect(shCmds).toContain('git checkout --detach origin/main');
-            expect(shCmds).not.toContain('gh pr merge 5 --squash --delete-branch');
+            expect(shCmds).not.toContain("gh pr merge '5' --squash --delete-branch");
             assertNoForbiddenGit(shCmds);
         });
     });
@@ -2938,7 +2938,7 @@ describe('phaseDiffFiles — какая именно git-команда уход
             },
             logFn: () => {},
         });
-        expect(cmds[0]).toContain('git fetch origin main feature/x');
+        expect(cmds[0]).toContain("git fetch origin main 'feature/x'");
         expect(cmds[1]).toContain('diff --name-only');
         expect(cmds[1]).toContain('origin/main...origin/feature/x');
     });
@@ -3079,5 +3079,124 @@ describe('phaseDiffFiles — не-ASCII пути и пустой дифф (#132)
         expect(phaseDiffFiles(undefined, { shFn: () => '', logFn: (m) => logs.push(m) })).toBe(null);
         expect(logs.join('\n')).toMatch(/не задана/i);
         expect(logs.join('\n')).not.toMatch(/небезопасн/i);
+    });
+});
+
+// ── #133: квотирование значений, уходящих в sh() ─────────────────────────────
+// sh() исполняет строку через /bin/sh. milestone и branch приходят из конфига,
+// номера и заголовки — из ответов gh (публичный GitHub). Раньше значения
+// подставлялись голыми или в двойных кавычках, где $( ) раскрывается.
+
+describe('shq — POSIX-квотирование для sh() (#133)', () => {
+    const { shq } = ralph;
+    const { execSync } = require('node:child_process');
+
+    it('оборачивает обычное значение в одинарные кавычки', () => {
+        expect(shq('feature/x')).toBe("'feature/x'");
+    });
+
+    it('одинарная кавычка внутри значения не разрывает квотирование', () => {
+        expect(shq("don't")).toBe(`'don'\\''t'`);
+    });
+
+    // Главный сценарий: подстановка НЕ должна исполниться. Проверяем на живом
+    // шелле, а не сверкой строк — иначе тест доказывает лишь мои представления
+    // о квотировании, а не поведение /bin/sh.
+    it.each([
+        ['подстановка команды', '$(echo ВЗЛОМ)'],
+        ['обратные кавычки', '`echo ВЗЛОМ`'],
+        ['разделитель команд', '; echo ВЗЛОМ'],
+        ['переменная', '$HOME'],
+        ['кавычка и подстановка', `'; echo ВЗЛОМ; echo '`],
+    ])('%s проходит через шелл дословно', (_name, payload) => {
+        const out = execSync(`printf '%s' ${shq(payload)}`, { encoding: 'utf-8' });
+        // Дословно = payload вернулся как есть. Если бы шелл его ИСПОЛНИЛ, на
+        // выходе было бы 'ВЗЛОМ' (или подставленный $HOME) вместо самой строки.
+        expect(out).toBe(payload);
+        expect(out.trim()).not.toBe('ВЗЛОМ');
+    });
+
+    it('кириллица и типографика milestone переживают квотирование дословно', () => {
+        const milestone = 'Прод-режим ralph · Фаза 4: Толстый гейт (prod)';
+        const out = execSync(`printf '%s' ${shq(milestone)}`, { encoding: 'utf-8' });
+        expect(out).toBe(milestone);
+    });
+});
+
+describe('reviewDiffContext — дифф в промпт ревью (#133)', () => {
+    const { reviewDiffContext } = ralph;
+
+    const shOk = (diffBody) => (cmd) => {
+        if (cmd.includes('fetch')) return '';
+        if (cmd.includes('--name-only')) return 'src/a.ts\nsrc/b.ts';
+        return diffBody;
+    };
+
+    it('подаёт список файлов и сам дифф', () => {
+        const ctx = reviewDiffContext('feature/x', {
+            shFn: shOk('diff --git a/src/a.ts b/src/a.ts\n+строка'),
+            logFn: () => {},
+        });
+        expect(ctx).toContain('2 файлов');
+        expect(ctx).toContain('- src/a.ts');
+        expect(ctx).toContain('+строка');
+    });
+
+    // Молча обрезанный дифф — худший исход: ревью решит, что видело всё.
+    it('обрезка помечается явно, с числами и указанием дочитать', () => {
+        const huge = 'x'.repeat(5000);
+        const ctx = reviewDiffContext('feature/x', {
+            shFn: shOk(huge),
+            logFn: () => {},
+            limit: 1000,
+        });
+        expect(ctx).toContain('ДИФФ ОБРЕЗАН');
+        expect(ctx).toContain('1000');
+        expect(ctx).toContain('5000');
+        expect(ctx).toContain('gh pr diff');
+    });
+
+    it('дифф в пределах лимита не помечается обрезанным', () => {
+        const ctx = reviewDiffContext('feature/x', {
+            shFn: shOk('короткий дифф'),
+            logFn: () => {},
+            limit: 1000,
+        });
+        expect(ctx).not.toContain('ОБРЕЗАН');
+    });
+
+    it('сбой текста диффа не роняет ревью — остаётся список файлов и совет', () => {
+        const ctx = reviewDiffContext('feature/x', {
+            shFn: (cmd) => {
+                if (cmd.includes('--name-only')) return 'src/a.ts';
+                if (cmd.includes('fetch')) return '';
+                throw new Error('git diff умер');
+            },
+            logFn: () => {},
+        });
+        expect(ctx).toContain('- src/a.ts');
+        expect(ctx).toContain('gh pr diff');
+    });
+
+    it('дифф недоступен целиком — пустая строка, промпт остаётся валидным', () => {
+        const ctx = reviewDiffContext('feature/x', {
+            shFn: () => {
+                throw new Error('нет remote');
+            },
+            logFn: () => {},
+        });
+        expect(ctx).toBe('');
+    });
+
+    it('имя ветки уходит в git заквотированным', () => {
+        const cmds = [];
+        reviewDiffContext('feature/x', {
+            shFn: (c) => {
+                cmds.push(c);
+                return c.includes('--name-only') ? 'src/a.ts' : 'дифф';
+            },
+            logFn: () => {},
+        });
+        expect(cmds.some((c) => c.includes(`'origin/main...origin/feature/x'`))).toBe(true);
     });
 });
