@@ -1677,6 +1677,18 @@ function tryMergePhase(
     return 'merged';
 }
 
+// Деплой фазы (#87) — явный no-op-плейсхолдер. Боевой прод уже раскатывается
+// САМ CI (.github/workflows/deploy.yml → scripts/deploy-remote.sh) по факту пуша
+// в main — squash-мердж внутри tryMergePhase выше его и запускает. Раннеру
+// незачем дублировать деплой или дожидаться его статуса; эта функция — только
+// маркер точки цикла, где prod-loop логически передаёт фазу релизу и
+// останавливается (см. runLoop, gate === 'merged'), не читая исход CI-раскатки.
+function deployPhasePlaceholder(phase, { logFn = log } = {}) {
+    logFn(
+        `🚀 Деплой фазы "${phase.milestone}": плейсхолдер — раскатку уже делает CI по пушу в main, раннер её не дублирует.`,
+    );
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 // Схема: { count, milestone, submitted }.
 //   milestone — ИМЯ текущей фазы (M7). Позиционный phaseIndex ломался при любой
@@ -1885,6 +1897,7 @@ function runLoop(
         closeMilestoneByTitleFn = closeMilestoneByTitle,
         getLastRedCheck = () => lastRedCheck,
         pushEventFn = pushEvent,
+        deployPhaseFn = deployPhasePlaceholder,
     } = {},
 ) {
     // ── Main loop ────────────────────────────────────────────────────────────────
@@ -2159,7 +2172,17 @@ function runLoop(
                 pushEventFn(mergedMsg, cfg);
                 closeMilestoneByTitleFn(phase.milestone); // закрыть milestone сразу, не ждать свипа
                 advancePhaseFn(state, idx);
-                // continue → следующая фаза стартует с обновлённого main (полный AFK)
+                // #87: prod — стоп перед деплоем. Деплой уже в руках CI (мердж его и
+                // запустил), но loop не должен тут же хвататься за следующую фазу без
+                // паузы на релиз человеком. playground: мердж остаётся финалом —
+                // continue как раньше, следующая фаза стартует с обновлённого main.
+                if (cfg.profileName === 'prod') {
+                    deployPhaseFn(phase);
+                    logFn(
+                        `⏸ Ralph: фаза "${phase.milestone}" — loop остановлен перед деплоем (prod). Следующая фаза начнётся со следующего запуска.`,
+                    );
+                    break;
+                }
                 continue;
             }
             if (gate === 'merged-local-stale') {
@@ -2608,6 +2631,7 @@ module.exports = {
     gateChecksFor,
     checksGreen,
     tryMergePhase,
+    deployPhasePlaceholder,
     getLastRedCheck: () => lastRedCheck,
     getVerifiedHead: () => lastVerifiedHead,
 };

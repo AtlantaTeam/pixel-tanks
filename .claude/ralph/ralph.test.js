@@ -1372,6 +1372,63 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(pushEventFn.mock.calls[0][0]).toMatch(/готова к релизу/);
     });
 
+    it('#87 prod: гейт merged → деплой-плейсхолдер вызван, loop останавливается (не берёт следующую фазу)', () => {
+        const logs = [];
+        const closeMilestoneByTitleFn = vi.fn();
+        const advancePhaseFn = vi.fn();
+        const tryMergePhaseFn = vi.fn(() => 'merged');
+        const pushEventFn = vi.fn();
+        const deployPhaseFn = vi.fn();
+        const phaseIndexOfFn = vi.fn(() => 0); // не 99 на втором вызове — если дойдёт, тест это увидит
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn,
+                closeMilestoneByTitleFn,
+                advancePhaseFn,
+                pushEventFn,
+                deployPhaseFn,
+            }),
+        );
+        expect(closeMilestoneByTitleFn).toHaveBeenCalledWith('M1');
+        expect(advancePhaseFn).toHaveBeenCalledTimes(1);
+        expect(deployPhaseFn).toHaveBeenCalledTimes(1);
+        expect(deployPhaseFn.mock.calls[0][0]).toMatchObject({ milestone: 'M1' });
+        // #87: prod останавливается ПЕРЕД деплоем — второй проход while (следующая фаза)
+        // не должен состояться, phaseIndexOfFn зовётся ровно 1 раз.
+        expect(phaseIndexOfFn).toHaveBeenCalledTimes(1);
+        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+    });
+
+    it('#87 playground: гейт merged → деплой-плейсхолдер НЕ зовётся, мердж остаётся финалом (continue как раньше)', () => {
+        const logs = [];
+        const tryMergePhaseFn = vi.fn(() => 'merged');
+        const deployPhaseFn = vi.fn();
+        runLoop(
+            validCfg(), // profileName не задан → playground
+            ctx(mkState()),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn,
+                deployPhaseFn,
+            }),
+        );
+        expect(deployPhaseFn).not.toHaveBeenCalled();
+        // deps() даёт phaseIndexOfFn-счётчик: 2-й вызов «за концом» → «все фазы завершены».
+        expect(logs.join('\n')).toMatch(/Все фазы завершены/);
+    });
+
     it('шаг создания PR упал (код≠0) → fail-closed стоп, гейт не зовётся', () => {
         const logs = [];
         const tryMergePhaseFn = vi.fn(() => 'merged');
