@@ -83,7 +83,10 @@ function sendTelegramMessage(text, { token, chatId, execFn = realExecFn, logFn =
     // из заголовка issue закрыл бы строку раньше времени).
     const url = `${TELEGRAM_API_BASE}/bot${finalToken}/sendMessage`;
     const curlConfig = `url = "${url}"\n`;
-    const safeText = String(text).slice(0, TELEGRAM_MAX_TEXT);
+    // Режем по code points, а не по UTF-16-единицам: граница TELEGRAM_MAX_TEXT
+    // может попасть в середину суррогатной пары (эмодзи 🔔/⛔/✅ в текстах пушей —
+    // как раз пары), тогда в argv уехал бы одинокий суррогат → U+FFFD `�` в UTF-8.
+    const safeText = [...String(text)].slice(0, TELEGRAM_MAX_TEXT).join('');
     try {
         const raw = execFn(
             'curl',
@@ -98,8 +101,9 @@ function sendTelegramMessage(text, { token, chatId, execFn = realExecFn, logFn =
                 // делает обход прокси безусловным, не завися от NO_PROXY в env.
                 '--noproxy',
                 'api.telegram.org',
-                '-X',
-                'POST',
+                // -X POST не нужен: curl сам шлёт POST при любом --data-* (в т.ч.
+                // --data-urlencode). Явный -X ещё и вреден при появлении редиректа —
+                // заставил бы слать POST после 30x, где curl сам переключился бы верно.
                 '--config',
                 '-',
                 '--data-urlencode',

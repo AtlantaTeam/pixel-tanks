@@ -476,6 +476,19 @@ describe('pushEvent — доставка событий в Telegram, prod-only (
         );
     });
 
+    it('prod, но dry=true (--dry-run) — лог-маркер есть, но sendFn НЕ зовётся, false (C1: read-only)', () => {
+        // Регрессия: breaker maxIterations проверяется до первого dry-guard'а в loop,
+        // так что pushEvent достижим в --dry-run. Guard в самой точке доставки (как
+        // saveState) обязан молчать даже в боевом профиле.
+        const sendFn = vi.fn();
+        const logFn = vi.fn();
+        expect(pushEvent('событие', { profileName: 'prod' }, { sendFn, logFn, dry: true })).toBe(
+            false,
+        );
+        expect(logFn).toHaveBeenCalledWith(expect.stringContaining('событие'));
+        expect(sendFn).not.toHaveBeenCalled();
+    });
+
     it('интеграционный шов: дефолтный sendFn (реальный нотифаер) зовёт curl через прокинутый execFn', () => {
         // Без мока sendFn — проверяем, что pushEvent реально дёргает sendTelegramMessage,
         // а тот вызывает curl. execFn пробрасывается насквозь (без сети/токена).
@@ -1104,11 +1117,31 @@ describe('preflight — валидация конфига/среды и подг
             );
         });
 
-        it('prod с заполненными RALPH_TG_* → проверка проходит (не бросает на этой ветке)', () => {
-            process.env.RALPH_TG_BOT_TOKEN = '123:abc';
-            process.env.RALPH_TG_CHAT_ID = '42';
+        it('prod с заполненными RALPH_TG_* правильной формы → проверка проходит (не бросает на этой ветке)', () => {
+            process.env.RALPH_TG_BOT_TOKEN = '123456789:AAExampleTokenLooksLikeThisThirtyPlusChars';
+            process.env.RALPH_TG_CHAT_ID = '-1001234567890';
             const cfg = validCfg({ profileName: 'prod' });
             expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).not.toThrow();
+        });
+
+        it('prod с плейсхолдер-токеном неверной формы → fail (не только наличие, но и форма)', () => {
+            // Правдоподобный плейсхолдер, скопированный из ralph.env.example без правки,
+            // дал бы 401 на каждый пуш, а fail-open молча съел бы события. Отсекаем на старте.
+            process.env.RALPH_TG_BOT_TOKEN = '123456789:XXXX';
+            process.env.RALPH_TG_CHAT_ID = '42';
+            const cfg = validCfg({ profileName: 'prod' });
+            expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).toThrow(
+                /не похож на токен/,
+            );
+        });
+
+        it('prod с chat_id не-числом → fail', () => {
+            process.env.RALPH_TG_BOT_TOKEN = '123456789:AAExampleTokenLooksLikeThisThirtyPlusChars';
+            process.env.RALPH_TG_CHAT_ID = 'not-a-number';
+            const cfg = validCfg({ profileName: 'prod' });
+            expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).toThrow(
+                /не похож на chat_id/,
+            );
         });
 
         it('playground (без profileName) — проверка TG не применяется даже с пустым env', () => {
@@ -1356,7 +1389,7 @@ describe('runLoop — основной while-цикл: итерации коде
         // #86: событие «circuit breaker открылся» уходит пушем — и pushEvent теперь
         // единственный логгер события (маркер 🔔 PUSH), парного logFn больше нет.
         expect(pushEventFn).toHaveBeenCalledTimes(1);
-        expect(pushEventFn.mock.calls[0][0]).toMatch(/Circuit breaker: лимит итераций/);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/Ralph: circuit breaker — лимит итераций/);
         expect(pushEventFn.mock.calls[0][2]).toMatchObject({ logFn: expect.any(Function) });
     });
 
@@ -1415,7 +1448,7 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(state.noProgress).toBe(0); // сброшен перед стопом
         // #86: событие «circuit breaker открылся» уходит пушем (единственный логгер).
         expect(pushEventFn).toHaveBeenCalledTimes(1);
-        expect(pushEventFn.mock.calls[0][0]).toMatch(/Circuit breaker.*без прогресса/s);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/Ralph: circuit breaker.*без прогресса/s);
     });
 
     it('пустая очередь, но открыты blocked/чужие issues → сдача отложена, гейт не зовётся', () => {

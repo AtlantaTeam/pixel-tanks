@@ -113,6 +113,22 @@ describe('sendTelegramMessage', () => {
         expect(textArg.slice('text='.length).length).toBe(4096);
     });
 
+    it('обрезка по code points не разрубает суррогатную пару (эмодзи на границе не бьётся в U+FFFD)', () => {
+        const execFn = vi.fn().mockReturnValue(JSON.stringify({ ok: true }));
+        // 4095 обычных символов + эмодзи (суррогатная пара) на 4096-й позиции code point:
+        // наивный UTF-16 slice(0,4096) разрубил бы пару и оставил одинокий суррогат.
+        const text = 'a'.repeat(4095) + '🔔' + 'tail';
+
+        sendTelegramMessage(text, { token: 'T', chatId: 'C', execFn });
+
+        const sent = execFn.mock.calls[0][1]
+            .find((a) => a.startsWith('text='))
+            .slice('text='.length);
+        expect([...sent].length).toBe(4096);
+        expect(sent.endsWith('🔔')).toBe(true);
+        expect(sent).not.toContain('�');
+    });
+
     it('не светит токен в логе, даже если execFn бросил ошибку с ним в message', () => {
         const token = '123456:SECRETTOKEN';
         const execFn = vi.fn().mockImplementation(() => {

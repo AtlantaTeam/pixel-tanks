@@ -459,8 +459,16 @@ function restartTunnel(cfg, execFn = execFileSync) {
 // публичным учебным полигоном, боту там шуметь некуда (PRD: «Пуш-уведомления в
 // Telegram (prod)»). sendFn инжектируется (как probe/restart у ensureTunnel) —
 // юнит-тесты мокают сам вызов, не токен/сеть.
-function pushEvent(msg, cfg = config, { sendFn = sendTelegramMessage, logFn = log, execFn } = {}) {
+function pushEvent(
+    msg,
+    cfg = config,
+    { sendFn = sendTelegramMessage, logFn = log, execFn, dry = DRY } = {},
+) {
     logFn(`🔔 PUSH: ${msg}`);
+    // C1: --dry-run строго read-only. Доставка пуша — тоже побочка, а guard ЗДЕСЬ,
+    // в единственной точке доставки (как у saveState), закрывает и достижимый в dry
+    // путь — breaker maxIterations проверяется до первого dry-guard'а в loop.
+    if (dry) return false;
     if (!cfg || cfg.profileName !== 'prod') return false;
     // execFn пробрасывается в дефолтный sendTelegramMessage (curl) — так один тест
     // закрывает интеграционный шов pushEvent→нотифаер без реальной сети. undefined в
@@ -1821,6 +1829,22 @@ function preflight(
                 'Профиль prod: не заданы RALPH_TG_BOT_TOKEN/RALPH_TG_CHAT_ID — пуш-события фазы 5 ' +
                     '(release/blocked/breaker/rate-limit) молча ушли бы только в лог. Заполни их в ralph.env.',
             );
+        // Проверяем не только наличие, но и ФОРМУ: правдоподобный плейсхолдер из
+        // ralph.env.example, скопированный без правки, прошёл бы presence-проверку и
+        // дал бы 401 на каждый пуш, а fail-open молча съел бы все 4 события. Заодно
+        // мусор с кавычками/пробелами/переводами строк не доедет до интерполяции в
+        // curl-конфиг нотифаера. Токен бота — `\d+:[A-Za-z0-9_-]{30,}`, chat_id —
+        // целое (может быть отрицательным для групп).
+        if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(tg.token))
+            failFn(
+                'Профиль prod: RALPH_TG_BOT_TOKEN не похож на токен бота (ожидается \\d+:[A-Za-z0-9_-]{30,}). ' +
+                    'Похоже, в ralph.env остался плейсхолдер — подставь реальный токен от @BotFather.',
+            );
+        if (!/^-?\d+$/.test(tg.chatId))
+            failFn(
+                'Профиль prod: RALPH_TG_CHAT_ID не похож на chat_id (ожидается целое число, для групп — со знаком минус). ' +
+                    'Проверь значение в ralph.env.',
+            );
     }
 
     try {
@@ -1945,7 +1969,7 @@ function runLoop(
         }
 
         if (!once && state.count >= maxIterations) {
-            const breakerMsg = `⛔ Circuit breaker: лимит итераций (${maxIterations}) на фазу "${phase.milestone}". Проверь лог и issues, перезапусти для продолжения.`;
+            const breakerMsg = `⛔ Ralph: circuit breaker — лимит итераций (${maxIterations}) на фазу "${phase.milestone}". Проверь лог и issues, перезапусти для продолжения.`;
             pushEventFn(breakerMsg, cfg, { logFn });
             state.count = 0;
             saveStateFn(state);
@@ -2013,7 +2037,7 @@ function runLoop(
                 const maxNoProgress = cfg.maxNoProgress || 3;
                 if (state.noProgress >= maxNoProgress) {
                     const noProgressMsg =
-                        `⛔ Circuit breaker: ${maxNoProgress} итераций подряд без прогресса (ни коммита, ни закрытого issue) на фазе "${phase.milestone}". ` +
+                        `⛔ Ralph: circuit breaker — ${maxNoProgress} итераций подряд без прогресса (ни коммита, ни закрытого issue) на фазе "${phase.milestone}". ` +
                         `Loop стоит об стену — разбери Issue #${next.number} руками (или поставь label blocked) и перезапусти.`;
                     pushEventFn(noProgressMsg, cfg, { logFn });
                     state.noProgress = 0;
