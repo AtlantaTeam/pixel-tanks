@@ -63,6 +63,7 @@
 
 const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const path = require('node:path');
 
 const CLAUDE_DIR = '.claude';
@@ -72,6 +73,16 @@ const LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.log');
 const MONITOR_PATH = path.join(CLAUDE_DIR, 'ralph', 'monitor.js');
 const MONITOR_OUT = path.join(CLAUDE_DIR, 'ralph', 'monitor.out');
 const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
+// Маркер хэша package-lock.json последнего успешного `npm ci` в дереве раннера.
+// Гейт сверяет с ним lock PR-головы и переустанавливает зависимости при расхождении
+// (#SiaUX): фаза, добавившая зависимость, иначе гарантированно красила бы ночной гейт.
+const LOCK_MARKER_PATH = path.join(CLAUDE_DIR, 'ralph', '.deps-lock.sha');
+
+// Куда log() дописывает строки. По умолчанию — cwd-относительный LOG_PATH, но main()
+// репойнтит на АБСОЛЮТНЫЙ путь внутри worktree раннера ещё ДО chdir (#SiaUB): иначе
+// строки создания worktree (🌳/📦) ушли бы в ralph.log дерева человека, а монитор
+// тейлит только worktree-лог — ранние события на панели пропадали бы.
+let logTarget = LOG_PATH;
 
 const args = process.argv.slice(2);
 const ONCE = args.includes('--once');
@@ -90,7 +101,7 @@ function log(msg) {
     const line = `[${new Date().toISOString()}] ${msg}`;
     console.log(line);
     try {
-        fs.appendFileSync(LOG_PATH, line + '\n');
+        fs.appendFileSync(logTarget, line + '\n');
     } catch {}
 }
 
@@ -449,6 +460,18 @@ function parseWorktreeList(raw) {
         .map((l) => l.slice('worktree '.length).trim());
 }
 
+// Дерево раннера УЖЕ поднято (зарегистрировано И папка на месте)? Для DRY: только тогда
+// dry-run переезжает читать state/лог оттуда — ничего не создавая и не чиня (#SiaT3).
+function runnerWorktreeReady(worktreePath, { shFn = sh, existsFn = fs.existsSync } = {}) {
+    let list = '';
+    try {
+        list = shFn('git worktree list --porcelain');
+    } catch {
+        return false;
+    }
+    return parseWorktreeList(list).includes(worktreePath) && existsFn(worktreePath);
+}
+
 /**
  * Гарантирует существование выделенного worktree раннера. Идемпотентно: уже
  * зарегистрированный worktree переиспользуется без побочных эффектов (M2-стиль —
@@ -476,9 +499,28 @@ function ensureRunnerWorktree(
         logFn = log,
         failFn = fail,
         existsFn = fs.existsSync,
+        // Путь в argv (execFile без shell), а не в шелл-строку: пробел/спецсимвол из
+        // cfg.runnerWorktreePath/RALPH_WORKTREE_PATH не разваливает команду на аргументы
+        // и не доезжает до шелла (та же гигиена, что spawnClaude/probeEgress) (#SiaUP).
+        addFn = (p) =>
+            execFileSync('git', ['worktree', 'add', '--detach', p, 'origin/main'], {
+                stdio: 'inherit',
+            }),
         installFn = (dir) => execSync('npm ci', { cwd: dir, stdio: 'inherit' }),
+        markFn = writeLockMarker,
+        repoRoot = process.cwd(),
     } = {},
 ) {
+    // #SiaUT: путь ВНУТРИ репозитория — ошибка (дефолт-сосед при запуске не из корня,
+    // или кривой cfg/env-override): вложенное дерево игнорится .gitignore родителя либо
+    // норовит закоммититься как sub-repo. Останавливаемся до любых git-побочек.
+    if (worktreePath === repoRoot || worktreePath.startsWith(repoRoot + path.sep)) {
+        return failFn(
+            `Путь worktree раннера ${worktreePath} — внутри репозитория ${repoRoot}. ` +
+                `Он должен быть СОСЕДОМ репозитория (дефолт ../pixel-tanks-ralph); ` +
+                `поправь runnerWorktreePath/RALPH_WORKTREE_PATH и перезапусти.`,
+        );
+    }
     let list = '';
     try {
         list = shFn('git worktree list --porcelain');
@@ -486,19 +528,39 @@ function ensureRunnerWorktree(
         return failFn(`git worktree list упал: ${e.message}`);
     }
     if (parseWorktreeList(list).includes(worktreePath)) {
+        // #SiaUG: обратный к следующей ветке случай — путь ЗАРЕГИСТРИРОВАН, но папки нет
+        // (итог ручного `rm -rf` без `git worktree remove`: list отдаёт путь до prune).
+        // Без этой проверки main() свалился бы на process.chdir с голым ENOENT. Здесь
+        // prune как раз к месту — он чистит регистрации без папок.
+        if (!existsFn(worktreePath)) {
+            return failFn(
+                `${worktreePath} зарегистрирован как git worktree, но папки на диске нет — ` +
+                    `похоже, ручной rm -rf вместо "git worktree remove". Почисти реестр: ` +
+                    `"git worktree prune" — и перезапусти.`,
+            );
+        }
         logFn(`🌳 Worktree раннера уже поднят: ${worktreePath}`);
         return worktreePath;
     }
     if (existsFn(worktreePath)) {
+        // #SiaUJ: здесь папка ЕСТЬ, но не зарегистрирована — prune тут не поможет (он
+        // чистит противоположное). Fail-closed: путь занят посторонней папкой.
         return failFn(
             `${worktreePath} существует, но не зарегистрирован как git worktree этого репозитория — ` +
-                `возможно, ручной rm -rf вместо "git worktree remove" оставил мусор. Разберись руками ` +
-                `(перенеси/удали папку или "git worktree prune") и перезапусти.`,
+                `путь занят посторонней папкой. Перенеси или удали её и перезапусти.`,
         );
     }
     logFn(`🌳 Создаю выделенный worktree раннера: ${worktreePath}`);
+    // База — свежий origin/main, а не текущий HEAD дерева человека (#499): тот в момент
+    // первого запуска может стоять где угодно (древняя ветка, детач посреди ручной
+    // археологии), и npm ci ниже поставил бы зависимости случайного коммита.
     try {
-        shFn(`git worktree add ${worktreePath} --detach`);
+        shFn('git fetch origin main');
+    } catch (e) {
+        return failFn(`git fetch origin main перед созданием worktree упал: ${e.message}`);
+    }
+    try {
+        addFn(worktreePath);
     } catch (e) {
         return failFn(`git worktree add ${worktreePath} упал: ${e.message}`);
     }
@@ -508,7 +570,56 @@ function ensureRunnerWorktree(
     } catch (e) {
         return failFn(`npm ci в ${worktreePath} упал: ${e.message}`);
     }
+    // Засеваем маркер хэша lock: первый гейт на PR-голове с тем же lock не будет
+    // гонять npm ci заново (#SiaUX). Best-effort — маркер лишь оптимизация.
+    markFn(worktreePath);
     return worktreePath;
+}
+
+// Хэш package-lock.json в дереве dir (sha256 содержимого) или null, если файла нет.
+// Чистая обёртка над fs — вынесена, чтобы гейт и bootstrap считали хэш одинаково.
+function lockHash(dir = '.', readFn = fs.readFileSync) {
+    try {
+        return crypto
+            .createHash('sha256')
+            .update(readFn(path.join(dir, 'package-lock.json')))
+            .digest('hex');
+    } catch {
+        return null;
+    }
+}
+
+// Записывает текущий хэш lock как маркер «под эти зависимости уже прогнан npm ci».
+function writeLockMarker(dir = '.', { readFn = fs.readFileSync, writeFn = fs.writeFileSync } = {}) {
+    const h = lockHash(dir, readFn);
+    if (!h) return;
+    try {
+        writeFn(path.join(dir, LOCK_MARKER_PATH), h);
+    } catch {}
+}
+
+// Гейт детачится на PR-голову ТОЧНОГО коммита, который уедет в main — а её lock мог
+// добавить зависимость (node_modules дерева раннера при этом старые). Сверяем хэш lock
+// с маркером последнего npm ci и при расхождении переустанавливаем ДО чеков (#SiaUX):
+// иначе фаза-с-новой-зависимостью гарантированно красила бы ночной гейт на «module not
+// found», а README честно, но против цели AFK-прогона, отсылал бы чинить руками.
+function syncDepsIfLockChanged({
+    logFn = log,
+    existsFn = fs.existsSync,
+    readFn = fs.readFileSync,
+    writeFn = fs.writeFileSync,
+    installFn = () => execSync('npm ci', { stdio: 'inherit' }),
+} = {}) {
+    const current = lockHash('.', readFn);
+    if (!current) return; // нет package-lock.json — сверять нечего
+    let prev = null;
+    try {
+        if (existsFn(LOCK_MARKER_PATH)) prev = readFn(LOCK_MARKER_PATH, 'utf-8').trim();
+    } catch {}
+    if (prev === current) return;
+    logFn('📦 package-lock.json PR-головы отличается от установленного — npm ci перед чеками...');
+    installFn();
+    writeLockMarker('.', { readFn, writeFn });
 }
 
 /**
@@ -811,12 +922,26 @@ function ensureClean(context, { shFn = sh, logFn = log } = {}) {
     return true;
 }
 
+// Единый рецепт «обнови дерево раннера до origin/main» — в сообщениях починки и как
+// команды. #SiaUk: обновление после мерджа (tryMergePhase) и после ручного мерджа
+// (runLoop) — одна и та же пара команд; держим их в ОДНОМ месте, чтобы правку
+// хореографии не приходилось синхронно вносить в оба.
+const RUNNER_TREE_FIX_HINT = 'git fetch origin main && git checkout --detach origin/main';
+
+// Обновляет дерево раннера на свежий origin/main (fetch + detach). Бросает при сбое —
+// сообщение и статус восстановления решает вызывающий (они разные). #77: локальный main
+// (ref человека) не трогаем вовсе — git и не даст занять его вторым worktree.
+function updateRunnerTreeToOriginMain(shFn = sh) {
+    shFn('git fetch origin main');
+    shFn('git checkout --detach origin/main');
+}
+
 // L2 → worktree-модель (#77): после гейта не бросаем дерево раннера на PR-голове —
 // паркуем его на origin/main. Именно ДЕТАЧЕМ на origin/main, а не `git checkout main`:
 // ветку main почти всегда держит соседнее дерево человека, git не даёт занять один
 // ref двум worktree, и прежний checkout падал бы всякий раз. --detach на ref вообще
 // не претендует. Best-effort: неудача не критична, только лог.
-function checkoutMainQuiet({ shFn = sh, logFn = log } = {}) {
+function parkOnOriginMain({ shFn = sh, logFn = log } = {}) {
     try {
         shFn('git checkout --detach origin/main');
     } catch (e) {
@@ -869,12 +994,20 @@ const SHA40_RE = /^[0-9a-f]{40}$/;
 function checksGreen(
     branch,
     prNumber,
-    { shFn = sh, ghJsonFn = ghJson, logFn = log, parkFn = checkoutMainQuiet } = {},
+    {
+        shFn = sh,
+        ghJsonFn = ghJson,
+        logFn = log,
+        parkFn = parkOnOriginMain,
+        syncDepsFn = syncDepsIfLockChanged,
+    } = {},
 ) {
     // Сброс СРАЗУ: любой выход из этого раунда до чеков не должен носить red-check
     // прошлого раунда — tryMergePhase иначе вернул бы 'red-checks' с устаревшей
-    // ошибкой и чини-сессия чинила бы уже починенное.
+    // ошибкой и чини-сессия чинила бы уже починенное. lastVerifiedHead тоже сбрасываем:
+    // старый sha не должен доехать до --match-head-commit, если этот раунд упал до чеков.
     lastRedCheck = null;
+    lastVerifiedHead = null;
     try {
         shFn(`git fetch origin ${branch}`);
     } catch (e) {
@@ -924,6 +1057,10 @@ function checksGreen(
         parkFn();
         return false;
     }
+    // #SiaUX: PR-голова могла добавить зависимость (её package-lock новее, а node_modules
+    // дерева раннера — старые). Переустанавливаем ДО чеков при расхождении lock, иначе
+    // build/test упали бы красным на «module not found» из-за инфраструктуры, а не кода.
+    syncDepsFn();
     for (const [name, cmd] of GATE_CHECKS) {
         try {
             shFn(cmd);
@@ -942,8 +1079,16 @@ function checksGreen(
             return false;
         }
     }
+    // Все чеки зелёные на ЭТОМ sha — запоминаем его для --match-head-commit при мердже
+    // (#SiaTz): gh иначе смерджил бы голову PR НА МОМЕНТ мерджа, а не ту, что прогнали.
+    lastVerifiedHead = remoteHead;
     return true;
 }
+
+// sha PR-головы, на которой последний прогон гейта дал ВСЕ зелёные (null = гейт не
+// доходил до зелёного финала). Отдаётся в `gh pr merge --match-head-commit`, чтобы
+// закрыть TOCTOU-окно между прогоном чеков и мерджем (#SiaTz).
+let lastVerifiedHead = null;
 
 // Последний упавший ЧЕК гейта (null = гейт падал не на чеках: fetch/HEAD/detach).
 // Разделение важно: чини-сессия имеет смысл только для красных чеков — сетевые
@@ -993,8 +1138,9 @@ function tryMergePhase(
         checksGreenFn = checksGreen,
         phaseMergedFn = phaseMerged,
         sleepFn = sleep,
-        parkFn = checkoutMainQuiet,
+        parkFn = parkOnOriginMain,
         getLastRedCheckFn = () => lastRedCheck,
+        getVerifiedHeadFn = () => lastVerifiedHead,
     } = {},
 ) {
     // C1: dry-run строго read-only. Основной guard стоит в цикле ДО вызова гейта;
@@ -1032,16 +1178,29 @@ function tryMergePhase(
     // с GitHub API на зелёном гейте, и ночь встала из-за одного сетевого чиха.
     // Мутации вслепую не ретраим — но здесь между попытками СВЕРЯЕМСЯ phaseMerged():
     // если первый вызов на самом деле прошёл (упал только ответ) — задвоения нет.
+    // #SiaTz: --match-head-commit закрывает TOCTOU-окно между прогоном чеков и мерджем.
+    // checksGreen тестировал ТОЧНЫЙ sha PR-головы; за минуты GATE_CHECKS в ветку могли
+    // допушить (недобитая кодер-сессия, человек с другой машины) — без этой привязки gh
+    // смерджил бы новую, НЕ прогнанную голову. Сервер отвергнет мердж, если голова уехала.
+    // Пусто (мок checksGreen в тестах не выставил sha) → мерджим как раньше, без привязки.
+    const verifiedHead = getVerifiedHeadFn();
+    const matchArg = SHA40_RE.test(String(verifiedHead))
+        ? ` --match-head-commit ${verifiedHead}`
+        : '';
     let mergedOk = false;
     for (let attempt = 1; attempt <= 2 && !mergedOk; attempt++) {
         try {
-            shFn(`gh pr merge ${pr.number} --squash --delete-branch`);
+            shFn(`gh pr merge ${pr.number} --squash --delete-branch${matchArg}`);
             mergedOk = true;
         } catch (e) {
             try {
                 if (phaseMergedFn(phase)) {
+                    // Безобидные причины ошибки при уже влитом PR: локальный ref ветки
+                    // держит дерево человека, поэтому --delete-branch не смог удалить его
+                    // после успешного squash (#SiaUf); либо сеть оборвала ответ на success.
                     logFn(
-                        `⚠ gh pr merge #${pr.number} вернул ошибку, но PR уже влит — продолжаем.`,
+                        `⚠ gh pr merge #${pr.number} вернул ошибку, но PR уже влит (частая безобидная причина — ` +
+                            `--delete-branch не удалил локальный ref, занятый деревом человека) — продолжаем.`,
                     );
                     mergedOk = true;
                     break;
@@ -1066,12 +1225,11 @@ function tryMergePhase(
     // «Обновлённый main» раннера = свежий origin/main + detach на нём: следующая
     // фаза стартует ровно от этого коммита.
     try {
-        shFn('git fetch origin main');
-        shFn('git checkout --detach origin/main');
+        updateRunnerTreeToOriginMain(shFn);
     } catch (e) {
         logFn(
             `⚠ PR #${pr.number} СМЕРДЖЕН, но дерево раннера не обновилось (${e.message}). ` +
-                `Почини руками в дереве раннера: git fetch origin main && git checkout --detach origin/main — ` +
+                `Почини руками в дереве раннера: ${RUNNER_TREE_FIX_HINT} — ` +
                 `затем перезапусти loop (рестарт увидит фазу смердженной и продолжит со следующей).`,
         );
         return 'merged-local-stale';
@@ -1431,12 +1589,11 @@ function runLoop(
                 // Fail-stop: строить следующую фазу на непонятной базе хуже, чем встать.
                 if (!dry) {
                     try {
-                        shFn('git fetch origin main');
-                        shFn('git checkout --detach origin/main');
+                        updateRunnerTreeToOriginMain(shFn);
                     } catch (e) {
                         logFn(
                             `⛔ Фаза "${phase.milestone}" смерджена, но дерево раннера не обновилось (${e.message}). ` +
-                                `Почини руками в дереве раннера: git fetch origin main && git checkout --detach origin/main — затем перезапусти loop.`,
+                                `Почини руками в дереве раннера: ${RUNNER_TREE_FIX_HINT} — затем перезапусти loop.`,
                         );
                         break;
                     }
@@ -1727,6 +1884,7 @@ function startMonitor(deps = {}) {
         closeOutFn = (fd) => fs.closeSync(fd),
         adoptFn = adoptMonitor,
         profile,
+        configPath,
     } = deps;
 
     // Защита от двойного спавна остаётся и здесь: main() подбирает сироту до preflight,
@@ -1739,7 +1897,12 @@ function startMonitor(deps = {}) {
         out = openOutFn();
         // Профиль прокидываем в монитор: без него панель резолвила бы defaultProfile и
         // показывала чужие phases/прогресс, когда раннер идёт из --profile prod.
-        const argv = profile ? [MONITOR_PATH, '--profile', profile] : [MONITOR_PATH];
+        // configPath (#SiaT8) — абсолютный путь конфига раннера (дерево человека): без
+        // него монитор читал бы копию из своего worktree на детач-коммите, которая могла
+        // отстать от того конфига, по которому реально идёт прогон.
+        const argv = [MONITOR_PATH];
+        if (profile) argv.push('--profile', profile);
+        if (configPath) argv.push('--config', configPath);
         const child = spawnFn(process.execPath, argv, {
             detached: true, // своя группа процессов
             stdio: ['ignore', out, out],
@@ -1810,18 +1973,30 @@ function main() {
     // про профили не знает вовсе. Парсим флаг в main(), а не рядом с ONCE/DRY на
     // module-level — иначе кривой argv ронял бы process.exit при простом import в тестах.
     config = resolveProfile(raw, parseProfileFlag(args));
+    // Абсолютный путь конфига раннера фиксируем ДО любого chdir: прокинем его монитору,
+    // чтобы панель читала ТОТ ЖЕ конфиг, что раннер (дерево человека), а не свою копию в
+    // worktree на детач-коммите, которая могла отстать (#SiaT8).
+    const runnerConfigPath = path.resolve(CONFIG_PATH);
+    const worktreePath = resolveWorktreePath(config);
+    // #SiaUB: лог репойнтим на worktree ещё ДО первой строки — монитор тейлит только
+    // worktree-лог, иначе ранние события (⚙️ Профиль, создание worktree) на панели
+    // пропали бы. Только для живого прогона; DRY read-only и cwd/лог не переставляет.
+    if (!DRY) logTarget = path.join(worktreePath, LOG_PATH);
+
     // Режим в лог первой строкой: разбирая утренний ralph.log, надо видеть, в каком
     // профиле шёл прогон, не сверяясь с историей команд.
     log(`⚙️  Профиль: ${config.profileName}`);
 
-    // #76: раннер переезжает в выделенный worktree ДО всего остального (включая
-    // --reset — state теперь тоже живёт в worktree, см. STATE_PATH ниже как
-    // CLAUDE_DIR-относительный путь). C1: --dry-run строго read-only — ни
-    // worktree не создаём, ни cwd не трогаем, dry-показ идёт в текущем дереве,
-    // как и раньше.
+    // #76: раннер переезжает в выделенный worktree ДО всего остального (включая --reset —
+    // state тоже живёт в worktree; STATE_PATH объявлен ВЫШЕ, в шапке файла, как
+    // CLAUDE_DIR-относительный путь). C1: --dry-run строго read-only — worktree не
+    // создаём и cwd не трогаем; но если дерево раннера УЖЕ поднято, dry читает state/лог
+    // оттуда (chdir — тоже read-only), иначе предсказывал бы по застывшему state дерева
+    // человека, разойдясь с тем, что реально возьмёт живой запуск (#SiaT3).
     if (!DRY) {
-        const worktreePath = resolveWorktreePath(config);
         ensureRunnerWorktree(worktreePath);
+        process.chdir(worktreePath);
+    } else if (runnerWorktreeReady(worktreePath)) {
         process.chdir(worktreePath);
     }
     log(`📂 Рабочее дерево раннера: ${process.cwd()}`);
@@ -1859,7 +2034,8 @@ function main() {
     // Свой монитор — после preflight: отвергнутый запуск иначе дёргал бы его на секунду
     // и обнулял monitor.out от прошлого прогона. И только для живых прогонов: --dry-run
     // живёт секунды, а спавн процесса плохо вяжется с read-only (C1).
-    if (!DRY && !monitor) monitor = startMonitor({ profile: config.profileName });
+    if (!DRY && !monitor)
+        monitor = startMonitor({ profile: config.profileName, configPath: runnerConfigPath });
 
     runLoop(config, ctx);
 }
@@ -1888,11 +2064,13 @@ if (require.main === module) main();
 // resolveWorktreePath/parseWorktreeList/ensureRunnerWorktree (#76) — изоляция раннера
 // в выделенный git worktree, соседний с деревом человека; побочки (git/npm/fs/log/fail)
 // инжектируются, как и везде выше, поэтому тестируются без реального git/npm.
-// checkoutMainQuiet/checksGreen/tryMergePhase (#77) — ветковая хореография гейта в
+// parkOnOriginMain/checksGreen/tryMergePhase (#77) — ветковая хореография гейта в
 // worktree-модели: только detached checkout (PR-голова / origin/main), именованные
 // ветки не занимаются; побочки (sh/gh/log/park/sleep) и dry — инжектируемые.
-// getLastRedCheck — геттер module-level lastRedCheck для ассертов red-check в тестах
-// (то же, что runLoop получает дефолтным getLastRedCheck-депом).
+// getLastRedCheck / getVerifiedHead — геттеры module-level lastRedCheck/lastVerifiedHead
+// для ассертов в тестах (то же, что runLoop/tryMergePhase получают дефолтными депами).
+// runnerWorktreeReady (#SiaT3) — «дерево раннера уже поднято?» для read-only переезда DRY.
+// syncDepsIfLockChanged/lockHash (#SiaUX) — авто-npm ci при смене package-lock перед чеками.
 // ensureClean (#78) — проверка чистоты дерева раннера; shFn/logFn инжектируемы, что
 // даёт прямой тест изоляции от правок человека в соседнем worktree.
 module.exports = {
@@ -1916,13 +2094,17 @@ module.exports = {
     restartTunnel,
     resolveWorktreePath,
     parseWorktreeList,
+    runnerWorktreeReady,
     ensureRunnerWorktree,
+    lockHash,
+    syncDepsIfLockChanged,
     preflight,
     runLoop,
     loadState,
     ensureClean,
-    checkoutMainQuiet,
+    parkOnOriginMain,
     checksGreen,
     tryMergePhase,
     getLastRedCheck: () => lastRedCheck,
+    getVerifiedHead: () => lastVerifiedHead,
 };

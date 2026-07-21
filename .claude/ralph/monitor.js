@@ -29,12 +29,19 @@ const RALPH_DIR = __dirname;
 const REPO_DIR = path.resolve(RALPH_DIR, '..', '..');
 const LOG_PATH = path.join(RALPH_DIR, 'ralph.log');
 const STATE_PATH = path.join(RALPH_DIR, 'ralph.state.json');
-const CONFIG_PATH = path.join(RALPH_DIR, 'ralph.config.json');
 
 const args = process.argv.slice(2);
 const ONCE = args.includes('--once');
 const intervalIdx = args.indexOf('--interval');
 const INTERVAL_SEC = intervalIdx !== -1 ? Number(args[intervalIdx + 1]) || 300 : 300;
+// --config <путь> (#SiaT8): раннер прокидывает АБСОЛЮТНЫЙ путь конфига из дерева
+// человека — тот же файл, по которому он реально идёт. Без флага (ручной запуск) —
+// копия в этом же worktree; она может отставать на детач-коммите, о чём и был ревью.
+const configIdx = args.indexOf('--config');
+const CONFIG_PATH =
+    configIdx !== -1 && args[configIdx + 1]
+        ? args[configIdx + 1]
+        : path.join(RALPH_DIR, 'ralph.config.json');
 // Профиль тем же парсером, что у раннера (раннер прокидывает его при авто-спавне).
 // failFn → null: монитор наблюдательный, кривой флаг для него повод показать
 // defaultProfile, а не упасть с панелью.

@@ -39,15 +39,19 @@ const {
     restartTunnel,
     resolveWorktreePath,
     parseWorktreeList,
+    runnerWorktreeReady,
     ensureRunnerWorktree,
+    lockHash,
+    syncDepsIfLockChanged,
     preflight,
     runLoop,
     loadState,
     ensureClean,
-    checkoutMainQuiet,
+    parkOnOriginMain,
     checksGreen,
     tryMergePhase,
     getLastRedCheck,
+    getVerifiedHead,
 } = ralph;
 
 describe('buildClaudeArgs — построение argv для claude -p (ядро порта)', () => {
@@ -542,6 +546,11 @@ describe('resolveWorktreePath — путь выделенного worktree ра�
         expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/tmp/ralph-worktree');
     });
 
+    it('ОТНОСИТЕЛЬНЫЙ RALPH_WORKTREE_PATH резолвится от repoRoot, а не от cwd вызова (#SiaUv)', () => {
+        process.env.RALPH_WORKTREE_PATH = '../custom';
+        expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/root/custom');
+    });
+
     it('cfg.runnerWorktreePath важнее env (явный конфиг не должен молча перебиваться)', () => {
         process.env.RALPH_WORKTREE_PATH = '/tmp/from-env';
         expect(
@@ -551,40 +560,99 @@ describe('resolveWorktreePath — путь выделенного worktree ра�
 });
 
 describe('ensureRunnerWorktree — выделенный git worktree раннера, соседний с деревом человека (#76)', () => {
-    it('уже зарегистрирован (git worktree list его содержит) → переиспользуем, без add/npm ci', () => {
+    // repoRoot фиксируем явно: guard «путь не внутри репозитория» (#SiaUT) иначе бы
+    // сверялся с process.cwd() и зависел бы от того, откуда запущен vitest.
+    const REPO = '/root/pixel-tanks';
+    const WT = '/root/pixel-tanks-ralph';
+
+    it('уже зарегистрирован и папка на месте → переиспользуем, без add/fetch/npm ci', () => {
         const shFn = vi
             .fn()
             .mockReturnValue(
                 'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n\n' +
                     'worktree /root/pixel-tanks-ralph\nHEAD def456\ndetached\n',
             );
+        const existsFn = vi.fn().mockReturnValue(true);
         const logFn = vi.fn();
         const installFn = vi.fn();
-        const result = ensureRunnerWorktree('/root/pixel-tanks-ralph', { shFn, logFn, installFn });
-        expect(result).toBe('/root/pixel-tanks-ralph');
-        expect(shFn).toHaveBeenCalledTimes(1); // только list, без add
+        const addFn = vi.fn();
+        const result = ensureRunnerWorktree(WT, {
+            shFn,
+            existsFn,
+            logFn,
+            installFn,
+            addFn,
+            repoRoot: REPO,
+        });
+        expect(result).toBe(WT);
+        expect(shFn).toHaveBeenCalledTimes(1); // только list, без fetch/add
+        expect(addFn).not.toHaveBeenCalled();
         expect(installFn).not.toHaveBeenCalled();
     });
 
-    it('не зарегистрирован и путь свободен → git worktree add --detach + npm ci', () => {
+    it('#SiaUG: зарегистрирован, но папки на диске нет (rm -rf без git worktree remove) → fail с рецептом prune', () => {
+        const shFn = vi
+            .fn()
+            .mockReturnValue(
+                'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n\n' +
+                    'worktree /root/pixel-tanks-ralph\nHEAD def456\ndetached\n',
+            );
+        const existsFn = vi.fn().mockReturnValue(false); // папки нет
+        const failFn = vi.fn(() => {
+            throw new Error('stopped');
+        });
+        const installFn = vi.fn();
+        expect(() =>
+            ensureRunnerWorktree(WT, { shFn, existsFn, failFn, installFn, repoRoot: REPO }),
+        ).toThrow('stopped');
+        expect(failFn.mock.calls[0][0]).toMatch(/git worktree prune/);
+        expect(installFn).not.toHaveBeenCalled();
+    });
+
+    it('не зарегистрирован и путь свободен → git fetch origin main + add (argv, execFile) + npm ci', () => {
         const shFn = vi
             .fn()
             .mockReturnValueOnce(
                 'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n',
             )
-            .mockReturnValueOnce('');
+            .mockReturnValue('');
         const existsFn = vi.fn().mockReturnValue(false);
         const installFn = vi.fn();
+        const addFn = vi.fn();
+        const markFn = vi.fn();
         const logFn = vi.fn();
-        const result = ensureRunnerWorktree('/root/pixel-tanks-ralph', {
+        const result = ensureRunnerWorktree(WT, {
             shFn,
             existsFn,
             installFn,
+            addFn,
+            markFn,
             logFn,
+            repoRoot: REPO,
         });
-        expect(result).toBe('/root/pixel-tanks-ralph');
-        expect(shFn).toHaveBeenCalledWith('git worktree add /root/pixel-tanks-ralph --detach');
-        expect(installFn).toHaveBeenCalledWith('/root/pixel-tanks-ralph');
+        expect(result).toBe(WT);
+        // База — свежий origin/main, а не текущий HEAD дерева человека (#499).
+        expect(shFn).toHaveBeenCalledWith('git fetch origin main');
+        // add идёт через argv-collaborator (execFile без shell) — путь одним аргументом (#SiaUP).
+        expect(addFn).toHaveBeenCalledWith(WT);
+        expect(installFn).toHaveBeenCalledWith(WT);
+        expect(markFn).toHaveBeenCalledWith(WT); // маркер lock засеян
+    });
+
+    it('#SiaUT: путь ВНУТРИ репозитория → fail-closed до любых git-побочек', () => {
+        const shFn = vi.fn();
+        const failFn = vi.fn(() => {
+            throw new Error('stopped');
+        });
+        expect(() =>
+            ensureRunnerWorktree('/root/pixel-tanks/nested-ralph', {
+                shFn,
+                failFn,
+                repoRoot: REPO,
+            }),
+        ).toThrow('stopped');
+        expect(failFn.mock.calls[0][0]).toMatch(/внутри репозитория/);
+        expect(shFn).not.toHaveBeenCalled(); // даже git worktree list не звали
     });
 
     it('путь занят посторонним (не в git worktree list, но существует на диске) → fail-closed, не трогаем', () => {
@@ -597,10 +665,12 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         });
         const installFn = vi.fn();
         expect(() =>
-            ensureRunnerWorktree('/root/pixel-tanks-ralph', { shFn, existsFn, failFn, installFn }),
+            ensureRunnerWorktree(WT, { shFn, existsFn, failFn, installFn, repoRoot: REPO }),
         ).toThrow('stopped');
         expect(failFn).toHaveBeenCalledTimes(1);
-        expect(failFn.mock.calls[0][0]).toMatch(/не зарегистрирован как git worktree/);
+        // #SiaUJ: сообщение НЕ советует prune (тут папка есть, но не зарегистрирована).
+        expect(failFn.mock.calls[0][0]).toMatch(/посторонней папкой/);
+        expect(failFn.mock.calls[0][0]).not.toMatch(/prune/);
         expect(installFn).not.toHaveBeenCalled();
     });
 
@@ -611,10 +681,12 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         const failFn = vi.fn(() => {
             throw new Error('stopped');
         });
-        expect(() => ensureRunnerWorktree('/root/pixel-tanks-ralph', { shFn, failFn })).toThrow(
+        const addFn = vi.fn();
+        expect(() => ensureRunnerWorktree(WT, { shFn, failFn, addFn, repoRoot: REPO })).toThrow(
             'stopped',
         );
         expect(failFn.mock.calls[0][0]).toMatch(/git worktree list/);
+        expect(addFn).not.toHaveBeenCalled();
     });
 
     it('git worktree add упал → fail-closed, npm ci не запускается', () => {
@@ -623,22 +695,25 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
             .mockReturnValueOnce(
                 'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n',
             )
-            .mockImplementationOnce(() => {
-                throw new Error('branch already checked out');
-            });
+            .mockReturnValue('');
         const existsFn = vi.fn().mockReturnValue(false);
+        const addFn = vi.fn(() => {
+            throw new Error('branch already checked out');
+        });
         const failFn = vi.fn(() => {
             throw new Error('stopped');
         });
         const installFn = vi.fn();
         const logFn = vi.fn();
         expect(() =>
-            ensureRunnerWorktree('/root/pixel-tanks-ralph', {
+            ensureRunnerWorktree(WT, {
                 shFn,
                 existsFn,
+                addFn,
                 failFn,
                 installFn,
                 logFn,
+                repoRoot: REPO,
             }),
         ).toThrow('stopped');
         expect(installFn).not.toHaveBeenCalled();
@@ -650,8 +725,9 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
             .mockReturnValueOnce(
                 'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n',
             )
-            .mockReturnValueOnce('');
+            .mockReturnValue('');
         const existsFn = vi.fn().mockReturnValue(false);
+        const addFn = vi.fn();
         const installFn = vi.fn(() => {
             throw new Error('npm ci failed');
         });
@@ -660,15 +736,113 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         });
         const logFn = vi.fn();
         expect(() =>
-            ensureRunnerWorktree('/root/pixel-tanks-ralph', {
+            ensureRunnerWorktree(WT, {
                 shFn,
                 existsFn,
+                addFn,
                 installFn,
                 failFn,
                 logFn,
+                repoRoot: REPO,
             }),
         ).toThrow('stopped');
         expect(failFn.mock.calls[0][0]).toMatch(/npm ci/);
+    });
+});
+
+describe('runnerWorktreeReady — «дерево раннера уже поднято?» для read-only переезда DRY (#SiaT3)', () => {
+    const WT = '/root/pixel-tanks-ralph';
+    const listWith = 'worktree /root/pixel-tanks\n\nworktree /root/pixel-tanks-ralph\ndetached\n';
+
+    it('зарегистрирован И папка на месте → true (dry переедет читать state оттуда)', () => {
+        const shFn = vi.fn().mockReturnValue(listWith);
+        const existsFn = vi.fn().mockReturnValue(true);
+        expect(runnerWorktreeReady(WT, { shFn, existsFn })).toBe(true);
+    });
+
+    it('зарегистрирован, но папки нет (rm -rf) → false (dry не chdir в несуществующее)', () => {
+        const shFn = vi.fn().mockReturnValue(listWith);
+        const existsFn = vi.fn().mockReturnValue(false);
+        expect(runnerWorktreeReady(WT, { shFn, existsFn })).toBe(false);
+    });
+
+    it('не зарегистрирован → false', () => {
+        const shFn = vi.fn().mockReturnValue('worktree /root/pixel-tanks\n');
+        const existsFn = vi.fn().mockReturnValue(true);
+        expect(runnerWorktreeReady(WT, { shFn, existsFn })).toBe(false);
+    });
+
+    it('git worktree list упал → false (dry остаётся в текущем дереве, не падает)', () => {
+        const shFn = vi.fn(() => {
+            throw new Error('not a git repo');
+        });
+        expect(runnerWorktreeReady(WT, { shFn, existsFn: () => true })).toBe(false);
+    });
+});
+
+describe('syncDepsIfLockChanged — авто-npm ci при смене package-lock перед чеками (#SiaUX)', () => {
+    const HASH_OF = (s) => require('node:crypto').createHash('sha256').update(s).digest('hex');
+
+    it('lockHash: sha256 содержимого package-lock.json, null если файла нет', () => {
+        expect(lockHash('/x', () => 'LOCKDATA')).toBe(HASH_OF('LOCKDATA'));
+        expect(
+            lockHash('/x', () => {
+                throw new Error('ENOENT');
+            }),
+        ).toBeNull();
+    });
+
+    it('lock не менялся (маркер == хэш) → npm ci НЕ гоняется', () => {
+        const lock = 'LOCK-A';
+        const installFn = vi.fn();
+        syncDepsIfLockChanged({
+            logFn: () => {},
+            existsFn: () => true,
+            readFn: (p) => (String(p).endsWith('package-lock.json') ? lock : HASH_OF(lock)),
+            installFn,
+        });
+        expect(installFn).not.toHaveBeenCalled();
+    });
+
+    it('lock изменился (маркер != хэш) → npm ci гоняется и маркер перезаписывается', () => {
+        const installFn = vi.fn();
+        const writes = [];
+        syncDepsIfLockChanged({
+            logFn: () => {},
+            existsFn: () => true,
+            readFn: (p) =>
+                String(p).endsWith('package-lock.json') ? 'LOCK-NEW' : HASH_OF('LOCK-OLD'),
+            writeFn: (p, data) => writes.push([p, data]),
+            installFn,
+        });
+        expect(installFn).toHaveBeenCalledTimes(1);
+        // Маркер перезаписан новым хэшем — следующий гейт с тем же lock не переустановит.
+        expect(writes.some(([, data]) => data === HASH_OF('LOCK-NEW'))).toBe(true);
+    });
+
+    it('нет package-lock.json → no-op (сверять нечего, npm ci не гоняется)', () => {
+        const installFn = vi.fn();
+        syncDepsIfLockChanged({
+            logFn: () => {},
+            existsFn: () => true,
+            readFn: () => {
+                throw new Error('ENOENT');
+            },
+            installFn,
+        });
+        expect(installFn).not.toHaveBeenCalled();
+    });
+
+    it('маркера ещё нет (первый гейт после bootstrap) → prev=null, npm ci гоняется', () => {
+        const installFn = vi.fn();
+        syncDepsIfLockChanged({
+            logFn: () => {},
+            existsFn: () => false, // маркер-файла нет
+            readFn: (p) => (String(p).endsWith('package-lock.json') ? 'LOCK' : ''),
+            writeFn: () => {},
+            installFn,
+        });
+        expect(installFn).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -1321,17 +1495,17 @@ describe('ветковая хореография в worktree раннера (#7
     const SHA_A = 'a'.repeat(40);
     const SHA_B = 'b'.repeat(40);
 
-    describe('checkoutMainQuiet — парковка дерева раннера', () => {
+    describe('parkOnOriginMain — парковка дерева раннера', () => {
         it('паркует detached на origin/main, НЕ занимая ветку main', () => {
             const shCmds = [];
-            checkoutMainQuiet({ shFn: (c) => shCmds.push(c), logFn: () => {} });
+            parkOnOriginMain({ shFn: (c) => shCmds.push(c), logFn: () => {} });
             expect(shCmds).toEqual(['git checkout --detach origin/main']);
         });
 
         it('best-effort: сбой checkout не бросает, только лог', () => {
             const logs = [];
             expect(() =>
-                checkoutMainQuiet({
+                parkOnOriginMain({
                     shFn: () => {
                         throw new Error('нет origin/main');
                     },
@@ -1359,6 +1533,9 @@ describe('ветковая хореография в worktree раннера (#7
                 ghJsonFn: () => ({ headRefOid: SHA_A }),
                 logFn: () => {},
                 parkFn,
+                // Авто-npm ci при смене lock (#SiaUX) в юнитах глушим — реальный npm ci
+                // здесь не нужен; отдельный describe покрывает саму syncDepsIfLockChanged.
+                syncDepsFn: () => {},
                 ...rest,
             };
             return { shCmds, parkFn, deps };
@@ -1384,6 +1561,28 @@ describe('ветковая хореография в worktree раннера (#7
             expect(shCmds).not.toContain('git checkout main');
             // На зелёном дерево остаётся на PR-голове (её и мерджим) — парковки нет.
             expect(parkFn).not.toHaveBeenCalled();
+        });
+
+        it('#SiaTz/#SiaUX: на зелёном фиксирует голову PR и синкает зависимости после detach', () => {
+            const syncDepsFn = vi.fn();
+            const { shCmds, deps } = mkDeps({ syncDepsFn });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(true);
+            // syncDeps зовётся один раз (после detach, до чеков).
+            expect(syncDepsFn).toHaveBeenCalledTimes(1);
+            expect(shCmds.indexOf(`git checkout --detach ${SHA_A}`)).toBeGreaterThanOrEqual(0);
+            // Проверенная голова доступна для --match-head-commit при мердже.
+            expect(getVerifiedHead()).toBe(SHA_A);
+        });
+
+        it('#SiaTz: голова НЕ фиксируется, если гейт упал до зелёного финала (fetch)', () => {
+            const { deps } = mkDeps({
+                shImpl: (cmd) => {
+                    if (cmd.startsWith('git fetch')) throw new Error('сеть');
+                    return '';
+                },
+            });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(false);
+            expect(getVerifiedHead()).toBeNull();
         });
 
         it('H3 в worktree: локальная ветка (общий ref кодер-сессий) != голова PR → false, чеки не гонялись', () => {
@@ -1500,6 +1699,10 @@ describe('ветковая хореография в worktree раннера (#7
                 sleepFn: () => {},
                 parkFn,
                 getLastRedCheckFn: () => null,
+                // checksGreenFn здесь замокан и не выставляет lastVerifiedHead; фиксируем
+                // геттер, чтобы --match-head-commit не подмешался из module-level остатка
+                // прошлого теста (детерминизм). Привязку sha проверяет отдельный тест ниже.
+                getVerifiedHeadFn: () => null,
                 ...rest,
             };
             return { shCmds, parkFn, deps };
@@ -1517,6 +1720,22 @@ describe('ветковая хореография в worktree раннера (#7
             expect(shCmds).toContain('git checkout --detach origin/main');
             expect(shCmds).not.toContain('git checkout main');
             expect(shCmds).not.toContain('git pull --ff-only');
+        });
+
+        it('#SiaTz: проверенную голову привязывает через --match-head-commit (TOCTOU-защита)', () => {
+            const sha = 'd'.repeat(40);
+            const { shCmds, deps } = mkDeps({ getVerifiedHeadFn: () => sha });
+            expect(tryMergePhase(phase, deps)).toBe('merged');
+            expect(shCmds).toContain(
+                `gh pr merge 5 --squash --delete-branch --match-head-commit ${sha}`,
+            );
+        });
+
+        it('#SiaTz: sha головы не 40-hex → мерджим без --match-head-commit (не подставляем мусор)', () => {
+            const { shCmds, deps } = mkDeps({ getVerifiedHeadFn: () => 'not-a-sha' });
+            expect(tryMergePhase(phase, deps)).toBe('merged');
+            expect(shCmds).toContain('gh pr merge 5 --squash --delete-branch');
+            expect(shCmds.some((c) => c.includes('--match-head-commit'))).toBe(false);
         });
 
         it('пост-мердж fetch/detach упал → merged-local-stale (PR влит, дерево раннера отстало)', () => {
@@ -2376,6 +2595,7 @@ describe('Изоляция раннера в worktree — сценарии и м
                         ghJsonFn: () => ({ headRefOid: SHA_HEAD }),
                         logFn: () => {},
                         parkFn: () => shFn('git checkout --detach origin/main'),
+                        syncDepsFn: () => {}, // не гоняем реальный npm ci в инвариант-тесте
                     }),
                 phaseMergedFn: () => false,
                 sleepFn: () => {},
@@ -2394,7 +2614,11 @@ describe('Изоляция раннера в worktree — сценарии и м
             expect(shCmds).toContain(`git checkout --detach ${SHA_HEAD}`);
             expect(shCmds).toContain('git fetch origin main');
             expect(shCmds).toContain('git checkout --detach origin/main');
-            expect(shCmds).toContain('gh pr merge 5 --squash --delete-branch');
+            // #SiaTz: мердж привязан к ТОЙ ЖЕ голове, что прогнал реальный checksGreen —
+            // --match-head-commit закрывает TOCTOU-окно между чеками и мерджем.
+            expect(shCmds).toContain(
+                `gh pr merge 5 --squash --delete-branch --match-head-commit ${SHA_HEAD}`,
+            );
 
             // Инвариант: ни одного занятия именованной ветки / правки дерева человека.
             assertNoForbiddenGit(shCmds);
