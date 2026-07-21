@@ -443,6 +443,12 @@ describe('pushEvent — доставка событий в Telegram, prod-only (
             false,
         );
         expect(pushEvent('релиз готов', {}, { sendFn, logFn })).toBe(false);
+        // cfg=undefined фиксирует именно поведение при СРАБОТКЕ дефолта `cfg = config`:
+        // config заполняется в main(), а не при require, поэтому на момент вызова он
+        // undefined → профиля нет → событие не улетает. Кейс `{}` выше уже покрывает
+        // «профиль задан пустым»; этот — отдельно страхует, что дефолт-ветка молчит,
+        // а не подхватывает боевой profileName, если config когда-нибудь станет
+        // top-level.
         expect(pushEvent('релиз готов', undefined, { sendFn, logFn })).toBe(false);
         expect(sendFn).not.toHaveBeenCalled();
     });
@@ -468,6 +474,28 @@ describe('pushEvent — доставка событий в Telegram, prod-only (
         expect(pushEvent('событие', { profileName: 'prod' }, { sendFn, logFn: vi.fn() })).toBe(
             false,
         );
+    });
+
+    it('интеграционный шов: дефолтный sendFn (реальный нотифаер) зовёт curl через прокинутый execFn', () => {
+        // Без мока sendFn — проверяем, что pushEvent реально дёргает sendTelegramMessage,
+        // а тот вызывает curl. execFn пробрасывается насквозь (без сети/токена).
+        const execFn = vi.fn().mockReturnValue(JSON.stringify({ ok: true }));
+        const logFn = vi.fn();
+        const saved = { ...process.env };
+        process.env.RALPH_TG_BOT_TOKEN = '123:test';
+        process.env.RALPH_TG_CHAT_ID = '42';
+        try {
+            const result = pushEvent(
+                'фаза готова к релизу',
+                { profileName: 'prod' },
+                { logFn, execFn },
+            );
+            expect(result).toBe(true);
+            expect(execFn).toHaveBeenCalledTimes(1);
+            expect(execFn.mock.calls[0][0]).toBe('curl');
+        } finally {
+            process.env = saved;
+        }
     });
 });
 
@@ -1058,6 +1086,37 @@ describe('preflight — валидация конфига/среды и подг
         expect(() => preflight(cfg, okDeps())).toThrow(/phases/i);
     });
 
+    describe('профиль prod требует RALPH_TG_* (#85, fail-closed как authorAllowlist)', () => {
+        const savedEnv = { ...process.env };
+        beforeEach(() => {
+            process.env = { ...savedEnv };
+            delete process.env.RALPH_TG_BOT_TOKEN;
+            delete process.env.RALPH_TG_CHAT_ID;
+        });
+        afterEach(() => {
+            process.env = savedEnv;
+        });
+
+        it('prod без RALPH_TG_BOT_TOKEN/RALPH_TG_CHAT_ID → fail', () => {
+            const cfg = validCfg({ profileName: 'prod' });
+            expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).toThrow(
+                /RALPH_TG_BOT_TOKEN/,
+            );
+        });
+
+        it('prod с заполненными RALPH_TG_* → проверка проходит (не бросает на этой ветке)', () => {
+            process.env.RALPH_TG_BOT_TOKEN = '123:abc';
+            process.env.RALPH_TG_CHAT_ID = '42';
+            const cfg = validCfg({ profileName: 'prod' });
+            expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).not.toThrow();
+        });
+
+        it('playground (без profileName) — проверка TG не применяется даже с пустым env', () => {
+            const cfg = validCfg(); // profileName не задан → playground
+            expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).not.toThrow();
+        });
+    });
+
     it('state старой схемы (phaseIndex, без milestone) → fail (через реальный loadState)', () => {
         // Не инжектируем loadStateFn — работает РЕАЛЬНЫЙ loadState (дефолт), которому
         // preflight пробрасывает свой failFn. Диск мокаем на старую схему: единственное
@@ -1291,13 +1350,14 @@ describe('runLoop — основной while-цикл: итерации коде
             ctx(state, { maxIterations: 10 }),
             deps(logs, { phaseIndexOfFn: () => 0, saveStateFn, runClaudeFn, pushEventFn }),
         );
-        expect(logs.join('\n')).toMatch(/Circuit breaker: лимит итераций/);
         expect(state.count).toBe(0);
         expect(saveStateFn).toHaveBeenCalled();
         expect(runClaudeFn).not.toHaveBeenCalled(); // до итерации не дошли
-        // #86: событие «circuit breaker открылся» уходит пушем.
+        // #86: событие «circuit breaker открылся» уходит пушем — и pushEvent теперь
+        // единственный логгер события (маркер 🔔 PUSH), парного logFn больше нет.
         expect(pushEventFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn.mock.calls[0][0]).toMatch(/Circuit breaker: лимит итераций/);
+        expect(pushEventFn.mock.calls[0][2]).toMatchObject({ logFn: expect.any(Function) });
     });
 
     it('грязное дерево между итерациями (ensureClean=false, dry=false) → стоп до issues', () => {
@@ -1352,9 +1412,8 @@ describe('runLoop — основной while-цикл: итерации коде
                 pushEventFn,
             }),
         );
-        expect(logs.join('\n')).toMatch(/Circuit breaker.*без прогресса/s);
         expect(state.noProgress).toBe(0); // сброшен перед стопом
-        // #86: событие «circuit breaker открылся» уходит пушем.
+        // #86: событие «circuit breaker открылся» уходит пушем (единственный логгер).
         expect(pushEventFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn.mock.calls[0][0]).toMatch(/Circuit breaker.*без прогресса/s);
     });
@@ -1597,8 +1656,7 @@ describe('runLoop — основной while-цикл: итерации коде
         );
         expect(runClaudeFn).not.toHaveBeenCalled();
         expect(state.blockedHeals).toBe(0);
-        expect(logs.join('\n')).toMatch(/blocked устоял/);
-        // #86: событие «blocked отдан человеку» уходит пушем.
+        // #86: событие «blocked отдан человеку» уходит пушем (единственный логгер).
         expect(pushEventFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn.mock.calls[0][0]).toMatch(/blocked устоял/);
     });
@@ -1624,12 +1682,12 @@ describe('runLoop — основной while-цикл: итерации коде
             }),
         );
         expect(runClaudeFn).not.toHaveBeenCalled();
-        // Сообщение говорит «выключено профилем», а не «устоял после 0 разборов».
-        expect(logs.join('\n')).toMatch(/выключен профилем "prod"/);
-        expect(logs.join('\n')).not.toMatch(/устоял после 0/);
-        // #86: даже при 0 попытках разбора событие «blocked отдан человеку» уходит пушем.
+        // #86: даже при 0 попытках разбора событие «blocked отдан человеку» уходит
+        // пушем (единственный логгер). Сообщение говорит «выключено профилем», а не
+        // «устоял после 0 разборов».
         expect(pushEventFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn.mock.calls[0][0]).toMatch(/выключен профилем "prod"/);
+        expect(pushEventFn.mock.calls[0][0]).not.toMatch(/устоял после 0/);
     });
 
     it('гейт red-checks → чини-сессия гейта с деталями чека из getLastRedCheck', () => {

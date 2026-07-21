@@ -72,7 +72,7 @@ const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
-const { sendTelegramMessage } = require('./telegram-notifier.js');
+const { sendTelegramMessage, telegramConfigFromEnv } = require('./telegram-notifier.js');
 
 const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
@@ -459,10 +459,13 @@ function restartTunnel(cfg, execFn = execFileSync) {
 // публичным учебным полигоном, боту там шуметь некуда (PRD: «Пуш-уведомления в
 // Telegram (prod)»). sendFn инжектируется (как probe/restart у ensureTunnel) —
 // юнит-тесты мокают сам вызов, не токен/сеть.
-function pushEvent(msg, cfg = config, { sendFn = sendTelegramMessage, logFn = log } = {}) {
+function pushEvent(msg, cfg = config, { sendFn = sendTelegramMessage, logFn = log, execFn } = {}) {
     logFn(`🔔 PUSH: ${msg}`);
     if (!cfg || cfg.profileName !== 'prod') return false;
-    return sendFn(msg, { logFn });
+    // execFn пробрасывается в дефолтный sendTelegramMessage (curl) — так один тест
+    // закрывает интеграционный шов pushEvent→нотифаер без реальной сети. undefined в
+    // проде = сработает realExecFn нотифаера.
+    return sendFn(msg, { logFn, execFn });
 }
 
 // Оркестровка health-check. true = туннель здоров ИЛИ проверка выключена (можно
@@ -822,7 +825,8 @@ function runClaude(
         if (!limitHit || cfg.waitOnApiLimit === false || attempt >= maxWaits) return code;
         const waitMs = apiLimitWaitMs(output, cfg);
         const limitMsg = `⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`;
-        log(limitMsg);
+        // pushEvent — единственный логгер события (маркер 🔔 PUSH печатается всегда,
+        // даже без Telegram): парный log() выше давал двойную строку в логе.
         pushEventFn(limitMsg, cfg);
         sleepFn(waitMs);
     }
@@ -1805,6 +1809,20 @@ function preflight(
             'ralph.config.json: authorAllowlist пуст или отсутствует. Публичный репо + bypassPermissions = инъекция инструкций через чужие issues. Укажи gh-логины доверенных авторов.',
         );
 
+    // Фаза 5 (#85–88): в prod пуш-события (release/blocked/breaker/rate-limit) —
+    // единственный канал «раннер зовёт человека». Пустые RALPH_TG_* деградируют молча
+    // (fail-open sendTelegramMessage лишь пишет warn-строку в лог), и о пропущенном
+    // стопе человек узнаёт постфактум. Профиль prod требует канал — fail-closed на
+    // старте, как authorAllowlist выше. playground молчит по замыслу, там проверки нет.
+    if (cfg.profileName === 'prod') {
+        const tg = telegramConfigFromEnv();
+        if (!tg.token || !tg.chatId)
+            failFn(
+                'Профиль prod: не заданы RALPH_TG_BOT_TOKEN/RALPH_TG_CHAT_ID — пуш-события фазы 5 ' +
+                    '(release/blocked/breaker/rate-limit) молча ушли бы только в лог. Заполни их в ralph.env.',
+            );
+    }
+
     try {
         shFn('git rev-parse --is-inside-work-tree');
     } catch {
@@ -1928,8 +1946,7 @@ function runLoop(
 
         if (!once && state.count >= maxIterations) {
             const breakerMsg = `⛔ Circuit breaker: лимит итераций (${maxIterations}) на фазу "${phase.milestone}". Проверь лог и issues, перезапусти для продолжения.`;
-            logFn(breakerMsg);
-            pushEventFn(breakerMsg, cfg);
+            pushEventFn(breakerMsg, cfg, { logFn });
             state.count = 0;
             saveStateFn(state);
             break;
@@ -1998,8 +2015,7 @@ function runLoop(
                     const noProgressMsg =
                         `⛔ Circuit breaker: ${maxNoProgress} итераций подряд без прогресса (ни коммита, ни закрытого issue) на фазе "${phase.milestone}". ` +
                         `Loop стоит об стену — разбери Issue #${next.number} руками (или поставь label blocked) и перезапусти.`;
-                    logFn(noProgressMsg);
-                    pushEventFn(noProgressMsg, cfg);
+                    pushEventFn(noProgressMsg, cfg, { logFn });
                     state.noProgress = 0;
                     saveStateFn(state);
                     break;
@@ -2178,8 +2194,7 @@ function runLoop(
             const gate = tryMergePhaseFn(phase, { profileName: cfg.profileName });
             if (gate === 'merged') {
                 const mergedMsg = `✅ Ralph: фаза "${phase.milestone}" смерджена в main — готова к релизу.`;
-                logFn(mergedMsg);
-                pushEventFn(mergedMsg, cfg);
+                pushEventFn(mergedMsg, cfg, { logFn });
                 closeMilestoneByTitleFn(phase.milestone); // закрыть milestone сразу, не ждать свипа
                 advancePhaseFn(state, idx);
                 // #87: prod — стоп перед деплоем. Деплой уже в руках CI (мердж его и
@@ -2187,7 +2202,7 @@ function runLoop(
                 // паузы на релиз человеком. playground: мердж остаётся финалом —
                 // continue как раньше, следующая фаза стартует с обновлённого main.
                 if (cfg.profileName === 'prod') {
-                    deployPhaseFn(phase);
+                    deployPhaseFn(phase, { logFn });
                     logFn(
                         `⏸ Ralph: фаза "${phase.milestone}" — loop остановлен перед деплоем (prod). Следующая фаза начнётся со следующего запуска.`,
                     );
@@ -2221,8 +2236,7 @@ function runLoop(
                         bMax === 0
                             ? `⛔ Ralph: фаза "${phase.milestone}" — разбор blocked выключен профилем "${cfg.profileName}", PR с label blocked оставлен человеку.`
                             : `⛔ Ralph: фаза "${phase.milestone}" — label blocked устоял после ${bDone} разборов, PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`;
-                    logFn(blockedMsg);
-                    pushEventFn(blockedMsg, cfg);
+                    pushEventFn(blockedMsg, cfg, { logFn });
                     state.blockedHeals = 0;
                     saveStateFn(state);
                     break;

@@ -51,7 +51,7 @@ describe('sendTelegramMessage', () => {
         process.env = ORIGINAL_ENV;
     });
 
-    it('шлёт сообщение в заданный chat_id через execFn', () => {
+    it('шлёт сообщение в заданный chat_id через execFn (токен — в stdin-конфиге, не в argv)', () => {
         const execFn = vi.fn().mockReturnValue(JSON.stringify({ ok: true }));
 
         const result = sendTelegramMessage('Фаза готова к релизу', {
@@ -62,9 +62,16 @@ describe('sendTelegramMessage', () => {
 
         expect(result).toBe(true);
         expect(execFn).toHaveBeenCalledTimes(1);
-        const [bin, args] = execFn.mock.calls[0];
+        const [bin, args, opts] = execFn.mock.calls[0];
         expect(bin).toBe('curl');
-        expect(args).toContain(`${TELEGRAM_API_BASE}/botTOKEN123/sendMessage`);
+        // URL с токеном не в argv (иначе виден в ps/proc), а в конфиге на stdin.
+        expect(args).not.toContain(`${TELEGRAM_API_BASE}/botTOKEN123/sendMessage`);
+        expect(args.join(' ')).not.toContain('TOKEN123');
+        expect(opts.input).toContain(`${TELEGRAM_API_BASE}/botTOKEN123/sendMessage`);
+        expect(args).toContain('--config');
+        // api.telegram.org доступен из РФ напрямую — обход SS-туннеля.
+        expect(args).toContain('--noproxy');
+        expect(args).toContain('api.telegram.org');
         expect(args).toContain('chat_id=CHAT456');
         expect(args).toContain('text=Фаза готова к релизу');
     });
@@ -77,7 +84,9 @@ describe('sendTelegramMessage', () => {
         const result = sendTelegramMessage('привет', { execFn });
 
         expect(result).toBe(true);
-        expect(execFn.mock.calls[0][1]).toContain(`${TELEGRAM_API_BASE}/botENVTOKEN/sendMessage`);
+        expect(execFn.mock.calls[0][2].input).toContain(
+            `${TELEGRAM_API_BASE}/botENVTOKEN/sendMessage`,
+        );
         expect(execFn.mock.calls[0][1]).toContain('chat_id=ENVCHAT');
     });
 
@@ -88,8 +97,37 @@ describe('sendTelegramMessage', () => {
 
         sendTelegramMessage('hi', { token: 'EXPLICIT', chatId: 'EXPLICITCHAT', execFn });
 
-        expect(execFn.mock.calls[0][1]).toContain(`${TELEGRAM_API_BASE}/botEXPLICIT/sendMessage`);
+        expect(execFn.mock.calls[0][2].input).toContain(
+            `${TELEGRAM_API_BASE}/botEXPLICIT/sendMessage`,
+        );
         expect(execFn.mock.calls[0][1]).toContain('chat_id=EXPLICITCHAT');
+    });
+
+    it('обрезает текст до 4096 символов (Telegram вернул бы 400 на длинный)', () => {
+        const execFn = vi.fn().mockReturnValue(JSON.stringify({ ok: true }));
+        const long = 'я'.repeat(5000);
+
+        sendTelegramMessage(long, { token: 'T', chatId: 'C', execFn });
+
+        const textArg = execFn.mock.calls[0][1].find((a) => a.startsWith('text='));
+        expect(textArg.slice('text='.length).length).toBe(4096);
+    });
+
+    it('не светит токен в логе, даже если execFn бросил ошибку с ним в message', () => {
+        const token = '123456:SECRETTOKEN';
+        const execFn = vi.fn().mockImplementation(() => {
+            throw new Error(
+                `Command failed: curl -s url = "${TELEGRAM_API_BASE}/bot${token}/sendMessage"`,
+            );
+        });
+        const logFn = vi.fn();
+
+        const result = sendTelegramMessage('событие', { token, chatId: 'C', execFn, logFn });
+
+        expect(result).toBe(false);
+        expect(logFn).toHaveBeenCalledTimes(1);
+        expect(logFn.mock.calls[0][0]).not.toContain(token);
+        expect(logFn.mock.calls[0][0]).toContain('***');
     });
 
     it('fail-open: не бросает и возвращает false, если нет token/chatId', () => {

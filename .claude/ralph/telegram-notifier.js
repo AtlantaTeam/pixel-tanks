@@ -23,6 +23,11 @@ const { execFileSync } = require('node:child_process');
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
+// Telegram режет sendMessage на 4096 символах: более длинный текст вернёт 400, и
+// fail-open молча съест уведомление. Обрезаем заранее — заголовок issue в событии
+// вполне может однажды перевалить лимит.
+const TELEGRAM_MAX_TEXT = 4096;
+
 // Тот же предохранитель, что #138 в ralph.js (см. комментарий там), но свой
 // журнал: модуль самостоятельный, require('./ralph.js') отсюда создал бы
 // циклическую зависимость, как только ralph.js подключит этот модуль в pushEvent
@@ -69,7 +74,16 @@ function sendTelegramMessage(text, { token, chatId, execFn = realExecFn, logFn =
         return false;
     }
 
+    // Токен — секрет, а в argv он виден в `ps`/`/proc/*/cmdline` всё время запроса.
+    // Прячем URL с токеном в curl-конфиг, который curl читает со stdin (--config -):
+    // в argv остаются только флаги. chat_id/text — не секреты, оставляем их там же
+    // через --data-urlencode (шелл не участвует, argv-массив). Токен бота имеет вид
+    // `\d+:[A-Za-z0-9_-]+` — ни кавычек, ни бэкслэшей, поэтому значение в конфиге
+    // безопасно взять в кавычки, а untrusted-текст в конфиг НЕ попадает (иначе `"`
+    // из заголовка issue закрыл бы строку раньше времени).
     const url = `${TELEGRAM_API_BASE}/bot${finalToken}/sendMessage`;
+    const curlConfig = `url = "${url}"\n`;
+    const safeText = String(text).slice(0, TELEGRAM_MAX_TEXT);
     try {
         const raw = execFn(
             'curl',
@@ -77,15 +91,23 @@ function sendTelegramMessage(text, { token, chatId, execFn = realExecFn, logFn =
                 '-s',
                 '--max-time',
                 '10',
+                // api.telegram.org из РФ доступен напрямую (разблокирован с 2020) —
+                // ходить к нему через SS-туннель нельзя: событие «туннель красный»
+                // стреляет ровно тогда, когда этот маршрут мёртв, и единственный пуш,
+                // ради которого канал заведён, гарантированно не долетел бы. --noproxy
+                // делает обход прокси безусловным, не завися от NO_PROXY в env.
+                '--noproxy',
+                'api.telegram.org',
                 '-X',
                 'POST',
-                url,
+                '--config',
+                '-',
                 '--data-urlencode',
                 `chat_id=${finalChatId}`,
                 '--data-urlencode',
-                `text=${text}`,
+                `text=${safeText}`,
             ],
-            { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+            { encoding: 'utf-8', input: curlConfig, stdio: ['pipe', 'pipe', 'pipe'] },
         );
 
         let parsed;
@@ -105,7 +127,13 @@ function sendTelegramMessage(text, { token, chatId, execFn = realExecFn, logFn =
         }
         return true;
     } catch (e) {
-        logFn(`⚠ Telegram-нотифаер: отправка не удалась — ${String(e.message).split('\n')[0]}`);
+        // execFileSync при непустом exit-коде кладёт ПЕРВОЙ строкой e.message всю
+        // команду (`Command failed: curl …`). URL с токеном теперь уходит в stdin, а
+        // не в argv, но редактируем на всякий случай: лог тейлится монитором и
+        // копируется в чат — секрету там не место. Пустой токен сюда не доходит
+        // (ранний return выше), поэтому replaceAll не схлопнет всю строку.
+        const firstLine = String(e.message).split('\n')[0].replaceAll(finalToken, '***');
+        logFn(`⚠ Telegram-нотифаер: отправка не удалась — ${firstLine}`);
         return false;
     }
 }
