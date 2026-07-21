@@ -57,9 +57,11 @@
  *
  * Требования: gh CLI авторизован, git-репозиторий, ralph.config.json настроен, active: true.
  * Конфиг профильный: общие поля в `common`, дельта режима — в `profiles.<name>`.
+ * Монитор поднимается сам (кроме --dry-run) и глушится при выходе; панель —
+ * `tail -f .claude/ralph/monitor.out`.
  */
 
-const { execSync, execFileSync, spawnSync } = require('node:child_process');
+const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -67,6 +69,9 @@ const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
 const STATE_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.state.json');
 const LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.log');
+const MONITOR_PATH = path.join(CLAUDE_DIR, 'ralph', 'monitor.js');
+const MONITOR_OUT = path.join(CLAUDE_DIR, 'ralph', 'monitor.out');
+const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
 
 const args = process.argv.slice(2);
 const ONCE = args.includes('--once');
@@ -1458,6 +1463,125 @@ function runLoop(
     logFn('🏁 Ralph loop завершён.');
 }
 
+// --- Авто-спавн монитора (#74) --------------------------------------------
+// Монитор больше не поднимает человек отдельной командой: раннер запускает его сам и
+// глушит при выходе. Панель уходит в monitor.out — у детачнутого процесса нет
+// терминала, а файл переживает обрыв SSH и читается `tail -f` из любого окна.
+
+// Сигнал 0 — только проверка существования процесса, ничего ему не шлёт.
+function monitorAlive(pid, killFn = process.kill) {
+    if (!pid) return false;
+    try {
+        killFn(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// Сверка «за этим pid действительно monitor.js». ОС переиспользует pid: после смерти
+// монитора его номер может достаться чужому процессу — kill(pid, 0) тогда врёт «жив»,
+// а kill(-pid) при остановке снёс бы чужую группу. /proc/<pid>/cmdline — Linux-only,
+// как и весь раннер; аргументы в нём разделены \0, includes ищет по подстроке.
+function isMonitorProcess(pid, readFn = fs.readFileSync) {
+    if (!pid) return false;
+    try {
+        return readFn(`/proc/${pid}/cmdline`, 'utf-8').includes('monitor.js');
+    } catch {
+        return false;
+    }
+}
+
+function startMonitor(deps = {}) {
+    const {
+        spawnFn = spawn,
+        logFn = log,
+        readPidFn = () => Number(fs.readFileSync(MONITOR_PID, 'utf-8')),
+        writePidFn = (pid) => fs.writeFileSync(MONITOR_PID, String(pid)),
+        openOutFn = () => fs.openSync(MONITOR_OUT, 'w'),
+        closeOutFn = (fd) => fs.closeSync(fd),
+        aliveFn = monitorAlive,
+        isMonitorFn = isMonitorProcess,
+    } = deps;
+
+    // Монитор мог пережить прошлый прогон (kill -9, OOM). PID-файл пишет только сам
+    // раннер, поэтому живой monitor.js по этому pid — ральфов же монитор-сирота.
+    // Второй спавн удвоил бы gh-запросы, а бросить сироту — он жил бы вечно: поэтому
+    // ПОДХВАТЫВАЕМ его в жизненный цикл текущего прогона, stopMonitor заглушит при
+    // выходе. Сверка cmdline отсекает чужой процесс, получивший переиспользованный pid.
+    let prev = 0;
+    try {
+        prev = readPidFn();
+    } catch {}
+    if (aliveFn(prev) && isMonitorFn(prev)) {
+        logFn(`👁  Монитор уже работает (pid ${prev}) — подхватываю его, второй не поднимаю.`);
+        return { pid: prev };
+    }
+
+    let out;
+    try {
+        out = openOutFn();
+        const child = spawnFn(process.execPath, [MONITOR_PATH], {
+            detached: true, // своя группа процессов
+            stdio: ['ignore', out, out],
+        });
+        // Асинхронный сбой spawn (EMFILE и т.п.) приходит событием 'error'; без
+        // слушателя это uncaughtException — упал бы весь ночной прогон, а не монитор.
+        child.on('error', (e) => {
+            logFn(`⚠ Монитор упал при запуске (${e.message}) — прогон продолжается без него.`);
+        });
+        child.unref(); // не держим event loop раннера открытым
+        writePidFn(child.pid);
+        logFn(`👁  Монитор поднят (pid ${child.pid}) → ${MONITOR_OUT} (tail -f)`);
+        return child;
+    } catch (e) {
+        // Монитор — удобство, а не условие работы. Ронять из-за него ночной прогон
+        // нельзя: раннер продолжает, человек утром увидит предупреждение в логе.
+        logFn(`⚠ Монитор не запустился (${e.message}) — прогон продолжается без него.`);
+        return null;
+    } finally {
+        // Ребёнок при spawn получил свой dup дескриптора; копию родителя закрываем,
+        // иначе fd висит открытым до конца прогона (а при упавшем spawn — течёт зря).
+        if (out !== undefined) {
+            try {
+                closeOutFn(out);
+            } catch {}
+        }
+    }
+}
+
+function stopMonitor(child, deps = {}) {
+    const {
+        killFn = process.kill,
+        logFn = log,
+        rmPidFn = () => fs.rmSync(MONITOR_PID, { force: true }),
+        isMonitorFn = isMonitorProcess,
+    } = deps;
+    if (!child || !child.pid) return false;
+    // Пере-сверка перед kill: за ночь монитор мог умереть сам, а ОС — успеть отдать
+    // его pid чужому процессу; kill(-pid) без сверки снёс бы невиновную группу.
+    if (!isMonitorFn(child.pid)) {
+        try {
+            rmPidFn();
+        } catch {}
+        return false;
+    }
+    try {
+        // Минус pid — вся группа: detached-процесс сам себе лидер группы, и дочерние
+        // gh-вызовы монитора уходят вместе с ним, не оставаясь сиротами.
+        killFn(-child.pid, 'SIGTERM');
+    } catch {
+        try {
+            killFn(child.pid, 'SIGTERM');
+        } catch {}
+    }
+    try {
+        rmPidFn();
+    } catch {}
+    logFn('👁  Монитор остановлен.');
+    return true;
+}
+
 // main: тонкая оркестровка — загрузка конфига в module-level config (его читают
 // runClaude/openIssues/pickModel и др.), обработка --reset, затем preflight → runLoop.
 function main() {
@@ -1480,6 +1604,39 @@ function main() {
     // Два шага, а не runLoop(config, preflight(config)): у preflight много побочек
     // (свип milestones, saveState, логи), их порядок выполнения читается явнее так.
     const ctx = preflight(config);
+
+    // Монитор поднимаем ПОСЛЕ preflight: отвергнутый запуск (грязное дерево, active=false)
+    // иначе дёргал бы монитор на секунду и обнулял monitor.out от прошлого удачного
+    // прогона. И только для живых прогонов: --dry-run живёт секунды, панель за это
+    // время ничего не покажет, а спавн процесса плохо вяжется с read-only (C1).
+    if (!DRY) {
+        const monitor = startMonitor();
+        // Один стоп на любой путь выхода: штатное завершение, process.exit из fail(),
+        // uncaughtException (Node зовёт 'exit' и после него), Ctrl-C, kill от systemd,
+        // обрыв SSH / убитая tmux-сессия (SIGHUP). Сигналы ловим явно: смерть по
+        // ДЕФОЛТНОМУ обработчику сигнала 'exit'-хендлеры не вызывает — монитор осиротел бы.
+        // Флаг — чтобы SIGINT→exit не глушил монитор дважды и не писал два лога.
+        let stopped = false;
+        const stopOnce = () => {
+            if (stopped) return;
+            stopped = true;
+            stopMonitor(monitor);
+        };
+        process.on('exit', stopOnce);
+        // Коды 128 + номер сигнала (HUP=1, INT=2, TERM=15) — конвенция «убит сигналом»,
+        // её ждут systemd и tmux-обвязка.
+        for (const [sig, code] of [
+            ['SIGHUP', 129],
+            ['SIGINT', 130],
+            ['SIGTERM', 143],
+        ]) {
+            process.on(sig, () => {
+                stopOnce();
+                process.exit(code);
+            });
+        }
+    }
+
     runLoop(config, ctx);
 }
 
@@ -1508,6 +1665,10 @@ module.exports = {
     resolveProfile,
     deepMerge,
     parseProfileFlag,
+    startMonitor,
+    stopMonitor,
+    monitorAlive,
+    isMonitorProcess,
     buildClaudeArgs,
     formatExcerpt,
     parseResetWaitMs,

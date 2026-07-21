@@ -22,6 +22,10 @@ const {
     resolveProfile,
     deepMerge,
     parseProfileFlag,
+    startMonitor,
+    stopMonitor,
+    monitorAlive,
+    isMonitorProcess,
     buildClaudeArgs,
     formatExcerpt,
     parseResetWaitMs,
@@ -1316,5 +1320,222 @@ describe('боевой ralph.config.json — профили playground/prod (#73
         expect(prod.authorAllowlist).toEqual(pg.authorAllowlist);
         // Дельта prod в файле — ровно то, что заявлено, без случайных дублей.
         expect(Object.keys(raw.profiles.prod)).toEqual(['blockedHealAttempts']);
+    });
+});
+
+describe('monitorAlive — жив ли процесс монитора (#74)', () => {
+    it('сигнал 0 прошёл → процесс жив', () => {
+        expect(monitorAlive(1234, () => undefined)).toBe(true);
+    });
+
+    it('сигнал 0 бросил (нет такого процесса) → мёртв', () => {
+        expect(
+            monitorAlive(1234, () => {
+                throw new Error('ESRCH');
+            }),
+        ).toBe(false);
+    });
+
+    it('пустой/нулевой pid → мёртв, без вызова kill', () => {
+        const kill = vi.fn();
+        expect(monitorAlive(0, kill)).toBe(false);
+        expect(monitorAlive(undefined, kill)).toBe(false);
+        expect(kill).not.toHaveBeenCalled();
+    });
+});
+
+describe('isMonitorProcess — за pid действительно monitor.js (#74)', () => {
+    it('в /proc/<pid>/cmdline есть monitor.js → это наш монитор', () => {
+        const readFn = vi.fn(() => 'node .claude/ralph/monitor.js ');
+        expect(isMonitorProcess(99, readFn)).toBe(true);
+        expect(readFn).toHaveBeenCalledWith('/proc/99/cmdline', 'utf-8');
+    });
+
+    // ОС переиспользовала pid: живой процесс есть, но это не монитор — kill нельзя.
+    it('чужой процесс под тем же pid → false', () => {
+        expect(isMonitorProcess(99, () => 'nginx -g daemon off; ')).toBe(false);
+    });
+
+    it('процесса нет (чтение /proc упало) → false', () => {
+        expect(
+            isMonitorProcess(99, () => {
+                throw new Error('ENOENT');
+            }),
+        ).toBe(false);
+    });
+
+    it('пустой/нулевой pid → false без чтения /proc', () => {
+        const readFn = vi.fn();
+        expect(isMonitorProcess(0, readFn)).toBe(false);
+        expect(isMonitorProcess(undefined, readFn)).toBe(false);
+        expect(readFn).not.toHaveBeenCalled();
+    });
+});
+
+describe('startMonitor — авто-спавн панели прогресса (#74)', () => {
+    const deps = (over = {}) => ({
+        spawnFn: vi.fn(() => ({ pid: 4242, unref: vi.fn(), on: vi.fn() })),
+        logFn: vi.fn(),
+        readPidFn: () => 0,
+        writePidFn: vi.fn(),
+        openOutFn: () => 7,
+        closeOutFn: vi.fn(),
+        aliveFn: () => false,
+        isMonitorFn: () => false,
+        ...over,
+    });
+
+    it('спавнит monitor.js детачнутым, вывод — в файл, pid сохраняется', () => {
+        const d = deps();
+        const child = startMonitor(d);
+
+        expect(child.pid).toBe(4242);
+        const [bin, argv, opts] = d.spawnFn.mock.calls[0];
+        expect(bin).toBe(process.execPath);
+        expect(argv[0]).toMatch(/monitor\.js$/);
+        expect(opts.detached).toBe(true);
+        // stdout и stderr — в открытый дескриптор файла, stdin не нужен.
+        expect(opts.stdio).toEqual(['ignore', 7, 7]);
+        expect(d.writePidFn).toHaveBeenCalledWith(4242);
+    });
+
+    it('unref: раннер не держится в памяти из-за монитора', () => {
+        const unref = vi.fn();
+        startMonitor(deps({ spawnFn: () => ({ pid: 1, unref, on: vi.fn() }) }));
+        expect(unref).toHaveBeenCalled();
+    });
+
+    // Родитель обязан закрыть СВОЮ копию дескриптора monitor.out: ребёнок при spawn
+    // получил dup, а копия раннера иначе висела бы открытой весь ночной прогон.
+    it('дескриптор monitor.out закрывается в родителе после спавна', () => {
+        const d = deps();
+        startMonitor(d);
+        expect(d.closeOutFn).toHaveBeenCalledWith(7);
+    });
+
+    it('монитор от прошлого прогона живой → подхватываем его, второй не поднимаем', () => {
+        const d = deps({
+            readPidFn: () => 99,
+            aliveFn: (pid) => pid === 99,
+            isMonitorFn: (pid) => pid === 99,
+        });
+        // Возвращаем сироту как {pid} — stopMonitor заглушит его при выходе раннера.
+        expect(startMonitor(d)).toEqual({ pid: 99 });
+        expect(d.spawnFn).not.toHaveBeenCalled();
+    });
+
+    // pid из файла жив, но это уже ЧУЖОЙ процесс (ОС переиспользовала номер):
+    // подхватывать нельзя — спавним свой монитор.
+    it('живой pid из файла, но не monitor.js → спавним свой', () => {
+        const d = deps({ readPidFn: () => 99, aliveFn: () => true, isMonitorFn: () => false });
+        expect(startMonitor(d).pid).toBe(4242);
+        expect(d.spawnFn).toHaveBeenCalled();
+    });
+
+    it('pid-файл от убитого процесса не мешает: спавним заново', () => {
+        const d = deps({ readPidFn: () => 99, aliveFn: () => false });
+        expect(startMonitor(d).pid).toBe(4242);
+        expect(d.spawnFn).toHaveBeenCalled();
+    });
+
+    it('нечитаемый pid-файл не ломает старт', () => {
+        const d = deps({
+            readPidFn: () => {
+                throw new Error('ENOENT');
+            },
+        });
+        expect(startMonitor(d).pid).toBe(4242);
+    });
+
+    // Монитор — удобство: его падение не имеет права ронять ночной прогон.
+    it('упавший спавн → null и предупреждение, без исключения наружу', () => {
+        const d = deps({
+            spawnFn: () => {
+                throw new Error('EACCES');
+            },
+        });
+        expect(startMonitor(d)).toBe(null);
+        expect(d.logFn.mock.calls.join(' ')).toMatch(/не запустился/);
+        // Открытый под спавн дескриптор не течёт и на пути ошибки.
+        expect(d.closeOutFn).toHaveBeenCalledWith(7);
+    });
+
+    // spawn может упасть и АСИНХРОННО (событие 'error'); без слушателя это был бы
+    // uncaughtException — упал бы весь раннер, а не только монитор.
+    it("асинхронная ошибка spawn ('error') логируется, а не роняет раннер", () => {
+        const on = vi.fn();
+        const d = deps({ spawnFn: () => ({ pid: 1, unref: vi.fn(), on }) });
+        startMonitor(d);
+
+        const errorHandler = on.mock.calls.find(([event]) => event === 'error')?.[1];
+        expect(errorHandler).toBeTypeOf('function');
+        expect(() => errorHandler(new Error('EMFILE'))).not.toThrow();
+        expect(d.logFn.mock.calls.join(' ')).toMatch(/EMFILE/);
+    });
+});
+
+describe('stopMonitor — остановка монитора при выходе раннера (#74)', () => {
+    // isMonitorFn: () => true — «за pid реально monitor.js», путь до kill открыт.
+    it('глушит ГРУППУ процессов (минус pid) и чистит pid-файл', () => {
+        const killFn = vi.fn();
+        const rmPidFn = vi.fn();
+        expect(
+            stopMonitor(
+                { pid: 4242 },
+                { killFn, rmPidFn, logFn: vi.fn(), isMonitorFn: () => true },
+            ),
+        ).toBe(true);
+        expect(killFn).toHaveBeenCalledWith(-4242, 'SIGTERM');
+        expect(rmPidFn).toHaveBeenCalled();
+    });
+
+    it('если группу убить не вышло — падаем обратно на одиночный pid', () => {
+        const calls = [];
+        const killFn = vi.fn((pid) => {
+            calls.push(pid);
+            if (pid < 0) throw new Error('EPERM');
+        });
+        stopMonitor(
+            { pid: 7 },
+            { killFn, rmPidFn: vi.fn(), logFn: vi.fn(), isMonitorFn: () => true },
+        );
+        expect(calls).toEqual([-7, 7]);
+    });
+
+    it('монитора нет (не поднялся) → тихо ничего не делаем', () => {
+        const killFn = vi.fn();
+        expect(stopMonitor(null, { killFn, logFn: vi.fn() })).toBe(false);
+        expect(killFn).not.toHaveBeenCalled();
+    });
+
+    // Монитор умер сам, ОС отдала его pid чужому процессу — kill(-pid) снёс бы
+    // невиновную группу. Сверка перед kill обязана это отсечь; pid-файл всё равно чистим.
+    it('pid уже не monitor.js (переиспользован ОС) → kill не зовём, pid-файл чистим', () => {
+        const killFn = vi.fn();
+        const rmPidFn = vi.fn();
+        expect(
+            stopMonitor(
+                { pid: 4242 },
+                { killFn, rmPidFn, logFn: vi.fn(), isMonitorFn: () => false },
+            ),
+        ).toBe(false);
+        expect(killFn).not.toHaveBeenCalled();
+        expect(rmPidFn).toHaveBeenCalled();
+    });
+
+    it('мёртвый процесс: ошибка kill не пробрасывается наружу', () => {
+        expect(() =>
+            stopMonitor(
+                { pid: 5 },
+                {
+                    killFn: () => {
+                        throw new Error('ESRCH');
+                    },
+                    rmPidFn: vi.fn(),
+                    logFn: vi.fn(),
+                    isMonitorFn: () => true,
+                },
+            ),
+        ).not.toThrow();
     });
 });
