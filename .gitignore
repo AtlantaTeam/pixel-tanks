@@ -30,6 +30,7 @@ test-results/
 .claude/ralph/ralph.log
 .claude/ralph/monitor.out
 .claude/ralph/monitor.pid
+.claude/ralph/.deps-lock.sha
 
 # Ralph provisioning — реальный env с секретами (только .example в git)
 .claude/ralph/provision/ralph.env
