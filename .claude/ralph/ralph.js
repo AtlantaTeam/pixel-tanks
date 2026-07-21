@@ -1215,9 +1215,9 @@ const BASE_GATE_CHECKS = [
 ];
 
 // «Толстые» чеки прод-профиля (#80) — дороже и медленнее базовых, поэтому в playground
-// их не гоняем. Каждый доводится своим Issue фазы 4: e2e headless на сервере (#81),
-// coverage-порог (#82), детерминированный security-скан (#83). Здесь фиксируется
-// СОСТАВ (какие чеки добавляет prod); coverage/security ниже — ещё стартовые.
+// их не гоняем. Каждый доведён своим Issue фазы 4: e2e headless на сервере (#81),
+// coverage-порог (#82), детерминированный security-скан (#83). Здесь фиксируется СОСТАВ
+// (какие чеки добавляет prod).
 //
 // e2e (#81): `CI=1` — не косметика, а сам смысл «headless на сервере, детерминированно».
 // Playwright читает CI и переключается в гейт-режим: forbidOnly (случайный `.only` не
@@ -1227,10 +1227,19 @@ const BASE_GATE_CHECKS = [
 // playwright.config сделан независимо неблокирующим (open:never): html-репортёр по
 // умолчанию на падении поднимает сервер отчёта и ВИСИТ — тогда «красный e2e» превратился
 // бы в «зависший гейт», а не в красный. Падение → ненулевой код → checksGreen fail-closed.
+//
+// security (#83): `npm run security:audit` (scripts/security-audit.mjs), НЕ голый
+// `npm audit --audit-level=high`. Presence-гейт (любая high закрашивает гейт) на
+// сегодняшнем дереве Payload 3 (бета) вечно красный: undici/uuid — транзитивные
+// зависимости самого payload, без фикса апстрима не чинятся без --force (риск сломать
+// беку). Скрипт вместо этого считает находки из `npm audit --json` и красит гейт только
+// когда ПОРОГ превышен (critical>0 — нулевая терпимость, high>10 — запас над сегодняшним
+// долгом в 8), см. THRESHOLDS в scripts/security-audit.mjs. Это ДОБАВКА к LLM-ревью
+// безопасности (review-промпт в tryMergePhase), не замена — оба гейта независимы.
 const PROD_GATE_CHECKS = [
     ['e2e', 'CI=1 npm run test:e2e'],
     ['coverage', 'npm run test:coverage'],
-    ['security', 'npm audit --audit-level=high'],
+    ['security', 'npm run security:audit'],
 ];
 
 // Состав гейта по активному профилю (#80). База — всем; prod дополняет толстыми чеками.

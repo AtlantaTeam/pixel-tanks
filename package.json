@@ -13,6 +13,7 @@
         "test:watch": "vitest",
         "test:coverage": "vitest run --coverage",
         "test:e2e": "playwright test",
+        "security:audit": "node scripts/security-audit.mjs",
         "prepare": "husky"
     },
     "dependencies": {

@@ -1691,7 +1691,7 @@ describe('ветковая хореография в worktree раннера (#7
                     'npm run build',
                     'CI=1 npm run test:e2e',
                     'npm run test:coverage',
-                    'npm audit --audit-level=high',
+                    'npm run security:audit',
                 ]),
             );
         });

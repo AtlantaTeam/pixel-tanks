@@ -43,7 +43,11 @@ export default defineConfig({
                     name: 'ralph',
                     environment: 'node',
                     globals: true,
-                    include: ['.claude/ralph/**/*.test.{js,ts}', 'coverage-thresholds.test.ts'],
+                    include: [
+                        '.claude/ralph/**/*.test.{js,ts}',
+                        'coverage-thresholds.test.ts',
+                        'scripts/**/*.test.{js,ts}',
+                    ],
                 },
             },
         ],
