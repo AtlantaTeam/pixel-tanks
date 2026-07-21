@@ -4,6 +4,8 @@
 
 **Танковая дуэль на Canvas. Ретро-пиксель. Один выстрел решает всё.**
 
+[![Играть](https://img.shields.io/badge/▶_ИГРАТЬ-pixeltanks.ru-FF004D?style=for-the-badge)](https://pixeltanks.ru)
+
 [![Next.js](https://img.shields.io/badge/Next.js%2016-000000?style=for-the-badge&logo=nextdotjs&logoColor=white)](https://nextjs.org)
 [![React](https://img.shields.io/badge/React%2019-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript%205-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://typescriptlang.org)
@@ -46,6 +48,14 @@ npm run dev                  # → http://localhost:3050
 ```
 
 Полезное: `npm run test` · `npm run lint` · `npm run lint:fsd` · `npm run typecheck`
+
+## 🌍 Прод
+
+Живая игра — **[pixeltanks.ru](https://pixeltanks.ru)**. Деплой автоматический: каждый push в `main` запускает [`deploy.yml`](.github/workflows/deploy.yml), который собирает и катит на VDS. Прод-БД (SQLite) бэкапится по systemd-таймеру.
+
+Детали инфраструктуры, отката и восстановления — в [`docs/deploy/`](docs/deploy/).
+
+Игра в активном переносе со старого стека: часть возможностей ещё в работе, см. роадмап ниже.
 
 ## 🧱 Под капотом
 
