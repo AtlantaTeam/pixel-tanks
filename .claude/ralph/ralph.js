@@ -104,9 +104,43 @@ const RESUBMIT = args.includes('--resubmit');
 // после присваивания.
 let config;
 
+// #138: предохранитель от побочек в тестах. Раннерные функции берут коллабораторов
+// (shFn/logFn/…) через DI, но у каждого есть ДЕФОЛТ — настоящие sh/log. Тест, забывший
+// подменить хоть один, молча уходил в реальный git и дописывал строки в ralph.log
+// ЖИВОГО прогона: в логе фазы 4 так и появилось `git fetch origin main 'feature/m1'` —
+// имя ветки из фикстуры тестов. Симптом молчаливый и читается как проблема раннера.
+// Поэтому в тестовом окружении (vitest.config.ts выставляет переменную проекту "ralph")
+// sh() падает с внятным текстом, а log() не трогает файл: забытый мок обязан быть
+// ГРОМКОЙ красной ошибкой в том же тесте, а не мусором в логе через неделю.
+//
+// Одного throw мало: половина вызовов sh() стоит внутри try/catch (phaseDiffFiles,
+// checksGreen, refreshRunnerWorktree — им нельзя ронять ночной прогон из-за одной
+// git-ошибки), и такой catch проглотит предохранитель — тест снова зелёный, побочка
+// снова невидима. Поэтому каждая попытка ещё и записывается в журнал, а общий
+// afterEach в тестах валит тест, если журнал не пуст. Журнал наполняется ТОЛЬКО под
+// предохранителем: в бою массив всегда пуст и не растёт.
+const NO_SIDE_EFFECTS = process.env.RALPH_NO_SIDE_EFFECTS === '1';
+const sideEffectAttempts = [];
+
+// Один вход для всех боевых дефолтов, а не только для sh(). Ревью PR #141 показало,
+// что защищать один канал мало: тест, забывший подменить, например, saveStateFn или
+// installFn, перезаписал бы ralph.state.json (фазовый указатель ЖИВОГО прогона — гейт
+// гоняет npm run test прямо в worktree раннера) или запустил бы настоящий npm ci.
+// Последствия хуже мусора в логе, а предохранитель их не видел.
+function guardSideEffect(what) {
+    if (!NO_SIDE_EFFECTS) return;
+    sideEffectAttempts.push(what);
+    throw new Error(
+        `${what} — побочка в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1).\n` +
+            `Тест дошёл до боевого дефолта. Подмени зависимость в deps теста ` +
+            `(shFn, saveStateFn, installFn, spawnFn, …).`,
+    );
+}
+
 function log(msg) {
     const line = `[${new Date().toISOString()}] ${msg}`;
     console.log(line);
+    if (NO_SIDE_EFFECTS) return;
     try {
         fs.appendFileSync(logTarget, line + '\n');
     } catch {}
@@ -139,6 +173,9 @@ function shq(value) {
 }
 
 function sh(cmd) {
+    // #138: см. guardSideEffect выше — в тестах реальный шелл запрещён. Команду
+    // печатаем целиком: по ней сразу видно, какой именно дефолт не подменили.
+    guardSideEffect(`sh(${cmd})`);
     // maxBuffer 16 МБ (дефолт 1 МБ) — L4: многословный вывод npm/vitest переполнял
     // буфер и ронял sh() даже на ЗЕЛЁНЫХ чеках. Fail-closed безопасно, но ложные
     // красные стопы съедают смысл AFK-прогона.
@@ -303,6 +340,9 @@ function saveState(state) {
     // записи, а не у каждого вызова — невозможно забыть обернуть новый вызов в !DRY
     // (именно так dry-run и начал когда-то двигать phaseIndex).
     if (DRY) return;
+    // Тот же guard, что у sh(): забытый saveStateFn в тесте перезаписал бы state
+    // ЖИВОГО прогона — гейт мерджа гоняет npm run test прямо в worktree раннера.
+    guardSideEffect(`saveState(${STATE_PATH})`);
     fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
@@ -675,7 +715,12 @@ function syncDepsIfLockChanged({
     existsFn = fs.existsSync,
     readFn = fs.readFileSync,
     writeFn = fs.writeFileSync,
-    installFn = () => execSync('npm ci', { stdio: 'inherit' }),
+    installFn = () => {
+        // Забытый installFn в тесте запустил бы настоящий npm ci в дереве, где идут
+        // тесты, — переустановка node_modules посреди прогона (ревью PR #141).
+        guardSideEffect('npm ci (syncDepsIfLockChanged)');
+        return execSync('npm ci', { stdio: 'inherit' });
+    },
 } = {}) {
     const current = lockHash('.', readFn);
     if (!current) return; // нет package-lock.json — сверять нечего
@@ -806,6 +851,9 @@ function buildClaudeArgs(prompt, { model, maxTurns, noFallback }, cfg) {
 // Чистый вход (argv + timeout [+ spawnFn]) → {code, output}; чтение config — забота
 // вызывающего.
 function spawnClaude(cmdArgs, timeoutMs, spawnFn = spawnSync) {
+    // Дефолт — настоящий spawnSync: забытый мок запустил бы живую claude-сессию
+    // (это уже случалось, см. докблок выше). Guard делает промах громким.
+    if (spawnFn === spawnSync) guardSideEffect('spawnClaude(claude)');
     // pipe вместо inherit — вывод нужен для детекции API-лимита (см. runClaude).
     // maxBuffer 64 МБ: многочасовая сессия может быть многословной, обрезка вывода
     // уронила бы spawnSync и замаскировала настоящий exit-код.
@@ -1228,14 +1276,16 @@ const BASE_GATE_CHECKS = [
 // умолчанию на падении поднимает сервер отчёта и ВИСИТ — тогда «красный e2e» превратился
 // бы в «зависший гейт», а не в красный. Падение → ненулевой код → checksGreen fail-closed.
 //
-// security (#83): `npm run security:audit` (scripts/security-audit.mjs), НЕ голый
+// security (#83, #140): `npm run security:audit` (scripts/security-audit.mjs), НЕ голый
 // `npm audit --audit-level=high`. Presence-гейт (любая high закрашивает гейт) на
-// сегодняшнем дереве Payload 3 (бета) вечно красный: undici/uuid — транзитивные
-// зависимости самого payload, без фикса апстрима не чинятся без --force (риск сломать
-// беку). Скрипт вместо этого считает находки из `npm audit --json` и красит гейт только
-// когда ПОРОГ превышен (critical>0 — нулевая терпимость, high>10 — запас над сегодняшним
-// долгом в 8), см. THRESHOLDS в scripts/security-audit.mjs. Это ДОБАВКА к LLM-ревью
-// безопасности (review-промпт в tryMergePhase), не замена — оба гейта независимы.
+// сегодняшнем дереве Payload 3 (бета) вечно красный: undici — транзитивная зависимость
+// самого payload, без фикса апстрима не чинится без --force (риск сломать беку). Скрипт
+// вместо этого сверяет находки `npm audit --json --omit=dev` со списком известных
+// advisory-id (scripts/security-audit.baseline.json) и краснеет, когда появился id вне
+// списка. Числовой порог (#83, high>10 при долге 8) это заменило: он пропускал одну-две
+// НОВЫЕ high молча и позволял находкам отрасти обратно после починки апстримом. Это
+// ДОБАВКА к LLM-ревью безопасности (review-промпт в tryMergePhase), не замена — оба
+// гейта независимы.
 //
 // Порядок — fail-fast (дешёвый → дорогой): security (секунды) → coverage (юнит-прогон) →
 // e2e (минуты, браузер). Красный дешёвого чека отменяет мердж, не оплатив дорогой e2e.
@@ -2500,6 +2550,12 @@ module.exports = {
     isMonitorProcess,
     buildClaudeArgs,
     shq,
+    // sh/log/sideEffectAttempts экспортируются только ради предохранителя #138: проверить,
+    // что в тестовом окружении шелл запрещён и лог не пишется, можно лишь дёрнув их
+    // напрямую, а журнал попыток читает общий afterEach тестов.
+    sh,
+    log,
+    sideEffectAttempts,
     formatExcerpt,
     parseResetWaitMs,
     apiLimitWaitMs,

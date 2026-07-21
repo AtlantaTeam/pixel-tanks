@@ -1,0 +1,38 @@
+{
+    "_readme": [
+        "Известные и сегодня неустранимые advisory прод-поверхности (npm audit --omit=dev).",
+        "Гейт красный, когда появляется advisory, которого здесь НЕТ, — не когда их становится",
+        "больше некоторого числа. Добавлять сюда запись можно только осознанно: это признание",
+        "'живём с этим', и оно должно быть обосновано в reason.",
+        "Когда апстрим починит уязвимость, скан скажет 'baseline протух' — запись надо удалить,",
+        "иначе она молча разрешит будущий регресс с тем же id.",
+        "Гейтятся только critical/high ПО СЕВЕРИТИ САМОГО ADVISORY, а не по свёрнутой оценке",
+        "пакета-переносчика: у undici сегодня 7 находок, но high из них только три."
+    ],
+    "advisories": [
+        {
+            "id": 1121187,
+            "package": "undici",
+            "severity": "high",
+            "url": "https://github.com/advisories/GHSA-vmh5-mc38-953g",
+            "title": "TLS certificate validation bypass via dropped requestTls in SOCKS5 ProxyAgent",
+            "reason": "Транзитивная зависимость Payload 3 (бета); не чинится без --force на фреймворк. SOCKS5-прокси в проде не используется"
+        },
+        {
+            "id": 1121244,
+            "package": "undici",
+            "severity": "high",
+            "url": "https://github.com/advisories/GHSA-vxpw-j846-p89q",
+            "title": "WebSocket client vulnerable to denial of service via fragment count bypass",
+            "reason": "Транзитивная зависимость Payload 3 (бета); не чинится без --force на фреймворк. WebSocket-клиент undici в проде не используется"
+        },
+        {
+            "id": 1121247,
+            "package": "undici",
+            "severity": "high",
+            "url": "https://github.com/advisories/GHSA-hm92-r4w5-c3mj",
+            "title": "Cross-origin request routing via SOCKS5 proxy pool reuse",
+            "reason": "Транзитивная зависимость Payload 3 (бета); не чинится без --force на фреймворк. SOCKS5-прокси в проде не используется"
+        }
+    ]
+}
