@@ -642,11 +642,23 @@ function syncDepsIfLockChanged({
 // #130: запас был захардкожен как 2 минуты и оказался слишком тонким — окно
 // сбрасывается не мгновенно, и повтор рискует уйти в ту же стену, сжигая попытку
 // из apiLimitMaxWaits (их всего 3). Дефолт поднят до 5 минут и вынесен в конфиг.
-// ?? вместо || намеренно: apiLimitGraceMin: 0 — осознанный выбор «без запаса»,
-// его нельзя молча подменять дефолтом.
+//
+// minutesOrDefault, а не `??`: `??` пропускал бы любой мусор, а мусор здесь не
+// «странное число минут», а вечный сон. Atomics.wait(buf, 0, 0, NaN) трактует NaN
+// как +∞ — раннер вставал бы навсегда, молча, с записью «Жду NaN мин» в логе
+// (блокер ревью PR #132). Ноль при этом остаётся законным: «без запаса» —
+// осознанный выбор, его подменять дефолтом нельзя.
+// typeof number строго, без приведения: Number(null) и Number('') дают 0, и
+// пропущенный/пустой ключ читался бы как осознанный «нулевой запас» вместо
+// дефолта. Строку '5' тоже не принимаем — в JSON-конфиге минуты обязаны быть
+// числом, а тихое приведение прячет опечатку вместо того, чтобы её проявить.
+function minutesOrDefault(value, dflt) {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : dflt;
+}
+
 function apiLimitWaitMs(output, cfg) {
-    const fallbackMs = (cfg.apiLimitFallbackWaitMin || 30) * 60 * 1000;
-    const graceMs = (cfg.apiLimitGraceMin ?? 5) * 60 * 1000;
+    const fallbackMs = minutesOrDefault(cfg.apiLimitFallbackWaitMin, 30) * 60 * 1000;
+    const graceMs = minutesOrDefault(cfg.apiLimitGraceMin, 5) * 60 * 1000;
     return (parseResetWaitMs(output) ?? fallbackMs) + graceMs;
 }
 
@@ -858,8 +870,12 @@ function globToRegExp(glob) {
 
 // Первый файл диффа, попавший в зону риска, или null. Возвращаем именно файл, а
 // не булево: он уходит в лог — по нему видно, ЧТО вызвало дорогое ревью.
+// Array.isArray, а не просто .length: escalateOnPaths строкой (частая опечатка в
+// JSON — забыть скобки вокруг одного паттерна) давал бы .map is not a function
+// прямо в цикле сдачи фазы, уже после ревью (находка ревью PR #132).
 function matchRiskPaths(files, patterns) {
-    if (!patterns || !patterns.length) return null;
+    if (!Array.isArray(patterns) || !patterns.length) return null;
+    if (!Array.isArray(files) || !files.length) return null;
     const res = patterns.map(globToRegExp);
     return files.find((f) => res.some((re) => re.test(f))) ?? null;
 }
@@ -873,13 +889,21 @@ const SAFE_BRANCH_RE = /^[A-Za-z0-9._\-/]+$/;
 // Файлы, которые фаза меняет относительно main. Сравниваем remote-ссылки
 // (origin/main...origin/<branch>), а не локальные: дерево раннера живёт в detached
 // HEAD, а локальный main — ветка человека, к состоянию фазы отношения не имеет.
+//
+// fetch перед диффом обязателен (находка ревью PR #132): без него решение о цене
+// ревью принимается по протухшим remote-ссылкам — ровно та же мотивация, по
+// которой фетчит checksGreen(). --no-renames — тоже не косметика: при
+// переименовании git отдаёт ТОЛЬКО новый путь, и перенос файла ИЗ зоны риска
+// (например .github/workflows/deploy.yml → docs/old-deploy.yml) прошёл бы мимо
+// эскалации.
 function phaseDiffFiles(branch, { shFn = sh, logFn = log } = {}) {
     if (!branch || !SAFE_BRANCH_RE.test(branch)) {
         logFn(`⚠ Небезопасное имя ветки "${branch}" — дифф для выбора ревью-модели не считаю.`);
         return null;
     }
     try {
-        const out = shFn(`git diff --name-only origin/main...origin/${branch}`);
+        shFn(`git fetch origin main ${branch} --quiet`);
+        const out = shFn(`git diff --name-only --no-renames origin/main...origin/${branch}`);
         return out
             ? out
                   .split('\n')
@@ -912,7 +936,17 @@ function pickReviewModel(
     const review = cfg.review;
     if (!review) return cfg.reviewModel; // легаси-конфиг без блока review
 
-    const escalateOn = review.escalateOn || [];
+    // Эскалация без заданной escalated-модели вернула бы undefined, а runLoop
+    // трактует «нет модели» как «ревью за супервизором» и пропускает ревью ЦЕЛИКОМ
+    // — fail-open ровно на самых опасных фазах (находка ревью PR #132). Поэтому
+    // деградируем на default: полноценное ревью, просто не усиленное.
+    const escalatedModel = () => {
+        if (review.escalated) return review.escalated;
+        logFn('⚠ review.escalated не задан — эскалация невозможна, ревьюю моделью по умолчанию.');
+        return review.default;
+    };
+
+    const escalateOn = Array.isArray(review.escalateOn) ? review.escalateOn : [];
     if (escalateOn.length) {
         let all = [];
         try {
@@ -927,7 +961,7 @@ function pickReviewModel(
         );
         if (hasComplex) {
             logFn('🔺 Ревью эскалировано: в фазе есть issue с меткой из review.escalateOn.');
-            return review.escalated;
+            return escalatedModel();
         }
     }
 
@@ -935,7 +969,7 @@ function pickReviewModel(
     const hit = files && matchRiskPaths(files, review.escalateOnPaths);
     if (hit) {
         logFn(`🔺 Ревью эскалировано: дифф фазы трогает зону риска (${hit}).`);
-        return review.escalated;
+        return escalatedModel();
     }
     return review.default;
 }

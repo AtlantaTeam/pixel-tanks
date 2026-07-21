@@ -2877,3 +2877,136 @@ describe('pickReviewModel — эскалация ревью (#130)', () => {
         );
     });
 });
+
+// ── #130: негативные входы и дефекты, найденные ревью PR #132 ────────────────
+// Все пять сценариев ниже прошли сквозь ЗЕЛЁНЫЙ прогон первой версии — тесты
+// проверяли только happy path. Каждый оказался реальным дефектом.
+
+describe('apiLimitWaitMs — мусор в конфиге не превращается в вечный сон (#132)', () => {
+    const { apiLimitWaitMs } = ralph;
+    const MIN = 60 * 1000;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 6, 21, 12, 0, 0));
+    });
+    afterEach(() => vi.useRealTimers());
+
+    // Atomics.wait(buf, 0, 0, NaN) спит БЕСКОНЕЧНО: NaN трактуется как +∞.
+    // Раннер вставал бы навсегда, молча, с записью «Жду NaN мин» в логе.
+    it.each([['строка', 'abc'], ['null', null], ['объект', {}], ['отрицательное', -5]])(
+        'apiLimitGraceMin = %s → дефолтные 5 минут, не NaN',
+        (_name, value) => {
+            const ms = apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: value });
+            expect(Number.isFinite(ms)).toBe(true);
+            expect(ms).toBe(60 * MIN + 5 * MIN);
+        },
+    );
+
+    it('мусорный apiLimitFallbackWaitMin тоже не даёт NaN', () => {
+        const ms = apiLimitWaitMs('лимит без времени', { apiLimitFallbackWaitMin: 'скоро' });
+        expect(Number.isFinite(ms)).toBe(true);
+        expect(ms).toBe(30 * MIN + 5 * MIN);
+    });
+});
+
+describe('matchRiskPaths — кривой конфиг не роняет цикл сдачи (#132)', () => {
+    const { matchRiskPaths } = ralph;
+
+    // Забыть скобки вокруг единственного паттерна — типовая опечатка в JSON.
+    // .map по строке = TypeError прямо в середине сдачи фазы, после ревью.
+    it('escalateOnPaths строкой вместо массива — null, а не исключение', () => {
+        expect(() => matchRiskPaths(['.github/workflows/deploy.yml'], '.github/**')).not.toThrow();
+        expect(matchRiskPaths(['.github/workflows/deploy.yml'], '.github/**')).toBe(null);
+    });
+
+    it('files не массив — null, а не исключение', () => {
+        expect(matchRiskPaths(null, ['.github/**'])).toBe(null);
+        expect(matchRiskPaths(undefined, ['.github/**'])).toBe(null);
+    });
+});
+
+describe('phaseDiffFiles — какая именно git-команда уходит в шелл (#132)', () => {
+    const { phaseDiffFiles } = ralph;
+
+    it('фетчит ДО диффа: решение не принимается по протухшим remote-ссылкам', () => {
+        const cmds = [];
+        phaseDiffFiles('feature/x', {
+            shFn: (c) => {
+                cmds.push(c);
+                return '';
+            },
+            logFn: () => {},
+        });
+        expect(cmds[0]).toContain('git fetch origin main feature/x');
+        expect(cmds[1]).toContain('git diff');
+        expect(cmds[1]).toContain('origin/main...origin/feature/x');
+    });
+
+    it('дифф идёт с --no-renames: перенос файла ИЗ зоны риска виден', () => {
+        // Без --no-renames git отдаёт только НОВЫЙ путь, и переезд
+        // .github/workflows/deploy.yml → docs/old.yml прошёл бы мимо эскалации.
+        const cmds = [];
+        phaseDiffFiles('feature/x', {
+            shFn: (c) => {
+                cmds.push(c);
+                return '';
+            },
+            logFn: () => {},
+        });
+        expect(cmds[1]).toContain('--no-renames');
+    });
+
+    it('падение fetch не роняет сдачу — null и предупреждение в лог', () => {
+        const logs = [];
+        const files = phaseDiffFiles('feature/x', {
+            shFn: () => {
+                throw new Error('fatal: could not read from remote');
+            },
+            logFn: (m) => logs.push(m),
+        });
+        expect(files).toBe(null);
+        expect(logs.join('\n')).toMatch(/дифф/i);
+    });
+});
+
+describe('pickReviewModel — отсутствующая escalated-модель не отменяет ревью (#132)', () => {
+    const { pickReviewModel } = ralph;
+
+    // undefined из эскалации runLoop трактует как «ревью за супервизором» и
+    // пропускает ревью ЦЕЛИКОМ — fail-open ровно на самых опасных фазах.
+    it('зона риска при незаданном review.escalated — ревью дефолтной моделью, не undefined', () => {
+        const logs = [];
+        const model = pickReviewModel('Фаза X', 'feature/x', {
+            cfg: {
+                review: {
+                    default: 'claude-opus-4-8',
+                    escalateOnPaths: ['.github/workflows/**'],
+                },
+            },
+            logFn: (m) => logs.push(m),
+            shFn: () => '.github/workflows/deploy.yml',
+            ghJsonFn: () => [],
+        });
+        expect(model).toBe('claude-opus-4-8');
+        expect(model).toBeDefined();
+        expect(logs.join('\n')).toMatch(/escalated/i);
+    });
+
+    it('escalateOn строкой вместо массива не роняет выбор модели', () => {
+        expect(() =>
+            pickReviewModel('Фаза X', 'feature/x', {
+                cfg: {
+                    review: {
+                        default: 'claude-opus-4-8',
+                        escalated: 'claude-fable-5',
+                        escalateOn: 'complexity:expert',
+                    },
+                },
+                logFn: () => {},
+                shFn: () => '',
+                ghJsonFn: () => [],
+            }),
+        ).not.toThrow();
+    });
+});

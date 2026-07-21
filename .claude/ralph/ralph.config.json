@@ -29,7 +29,8 @@
             "escalateOnPaths": [
                 ".github/workflows/**",
                 ".claude/ralph/**",
-                "provision/**",
+                "deploy/**",
+                "scripts/**",
                 "src/payload.config.ts",
                 "src/payload/**",
                 "src/app/(payload)/**",
