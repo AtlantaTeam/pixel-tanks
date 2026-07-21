@@ -1520,19 +1520,37 @@ function adoptMonitor(deps = {}) {
         readPidFn = () => Number(fs.readFileSync(MONITOR_PID, 'utf-8')),
         aliveFn = monitorAlive,
         isMonitorFn = isMonitorProcess,
+        readCmdlineFn = (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
+        stopFn = stopMonitor,
+        profile,
     } = deps;
 
     let prev = 0;
     try {
         prev = readPidFn();
     } catch {}
-    if (aliveFn(prev) && isMonitorFn(prev)) {
-        logFn(
-            `👁  Монитор от прошлого прогона жив (pid ${prev}) — подхватываю, второй не поднимаю.`,
-        );
-        return { pid: prev };
+    if (!aliveFn(prev) || !isMonitorFn(prev)) return null;
+
+    // Сверка профиля сироты — по его же cmdline (аргументы разделены \0, парсер тот же,
+    // что у раннера). Сирота от прогона в ДРУГОМ профиле показывал бы чужие phases —
+    // та же дыра, что спавн без --profile: подхватывать нельзя, глушим здесь, свой
+    // (в верном профиле) main() поднимет после preflight. profile не задан (прямой
+    // вызов без ожиданий) — сверку пропускаем, подхватываем как есть.
+    if (profile) {
+        let orphanProfile = null;
+        try {
+            orphanProfile = parseProfileFlag(readCmdlineFn(prev).split('\0'), () => null);
+        } catch {}
+        if (orphanProfile !== profile) {
+            logFn(
+                `👁  Монитор от прошлого прогона жив (pid ${prev}), но в профиле "${orphanProfile ?? '—'}" вместо "${profile}" — глушу, подниму свой.`,
+            );
+            stopFn({ pid: prev }, deps);
+            return null;
+        }
     }
-    return null;
+    logFn(`👁  Монитор от прошлого прогона жив (pid ${prev}) — подхватываю, второй не поднимаю.`);
+    return { pid: prev };
 }
 
 function startMonitor(deps = {}) {
@@ -1640,7 +1658,8 @@ function main() {
     // Сироту от прошлого прогона (kill -9, OOM) подбираем ДО preflight: чаще всего
     // preflight и отвергает запуск (грязное дерево, active=false), а брошенный монитор
     // в это время продолжает долбить gh каждые 5 минут. Свой поднимаем позже.
-    let monitor = DRY ? null : adoptMonitor();
+    // profile — для сверки: сироту чужого профиля глушим, а не подхватываем.
+    let monitor = DRY ? null : adoptMonitor({ profile: config.profileName });
 
     // Стоп монитора — ТОЛЬКО на 'exit'. Обработчики сигналов здесь ставить нельзя:
     // process.on('SIGTERM'|'SIGINT'|'SIGHUP') снимает дефолтное действие сигнала, а

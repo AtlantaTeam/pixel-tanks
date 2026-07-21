@@ -1446,6 +1446,22 @@ describe('startMonitor — авто-спавн панели прогресса (
         expect(d.writePidFn).toHaveBeenCalledWith(4242);
     });
 
+    // Правка по ревью PR #127: без прокидывания профиля панель резолвила бы
+    // defaultProfile и показывала чужой режим, когда раннер идёт из --profile prod.
+    it('профиль раннера передаётся монитору через argv', () => {
+        const d = deps({ profile: 'prod' });
+        startMonitor(d);
+        const [, argv] = d.spawnFn.mock.calls[0];
+        expect(argv.slice(1)).toEqual(['--profile', 'prod']);
+    });
+
+    it('без профиля (прямой вызов) монитор спавнится без лишних флагов', () => {
+        const d = deps();
+        startMonitor(d);
+        const [, argv] = d.spawnFn.mock.calls[0];
+        expect(argv).toHaveLength(1);
+    });
+
     it('unref: раннер не держится в памяти из-за монитора', () => {
         const unref = vi.fn();
         startMonitor(deps({ spawnFn: () => ({ pid: 1, unref, on: vi.fn() }) }));
@@ -1625,5 +1641,76 @@ describe('adoptMonitor — подбор монитора-сироты от пр�
                 },
             }),
         ).toBe(null);
+    });
+
+    // Сирота от прогона в ДРУГОМ профиле показывал бы чужие phases — та же дыра,
+    // что спавн без --profile (ревью PR #127): не подхватываем, а глушим.
+    it('сирота в чужом профиле → глушим и не подхватываем', () => {
+        const killFn = vi.fn();
+        const rmPidFn = vi.fn();
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => 77,
+                aliveFn: () => true,
+                isMonitorFn: () => true,
+                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0playground\0',
+                profile: 'prod',
+                killFn,
+                rmPidFn,
+            }),
+        ).toBe(null);
+        // Глушим группу сироты и чистим pid-файл — как штатный stopMonitor.
+        expect(killFn).toHaveBeenCalledWith(-77, 'SIGTERM');
+        expect(rmPidFn).toHaveBeenCalled();
+    });
+
+    it('сирота в том же профиле → подхватываем', () => {
+        const killFn = vi.fn();
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => 77,
+                aliveFn: () => true,
+                isMonitorFn: () => true,
+                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0',
+                profile: 'prod',
+                killFn,
+            }),
+        ).toEqual({ pid: 77 });
+        expect(killFn).not.toHaveBeenCalled();
+    });
+
+    // Старый сирота без --profile в cmdline резолвил бы defaultProfile — это не
+    // обязательно профиль текущего раннера, подхватывать нельзя.
+    it('сирота без --profile в cmdline при заданном ожидании → глушим', () => {
+        const killFn = vi.fn();
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => 77,
+                aliveFn: () => true,
+                isMonitorFn: () => true,
+                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0',
+                profile: 'prod',
+                killFn,
+                rmPidFn: vi.fn(),
+            }),
+        ).toBe(null);
+        expect(killFn).toHaveBeenCalledWith(-77, 'SIGTERM');
+    });
+
+    it('profile не задан (прямой вызов) → сверки нет, подхватываем как раньше', () => {
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => 77,
+                aliveFn: () => true,
+                isMonitorFn: () => true,
+                readCmdlineFn: () => {
+                    throw new Error('не должен читаться');
+                },
+            }),
+        ).toEqual({ pid: 77 });
     });
 });
