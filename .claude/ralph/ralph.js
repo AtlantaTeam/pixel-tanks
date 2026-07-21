@@ -53,11 +53,15 @@
  *   node .claude/ralph/ralph.js --dry-run   показать что будет сделано; строго read-only
  *   node .claude/ralph/ralph.js --reset     сбросить state на первую фазу конфига
  *   node .claude/ralph/ralph.js --resubmit  повторить полный цикл сдачи фазы (PR/ревью/правки)
+ *   node .claude/ralph/ralph.js --profile <name>   профиль конфига (по умолчанию defaultProfile)
  *
  * Требования: gh CLI авторизован, git-репозиторий, ralph.config.json настроен, active: true.
+ * Конфиг профильный: общие поля в `common`, дельта режима — в `profiles.<name>`.
+ * Монитор поднимается сам (кроме --dry-run) и глушится при выходе; панель —
+ * `tail -f .claude/ralph/monitor.out`.
  */
 
-const { execSync, execFileSync, spawnSync } = require('node:child_process');
+const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -65,6 +69,9 @@ const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
 const STATE_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.state.json');
 const LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.log');
+const MONITOR_PATH = path.join(CLAUDE_DIR, 'ralph', 'monitor.js');
+const MONITOR_OUT = path.join(CLAUDE_DIR, 'ralph', 'monitor.out');
+const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
 
 const args = process.argv.slice(2);
 const ONCE = args.includes('--once');
@@ -136,6 +143,120 @@ function loadJson(p, fallback) {
     } catch {
         return fallback;
     }
+}
+
+// --- Профили конфига (#71) ------------------------------------------------
+// Конфиг разделён на `common` (общее) и `profiles` (дельта). Профиль НЕ дублирует
+// общие поля — иначе профили разъезжаются молча: правку modelRouting внесли в один,
+// забыли во втором, и прод неделю ходит на старой модели.
+
+function isPlainObject(v) {
+    return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+// Объекты сливаются вглубь (профиль правит ОДНУ метку modelRouting.labels, не
+// переписывая блок), массивы и скаляры заменяются целиком. Частичный мердж массивов
+// сознательно не делаем: для phases/authorAllowlist «дописать или заменить?» не имеет
+// однозначного ответа, а неверная догадка в authorAllowlist — дыра в защите от инъекций.
+// JSON.parse создаёт "__proto__" СОБСТВЕННЫМ ключом, но присваивание out[k] дёргает
+// сеттер и подменяет прототип результата — в конфиге всплывают фантомные поля, которых
+// в файле визуально нет. Легитимных полей с такими именами у нас не бывает, поэтому
+// это либо опечатка, либо чужая рука — и то и другое для раннера с bypassPermissions
+// повод остановиться, а не тихо нейтрализовать (fail-closed, как и вся схема профилей).
+const FORBIDDEN_KEYS = ['__proto__', 'constructor', 'prototype'];
+
+// Скан ВСЕЙ глубины, а не только уровней, куда рекурсирует мердж: объект из профиля по
+// ключу, которого нет в common, копируется присваиванием — без этого обхода его нутро
+// не проверялось бы вовсе, и инвариант «в конфиге не бывает опасных ключей» был бы
+// ложным обещанием комментария. Возвращает имя первого найденного ключа с путём.
+function findForbiddenKey(value, path) {
+    if (!isPlainObject(value)) return null;
+    for (const [k, v] of Object.entries(value)) {
+        if (FORBIDDEN_KEYS.includes(k)) return `"${k}" в блоке "${path}"`;
+        const deeper = findForbiddenKey(v, `${path}.${k}`);
+        if (deeper) return deeper;
+    }
+    return null;
+}
+
+function deepMerge(base, override, failFn = fail, path = 'common') {
+    const bad = findForbiddenKey(base, path) || findForbiddenKey(override, path);
+    if (bad) return failFn(`ralph.config.json: запрещённый ключ ${bad}.`);
+
+    const out = { ...base };
+    for (const [k, v] of Object.entries(override)) {
+        if (!isPlainObject(v) || !isPlainObject(base[k])) {
+            out[k] = v;
+            continue;
+        }
+        const merged = deepMerge(base[k], v, failFn, `${path}.${k}`);
+        // failFn мог не бросить (монитор передаёт `() => null`) — тогда обрываем мердж
+        // и прокидываем его результат наверх, а не собираем конфиг из полуфабриката.
+        if (!isPlainObject(merged)) return merged;
+        out[k] = merged;
+    }
+    return out;
+}
+
+// Флаг --profile <name> | --profile=<name> (#72). Нет флага → null, дальше решает
+// defaultProfile из конфига. Флаг БЕЗ имени — стоп: это почти всегда оборванная
+// команда, а «молча ушёл в playground, когда просили prod» — ровно тот тихий сдвиг
+// режима, против которого затевались профили.
+function parseProfileFlag(argv, failFn = fail) {
+    // Обе формы собираем разом: при дубле (`--profile a --profile=b`) «кто победит»
+    // решал бы порядок веток кода, а не намерение человека — тихий уход не в тот
+    // профиль. Дубль — стоп, даже с одинаковыми именами: команда явно собрана криво.
+    const hits = argv.filter((a) => a === '--profile' || a.startsWith('--profile='));
+    if (hits.length === 0) return null;
+    if (hits.length > 1) {
+        return failFn(`Флаг --profile указан ${hits.length} раза — оставь один.`);
+    }
+    if (hits[0].startsWith('--profile=')) {
+        return hits[0].slice('--profile='.length) || failFn('Флаг --profile= без имени профиля.');
+    }
+    const value = argv[argv.indexOf('--profile') + 1];
+    // Следующий флаг вместо имени (`--profile --once`) — тоже пропущенное имя.
+    if (!value || value.startsWith('--')) {
+        return failFn('Флаг --profile требует имя профиля: --profile <name>.');
+    }
+    return value;
+}
+
+// Fail-closed: любой изъян схемы — стоп с внятным сообщением, а не тихий дефолт.
+// Автономный раннер с bypassPermissions не имеет права УГАДЫВАТЬ, в каком режиме он
+// работает: «молча свалился в playground, думая что он prod» — худший исход из всех.
+// failFn инжектируется (как в preflight) — тесты проверяют отказы без process.exit.
+function resolveProfile(raw, name, failFn = fail) {
+    if (!isPlainObject(raw)) return failFn('ralph.config.json: ожидался JSON-объект.');
+    if (!isPlainObject(raw.common)) {
+        return failFn('ralph.config.json: нет блока "common" — общие поля профилей.');
+    }
+    if (!isPlainObject(raw.profiles)) {
+        return failFn('ralph.config.json: нет блока "profiles".');
+    }
+
+    const available = Object.keys(raw.profiles);
+    if (!available.length) return failFn('ralph.config.json: "profiles" пуст.');
+
+    // name (флаг --profile, #72) важнее defaultProfile; нет ни того ни другого — стоп.
+    const wanted = name ?? raw.defaultProfile;
+    if (!wanted) {
+        return failFn(
+            `ralph.config.json: профиль не задан и нет "defaultProfile". Доступны: ${available.join(', ')}.`,
+        );
+    }
+    if (!Object.prototype.hasOwnProperty.call(raw.profiles, wanted)) {
+        return failFn(`Неизвестный профиль "${wanted}". Доступны: ${available.join(', ')}.`);
+    }
+    if (!isPlainObject(raw.profiles[wanted])) {
+        return failFn(`ralph.config.json: профиль "${wanted}" — не объект.`);
+    }
+
+    // profileName в итоговом конфиге: раннеру и логам нужно знать режим, а исходный
+    // raw после резолва никто не таскает.
+    const merged = deepMerge(raw.common, raw.profiles[wanted], failFn, wanted);
+    if (!isPlainObject(merged)) return merged; // мягкий failFn — наверх как есть
+    return { ...merged, profileName: wanted };
 }
 
 function saveState(state) {
@@ -1274,7 +1395,12 @@ function runLoop(
                 const bDone = state.blockedHeals || 0;
                 if (bDone >= bMax) {
                     logFn(
-                        `⛔ Label blocked устоял после ${bDone} разборов — PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`,
+                        bMax === 0
+                            ? // Профиль prod (#73) выключает авто-разбор целиком. Без этой ветки
+                              // в лог шло «устоял после 0 разборов» — читается как сбой, хотя
+                              // это штатное прод-поведение: блокер сразу уходит человеку.
+                              `⛔ Разбор blocked выключен профилем "${cfg.profileName}" — PR с label blocked оставлен человеку.`
+                            : `⛔ Label blocked устоял после ${bDone} разборов — PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`,
                     );
                     state.blockedHeals = 0;
                     saveStateFn(state);
@@ -1354,11 +1480,174 @@ function runLoop(
     logFn('🏁 Ralph loop завершён.');
 }
 
+// --- Авто-спавн монитора (#74) --------------------------------------------
+// Монитор больше не поднимает человек отдельной командой: раннер запускает его сам и
+// глушит при выходе. Панель уходит в monitor.out — у детачнутого процесса нет
+// терминала, а файл переживает обрыв SSH и читается `tail -f` из любого окна.
+
+// Сигнал 0 — только проверка существования процесса, ничего ему не шлёт.
+function monitorAlive(pid, killFn = process.kill) {
+    if (!pid) return false;
+    try {
+        killFn(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// Сверка «за этим pid действительно monitor.js». ОС переиспользует pid: после смерти
+// монитора его номер может достаться чужому процессу — kill(pid, 0) тогда врёт «жив»,
+// а kill(-pid) при остановке снёс бы чужую группу. /proc/<pid>/cmdline — Linux-only,
+// как и весь раннер; аргументы в нём разделены \0, includes ищет по подстроке.
+function isMonitorProcess(pid, readFn = fs.readFileSync) {
+    if (!pid) return false;
+    try {
+        return readFn(`/proc/${pid}/cmdline`, 'utf-8').includes('monitor.js');
+    } catch {
+        return false;
+    }
+}
+
+// Монитор мог пережить прошлый прогон (kill -9, OOM, смерть по сигналу — 'exit'-хендлер
+// тогда не зовётся). PID-файл пишет только сам раннер, поэтому живой monitor.js по этому
+// pid — ральфов же монитор-сирота. Второй спавн удвоил бы gh-запросы, а бросить сироту —
+// он жил бы вечно: ПОДХВАТЫВАЕМ его в жизненный цикл текущего прогона, stopMonitor
+// заглушит при выходе. Сверка cmdline отсекает чужой процесс с переиспользованным pid.
+function adoptMonitor(deps = {}) {
+    const {
+        logFn = log,
+        readPidFn = () => Number(fs.readFileSync(MONITOR_PID, 'utf-8')),
+        aliveFn = monitorAlive,
+        isMonitorFn = isMonitorProcess,
+        readCmdlineFn = (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
+        stopFn = stopMonitor,
+        profile,
+    } = deps;
+
+    let prev = 0;
+    try {
+        prev = readPidFn();
+    } catch {}
+    if (!aliveFn(prev) || !isMonitorFn(prev)) return null;
+
+    // Сверка профиля сироты — по его же cmdline (аргументы разделены \0, парсер тот же,
+    // что у раннера). Сирота от прогона в ДРУГОМ профиле показывал бы чужие phases —
+    // та же дыра, что спавн без --profile: подхватывать нельзя, глушим здесь, свой
+    // (в верном профиле) main() поднимет после preflight. profile не задан (прямой
+    // вызов без ожиданий) — сверку пропускаем, подхватываем как есть.
+    if (profile) {
+        let orphanProfile = null;
+        try {
+            orphanProfile = parseProfileFlag(readCmdlineFn(prev).split('\0'), () => null);
+        } catch {}
+        if (orphanProfile !== profile) {
+            logFn(
+                `👁  Монитор от прошлого прогона жив (pid ${prev}), но в профиле "${orphanProfile ?? '—'}" вместо "${profile}" — глушу, подниму свой.`,
+            );
+            stopFn({ pid: prev }, deps);
+            return null;
+        }
+    }
+    logFn(`👁  Монитор от прошлого прогона жив (pid ${prev}) — подхватываю, второй не поднимаю.`);
+    return { pid: prev };
+}
+
+function startMonitor(deps = {}) {
+    const {
+        spawnFn = spawn,
+        logFn = log,
+        writePidFn = (pid) => fs.writeFileSync(MONITOR_PID, String(pid)),
+        openOutFn = () => fs.openSync(MONITOR_OUT, 'w'),
+        closeOutFn = (fd) => fs.closeSync(fd),
+        adoptFn = adoptMonitor,
+        profile,
+    } = deps;
+
+    // Защита от двойного спавна остаётся и здесь: main() подбирает сироту до preflight,
+    // но startMonitor вызывают и напрямую (тесты, ручные сценарии).
+    const adopted = adoptFn(deps);
+    if (adopted) return adopted;
+
+    let out;
+    try {
+        out = openOutFn();
+        // Профиль прокидываем в монитор: без него панель резолвила бы defaultProfile и
+        // показывала чужие phases/прогресс, когда раннер идёт из --profile prod.
+        const argv = profile ? [MONITOR_PATH, '--profile', profile] : [MONITOR_PATH];
+        const child = spawnFn(process.execPath, argv, {
+            detached: true, // своя группа процессов
+            stdio: ['ignore', out, out],
+        });
+        // Асинхронный сбой spawn (EMFILE и т.п.) приходит событием 'error'; без
+        // слушателя это uncaughtException — упал бы весь ночной прогон, а не монитор.
+        child.on('error', (e) => {
+            logFn(`⚠ Монитор упал при запуске (${e.message}) — прогон продолжается без него.`);
+        });
+        child.unref(); // не держим event loop раннера открытым
+        writePidFn(child.pid);
+        logFn(`👁  Монитор поднят (pid ${child.pid}) → ${MONITOR_OUT} (tail -f)`);
+        return child;
+    } catch (e) {
+        // Монитор — удобство, а не условие работы. Ронять из-за него ночной прогон
+        // нельзя: раннер продолжает, человек утром увидит предупреждение в логе.
+        logFn(`⚠ Монитор не запустился (${e.message}) — прогон продолжается без него.`);
+        return null;
+    } finally {
+        // Ребёнок при spawn получил свой dup дескриптора; копию родителя закрываем,
+        // иначе fd висит открытым до конца прогона (а при упавшем spawn — течёт зря).
+        if (out !== undefined) {
+            try {
+                closeOutFn(out);
+            } catch {}
+        }
+    }
+}
+
+function stopMonitor(child, deps = {}) {
+    const {
+        killFn = process.kill,
+        logFn = log,
+        rmPidFn = () => fs.rmSync(MONITOR_PID, { force: true }),
+        isMonitorFn = isMonitorProcess,
+    } = deps;
+    if (!child || !child.pid) return false;
+    // Пере-сверка перед kill: за ночь монитор мог умереть сам, а ОС — успеть отдать
+    // его pid чужому процессу; kill(-pid) без сверки снёс бы невиновную группу.
+    if (!isMonitorFn(child.pid)) {
+        try {
+            rmPidFn();
+        } catch {}
+        return false;
+    }
+    try {
+        // Минус pid — вся группа: detached-процесс сам себе лидер группы, и дочерние
+        // gh-вызовы монитора уходят вместе с ним, не оставаясь сиротами.
+        killFn(-child.pid, 'SIGTERM');
+    } catch {
+        try {
+            killFn(child.pid, 'SIGTERM');
+        } catch {}
+    }
+    try {
+        rmPidFn();
+    } catch {}
+    logFn('👁  Монитор остановлен.');
+    return true;
+}
+
 // main: тонкая оркестровка — загрузка конфига в module-level config (его читают
 // runClaude/openIssues/pickModel и др.), обработка --reset, затем preflight → runLoop.
 function main() {
-    config = loadJson(CONFIG_PATH, null);
-    if (!config) fail(`Не найден/не парсится ${CONFIG_PATH}`);
+    const raw = loadJson(CONFIG_PATH, null);
+    if (!raw) fail(`Не найден/не парсится ${CONFIG_PATH}`);
+    // Резолв здесь, до preflight/runLoop: весь раннер дальше читает ПЛОСКИЙ конфиг и
+    // про профили не знает вовсе. Парсим флаг в main(), а не рядом с ONCE/DRY на
+    // module-level — иначе кривой argv ронял бы process.exit при простом import в тестах.
+    config = resolveProfile(raw, parseProfileFlag(args));
+    // Режим в лог первой строкой: разбирая утренний ralph.log, надо видеть, в каком
+    // профиле шёл прогон, не сверяясь с историей команд.
+    log(`⚙️  Профиль: ${config.profileName}`);
 
     if (RESET) {
         saveState(defaultState());
@@ -1366,9 +1655,35 @@ function main() {
         process.exit(0);
     }
 
+    // Сироту от прошлого прогона (kill -9, OOM) подбираем ДО preflight: чаще всего
+    // preflight и отвергает запуск (грязное дерево, active=false), а брошенный монитор
+    // в это время продолжает долбить gh каждые 5 минут. Свой поднимаем позже.
+    // profile — для сверки: сироту чужого профиля глушим, а не подхватываем.
+    let monitor = DRY ? null : adoptMonitor({ profile: config.profileName });
+
+    // Стоп монитора — ТОЛЬКО на 'exit'. Обработчики сигналов здесь ставить нельзя:
+    // process.on('SIGTERM'|'SIGINT'|'SIGHUP') снимает дефолтное действие сигнала, а
+    // колбэк ждёт свободного event loop — которого у runLoop не бывает (spawnSync на
+    // claude-сессию держит поток до claudeTimeoutMs = 2 ч). Раннер переставал умирать
+    // по Ctrl-C и kill и продолжал мерджить с bypassPermissions, а systemd видел
+    // «код 0, завершился штатно» (проверено репродукцией). Смерть по сигналу оставит
+    // монитора сиротой — его подберёт adoptMonitor() при следующем запуске.
+    let stopped = false;
+    process.on('exit', () => {
+        if (stopped) return;
+        stopped = true;
+        stopMonitor(monitor);
+    });
+
     // Два шага, а не runLoop(config, preflight(config)): у preflight много побочек
     // (свип milestones, saveState, логи), их порядок выполнения читается явнее так.
     const ctx = preflight(config);
+
+    // Свой монитор — после preflight: отвергнутый запуск иначе дёргал бы его на секунду
+    // и обнулял monitor.out от прошлого прогона. И только для живых прогонов: --dry-run
+    // живёт секунды, а спавн процесса плохо вяжется с read-only (C1).
+    if (!DRY && !monitor) monitor = startMonitor({ profile: config.profileName });
+
     runLoop(config, ctx);
 }
 
@@ -1391,7 +1706,17 @@ if (require.main === module) main();
 // принимают cfg и зависимости с побочками параметрами (как ensureTunnel), поэтому
 // тестируются без git/gh/спавна claude/exit. У runLoop флаги режима once/dry и
 // красный чек (getLastRedCheck) — тоже инжектируемые.
+// resolveProfile/deepMerge (#71) — чистый config-слой: сборка итогового конфига из
+// common + профиль. failFn инжектируется, поэтому отказы тестируются без process.exit.
 module.exports = {
+    resolveProfile,
+    deepMerge,
+    parseProfileFlag,
+    startMonitor,
+    stopMonitor,
+    adoptMonitor,
+    monitorAlive,
+    isMonitorProcess,
     buildClaudeArgs,
     formatExcerpt,
     parseResetWaitMs,

@@ -126,5 +126,5 @@ ufw --force enable
 log "ГОТОВО"
 echo "Проверка claude через туннель:"
 echo "  cd $REPO_DIR && set -a && . $ENV_FILE && set +a && claude -p 'Ответь одним словом: OK'"
-echo "Запуск ralph (после реализации prod-профиля, Фаза 2):"
-echo "  cd $REPO_DIR/.claude/ralph && set -a && . $ENV_FILE && set +a && node ralph.js --profile prod"
+echo "Запуск ralph в прод-профиле (из КОРНЯ репо — пути в ralph.js относительные):"
+echo "  cd $REPO_DIR && set -a && . $ENV_FILE && set +a && node .claude/ralph/ralph.js --profile prod"

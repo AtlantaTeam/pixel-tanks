@@ -19,6 +19,14 @@ import fs from 'node:fs';
 import ralph from './ralph.js';
 
 const {
+    resolveProfile,
+    deepMerge,
+    parseProfileFlag,
+    startMonitor,
+    stopMonitor,
+    adoptMonitor,
+    monitorAlive,
+    isMonitorProcess,
     buildClaudeArgs,
     formatExcerpt,
     parseResetWaitMs,
@@ -1011,6 +1019,30 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(logs.join('\n')).toMatch(/blocked устоял/);
     });
 
+    // Ключевое поведенческое обещание профиля prod (#73): не «в конфиге стоит 0», а
+    // «чини-сессия не запускается вовсе». Регресс `?? 3` → `|| 3` ловится только так.
+    it('профиль prod (blockedHealAttempts=0) → блокер сразу человеку, чини-сессия НЕ зовётся', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 0 });
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({ blockedHealAttempts: 0, profileName: 'prod' }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                runClaudeFn,
+            }),
+        );
+        expect(runClaudeFn).not.toHaveBeenCalled();
+        // Сообщение говорит «выключено профилем», а не «устоял после 0 разборов».
+        expect(logs.join('\n')).toMatch(/выключен профилем "prod"/);
+        expect(logs.join('\n')).not.toMatch(/устоял после 0/);
+    });
+
     it('гейт red-checks → чини-сессия гейта с деталями чека из getLastRedCheck', () => {
         const logs = [];
         const state = mkState({ submitted: true, gateHeals: 0 });
@@ -1054,5 +1086,631 @@ describe('runLoop — основной while-цикл: итерации коде
             }),
         );
         expect(logs.join('\n')).toMatch(/не прошла авто-мердж/);
+    });
+});
+
+describe('deepMerge — наследование общих полей профилем (#71)', () => {
+    it('вложенные объекты сливаются вглубь: профиль правит одну метку, блок сохраняется', () => {
+        const merged = deepMerge(
+            { modelRouting: { default: 'opus', labels: { low: 'haiku', high: 'opus' } } },
+            { modelRouting: { labels: { high: 'fable' } } },
+        );
+        expect(merged.modelRouting).toEqual({
+            default: 'opus',
+            labels: { low: 'haiku', high: 'fable' },
+        });
+    });
+
+    it('массивы заменяются целиком, а не дописываются', () => {
+        expect(deepMerge({ phases: ['A', 'B'] }, { phases: ['C'] }).phases).toEqual(['C']);
+    });
+
+    it('скаляр профиля перебивает объект общего блока (и наоборот) без слияния', () => {
+        expect(deepMerge({ x: { a: 1 } }, { x: 0 }).x).toBe(0);
+        expect(deepMerge({ x: 0 }, { x: { a: 1 } }).x).toEqual({ a: 1 });
+    });
+
+    it('не мутирует исходные объекты — общий блок переиспользуется между профилями', () => {
+        const common = { a: { x: 1 } };
+        deepMerge(common, { a: { x: 2 } });
+        expect(common.a.x).toBe(1);
+    });
+
+    it('null в профиле затирает значение (осознанное «выключить», не пропуск)', () => {
+        expect(
+            deepMerge({ tunnelCheck: { enabled: true } }, { tunnelCheck: null }).tunnelCheck,
+        ).toBe(null);
+    });
+
+    // Опасные ключи — стоп, а не тихая нейтрализация: легитимных полей с такими
+    // именами нет, значит это опечатка или чужая рука в конфиге раннера.
+    const boom = (m) => {
+        throw new Error(m);
+    };
+
+    it('ключ __proto__ в профиле → стоп (иначе подменил бы прототип результата)', () => {
+        // JSON.parse — как реальный конфиг: "__proto__" становится собственным ключом
+        const evil = JSON.parse('{"__proto__": {"active": false}, "maxTurns": 5}');
+        expect(() => deepMerge({ maxTurns: 200 }, evil, boom)).toThrow(/запрещённый ключ/);
+    });
+
+    it('опасный ключ на вложенном уровне тоже роняет мердж, с путём в сообщении', () => {
+        const nested = JSON.parse('{"modelRouting": {"__proto__": {"evil": 1}}}');
+        expect(() => deepMerge({ modelRouting: { labels: {} } }, nested, boom)).toThrow(
+            /common\.modelRouting/,
+        );
+    });
+
+    it('опасный ключ в общем блоке ловится так же, как в профиле', () => {
+        const base = JSON.parse('{"constructor": {"x": 1}}');
+        expect(() => deepMerge(base, {}, boom)).toThrow(/constructor/);
+    });
+
+    it('мягкий failFn (монитор) обрывает мердж, а не собирает полуфабрикат', () => {
+        const evil = JSON.parse('{"a": {"__proto__": {"x": 1}}, "b": 2}');
+        expect(deepMerge({ a: { y: 1 } }, evil, () => null)).toBe(null);
+    });
+});
+
+describe('findForbiddenKey — скан всей глубины конфига (ревью PR #127)', () => {
+    const boom = (m) => {
+        throw new Error(m);
+    };
+
+    // Объект по ключу, которого нет в common, копируется присваиванием без рекурсии
+    // мерджа — раньше его нутро не проверялось вовсе.
+    it('опасный ключ в блоке, которого нет в common → стоп с полным путём', () => {
+        const evil = JSON.parse('{"newBlock": {"deep": {"__proto__": {"x": 1}}}}');
+        expect(() => deepMerge({ a: 1 }, evil, boom)).toThrow(/common\.newBlock\.deep/);
+    });
+
+    it('опасный ключ в глубине общего блока тоже ловится', () => {
+        const base = JSON.parse('{"a": {"b": {"constructor": 1}}}');
+        expect(() => deepMerge(base, {}, boom)).toThrow(/constructor/);
+    });
+
+    it('массивы не считаются объектами для скана — легитимный конфиг проходит', () => {
+        expect(() => deepMerge({ phases: [{ milestone: 'M' }] }, {}, boom)).not.toThrow();
+    });
+});
+
+describe('resolveProfile — сборка итогового конфига из common + профиль (#71)', () => {
+    const raw = () => ({
+        defaultProfile: 'playground',
+        common: {
+            maxIterations: 10,
+            blockedHealAttempts: 3,
+            modelRouting: { labels: { high: 'opus' } },
+            phases: [{ milestone: 'M', branch: 'b' }],
+        },
+        profiles: { playground: {}, prod: { blockedHealAttempts: 0 } },
+    });
+    // failFn инжектируется — отказы проверяем как исключение, без process.exit.
+    const boom = (m) => {
+        throw new Error(m);
+    };
+
+    it('без имени берётся defaultProfile, общие поля наследуются', () => {
+        const cfg = resolveProfile(raw(), null, boom);
+        expect(cfg.profileName).toBe('playground');
+        expect(cfg.maxIterations).toBe(10);
+        expect(cfg.phases).toEqual([{ milestone: 'M', branch: 'b' }]);
+    });
+
+    it('пустой профиль playground не меняет общие значения (регресса нет)', () => {
+        const cfg = resolveProfile(raw(), 'playground', boom);
+        expect(cfg.blockedHealAttempts).toBe(3);
+    });
+
+    it('профиль переопределяет только свою дельту, остальное — из common', () => {
+        const cfg = resolveProfile(raw(), 'prod', boom);
+        expect(cfg.blockedHealAttempts).toBe(0);
+        expect(cfg.maxIterations).toBe(10);
+        expect(cfg.modelRouting.labels.high).toBe('opus');
+    });
+
+    it('явное имя важнее defaultProfile', () => {
+        expect(resolveProfile(raw(), 'prod', boom).profileName).toBe('prod');
+    });
+
+    it('резолв одного профиля не протекает в соседний (общий блок не мутируется)', () => {
+        const cfgRaw = raw();
+        resolveProfile(cfgRaw, 'prod', boom);
+        expect(resolveProfile(cfgRaw, 'playground', boom).blockedHealAttempts).toBe(3);
+    });
+
+    // Fail-closed: раннер с bypassPermissions не имеет права угадывать режим.
+    it('неизвестный профиль → стоп, в сообщении перечислены доступные', () => {
+        expect(() => resolveProfile(raw(), 'staging', boom)).toThrow(/staging.*playground, prod/s);
+    });
+
+    it('нет defaultProfile и профиль не задан → стоп, а не молчаливый playground', () => {
+        const cfg = raw();
+        delete cfg.defaultProfile;
+        expect(() => resolveProfile(cfg, null, boom)).toThrow(/defaultProfile/);
+    });
+
+    it('нет блока common → стоп', () => {
+        expect(() => resolveProfile({ profiles: { p: {} } }, 'p', boom)).toThrow(/common/);
+    });
+
+    it('нет блока profiles → стоп', () => {
+        expect(() => resolveProfile({ common: {} }, null, boom)).toThrow(/profiles/);
+    });
+
+    it('profiles пуст → стоп', () => {
+        expect(() => resolveProfile({ common: {}, profiles: {} }, null, boom)).toThrow(/пуст/);
+    });
+
+    it('профиль не объект (массив/строка) → стоп', () => {
+        expect(() => resolveProfile({ common: {}, profiles: { p: [] } }, 'p', boom)).toThrow(
+            /не объект/,
+        );
+    });
+
+    it('конфиг не объект (null/массив) → стоп', () => {
+        expect(() => resolveProfile(null, null, boom)).toThrow(/объект/);
+        expect(() => resolveProfile([], null, boom)).toThrow(/объект/);
+    });
+
+    it('имя профиля из прототипа (constructor/toString) не считается существующим', () => {
+        expect(() => resolveProfile(raw(), 'constructor', boom)).toThrow(/Неизвестный профиль/);
+    });
+
+    // Контракт монитора: failFn может НЕ бросать, а вернуть sentinel (null) —
+    // resolveProfile обязан вернуть его сразу, не продолжая работу с кривым raw.
+    it('с невыбрасывающим failFn возвращает его результат, а не падает дальше по коду', () => {
+        const softFail = () => null;
+        expect(resolveProfile(null, null, softFail)).toBe(null);
+        expect(resolveProfile({ common: {} }, null, softFail)).toBe(null);
+        expect(resolveProfile(raw(), 'staging', softFail)).toBe(null);
+    });
+});
+
+describe('parseProfileFlag — выбор профиля из argv (#72)', () => {
+    const boom = (m) => {
+        throw new Error(m);
+    };
+
+    it('--profile <name> отдаёт имя', () => {
+        expect(parseProfileFlag(['--profile', 'prod'], boom)).toBe('prod');
+    });
+
+    it('--profile=<name> отдаёт имя', () => {
+        expect(parseProfileFlag(['--profile=prod'], boom)).toBe('prod');
+    });
+
+    it('без флага → null: решать будет defaultProfile конфига', () => {
+        expect(parseProfileFlag(['--once', '--dry-run'], boom)).toBe(null);
+    });
+
+    it('имя не путается с соседними флагами', () => {
+        expect(parseProfileFlag(['--dry-run', '--profile', 'prod', '--once'], boom)).toBe('prod');
+    });
+
+    // Оборванная команда не должна тихо уводить в playground.
+    it('--profile без имени → стоп', () => {
+        expect(() => parseProfileFlag(['--profile'], boom)).toThrow(/требует имя/);
+    });
+
+    it('--profile перед другим флагом → стоп, а не имя "--once"', () => {
+        expect(() => parseProfileFlag(['--profile', '--once'], boom)).toThrow(/требует имя/);
+    });
+
+    it('--profile= с пустым значением → стоп', () => {
+        expect(() => parseProfileFlag(['--profile='], boom)).toThrow(/без имени/);
+    });
+
+    // Дубль с разными именами: «кто победит» нельзя решать порядком веток парсера —
+    // это тихий уход не в тот профиль. Только стоп.
+    it('дубль флага в разных формах → стоп', () => {
+        expect(() => parseProfileFlag(['--profile', 'prod', '--profile=playground'], boom)).toThrow(
+            /указан 2 раза/,
+        );
+    });
+
+    it('дубль флага в одной форме → стоп, даже с одинаковым именем', () => {
+        expect(() => parseProfileFlag(['--profile', 'prod', '--profile', 'prod'], boom)).toThrow(
+            /указан 2 раза/,
+        );
+    });
+
+    it('связка с резолвом: флаг важнее defaultProfile', () => {
+        const raw = {
+            defaultProfile: 'playground',
+            common: { maxTurns: 200 },
+            profiles: { playground: {}, prod: { maxTurns: 50 } },
+        };
+        const name = parseProfileFlag(['--profile', 'prod'], boom);
+        const cfg = resolveProfile(raw, name, boom);
+        expect(cfg.profileName).toBe('prod');
+        expect(cfg.maxTurns).toBe(50);
+    });
+
+    it('связка с резолвом: неизвестное имя из флага → стоп', () => {
+        const raw = { defaultProfile: 'playground', common: {}, profiles: { playground: {} } };
+        const name = parseProfileFlag(['--profile', 'staging'], boom);
+        expect(() => resolveProfile(raw, name, boom)).toThrow(/Неизвестный профиль/);
+    });
+});
+
+describe('боевой ralph.config.json — профили playground/prod (#73)', () => {
+    // Читаем НАСТОЯЩИЙ конфиг, а не синтетику: смысл issue в том, что прод-значения
+    // лежат в файле, а не в дефолтах кода, и что playground не съехал.
+    const raw = JSON.parse(fs.readFileSync('.claude/ralph/ralph.config.json', 'utf-8'));
+    const boom = (m) => {
+        throw new Error(m);
+    };
+
+    it('без флага резолвится playground', () => {
+        expect(resolveProfile(raw, null, boom).profileName).toBe('playground');
+    });
+
+    it('playground сохраняет прежнее поведение: крутилки равны дефолтам кода', () => {
+        const cfg = resolveProfile(raw, 'playground', boom);
+        // Ровно те значения, что стояли в `cfg.X ?? N` до переезда в конфиг.
+        expect(cfg.blockedHealAttempts).toBe(3);
+        expect(cfg.gateHealAttempts).toBe(2);
+        expect(cfg.apiLimitMaxWaits).toBe(3);
+    });
+
+    it('prod: blocked-разбор выключен — блокер ревью уходит человеку, не чинится сам', () => {
+        expect(resolveProfile(raw, 'prod', boom).blockedHealAttempts).toBe(0);
+    });
+
+    it('prod наследует всё остальное из common, не дублируя его', () => {
+        const pg = resolveProfile(raw, 'playground', boom);
+        const prod = resolveProfile(raw, 'prod', boom);
+        expect(prod.modelRouting).toEqual(pg.modelRouting);
+        expect(prod.review).toEqual(pg.review);
+        expect(prod.phases).toEqual(pg.phases);
+        expect(prod.authorAllowlist).toEqual(pg.authorAllowlist);
+        // Дельта prod в файле — ровно то, что заявлено, без случайных дублей.
+        expect(Object.keys(raw.profiles.prod)).toEqual(['blockedHealAttempts']);
+    });
+});
+
+describe('monitorAlive — жив ли процесс монитора (#74)', () => {
+    it('сигнал 0 прошёл → процесс жив', () => {
+        expect(monitorAlive(1234, () => undefined)).toBe(true);
+    });
+
+    it('сигнал 0 бросил (нет такого процесса) → мёртв', () => {
+        expect(
+            monitorAlive(1234, () => {
+                throw new Error('ESRCH');
+            }),
+        ).toBe(false);
+    });
+
+    it('пустой/нулевой pid → мёртв, без вызова kill', () => {
+        const kill = vi.fn();
+        expect(monitorAlive(0, kill)).toBe(false);
+        expect(monitorAlive(undefined, kill)).toBe(false);
+        expect(kill).not.toHaveBeenCalled();
+    });
+});
+
+describe('isMonitorProcess — за pid действительно monitor.js (#74)', () => {
+    it('в /proc/<pid>/cmdline есть monitor.js → это наш монитор', () => {
+        const readFn = vi.fn(() => 'node\0.claude/ralph/monitor.js\0');
+        expect(isMonitorProcess(99, readFn)).toBe(true);
+        expect(readFn).toHaveBeenCalledWith('/proc/99/cmdline', 'utf-8');
+    });
+
+    // ОС переиспользовала pid: живой процесс есть, но это не монитор — kill нельзя.
+    it('чужой процесс под тем же pid → false', () => {
+        expect(isMonitorProcess(99, () => 'nginx\0-g\0daemon off;\0')).toBe(false);
+    });
+
+    it('процесса нет (чтение /proc упало) → false', () => {
+        expect(
+            isMonitorProcess(99, () => {
+                throw new Error('ENOENT');
+            }),
+        ).toBe(false);
+    });
+
+    it('пустой/нулевой pid → false без чтения /proc', () => {
+        const readFn = vi.fn();
+        expect(isMonitorProcess(0, readFn)).toBe(false);
+        expect(isMonitorProcess(undefined, readFn)).toBe(false);
+        expect(readFn).not.toHaveBeenCalled();
+    });
+});
+
+describe('startMonitor — авто-спавн панели прогресса (#74)', () => {
+    const deps = (over = {}) => ({
+        spawnFn: vi.fn(() => ({ pid: 4242, unref: vi.fn(), on: vi.fn() })),
+        logFn: vi.fn(),
+        readPidFn: () => 0,
+        writePidFn: vi.fn(),
+        openOutFn: () => 7,
+        closeOutFn: vi.fn(),
+        aliveFn: () => false,
+        isMonitorFn: () => false,
+        ...over,
+    });
+
+    it('спавнит monitor.js детачнутым, вывод — в файл, pid сохраняется', () => {
+        const d = deps();
+        const child = startMonitor(d);
+
+        expect(child.pid).toBe(4242);
+        const [bin, argv, opts] = d.spawnFn.mock.calls[0];
+        expect(bin).toBe(process.execPath);
+        expect(argv[0]).toMatch(/monitor\.js$/);
+        expect(opts.detached).toBe(true);
+        // stdout и stderr — в открытый дескриптор файла, stdin не нужен.
+        expect(opts.stdio).toEqual(['ignore', 7, 7]);
+        expect(d.writePidFn).toHaveBeenCalledWith(4242);
+    });
+
+    // Правка по ревью PR #127: без прокидывания профиля панель резолвила бы
+    // defaultProfile и показывала чужой режим, когда раннер идёт из --profile prod.
+    it('профиль раннера передаётся монитору через argv', () => {
+        const d = deps({ profile: 'prod' });
+        startMonitor(d);
+        const [, argv] = d.spawnFn.mock.calls[0];
+        expect(argv.slice(1)).toEqual(['--profile', 'prod']);
+    });
+
+    it('без профиля (прямой вызов) монитор спавнится без лишних флагов', () => {
+        const d = deps();
+        startMonitor(d);
+        const [, argv] = d.spawnFn.mock.calls[0];
+        expect(argv).toHaveLength(1);
+    });
+
+    it('unref: раннер не держится в памяти из-за монитора', () => {
+        const unref = vi.fn();
+        startMonitor(deps({ spawnFn: () => ({ pid: 1, unref, on: vi.fn() }) }));
+        expect(unref).toHaveBeenCalled();
+    });
+
+    // Родитель обязан закрыть СВОЮ копию дескриптора monitor.out: ребёнок при spawn
+    // получил dup, а копия раннера иначе висела бы открытой весь ночной прогон.
+    it('дескриптор monitor.out закрывается в родителе после спавна', () => {
+        const d = deps();
+        startMonitor(d);
+        expect(d.closeOutFn).toHaveBeenCalledWith(7);
+    });
+
+    it('монитор от прошлого прогона живой → подхватываем его, второй не поднимаем', () => {
+        const d = deps({
+            readPidFn: () => 99,
+            aliveFn: (pid) => pid === 99,
+            isMonitorFn: (pid) => pid === 99,
+        });
+        // Возвращаем сироту как {pid} — stopMonitor заглушит его при выходе раннера.
+        expect(startMonitor(d)).toEqual({ pid: 99 });
+        expect(d.spawnFn).not.toHaveBeenCalled();
+    });
+
+    // pid из файла жив, но это уже ЧУЖОЙ процесс (ОС переиспользовала номер):
+    // подхватывать нельзя — спавним свой монитор.
+    it('живой pid из файла, но не monitor.js → спавним свой', () => {
+        const d = deps({ readPidFn: () => 99, aliveFn: () => true, isMonitorFn: () => false });
+        expect(startMonitor(d).pid).toBe(4242);
+        expect(d.spawnFn).toHaveBeenCalled();
+    });
+
+    it('pid-файл от убитого процесса не мешает: спавним заново', () => {
+        const d = deps({ readPidFn: () => 99, aliveFn: () => false });
+        expect(startMonitor(d).pid).toBe(4242);
+        expect(d.spawnFn).toHaveBeenCalled();
+    });
+
+    it('нечитаемый pid-файл не ломает старт', () => {
+        const d = deps({
+            readPidFn: () => {
+                throw new Error('ENOENT');
+            },
+        });
+        expect(startMonitor(d).pid).toBe(4242);
+    });
+
+    // Монитор — удобство: его падение не имеет права ронять ночной прогон.
+    it('упавший спавн → null и предупреждение, без исключения наружу', () => {
+        const d = deps({
+            spawnFn: () => {
+                throw new Error('EACCES');
+            },
+        });
+        expect(startMonitor(d)).toBe(null);
+        expect(d.logFn.mock.calls.join(' ')).toMatch(/не запустился/);
+        // Открытый под спавн дескриптор не течёт и на пути ошибки.
+        expect(d.closeOutFn).toHaveBeenCalledWith(7);
+    });
+
+    // spawn может упасть и АСИНХРОННО (событие 'error'); без слушателя это был бы
+    // uncaughtException — упал бы весь раннер, а не только монитор.
+    it("асинхронная ошибка spawn ('error') логируется, а не роняет раннер", () => {
+        const on = vi.fn();
+        const d = deps({ spawnFn: () => ({ pid: 1, unref: vi.fn(), on }) });
+        startMonitor(d);
+
+        const errorHandler = on.mock.calls.find(([event]) => event === 'error')?.[1];
+        expect(errorHandler).toBeTypeOf('function');
+        expect(() => errorHandler(new Error('EMFILE'))).not.toThrow();
+        expect(d.logFn.mock.calls.join(' ')).toMatch(/EMFILE/);
+    });
+});
+
+describe('stopMonitor — остановка монитора при выходе раннера (#74)', () => {
+    // isMonitorFn: () => true — «за pid реально monitor.js», путь до kill открыт.
+    it('глушит ГРУППУ процессов (минус pid) и чистит pid-файл', () => {
+        const killFn = vi.fn();
+        const rmPidFn = vi.fn();
+        expect(
+            stopMonitor(
+                { pid: 4242 },
+                { killFn, rmPidFn, logFn: vi.fn(), isMonitorFn: () => true },
+            ),
+        ).toBe(true);
+        expect(killFn).toHaveBeenCalledWith(-4242, 'SIGTERM');
+        expect(rmPidFn).toHaveBeenCalled();
+    });
+
+    it('если группу убить не вышло — падаем обратно на одиночный pid', () => {
+        const calls = [];
+        const killFn = vi.fn((pid) => {
+            calls.push(pid);
+            if (pid < 0) throw new Error('EPERM');
+        });
+        stopMonitor(
+            { pid: 7 },
+            { killFn, rmPidFn: vi.fn(), logFn: vi.fn(), isMonitorFn: () => true },
+        );
+        expect(calls).toEqual([-7, 7]);
+    });
+
+    it('монитора нет (не поднялся) → тихо ничего не делаем', () => {
+        const killFn = vi.fn();
+        expect(stopMonitor(null, { killFn, logFn: vi.fn() })).toBe(false);
+        expect(killFn).not.toHaveBeenCalled();
+    });
+
+    // Монитор умер сам, ОС отдала его pid чужому процессу — kill(-pid) снёс бы
+    // невиновную группу. Сверка перед kill обязана это отсечь; pid-файл всё равно чистим.
+    it('pid уже не monitor.js (переиспользован ОС) → kill не зовём, pid-файл чистим', () => {
+        const killFn = vi.fn();
+        const rmPidFn = vi.fn();
+        expect(
+            stopMonitor(
+                { pid: 4242 },
+                { killFn, rmPidFn, logFn: vi.fn(), isMonitorFn: () => false },
+            ),
+        ).toBe(false);
+        expect(killFn).not.toHaveBeenCalled();
+        expect(rmPidFn).toHaveBeenCalled();
+    });
+
+    it('мёртвый процесс: ошибка kill не пробрасывается наружу', () => {
+        expect(() =>
+            stopMonitor(
+                { pid: 5 },
+                {
+                    killFn: () => {
+                        throw new Error('ESRCH');
+                    },
+                    rmPidFn: vi.fn(),
+                    logFn: vi.fn(),
+                    isMonitorFn: () => true,
+                },
+            ),
+        ).not.toThrow();
+    });
+});
+
+describe('adoptMonitor — подбор монитора-сироты от прошлого прогона (#74)', () => {
+    it('живой monitor.js по pid-файлу → подхватываем, а не плодим второй', () => {
+        const got = adoptMonitor({
+            logFn: vi.fn(),
+            readPidFn: () => 77,
+            aliveFn: (pid) => pid === 77,
+            isMonitorFn: (pid) => pid === 77,
+        });
+        expect(got).toEqual({ pid: 77 });
+    });
+
+    it('pid мёртв → сироты нет', () => {
+        expect(adoptMonitor({ logFn: vi.fn(), readPidFn: () => 77, aliveFn: () => false })).toBe(
+            null,
+        );
+    });
+
+    // ОС переиспользует pid: живой процесс по этому номеру может быть чужим.
+    it('pid жив, но за ним не monitor.js → не подхватываем (иначе убьём чужое)', () => {
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => 77,
+                aliveFn: () => true,
+                isMonitorFn: () => false,
+            }),
+        ).toBe(null);
+    });
+
+    it('нет pid-файла → сироты нет, без исключения', () => {
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => {
+                    throw new Error('ENOENT');
+                },
+            }),
+        ).toBe(null);
+    });
+
+    // Сирота от прогона в ДРУГОМ профиле показывал бы чужие phases — та же дыра,
+    // что спавн без --profile (ревью PR #127): не подхватываем, а глушим.
+    it('сирота в чужом профиле → глушим и не подхватываем', () => {
+        const killFn = vi.fn();
+        const rmPidFn = vi.fn();
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => 77,
+                aliveFn: () => true,
+                isMonitorFn: () => true,
+                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0playground\0',
+                profile: 'prod',
+                killFn,
+                rmPidFn,
+            }),
+        ).toBe(null);
+        // Глушим группу сироты и чистим pid-файл — как штатный stopMonitor.
+        expect(killFn).toHaveBeenCalledWith(-77, 'SIGTERM');
+        expect(rmPidFn).toHaveBeenCalled();
+    });
+
+    it('сирота в том же профиле → подхватываем', () => {
+        const killFn = vi.fn();
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => 77,
+                aliveFn: () => true,
+                isMonitorFn: () => true,
+                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0',
+                profile: 'prod',
+                killFn,
+            }),
+        ).toEqual({ pid: 77 });
+        expect(killFn).not.toHaveBeenCalled();
+    });
+
+    // Старый сирота без --profile в cmdline резолвил бы defaultProfile — это не
+    // обязательно профиль текущего раннера, подхватывать нельзя.
+    it('сирота без --profile в cmdline при заданном ожидании → глушим', () => {
+        const killFn = vi.fn();
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => 77,
+                aliveFn: () => true,
+                isMonitorFn: () => true,
+                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0',
+                profile: 'prod',
+                killFn,
+                rmPidFn: vi.fn(),
+            }),
+        ).toBe(null);
+        expect(killFn).toHaveBeenCalledWith(-77, 'SIGTERM');
+    });
+
+    it('profile не задан (прямой вызов) → сверки нет, подхватываем как раньше', () => {
+        expect(
+            adoptMonitor({
+                logFn: vi.fn(),
+                readPidFn: () => 77,
+                aliveFn: () => true,
+                isMonitorFn: () => true,
+                readCmdlineFn: () => {
+                    throw new Error('не должен читаться');
+                },
+            }),
+        ).toEqual({ pid: 77 });
     });
 });
