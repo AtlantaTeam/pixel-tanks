@@ -25,7 +25,7 @@ description: Создаёт GitHub milestones и issues из файла план
 
 ## Label сложности (обязательно, ровно один на issue)
 
-По label Ralph-раннер выбирает модель кодера (`.claude/ralph/ralph.config.json → common.modelRouting`), а `complexity:expert` дополнительно эскалирует ревью всей фазы на fable. Если label'ов ещё нет в репо — создай (`gh label create ...`).
+По label Ralph-раннер выбирает модель кодера (`.claude/ralph/ralph.config.json → common.modelRouting`). На модель ревью фазы label больше не влияет: ревью эскалируется по зоне риска в диффе (`common.review.escalateOnPaths` — деплой, права Payload, сам раннер), потому что метка описывает сложность написания, а ревью усиливают там, где дорого ошибиться. Если label'ов ещё нет в репо — создай (`gh label create ...`).
 
 | Label               | Модель | Когда ставить                                                                      |
 | ------------------- | ------ | ---------------------------------------------------------------------------------- |

@@ -2939,7 +2939,7 @@ describe('phaseDiffFiles — какая именно git-команда уход
             logFn: () => {},
         });
         expect(cmds[0]).toContain('git fetch origin main feature/x');
-        expect(cmds[1]).toContain('git diff');
+        expect(cmds[1]).toContain('diff --name-only');
         expect(cmds[1]).toContain('origin/main...origin/feature/x');
     });
 
@@ -3008,5 +3008,76 @@ describe('pickReviewModel — отсутствующая escalated-модель 
                 ghJsonFn: () => [],
             }),
         ).not.toThrow();
+    });
+});
+
+describe('globToRegExp — ветки конвертера, не покрытые первой версией (#132)', () => {
+    const { globToRegExp } = ralph;
+
+    it('** в СЕРЕДИНЕ пути матчит любую вложенность между префиксом и хвостом', () => {
+        const re = globToRegExp('src/**/collections/**');
+        expect(re.test('src/payload/collections/users.ts')).toBe(true);
+        expect(re.test('src/a/b/c/collections/x/y.ts')).toBe(true);
+        expect(re.test('src/collections-lookalike/users.ts')).toBe(false);
+    });
+
+    it('? матчит ровно один символ и не перепрыгивает через /', () => {
+        expect(globToRegExp('src/?.ts').test('src/a.ts')).toBe(true);
+        expect(globToRegExp('src/?.ts').test('src/ab.ts')).toBe(false);
+        expect(globToRegExp('src/?.ts').test('src//.ts')).toBe(false);
+    });
+});
+
+describe('positiveIntOrDefault — бюджет ходов ревью (#132)', () => {
+    const { positiveIntOrDefault } = ralph;
+
+    it('нормальное значение проходит', () => {
+        expect(positiveIntOrDefault(80, 200)).toBe(80);
+    });
+
+    // maxTurns: 0 — не «без ограничения», а сессия без единого хода.
+    it.each([
+        ['ноль', 0],
+        ['отрицательное', -1],
+        ['дробное', 12.5],
+        ['строка', '80'],
+        ['undefined', undefined],
+        ['null', null],
+    ])('%s → дефолт', (_name, value) => {
+        expect(positiveIntOrDefault(value, 200)).toBe(200);
+    });
+});
+
+describe('phaseDiffFiles — не-ASCII пути и пустой дифф (#132)', () => {
+    const { phaseDiffFiles, matchRiskPaths } = ralph;
+
+    it('core.quotePath=false — кириллический путь приходит как есть и матчится зоной', () => {
+        const cmds = [];
+        const files = phaseDiffFiles('feature/x', {
+            shFn: (c) => {
+                cmds.push(c);
+                return c.includes('diff') ? 'src/payload/коллекции/пользователи.ts' : '';
+            },
+            logFn: () => {},
+        });
+        expect(cmds[1]).toContain('core.quotePath=false');
+        // Без флага git отдал бы "src/payload/\320\272..." — мимо любого глоба.
+        expect(matchRiskPaths(files, ['src/payload/**'])).toBe(
+            'src/payload/коллекции/пользователи.ts',
+        );
+    });
+
+    it('пустой дифф пишет предупреждение — это аномалия, а не «зоны не задеты»', () => {
+        const logs = [];
+        const files = phaseDiffFiles('feature/x', { shFn: () => '', logFn: (m) => logs.push(m) });
+        expect(files).toEqual([]);
+        expect(logs.join('\n')).toMatch(/пуст/i);
+    });
+
+    it('ветка не задана — отдельное сообщение, не «небезопасное имя»', () => {
+        const logs = [];
+        expect(phaseDiffFiles(undefined, { shFn: () => '', logFn: (m) => logs.push(m) })).toBe(null);
+        expect(logs.join('\n')).toMatch(/не задана/i);
+        expect(logs.join('\n')).not.toMatch(/небезопасн/i);
     });
 });

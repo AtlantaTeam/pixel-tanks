@@ -36,6 +36,12 @@
  * время AFK-прогонов и/или запуск в песочнице/VM, а не на рабочей машине) — за
  * человеком; раннер видимость репо не меняет.
  *
+ * Роутинг моделей: кодер — по метке complexity:* (modelRouting.labels); ревью
+ * фазы — review.default (opus), с эскалацией на review.escalated по ЗОНЕ РИСКА
+ * диффа (review.escalateOnPaths: деплой, права Payload, сам раннер), а не по
+ * сложности написания (#130). Бюджет ходов ревью — review.maxTurns (дефолт 80),
+ * отдельно от кодерского maxTurns: ревью не пишет код.
+ *
  * Circuit breaker: maxIterations (на фазу), maxTurns (на сессию),
  * maxNoProgress (подряд итераций без коммита и без закрытого issue, дефолт 3),
  * gateHealAttempts (чини-сессий на красный чек гейта, дефолт 2 — потом стоп),
@@ -623,19 +629,6 @@ function syncDepsIfLockChanged({
     writeLockMarker('.', { readFn, writeFn });
 }
 
-/**
- * Запуск claude -p. Возвращает exit-код процесса (0 = успех; DRY всегда 0).
- * H2: код возвращаем, а не глотаем, потому что фатальность решает ВЫЗЫВАЮЩИЙ:
- * для кодер-итераций ненулевой код не фатален (незакрытый issue возьмёт следующая
- * чистая сессия), а для шагов сдачи фазы — стоп fail-closed (упавшее ревью не
- * должно молча пропускать фазу в main).
- *
- * Вывод claude теперь захватывается (pipe), а не inherit: это цена за детекцию
- * API-лимита в тексте. Потери живого стрима почти нет — `claude -p` печатает
- * результат в конце сессии; захваченный вывод целиком уходит в консоль после.
- * При маркере лимита: sleep до сброса (+ apiLimitGraceMin запаса) и повтор той же
- * команды, не более config.apiLimitMaxWaits раз (дефолт 3) — защита от вечного сна.
- */
 // Сколько спать после маркера лимита: время до сброса окна (или fallback, если
 // время не распарсилось) плюс запас config.apiLimitGraceMin.
 //
@@ -656,11 +649,32 @@ function minutesOrDefault(value, dflt) {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : dflt;
 }
 
+// То же для бюджета ходов, но строго > 0: maxTurns: 0 — не «без ограничения», а
+// сессия, которой не дали сделать ни хода. Прежний `||` молча ронял такое
+// значение на кодерские 200, что противоречило аргументации PR про `??`.
+function positiveIntOrDefault(value, dflt) {
+    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : dflt;
+}
+
 function apiLimitWaitMs(output, cfg) {
     const fallbackMs = minutesOrDefault(cfg.apiLimitFallbackWaitMin, 30) * 60 * 1000;
     const graceMs = minutesOrDefault(cfg.apiLimitGraceMin, 5) * 60 * 1000;
     return (parseResetWaitMs(output) ?? fallbackMs) + graceMs;
 }
+
+/**
+ * Запуск claude -p. Возвращает exit-код процесса (0 = успех; DRY всегда 0).
+ * H2: код возвращаем, а не глотаем, потому что фатальность решает ВЫЗЫВАЮЩИЙ:
+ * для кодер-итераций ненулевой код не фатален (незакрытый issue возьмёт следующая
+ * чистая сессия), а для шагов сдачи фазы — стоп fail-closed (упавшее ревью не
+ * должно молча пропускать фазу в main).
+ *
+ * Вывод claude теперь захватывается (pipe), а не inherit: это цена за детекцию
+ * API-лимита в тексте. Потери живого стрима почти нет — `claude -p` печатает
+ * результат в конце сессии; захваченный вывод целиком уходит в консоль после.
+ * При маркере лимита: sleep до сброса (+ apiLimitGraceMin запаса) и повтор той же
+ * команды, не более config.apiLimitMaxWaits раз (дефолт 3) — защита от вечного сна.
+ */
 
 function runClaude(prompt, opts) {
     // #92: единая точка всех claude-сессий (кодер-итерации И шаги сдачи) — здесь же
@@ -895,21 +909,37 @@ const SAFE_BRANCH_RE = /^[A-Za-z0-9._\-/]+$/;
 // которой фетчит checksGreen(). --no-renames — тоже не косметика: при
 // переименовании git отдаёт ТОЛЬКО новый путь, и перенос файла ИЗ зоны риска
 // (например .github/workflows/deploy.yml → docs/old-deploy.yml) прошёл бы мимо
-// эскалации.
+// эскалации. core.quotePath=false — тоже про полноту охвата: по умолчанию git
+// оборачивает пути с не-ASCII в кавычки и экранирует байты (`"\321\204.ts"`), и
+// такой путь не совпал бы ни с одним глобом зоны риска.
 function phaseDiffFiles(branch, { shFn = sh, logFn = log } = {}) {
-    if (!branch || !SAFE_BRANCH_RE.test(branch)) {
+    if (!branch) {
+        logFn('⚠ Ветка фазы не задана — дифф для выбора ревью-модели не считаю.');
+        return null;
+    }
+    if (!SAFE_BRANCH_RE.test(branch)) {
         logFn(`⚠ Небезопасное имя ветки "${branch}" — дифф для выбора ревью-модели не считаю.`);
         return null;
     }
     try {
         shFn(`git fetch origin main ${branch} --quiet`);
-        const out = shFn(`git diff --name-only --no-renames origin/main...origin/${branch}`);
-        return out
+        const out = shFn(
+            `git -c core.quotePath=false diff --name-only --no-renames origin/main...origin/${branch}`,
+        );
+        const files = out
             ? out
                   .split('\n')
                   .map((s) => s.trim())
                   .filter(Boolean)
             : [];
+        // Пустой дифф — не то же самое, что «зоны риска не задеты»: у фазы всегда
+        // есть изменения, поэтому пусто = ветка не запушена, ушла не туда или
+        // сравнение поехало. Молча ревьюить дешёвой моделью в такой ситуации
+        // нельзя — пусть в логе останется след.
+        if (!files.length) {
+            logFn(`⚠ Дифф ${branch} против origin/main пуст — зоны риска определить не по чему.`);
+        }
+        return files;
     } catch (e) {
         logFn(`⚠ Не смог получить дифф фазы для выбора ревью-модели: ${e.message}`);
         return null;
@@ -1793,7 +1823,7 @@ function runLoop(
                         // бюджет уходит на перечитывание уже прочитанного.
                         {
                             model: reviewModel,
-                            maxTurns: cfg.review?.maxTurns || maxTurns,
+                            maxTurns: positiveIntOrDefault(cfg.review?.maxTurns, maxTurns),
                             noFallback: true,
                         },
                     );
@@ -2241,6 +2271,8 @@ module.exports = {
     formatExcerpt,
     parseResetWaitMs,
     apiLimitWaitMs,
+    minutesOrDefault,
+    positiveIntOrDefault,
     globToRegExp,
     matchRiskPaths,
     phaseDiffFiles,
