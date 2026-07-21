@@ -518,7 +518,7 @@ function runnerWorktreeReady(worktreePath, { shFn = sh, existsFn = fs.existsSync
  *
  * `npm ci` сразу после создания: `git worktree add` линкует только git-отслеживаемые
  * файлы, `node_modules` (в .gitignore) в новом дереве нет — без установки первый же
- * GATE_CHECKS упал бы на отсутствующих зависимостях.
+ * чек гейта упал бы на отсутствующих зависимостях.
  */
 // Обновление УЖЕ существующего worktree на свежий origin/main.
 //
@@ -1203,7 +1203,8 @@ function closeMilestoneByTitle(title) {
 // переход к следующей фазе (полный AFK). Красно / blocked / мердж не удался →
 // PR оставлен человеку, loop останавливается.
 
-const GATE_CHECKS = [
+// Базовый набор чеков — общий для ВСЕХ профилей. playground гоняет ровно его.
+const BASE_GATE_CHECKS = [
     // M1: build обязателен — ошибки next build (границы server/client, RSC-нюансы)
     // не ловятся ни tsc, ни vitest; без него в main мог уехать несобираемый код.
     ['build', 'npm run build'],
@@ -1212,6 +1213,26 @@ const GATE_CHECKS = [
     ['typecheck', 'npm run typecheck'],
     ['test', 'npm run test --silent'],
 ];
+
+// «Толстые» чеки прод-профиля (#80) — дороже и медленнее базовых, поэтому в playground
+// их не гоняем. Каждый доводится своим Issue фазы 4: e2e headless на сервере (#81),
+// coverage-порог (#82), детерминированный security-скан (#83). Здесь фиксируется только
+// СОСТАВ (какие чеки добавляет prod); команды ниже — стартовые, их уточнят те Issue.
+const PROD_GATE_CHECKS = [
+    ['e2e', 'npm run test:e2e'],
+    ['coverage', 'npm run test:coverage'],
+    ['security', 'npm audit --audit-level=high'],
+];
+
+// Состав гейта по активному профилю (#80). База — всем; prod дополняет толстыми чеками.
+// Селектор ТОЛЬКО собирает список — fail-closed сохранён в checksGreen: падение любого
+// чека (хоть базового, хоть прод-) по-прежнему отменяет мердж. Неизвестный/пустой профиль
+// → только база: безопасный дефолт, лишний прогон никогда не мягче нужного.
+function gateChecksFor(profileName) {
+    const checks = [...BASE_GATE_CHECKS];
+    if (profileName === 'prod') checks.push(...PROD_GATE_CHECKS);
+    return checks;
+}
 
 // M2: грязное дерево ПОСРЕДИ цикла — реальный сценарий (сессия убита по maxTurns
 // на полуслове). Preflight ловит грязь только на старте; эта проверка зовётся перед
@@ -1319,6 +1340,9 @@ function checksGreen(
         logFn = log,
         parkFn = parkOnOriginMain,
         syncDepsFn = syncDepsIfLockChanged,
+        // Состав гейта (#80): по умолчанию база (playground). tryMergePhase прокидывает
+        // сюда список по активному профилю; для prod он длиннее на толстые чеки.
+        checks = BASE_GATE_CHECKS,
     } = {},
 ) {
     // Сброс СРАЗУ: любой выход из этого раунда до чеков не должен носить red-check
@@ -1386,7 +1410,7 @@ function checksGreen(
     // дерева раннера — старые). Переустанавливаем ДО чеков при расхождении lock, иначе
     // build/test упали бы красным на «module not found» из-за инфраструктуры, а не кода.
     syncDepsFn();
-    for (const [name, cmd] of GATE_CHECKS) {
+    for (const [name, cmd] of checks) {
         try {
             shFn(cmd);
             logFn(`  ✓ ${name}`);
@@ -1466,6 +1490,9 @@ function tryMergePhase(
         parkFn = parkOnOriginMain,
         getLastRedCheckFn = () => lastRedCheck,
         getVerifiedHeadFn = () => lastVerifiedHead,
+        // Профиль (#80) решает состав гейта. runLoop прокидывает cfg.profileName; по
+        // умолчанию (undefined) — только база, безопасный дефолт вне цикла.
+        profileName = undefined,
     } = {},
 ) {
     // C1: dry-run строго read-only. Основной guard стоит в цикле ДО вызова гейта;
@@ -1486,7 +1513,7 @@ function tryMergePhase(
         logFn(`⛔ Гейт: PR #${pr.number} помечен 'blocked'.`);
         return 'blocked';
     }
-    if (!checksGreenFn(phase.branch, pr.number)) {
+    if (!checksGreenFn(phase.branch, pr.number, { checks: gateChecksFor(profileName) })) {
         const redCheck = getLastRedCheckFn();
         if (redCheck) {
             logFn(`⛔ Гейт: чек ${redCheck.name} красный на PR #${pr.number}.`);
@@ -1504,7 +1531,7 @@ function tryMergePhase(
     // Мутации вслепую не ретраим — но здесь между попытками СВЕРЯЕМСЯ phaseMerged():
     // если первый вызов на самом деле прошёл (упал только ответ) — задвоения нет.
     // #SiaTz: --match-head-commit закрывает TOCTOU-окно между прогоном чеков и мерджем.
-    // checksGreen тестировал ТОЧНЫЙ sha PR-головы; за минуты GATE_CHECKS в ветку могли
+    // checksGreen тестировал ТОЧНЫЙ sha PR-головы; за минуты чеков гейта в ветку могли
     // допушить (недобитая кодер-сессия, человек с другой машины) — без этой привязки gh
     // смерджил бы новую, НЕ прогнанную голову. Сервер отвергнет мердж, если голова уехала.
     // Пусто (мок checksGreen в тестах не выставил sha) → мерджим как раньше, без привязки.
@@ -2036,7 +2063,7 @@ function runLoop(
 
             // 4. Детерминированный гейт: раннер сам проверяет blocked + HEAD==PR + чеки.
             logFn('🚦 Гейт мерджа: проверка label blocked + сверка HEAD + прогон чеков...');
-            const gate = tryMergePhaseFn(phase);
+            const gate = tryMergePhaseFn(phase, { profileName: cfg.profileName });
             if (gate === 'merged') {
                 closeMilestoneByTitleFn(phase.milestone); // закрыть milestone сразу, не ждать свипа
                 advancePhaseFn(state, idx);
@@ -2461,6 +2488,7 @@ module.exports = {
     loadState,
     ensureClean,
     parkOnOriginMain,
+    gateChecksFor,
     checksGreen,
     tryMergePhase,
     getLastRedCheck: () => lastRedCheck,
