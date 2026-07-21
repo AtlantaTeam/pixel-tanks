@@ -37,7 +37,8 @@
                 "**/middleware.ts",
                 "next.config.ts"
             ],
-            "maxTurns": 80
+            "maxTurns": 80,
+            "diffLimit": 60000
         },
         "tunnelCheck": {
             "enabled": false,
