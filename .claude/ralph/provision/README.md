@@ -176,5 +176,11 @@ bash .claude/ralph/provision/update-token.sh           # вклеить в ralph
 
 - **Linux-порт `ralph.js`** — писался под Windows (`spawnSync shell:true` → `/bin/sh`,
   guard `%`/`"` под cmd.exe). Прогнать `--dry-run`, починить (#66–70).
-- **prod-профиль** (`--profile prod`) — в коде ещё нет (Фаза 2, #71–75).
 - **systemd-юнит для ralph** + health-check туннеля перед итерацией — после prod-профиля.
+
+Прод-профиль (`--profile prod`) реализован в Фазе 2 (#71–75). Запускать **из корня репо**:
+пути в `ralph.js` относительные, из `.claude/ralph/` конфиг не найдётся.
+
+```bash
+cd /root/pixel-tanks && set -a && . /root/ralph.env && set +a && node .claude/ralph/ralph.js --profile prod
+```

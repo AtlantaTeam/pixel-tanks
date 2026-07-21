@@ -165,11 +165,23 @@ function isPlainObject(v) {
 // повод остановиться, а не тихо нейтрализовать (fail-closed, как и вся схема профилей).
 const FORBIDDEN_KEYS = ['__proto__', 'constructor', 'prototype'];
 
+// Скан ВСЕЙ глубины, а не только уровней, куда рекурсирует мердж: объект из профиля по
+// ключу, которого нет в common, копируется присваиванием — без этого обхода его нутро
+// не проверялось бы вовсе, и инвариант «в конфиге не бывает опасных ключей» был бы
+// ложным обещанием комментария. Возвращает имя первого найденного ключа с путём.
+function findForbiddenKey(value, path) {
+    if (!isPlainObject(value)) return null;
+    for (const [k, v] of Object.entries(value)) {
+        if (FORBIDDEN_KEYS.includes(k)) return `"${k}" в блоке "${path}"`;
+        const deeper = findForbiddenKey(v, `${path}.${k}`);
+        if (deeper) return deeper;
+    }
+    return null;
+}
+
 function deepMerge(base, override, failFn = fail, path = 'common') {
-    const bad = [...Object.keys(base), ...Object.keys(override)].find((k) =>
-        FORBIDDEN_KEYS.includes(k),
-    );
-    if (bad) return failFn(`ralph.config.json: запрещённый ключ "${bad}" в блоке "${path}".`);
+    const bad = findForbiddenKey(base, path) || findForbiddenKey(override, path);
+    if (bad) return failFn(`ralph.config.json: запрещённый ключ ${bad}.`);
 
     const out = { ...base };
     for (const [k, v] of Object.entries(override)) {
@@ -1383,7 +1395,12 @@ function runLoop(
                 const bDone = state.blockedHeals || 0;
                 if (bDone >= bMax) {
                     logFn(
-                        `⛔ Label blocked устоял после ${bDone} разборов — PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`,
+                        bMax === 0
+                            ? // Профиль prod (#73) выключает авто-разбор целиком. Без этой ветки
+                              // в лог шло «устоял после 0 разборов» — читается как сбой, хотя
+                              // это штатное прод-поведение: блокер сразу уходит человеку.
+                              `⛔ Разбор blocked выключен профилем "${cfg.profileName}" — PR с label blocked оставлен человеку.`
+                            : `⛔ Label blocked устоял после ${bDone} разборов — PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`,
                     );
                     state.blockedHeals = 0;
                     saveStateFn(state);
@@ -1492,36 +1509,55 @@ function isMonitorProcess(pid, readFn = fs.readFileSync) {
     }
 }
 
-function startMonitor(deps = {}) {
+// Монитор мог пережить прошлый прогон (kill -9, OOM, смерть по сигналу — 'exit'-хендлер
+// тогда не зовётся). PID-файл пишет только сам раннер, поэтому живой monitor.js по этому
+// pid — ральфов же монитор-сирота. Второй спавн удвоил бы gh-запросы, а бросить сироту —
+// он жил бы вечно: ПОДХВАТЫВАЕМ его в жизненный цикл текущего прогона, stopMonitor
+// заглушит при выходе. Сверка cmdline отсекает чужой процесс с переиспользованным pid.
+function adoptMonitor(deps = {}) {
     const {
-        spawnFn = spawn,
         logFn = log,
         readPidFn = () => Number(fs.readFileSync(MONITOR_PID, 'utf-8')),
-        writePidFn = (pid) => fs.writeFileSync(MONITOR_PID, String(pid)),
-        openOutFn = () => fs.openSync(MONITOR_OUT, 'w'),
-        closeOutFn = (fd) => fs.closeSync(fd),
         aliveFn = monitorAlive,
         isMonitorFn = isMonitorProcess,
     } = deps;
 
-    // Монитор мог пережить прошлый прогон (kill -9, OOM). PID-файл пишет только сам
-    // раннер, поэтому живой monitor.js по этому pid — ральфов же монитор-сирота.
-    // Второй спавн удвоил бы gh-запросы, а бросить сироту — он жил бы вечно: поэтому
-    // ПОДХВАТЫВАЕМ его в жизненный цикл текущего прогона, stopMonitor заглушит при
-    // выходе. Сверка cmdline отсекает чужой процесс, получивший переиспользованный pid.
     let prev = 0;
     try {
         prev = readPidFn();
     } catch {}
     if (aliveFn(prev) && isMonitorFn(prev)) {
-        logFn(`👁  Монитор уже работает (pid ${prev}) — подхватываю его, второй не поднимаю.`);
+        logFn(
+            `👁  Монитор от прошлого прогона жив (pid ${prev}) — подхватываю, второй не поднимаю.`,
+        );
         return { pid: prev };
     }
+    return null;
+}
+
+function startMonitor(deps = {}) {
+    const {
+        spawnFn = spawn,
+        logFn = log,
+        writePidFn = (pid) => fs.writeFileSync(MONITOR_PID, String(pid)),
+        openOutFn = () => fs.openSync(MONITOR_OUT, 'w'),
+        closeOutFn = (fd) => fs.closeSync(fd),
+        adoptFn = adoptMonitor,
+        profile,
+    } = deps;
+
+    // Защита от двойного спавна остаётся и здесь: main() подбирает сироту до preflight,
+    // но startMonitor вызывают и напрямую (тесты, ручные сценарии).
+    const adopted = adoptFn(deps);
+    if (adopted) return adopted;
 
     let out;
     try {
         out = openOutFn();
-        const child = spawnFn(process.execPath, [MONITOR_PATH], {
+        // Профиль прокидываем в монитор: без него панель резолвила бы defaultProfile и
+        // показывала чужие phases/прогресс, когда раннер идёт из --profile prod.
+        const argv = profile ? [MONITOR_PATH, '--profile', profile] : [MONITOR_PATH];
+        const child = spawnFn(process.execPath, argv, {
             detached: true, // своя группа процессов
             stdio: ['ignore', out, out],
         });
@@ -1601,41 +1637,33 @@ function main() {
         process.exit(0);
     }
 
+    // Сироту от прошлого прогона (kill -9, OOM) подбираем ДО preflight: чаще всего
+    // preflight и отвергает запуск (грязное дерево, active=false), а брошенный монитор
+    // в это время продолжает долбить gh каждые 5 минут. Свой поднимаем позже.
+    let monitor = DRY ? null : adoptMonitor();
+
+    // Стоп монитора — ТОЛЬКО на 'exit'. Обработчики сигналов здесь ставить нельзя:
+    // process.on('SIGTERM'|'SIGINT'|'SIGHUP') снимает дефолтное действие сигнала, а
+    // колбэк ждёт свободного event loop — которого у runLoop не бывает (spawnSync на
+    // claude-сессию держит поток до claudeTimeoutMs = 2 ч). Раннер переставал умирать
+    // по Ctrl-C и kill и продолжал мерджить с bypassPermissions, а systemd видел
+    // «код 0, завершился штатно» (проверено репродукцией). Смерть по сигналу оставит
+    // монитора сиротой — его подберёт adoptMonitor() при следующем запуске.
+    let stopped = false;
+    process.on('exit', () => {
+        if (stopped) return;
+        stopped = true;
+        stopMonitor(monitor);
+    });
+
     // Два шага, а не runLoop(config, preflight(config)): у preflight много побочек
     // (свип milestones, saveState, логи), их порядок выполнения читается явнее так.
     const ctx = preflight(config);
 
-    // Монитор поднимаем ПОСЛЕ preflight: отвергнутый запуск (грязное дерево, active=false)
-    // иначе дёргал бы монитор на секунду и обнулял monitor.out от прошлого удачного
-    // прогона. И только для живых прогонов: --dry-run живёт секунды, панель за это
-    // время ничего не покажет, а спавн процесса плохо вяжется с read-only (C1).
-    if (!DRY) {
-        const monitor = startMonitor();
-        // Один стоп на любой путь выхода: штатное завершение, process.exit из fail(),
-        // uncaughtException (Node зовёт 'exit' и после него), Ctrl-C, kill от systemd,
-        // обрыв SSH / убитая tmux-сессия (SIGHUP). Сигналы ловим явно: смерть по
-        // ДЕФОЛТНОМУ обработчику сигнала 'exit'-хендлеры не вызывает — монитор осиротел бы.
-        // Флаг — чтобы SIGINT→exit не глушил монитор дважды и не писал два лога.
-        let stopped = false;
-        const stopOnce = () => {
-            if (stopped) return;
-            stopped = true;
-            stopMonitor(monitor);
-        };
-        process.on('exit', stopOnce);
-        // Коды 128 + номер сигнала (HUP=1, INT=2, TERM=15) — конвенция «убит сигналом»,
-        // её ждут systemd и tmux-обвязка.
-        for (const [sig, code] of [
-            ['SIGHUP', 129],
-            ['SIGINT', 130],
-            ['SIGTERM', 143],
-        ]) {
-            process.on(sig, () => {
-                stopOnce();
-                process.exit(code);
-            });
-        }
-    }
+    // Свой монитор — после preflight: отвергнутый запуск иначе дёргал бы его на секунду
+    // и обнулял monitor.out от прошлого прогона. И только для живых прогонов: --dry-run
+    // живёт секунды, а спавн процесса плохо вяжется с read-only (C1).
+    if (!DRY && !monitor) monitor = startMonitor({ profile: config.profileName });
 
     runLoop(config, ctx);
 }
@@ -1667,6 +1695,7 @@ module.exports = {
     parseProfileFlag,
     startMonitor,
     stopMonitor,
+    adoptMonitor,
     monitorAlive,
     isMonitorProcess,
     buildClaudeArgs,

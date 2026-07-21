@@ -23,7 +23,7 @@ const { execSync } = require('child_process');
 // Резолв профилей (#71) — единый источник правды с раннером, чтобы монитор не завёл
 // вторую копию правил мерджа. require безопасен: main() в ralph.js под guard
 // require.main === module, при импорте выполняются только объявления и консты.
-const { resolveProfile } = require('./ralph.js');
+const { resolveProfile, parseProfileFlag } = require('./ralph.js');
 
 const RALPH_DIR = __dirname;
 const REPO_DIR = path.resolve(RALPH_DIR, '..', '..');
@@ -35,6 +35,10 @@ const args = process.argv.slice(2);
 const ONCE = args.includes('--once');
 const intervalIdx = args.indexOf('--interval');
 const INTERVAL_SEC = intervalIdx !== -1 ? Number(args[intervalIdx + 1]) || 300 : 300;
+// Профиль тем же парсером, что у раннера (раннер прокидывает его при авто-спавне).
+// failFn → null: монитор наблюдательный, кривой флаг для него повод показать
+// defaultProfile, а не упасть с панелью.
+const PROFILE = parseProfileFlag(args, () => null);
 
 // Строки лога, которые считаем «значимыми» (маркеры этапов AFK-цикла).
 const SIGNAL_RE = /🚀|🔄|✅|🔍|🔧|🛑|⛔|🏁|❌|⚠|🔀|💤/u;
@@ -130,7 +134,7 @@ function snapshot() {
     // Конфиг профильный (#71) — phases лежат в common, поэтому резолвим тем же кодом,
     // что и раннер, а не читаем сырой JSON. failFn → null: монитор наблюдательный,
     // кривой конфиг для него повод показать «—», а не упасть (упасть должен ralph.js).
-    const config = resolveProfile(readJSON(CONFIG_PATH), null, () => null);
+    const config = resolveProfile(readJSON(CONFIG_PATH), PROFILE, () => null);
     const { lines, lastMtime } = tailSignals(8);
     const ms = currentMilestone(state, config);
     const milestoneName = ms?.phase?.milestone || state.milestone || '—';
