@@ -57,8 +57,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Наблюдаемость ralph · Фаза 2: Взаимный контроль раннер↔монитор",
-                "branch": "feature/ralph-monitor-mutual"
+                "milestone": "Надёжность ralph · Фаза 3: Разбор blocked без человека",
+                "branch": "feature/ralph-blocked-review"
             }
         ]
     },
