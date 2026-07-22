@@ -1944,8 +1944,9 @@ function preflight(
 // разбор blocked) — как есть. cfg передаётся ЯВНО; ctx = результат preflight().
 // DI (#104): коллабораторы с побочками и флаги режима once/dry инжектируются
 // параметрами с дефолтами из module-level ссылок — как у preflight/ensureTunnel.
-// В проде main() зовёт runLoop(config, ctx) без deps → срабатывают дефолты, флаги
-// берутся из глобалей ONCE/DRY → поведение идентично прежнему. Тесты передают
+// В проде main() зовёт runLoop(config, ctx, { monitorConfigPath }) — единственный dep,
+// который прод передаёт явно (#151, путь конфига для переподнятого монитора); флаги
+// берутся из глобалей ONCE/DRY, остальные коллабораторы — их дефолты. Тесты передают
 // фейки ЯВНО и гоняют одиночные проходы цикла до break.
 //
 // getLastRedCheck (не значение, а геттер): красный чек ставит module-level
@@ -1983,6 +1984,8 @@ function runLoop(
         getLastRedCheck = () => lastRedCheck,
         pushEventFn = pushEvent,
         deployPhaseFn = deployPhasePlaceholder,
+        ensureMonitorAliveFn = ensureMonitorAlive,
+        monitorConfigPath,
     } = {},
 ) {
     // ── Main loop ────────────────────────────────────────────────────────────────
@@ -1994,6 +1997,12 @@ function runLoop(
     let iterationsThisRun = 0;
 
     while (true) {
+        // #151: живость монитора проверяем на КАЖДОМ проходе цикла, не только в
+        // main() на старте — иначе смерть сторожа посреди ночной фазы оставалась бы
+        // тишиной до следующего ручного перезапуска. dry read-only: не спавнит и
+        // не проверяет (в DRY монитор и не поднимается).
+        if (!dry) ensureMonitorAliveFn({ profile: cfg.profileName, configPath: monitorConfigPath });
+
         const idx = phaseIndexOfFn(state);
         const phase = cfg.phases[idx];
         if (!phase) {
@@ -2558,6 +2567,35 @@ function stopMonitor(child, deps = {}) {
     return true;
 }
 
+// Взаимный контроль раннер↔монитор (#151, наблюдаемость фаза 2): раньше монитор
+// поднимался только один раз в main() на старте — смерть между итерациями (OOM,
+// kill -9) оставалась тишиной до следующего ручного перезапуска раннера. Проверка —
+// той же сверкой, что и adoptMonitor при старте (pid-файл + monitorAlive +
+// isMonitorProcess; cmdline-сверка отсекает чужой процесс с переиспользованным pid),
+// поэтому молчит на каждой живой итерации и не шумит в лог, пока монитор жив.
+// startMonitor сам умеет адаптировать сироту/спавнить нового и перезаписать
+// pid-файл — вызываем его напрямую, второй механизм спавна не заводим.
+function ensureMonitorAlive(deps = {}) {
+    const {
+        logFn = log,
+        readPidFn = () => Number(fs.readFileSync(MONITOR_PID, 'utf-8')),
+        aliveFn = monitorAlive,
+        isMonitorFn = isMonitorProcess,
+        startMonitorFn = startMonitor,
+        profile,
+        configPath,
+    } = deps;
+
+    let pid = 0;
+    try {
+        pid = readPidFn();
+    } catch {}
+    if (aliveFn(pid) && isMonitorFn(pid)) return null;
+
+    logFn(`👁  Монитор не отвечает (pid ${pid || '—'}) — переподнимаю.`);
+    return startMonitorFn({ profile, configPath });
+}
+
 // main: тонкая оркестровка — загрузка конфига в module-level config (его читают
 // runClaude/openIssues/pickModel и др.), обработка --reset, затем preflight → runLoop.
 function main() {
@@ -2631,7 +2669,10 @@ function main() {
     if (!DRY && !monitor)
         monitor = startMonitor({ profile: config.profileName, configPath: runnerConfigPath });
 
-    runLoop(config, ctx);
+    // #151: monitorConfigPath — единственный dep, который прод обязан передать явно
+    // (тот же runnerConfigPath, что уходил монитору выше при спавне): ensureMonitorAlive
+    // внутри runLoop зовёт startMonitor тем же путём при переподнятии.
+    runLoop(config, ctx, { monitorConfigPath: runnerConfigPath });
 }
 
 // Запуск loop — только когда файл исполнен как скрипт (node ralph.js). При import
@@ -2679,6 +2720,7 @@ module.exports = {
     adoptMonitor,
     monitorAlive,
     isMonitorProcess,
+    ensureMonitorAlive,
     buildClaudeArgs,
     shq,
     // sh/log/sideEffectAttempts экспортируются только ради предохранителя #138: проверить,
