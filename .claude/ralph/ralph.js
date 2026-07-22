@@ -1644,6 +1644,12 @@ let lastVerifiedHead = null;
 // и git-проблемы кодом не лечатся.
 let lastRedCheck = null;
 
+// Номер PR последнего прохода гейта (null = гейт не дошёл до findOpenPr). #218:
+// нужен runLoop'у для текста пуша «блокер снят автоматически» — событие рождается
+// ПОСЛЕ tryMergePhase вернул строку-статус, а не объект с PR, так что номер несём
+// тем же геттер-паттерном, что lastRedCheck/lastVerifiedHead.
+let lastGatePr = null;
+
 // Фаза уже смерджена (авто-мерджем прошлого прогона ИЛИ вручную человеком)?
 // Нужно, чтобы после ручного мерджа loop не зациклился на пересоздании PR, а
 // перешёл к следующей фазе. БРОСАЕТ исключение при недоступности gh (после
@@ -1695,6 +1701,10 @@ function tryMergePhase(
         profileName = undefined,
     } = {},
 ) {
+    // #218: сброс СРАЗУ, тем же приёмом, что checksGreen сбрасывает lastRedCheck/
+    // lastVerifiedHead — раунд, упавший ДО findOpenPr (dry/грязное дерево), не должен
+    // оставлять номер PR прошлого раунда для текста пуша «блокер снят автоматически».
+    lastGatePr = null;
     // C1: dry-run строго read-only. Основной guard стоит в цикле ДО вызова гейта;
     // этот — defense in depth: даже если будущая правка цикла потеряет внешний
     // guard, dry-run всё равно не смерджит и не тронет дерево раннера.
@@ -1709,6 +1719,7 @@ function tryMergePhase(
         logFn(`⛔ Гейт: открытый PR ветки ${phase.branch} в main не найден — мердж невозможен.`);
         return 'not-merged';
     }
+    lastGatePr = pr.number;
     if ((pr.labels || []).some((l) => l.name === 'blocked')) {
         logFn(`⛔ Гейт: PR #${pr.number} помечен 'blocked'.`);
         return 'blocked';
@@ -2050,6 +2061,7 @@ function runLoop(
         closeMilestoneByTitleFn = closeMilestoneByTitle,
         syncProjectBoardFn = syncProjectBoard,
         getLastRedCheck = () => lastRedCheck,
+        getLastGatePr = () => lastGatePr,
         pushEventFn = pushEvent,
         deployPhaseFn = deployPhasePlaceholder,
         ensureMonitorAliveFn = ensureMonitorAlive,
@@ -2349,6 +2361,22 @@ function runLoop(
             // 4. Детерминированный гейт: раннер сам проверяет blocked + HEAD==PR + чеки.
             logFn('🚦 Гейт мерджа: проверка label blocked + сверка HEAD + прогон чеков...');
             const gate = tryMergePhaseFn(phase, { profileName: cfg.profileName });
+            // #218: гейт дошёл сюда БЕЗ label blocked, а счётчик разбора > 0 → прошлый
+            // проход сняла метку (removeBlockedLabel) и повторное ревью раннера её не
+            // вернуло — блокер устранён и подтверждён автоматически, человек не нужен.
+            // Молчать нельзя (тот же принцип, что в #207): пуш с номером PR и моделью
+            // ревью. Единая точка ДО branch-specific обработки ниже — гейт может уйти
+            // в merged/red-checks/not-merged/merged-local-stale, факт снятия блока один.
+            if (gate !== 'blocked' && (state.blockedHeals || 0) > 0) {
+                const liftedPr = getLastGatePr();
+                pushEventFn(
+                    `✅ Ralph: фаза "${phase.milestone}" — блокер на PR #${liftedPr ?? '?'} снят автоматически после повторного ревью моделью ${state.lastReviewModel ?? '?'}.`,
+                    cfg,
+                    { logFn },
+                );
+                state.blockedHeals = 0;
+                saveStateFn(state);
+            }
             if (gate === 'merged') {
                 const mergedMsg = `✅ Ralph: фаза "${phase.milestone}" смерджена в main — готова к релизу.`;
                 pushEventFn(mergedMsg, cfg, { logFn });
@@ -2402,10 +2430,13 @@ function runLoop(
                     // Профиль prod (#73) выключает авто-разбор целиком. Без этой ветки
                     // в лог шло «устоял после 0 разборов» — читается как сбой, хотя
                     // это штатное прод-поведение: блокер сразу уходит человеку.
+                    // #218: реальное исчерпание (bMax > 0) формулируем ПРЯМО про версию
+                    // зацикливания — иначе человек по привычке ищет дефект в коде, а
+                    // причина может быть в споре ревьюера с правками (см. #215).
                     const blockedMsg =
                         bMax === 0
                             ? `⛔ Ralph: фаза "${phase.milestone}" — разбор blocked выключен профилем "${cfg.profileName}", PR с label blocked оставлен человеку.`
-                            : `⛔ Ralph: фаза "${phase.milestone}" — label blocked устоял после ${bDone} разборов, PR оставлен человеку. Сними label или почини руками, затем перезапусти loop.`;
+                            : `⛔ Ralph: фаза "${phase.milestone}" — PR #${getLastGatePr() ?? '?'}: label blocked устоял после ${bDone} повторных ревью подряд, PR оставлен человеку. Возможно, ревью зациклилось на второстепенном — смотри спор ревьюера и правок, а не только код.`;
                     pushEventFn(blockedMsg, cfg, { logFn });
                     state.blockedHeals = 0;
                     // #217: фаза уходит человеку — планка повторного ревью больше не нужна.
@@ -2521,16 +2552,12 @@ function runLoop(
             // module-level lastRedCheck (см. докблок про getLastRedCheck выше).
             const redCheck = getLastRedCheck();
             if (gate === 'red-checks' && redCheck) {
-                // #216: разбор blocked считает ПОДРЯД идущие ревью, оставившие блок, а не
-                // круги вообще. Раз гейт дошёл до чеков — на PR нет label blocked, значит
-                // ревью этого круга блокер НЕ поставило и разбор завершён: счётчик в ноль.
-                // Без этого «блок → чисто (но красный чек) → блок» копилось бы как «три
-                // ревью подряд оставили блок» и однажды дёрнуло бы человека на ерунде.
-                // Инкремент — только в ветке gate === 'blocked' выше.
-                if ((state.blockedHeals || 0) > 0) {
-                    state.blockedHeals = 0;
-                    saveStateFn(state);
-                }
+                // #216/#218: разбор blocked считает ПОДРЯД идущие ревью, оставившие блок,
+                // а не круги вообще. Раз гейт дошёл до чеков — на PR нет label blocked,
+                // значит ревью этого круга блокер НЕ поставило; сброс счётчика (и пуш,
+                // если он был > 0) уже сделан единой веткой сразу после tryMergePhaseFn
+                // выше. Без него «блок → чисто (но красный чек) → блок» копилось бы как
+                // «три ревью подряд оставили блок» и однажды дёрнуло бы человека зря.
                 // Self-heal гейта (Дима, 2026-07-19: «ночью не вставать на красном гейте»):
                 // красный ЧЕК — это чинимо кодом, стоп заменяем чини-сессией с текстом
                 // ошибки → цикл вернётся на гейт (submitted=true). Бюджет попыток — в
@@ -3001,4 +3028,5 @@ module.exports = {
     deployPhasePlaceholder,
     getLastRedCheck: () => lastRedCheck,
     getVerifiedHead: () => lastVerifiedHead,
+    getLastGatePr: () => lastGatePr,
 };
