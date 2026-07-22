@@ -26,6 +26,8 @@ describe('loadBaseline', () => {
 });
 
 describe('checkRatchet', () => {
+    const read = (obj) => () => JSON.stringify(obj);
+
     it('падение ниже эталона — красный', () => {
         expect(checkRatchet(925, { count: 928 }).ok).toBe(false);
     });
@@ -51,6 +53,18 @@ describe('checkRatchet', () => {
         const { ok, message } = checkRatchet(940, { count: 928 });
         expect(ok).toBe(true);
         expect(message).toMatch(/12/); // прирост показан
+    });
+
+    // #158: легальное удаление — эталон в том же PR осознанно снижен (с обоснованием
+    // в reason), фактическое число тестов теперь равно новому, более низкому count.
+    // reason не участвует в сравнении (это поле для человека/ревью) — храповик должен
+    // пропустить такое снижение зелёным, не отличая его от «эталон просто маленький».
+    it('легальное удаление теста с обновлённым эталоном и reason — зелёный', () => {
+        const baseline = loadBaseline(
+            read({ count: 900, reason: 'дедупликация устаревшего сценария логина (#158)' }),
+            'x',
+        );
+        expect(checkRatchet(900, baseline).ok).toBe(true);
     });
 });
 
