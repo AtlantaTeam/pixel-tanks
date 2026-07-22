@@ -5,9 +5,7 @@
         "maxIterations": 10,
         "maxTurns": 200,
         "claudeTimeoutMs": 7200000,
-        "authorAllowlist": [
-            "Pelmenya"
-        ],
+        "authorAllowlist": ["Pelmenya"],
         "model": "claude-opus-4-8",
         "fallbackModel": "claude-opus-4-8",
         "permissionMode": "bypassPermissions",
@@ -64,8 +62,6 @@
     },
     "profiles": {
         "playground": {},
-        "prod": {
-            "blockedHealAttempts": 0
-        }
+        "prod": {}
     }
 }

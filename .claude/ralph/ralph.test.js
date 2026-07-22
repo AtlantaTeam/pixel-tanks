@@ -55,6 +55,7 @@ const {
     tryMergePhase,
     getLastRedCheck,
     getVerifiedHead,
+    getLastGatePr,
 } = ralph;
 
 describe('buildClaudeArgs — построение argv для claude -p (ядро порта)', () => {
@@ -1350,6 +1351,9 @@ describe('runLoop — основной while-цикл: итерации коде
             // log(), дописывавший в ralph.log живого прогона.
             phaseDiffFilesFn: () => [],
             reviewDiffContextFn: () => '',
+            // #217: снятие label blocked — побочка (gh), в тестах заглушка. Реальный
+            // removeBlockedLabel зовёт sh и попал бы в предохранитель #138.
+            removeBlockedLabelFn: () => {},
             runClaudeFn: () => 0,
             ensureCleanFn: () => true,
             phaseMergedFn: () => false,
@@ -1744,10 +1748,16 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(tryMergePhaseFn).not.toHaveBeenCalled();
     });
 
-    it('гейт blocked, бюджет есть → чини-сессия блокеров, инкремент blockedHeals, submitted=false', () => {
+    it('#217: гейт blocked → чини-сессия + повторное ревью раннером, снятие метки раннером, инкремент', () => {
         const logs = [];
-        const state = mkState({ submitted: true, blockedHeals: 0 });
+        // lastReviewModel — модель, поставившая блок (её и подымет планка).
+        const state = mkState({
+            submitted: true,
+            blockedHeals: 0,
+            lastReviewModel: 'claude-opus-4-8',
+        });
         const runClaudeFn = vi.fn(() => 0);
+        const removeBlockedLabelFn = vi.fn();
         runLoop(
             validCfg({ blockedHealAttempts: 3 }),
             ctx(state),
@@ -1756,13 +1766,26 @@ describe('runLoop — основной while-цикл: итерации коде
                 allOpenIssuesFn: () => [],
                 phaseMergedFn: () => false,
                 tryMergePhaseFn: () => 'blocked',
+                pickReviewModelFn: () => 'claude-opus-4-8',
                 runClaudeFn,
+                removeBlockedLabelFn,
             }),
         );
         expect(state.blockedHeals).toBe(1);
-        expect(state.submitted).toBe(false); // сброс → повторное ревью на следующем проходе
-        expect(runClaudeFn).toHaveBeenCalledTimes(1);
-        expect(runClaudeFn.mock.calls[0][0]).toMatch(/blocked/);
+        // #217: submitted НЕ сбрасывается — следующий проход идёт сразу на гейт, который
+        // перечитает метку, выставленную повторным ревью раннера.
+        expect(state.submitted).toBe(true);
+        // Две сессии: чини-сессия блокеров + повторное ревью раннером.
+        expect(runClaudeFn).toHaveBeenCalledTimes(2);
+        // Чини-сессии явно запрещено снимать метку — это делает раннер.
+        expect(runClaudeFn.mock.calls[0][0]).toMatch(/label blocked НЕ снимай/);
+        // Второй вызов — повторное ревью: вешает blocked заново, если блокеры остались.
+        expect(runClaudeFn.mock.calls[1][0]).toMatch(/повторн|устранен/i);
+        // Метку снял РАННЕР (не кодер-сессия), перед повторным ревью.
+        expect(removeBlockedLabelFn).toHaveBeenCalledTimes(1);
+        expect(removeBlockedLabelFn.mock.calls[0][0]).toBe('feature/m1');
+        // Планка поднята до модели, поставившей блок.
+        expect(state.reviewModelFloor).toBe('claude-opus-4-8');
     });
 
     it('гейт blocked, бюджет исчерпан → стоп без чини-сессии, сброс счётчика, пуш человеку', () => {
@@ -1779,6 +1802,7 @@ describe('runLoop — основной while-цикл: итерации коде
                 allOpenIssuesFn: () => [],
                 phaseMergedFn: () => false,
                 tryMergePhaseFn: () => 'blocked',
+                getLastGatePr: () => 555,
                 runClaudeFn,
                 pushEventFn,
             }),
@@ -1788,11 +1812,245 @@ describe('runLoop — основной while-цикл: итерации коде
         // #86: событие «blocked отдан человеку» уходит пушем (единственный логгер).
         expect(pushEventFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn.mock.calls[0][0]).toMatch(/blocked устоял/);
+        // #218 (критерий 2): текст называет число ревью, PR и версию про зацикливание —
+        // иначе человек по привычке ищет дефект в коде, хотя проблема может быть в
+        // споре ревьюера с правками, а не в самом коде.
+        expect(pushEventFn.mock.calls[0][0]).toContain('#555');
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/3 повторных ревью/);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/зациклилось/);
     });
 
-    // Ключевое поведенческое обещание профиля prod (#73): не «в конфиге стоит 0», а
-    // «чини-сессия не запускается вовсе». Регресс `?? 3` → `|| 3` ловится только так.
-    it('профиль prod (blockedHealAttempts=0) → блокер сразу человеку, чини-сессия НЕ зовётся, пуш уходит', () => {
+    // #216: prod (с включённым разбором) блокер запускает чини-сессию, а не немедленный
+    // стоп человеку. Тестируем именно поведение при profileName='prod' + ненулевом лимите.
+    it('#216: prod с включённым разбором → блокер запускает разбор+повторное ревью, человека не зовём', () => {
+        const logs = [];
+        const state = mkState({
+            submitted: true,
+            blockedHeals: 0,
+            lastReviewModel: 'claude-opus-4-8',
+        });
+        const runClaudeFn = vi.fn(() => 0);
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ blockedHealAttempts: 3, profileName: 'prod' }),
+            ctx(state),
+            // phaseIndexOfFn НЕ переопределяем: дефолтный счётчик (0 → 99) даёт ровно
+            // один рабочий проход, иначе continue после разбора крутил бы цикл до брейкера.
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                pickReviewModelFn: () => 'claude-opus-4-8',
+                runClaudeFn,
+                pushEventFn,
+            }),
+        );
+        expect(runClaudeFn).toHaveBeenCalledTimes(2); // разбор + повторное ревью
+        expect(state.blockedHeals).toBe(1);
+        expect(pushEventFn).not.toHaveBeenCalled(); // блокер не ушёл человеку
+    });
+
+    // #216: счётчик не в памяти процесса — новое значение уходит в state ДО чини-сессии,
+    // поэтому перезапуск раннера посреди разбора его не обнулит (loadState прочитает 2).
+    it('#216: инкремент blockedHeals персистится через saveState (переживает перезапуск)', () => {
+        const logs = [];
+        const state = mkState({
+            submitted: true,
+            blockedHeals: 1,
+            lastReviewModel: 'claude-opus-4-8',
+        });
+        const saved = [];
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                pickReviewModelFn: () => 'claude-opus-4-8',
+                runClaudeFn: () => 0,
+                saveStateFn: (s) => saved.push({ ...s }),
+            }),
+        );
+        expect(saved.some((s) => s.blockedHeals === 2)).toBe(true);
+    });
+
+    // #216: чистое повторное ревью завершает разбор — счётчик оставивших блок ревью в
+    // ноль. Гейт дошёл до чеков (red-checks) = на PR нет label blocked = ревью блок не
+    // поставило. Без сброса чередование «блок → чисто → блок» набирало бы «три подряд»
+    // и зря дёргало человека. Считаем ПОДРЯД идущие блок-ревью, а не круги вообще.
+    it('#216: чистое повторное ревью (red-checks) обнуляет blockedHeals — чередование не копит счётчик', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 2 });
+        runLoop(
+            validCfg({ blockedHealAttempts: 3, gateHealAttempts: 2 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'red-checks',
+                // #223: red-checks — пост-меточный исход, tryMergePhase уже прочитал PR
+                // (lastGatePr выставлен) и лишь потом упёрся в чеки. Сброс blockedHeals
+                // теперь требует getLastGatePr() !== null (пуш «снят автоматически» не
+                // должен стрелять на путях, где метку гейт не читал) — симулируем номер.
+                getLastGatePr: () => 909,
+                getLastRedCheck: () => ({ name: 'test', cmd: 'npm run test', excerpt: 'boom' }),
+                runClaudeFn: () => 0,
+            }),
+        );
+        expect(state.blockedHeals).toBe(0);
+    });
+
+    // #218 (критерий 1): «блокер снят автоматически» — отдельное событие, не то же
+    // самое, что общий пуш о состоянии гейта. Гейт дошёл до red-checks БЕЗ label
+    // blocked при blockedHeals > 0 — значит повторное ревью раннера блок не оставило,
+    // и это надо назвать явно: номер PR + модель ревью, чтобы человек не тратил время
+    // разбираясь, что вообще произошло.
+    it('#218: гейт red-checks после разбора blocked → пуш «снят автоматически» с PR и моделью ревью', () => {
+        const logs = [];
+        const state = mkState({
+            submitted: true,
+            blockedHeals: 2,
+            lastReviewModel: 'claude-opus-4-8',
+        });
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ blockedHealAttempts: 3, gateHealAttempts: 2 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'red-checks',
+                getLastRedCheck: () => ({ name: 'test', cmd: 'npm run test', excerpt: 'boom' }),
+                getLastGatePr: () => 321,
+                runClaudeFn: () => 0,
+                pushEventFn,
+            }),
+        );
+        expect(state.blockedHeals).toBe(0);
+        const liftedMsg = pushEventFn.mock.calls
+            .map((c) => c[0])
+            .find((m) => m.includes('снят автоматически'));
+        expect(liftedMsg).toBeDefined();
+        expect(liftedMsg).toContain('#321');
+        expect(liftedMsg).toContain('claude-opus-4-8');
+    });
+
+    // #218: тот же барьер, но по пути gate === 'merged' — повторное ревью прошло
+    // чисто и гейт домерджил фазу СРАЗУ, минуя red-checks. Пуш о снятом блокере
+    // должен уйти отдельно от пуша «фаза смерджена» — это два разных события.
+    it('#218: гейт merged после разбора blocked → отдельный пуш «снят автоматически» с PR и моделью ревью', () => {
+        const logs = [];
+        const state = mkState({
+            submitted: true,
+            blockedHeals: 1,
+            lastReviewModel: 'claude-opus-4-8',
+        });
+        const pushEventFn = vi.fn();
+        let gateCalls = 0;
+        const tryMergePhaseFn = vi.fn(() => (gateCalls++ === 0 ? 'blocked' : 'merged'));
+        let idxCalls = 0;
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => (idxCalls++ < 2 ? 0 : 99),
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'claude-opus-4-8',
+                tryMergePhaseFn,
+                runClaudeFn: () => 0,
+                pushEventFn,
+                getLastGatePr: () => 217,
+            }),
+        );
+        const messages = pushEventFn.mock.calls.map((c) => c[0]);
+        const liftedMsg = messages.find((m) => m.includes('снят автоматически'));
+        const mergedMsg = messages.find((m) => m.includes('смерджена в main'));
+        expect(liftedMsg).toBeDefined();
+        expect(liftedMsg).toContain('#217');
+        expect(liftedMsg).toContain('claude-opus-4-8');
+        // Два РАЗНЫХ события пушем, не одно слитое сообщение.
+        expect(mergedMsg).toBeDefined();
+        expect(mergedMsg).not.toBe(liftedMsg);
+    });
+
+    // #222: hold — человеческий стоп-кран. Гейт стоп + пуш, БЕЗ чини-сессий, БЕЗ
+    // повторного ревью, счётчики blockedHeals/gateHeals не трогаются.
+    it('#222: гейт hold → стоп + пуш с номером PR, ни одной сессии не запущено', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 0, gateHeals: 0 });
+        const runClaudeFn = vi.fn(() => 0);
+        const removeBlockedLabelFn = vi.fn();
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'hold',
+                getLastGatePr: () => 909,
+                runClaudeFn,
+                removeBlockedLabelFn,
+                pushEventFn,
+            }),
+        );
+        expect(runClaudeFn).not.toHaveBeenCalled();
+        expect(removeBlockedLabelFn).not.toHaveBeenCalled();
+        expect(state.blockedHeals).toBe(0);
+        expect(state.gateHeals).toBe(0);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        const msg = pushEventFn.mock.calls[0][0];
+        expect(msg).toContain('#909');
+        expect(msg).toMatch(/hold/);
+        expect(msg).toMatch(/человек/);
+    });
+
+    // #222: hold проверяется в tryMergePhase раньше blocked — если предыдущий круг
+    // разбора оставил blockedHeals > 0, а этот проход внезапно видит hold (человек
+    // поставил метку параллельно), пуш «блокер снят автоматически» НЕ должен уйти —
+    // мы не знаем, снят ли фактически blocked, гейт вообще до него не дошёл.
+    it('#222: гейт hold при blockedHeals > 0 НЕ шлёт «снят автоматически», счётчик не трогается', () => {
+        const logs = [];
+        const state = mkState({
+            submitted: true,
+            blockedHeals: 2,
+            lastReviewModel: 'claude-opus-4-8',
+        });
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'hold',
+                getLastGatePr: () => 909,
+                runClaudeFn: () => 0,
+                pushEventFn,
+            }),
+        );
+        expect(state.blockedHeals).toBe(2); // не сброшен и не увеличен
+        const messages = pushEventFn.mock.calls.map((c) => c[0]);
+        expect(messages.some((m) => m.includes('снят автоматически'))).toBe(false);
+        expect(messages.some((m) => /hold/.test(m))).toBe(true);
+    });
+
+    // #216: prod больше не ставит blockedHealAttempts: 0, но ветка «явно выключено»
+    // осталась для конфигов, где разбор выключат сознательно. Обещание ветки: не «в
+    // конфиге 0», а «чини-сессия не запускается вовсе». Регресс `?? 3` → `|| 3` ловится
+    // только так. profileName взят произвольный — важно само значение 0, не имя профиля.
+    it('blockedHealAttempts=0 (разбор выключен явно) → блокер сразу человеку, чини-сессия НЕ зовётся, пуш уходит', () => {
         const logs = [];
         const state = mkState({ submitted: true, blockedHeals: 0 });
         const runClaudeFn = vi.fn(() => 0);
@@ -1817,6 +2075,110 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(pushEventFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn.mock.calls[0][0]).toMatch(/выключен профилем "prod"/);
         expect(pushEventFn.mock.calls[0][0]).not.toMatch(/устоял после 0/);
+    });
+
+    // #217 (критерий 2): планка модели повторного ревью. Блок поставила fable; после
+    // правок дифф «подешевел» и pickReviewModel даёт haiku. Повторное ревью обязано
+    // идти на fable, НЕ на haiku — иначе эскалацию обходят удешевлением ревьюера.
+    it('#217: повторное ревью не слабее поставившей блок — haiku-кандидат поднят до fable-планки', () => {
+        const logs = [];
+        const state = mkState({
+            submitted: true,
+            blockedHeals: 0,
+            lastReviewModel: 'claude-fable-5', // блок поставила fable
+        });
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                pickReviewModelFn: () => 'claude-haiku-4-5-20251001', // слабее блокирующей
+                runClaudeFn,
+            }),
+        );
+        expect(state.reviewModelFloor).toBe('claude-fable-5');
+        // Второй вызов runClaude — повторное ревью: модель = планка (fable), не haiku.
+        expect(runClaudeFn).toHaveBeenCalledTimes(2);
+        expect(runClaudeFn.mock.calls[1][1].model).toBe('claude-fable-5');
+        // Повторное ревью noFallback (M8) — иначе overload молча деградировал бы модель.
+        expect(runClaudeFn.mock.calls[1][1].noFallback).toBe(true);
+    });
+
+    // #217: судить блок нечем (review: none и планки нет) — fail-closed, PR человеку.
+    // Без этой ветки метку сняли бы «на слово» и фаза уехала бы в main без ревью.
+    it('#217: нет ревью-модели для повторного ревью → fail-closed, человек, не мерджим', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 0, lastReviewModel: null });
+        const runClaudeFn = vi.fn(() => 0);
+        const pushEventFn = vi.fn();
+        const removeBlockedLabelFn = vi.fn();
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                pickReviewModelFn: () => 'none', // ревью-модели нет
+                runClaudeFn,
+                pushEventFn,
+                removeBlockedLabelFn,
+            }),
+        );
+        // Чини-сессия прошла, но повторное ревью невозможно → метку раннер НЕ снимает.
+        expect(removeBlockedLabelFn).not.toHaveBeenCalled();
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/повторное ревью blocked невозможно/);
+        expect(state.blockedHeals).toBe(0); // отдан человеку
+    });
+
+    // #217 (критерий 3): снятая кодер-сессией метка сама по себе к мерджу не ведёт —
+    // между блоком и мерджем раннер ОБЯЗАТЕЛЬНО снимает метку сам и гоняет повторное
+    // ревью. Мердж наступает только следующим гейтом, после ревью раннера.
+    it('#217: метка снята кодером сама → мердж только после повторного ревью раннером', () => {
+        const logs = [];
+        const state = mkState({
+            submitted: true,
+            blockedHeals: 0,
+            lastReviewModel: 'claude-opus-4-8',
+        });
+        const runClaudeFn = vi.fn(() => 0);
+        const removeBlockedLabelFn = vi.fn();
+        const advancePhaseFn = vi.fn();
+        // 1-й гейт — blocked; 2-й (после повторного ревью) — merged.
+        let gateCalls = 0;
+        const tryMergePhaseFn = vi.fn(() => (gateCalls++ === 0 ? 'blocked' : 'merged'));
+        // idx 0 на первых двух проходах, затем «за концом» → выход.
+        let idxCalls = 0;
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => (idxCalls++ < 2 ? 0 : 99),
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'claude-opus-4-8',
+                tryMergePhaseFn,
+                runClaudeFn,
+                removeBlockedLabelFn,
+                advancePhaseFn,
+            }),
+        );
+        // Мердж состоялся ровно один раз — вторым гейтом, ПОСЛЕ повторного ревью раннера.
+        expect(advancePhaseFn).toHaveBeenCalledTimes(1);
+        // Раннер сам снял метку (не кодер) перед повторным ревью — ровно один раз.
+        expect(removeBlockedLabelFn).toHaveBeenCalledTimes(1);
+        // До мерджа прошли обе сессии blocked-цикла: чини + повторное ревью раннера.
+        expect(runClaudeFn).toHaveBeenCalledTimes(2);
+        expect(runClaudeFn.mock.calls[0][0]).toMatch(/label blocked НЕ снимай/);
+        expect(runClaudeFn.mock.calls[1][0]).toMatch(/повторн|устранен/i);
     });
 
     it('гейт red-checks → чини-сессия гейта с деталями чека из getLastRedCheck', () => {
@@ -2319,6 +2681,66 @@ describe('ветковая хореография в worktree раннера (#7
             expect(checksGreenFn).not.toHaveBeenCalled();
         });
 
+        // #222: hold — человеческий стоп-кран, раннер его не снимает никогда.
+        it('#222: PR с label hold → hold, чеки не гонялись', () => {
+            const checksGreenFn = vi.fn();
+            const { deps } = mkDeps({
+                findOpenPrFn: () => ({ number: 5, labels: [{ name: 'hold' }] }),
+                checksGreenFn,
+            });
+            expect(tryMergePhase(phase, deps)).toBe('hold');
+            expect(checksGreenFn).not.toHaveBeenCalled();
+        });
+
+        // #222 критерий 3: hold и blocked одновременно на PR → hold сильнее, стоп без
+        // разбора (негативный тест — blocked НЕ должен взять верх).
+        it('#222: PR с label hold И blocked одновременно → hold (сильнее), не blocked', () => {
+            const checksGreenFn = vi.fn();
+            const { deps } = mkDeps({
+                findOpenPrFn: () => ({
+                    number: 5,
+                    labels: [{ name: 'hold' }, { name: 'blocked' }],
+                }),
+                checksGreenFn,
+            });
+            expect(tryMergePhase(phase, deps)).toBe('hold');
+            expect(checksGreenFn).not.toHaveBeenCalled();
+        });
+
+        it('#222: PR с label hold → lastGatePr всё равно выставлен (нужен пушу об остановке)', () => {
+            const { deps } = mkDeps({
+                findOpenPrFn: () => ({ number: 88, labels: [{ name: 'hold' }] }),
+            });
+            expect(tryMergePhase(phase, deps)).toBe('hold');
+            expect(getLastGatePr()).toBe(88);
+        });
+
+        // #218: lastGatePr — источник номера PR для пуша «блокер снят автоматически»
+        // в runLoop (getLastGatePr). Тем же приёмом, что lastRedCheck/lastVerifiedHead:
+        // выставляется, как только PR найден, сбрасывается В НАЧАЛЕ каждого прогона.
+        it('#218: находит PR → lastGatePr = его номер (доступно через getLastGatePr)', () => {
+            const { deps } = mkDeps({ findOpenPrFn: () => ({ number: 42, labels: [] }) });
+            expect(tryMergePhase(phase, deps)).toBe('merged');
+            expect(getLastGatePr()).toBe(42);
+        });
+
+        it('#218: PR помечен blocked → lastGatePr всё равно выставлен (нужен пушу об исчерпании лимита)', () => {
+            const { deps } = mkDeps({
+                findOpenPrFn: () => ({ number: 99, labels: [{ name: 'blocked' }] }),
+            });
+            expect(tryMergePhase(phase, deps)).toBe('blocked');
+            expect(getLastGatePr()).toBe(99);
+        });
+
+        it('#218: lastGatePr сбрасывается В НАЧАЛЕ прогона — PR прошлого раунда не подставится в новый', () => {
+            const found = mkDeps({ findOpenPrFn: () => ({ number: 7, labels: [] }) });
+            expect(tryMergePhase(phase, found.deps)).toBe('merged');
+            expect(getLastGatePr()).toBe(7);
+            const notFound = mkDeps({ findOpenPrFn: () => null });
+            expect(tryMergePhase(phase, notFound.deps)).toBe('not-merged');
+            expect(getLastGatePr()).toBeNull();
+        });
+
         it('красный гейт: checksGreen=false + red-check → red-checks; без red-check → not-merged', () => {
             const red = mkDeps({
                 checksGreenFn: () => false,
@@ -2639,8 +3061,11 @@ describe('боевой ralph.config.json — профили playground/prod (#73
         expect(cfg.apiLimitMaxWaits).toBe(3);
     });
 
-    it('prod: blocked-разбор выключен — блокер ревью уходит человеку, не чинится сам', () => {
-        expect(resolveProfile(raw, 'prod', boom).blockedHealAttempts).toBe(0);
+    // #216: prod больше НЕ выключает разбор blocked (был blockedHealAttempts: 0) —
+    // блокер ревью, устранённый правками, снимается сам после чистого повторного ревью,
+    // а не ждёт человека. Значение наследуется из common (дефолт 3), профиль его не дублирует.
+    it('prod: blocked-разбор включён — наследует лимит из common (дефолт 3)', () => {
+        expect(resolveProfile(raw, 'prod', boom).blockedHealAttempts).toBe(3);
     });
 
     it('prod наследует всё остальное из common, не дублируя его', () => {
@@ -2650,8 +3075,10 @@ describe('боевой ralph.config.json — профили playground/prod (#73
         expect(prod.review).toEqual(pg.review);
         expect(prod.phases).toEqual(pg.phases);
         expect(prod.authorAllowlist).toEqual(pg.authorAllowlist);
-        // Дельта prod в файле — ровно то, что заявлено, без случайных дублей.
-        expect(Object.keys(raw.profiles.prod)).toEqual(['blockedHealAttempts']);
+        expect(prod.blockedHealAttempts).toEqual(pg.blockedHealAttempts);
+        // #216: дельта prod пуста — разбор blocked теперь идёт по общим правилам, отличие
+        // прода от playground держит код по profileName (толстый гейт, TG, стоп на деплой).
+        expect(Object.keys(raw.profiles.prod)).toEqual([]);
     });
 });
 
@@ -3823,6 +4250,104 @@ describe('pickReviewModel — отсутствующая escalated-модель 
     });
 });
 
+describe('#217: планка модели повторного ревью (reviewModelRank / strongerReviewModel)', () => {
+    const { reviewModelRank, strongerReviewModel } = ralph;
+
+    it('rank растёт по силе модели: haiku < sonnet < opus < fable', () => {
+        expect(reviewModelRank('claude-haiku-4-5-20251001')).toBeLessThan(
+            reviewModelRank('claude-sonnet-5'),
+        );
+        expect(reviewModelRank('claude-sonnet-5')).toBeLessThan(reviewModelRank('claude-opus-4-8'));
+        expect(reviewModelRank('claude-opus-4-8')).toBeLessThan(reviewModelRank('claude-fable-5'));
+    });
+
+    it('неизвестная/пустая модель → rank -1 (слабее любой известной)', () => {
+        expect(reviewModelRank('claude-unknown')).toBe(-1);
+        expect(reviewModelRank(undefined)).toBe(-1);
+        expect(reviewModelRank('none')).toBe(-1);
+    });
+
+    it('strongerReviewModel возвращает более сильную из двух', () => {
+        expect(strongerReviewModel('claude-opus-4-8', 'claude-haiku-4-5-20251001')).toBe(
+            'claude-opus-4-8',
+        );
+        expect(strongerReviewModel('claude-haiku-4-5-20251001', 'claude-fable-5')).toBe(
+            'claude-fable-5',
+        );
+    });
+
+    // Ядро барьера #217: слабый кандидат НЕ побеждает планку — эскалацию нельзя обойти
+    // удешевлением ревьюера (взять haiku после блока от fable).
+    it('слабая модель-кандидат не опускает планку ниже поставившей блок', () => {
+        expect(strongerReviewModel('claude-haiku-4-5-20251001', 'claude-fable-5')).toBe(
+            'claude-fable-5',
+        );
+        expect(strongerReviewModel('claude-fable-5', 'claude-haiku-4-5-20251001')).toBe(
+            'claude-fable-5',
+        );
+    });
+
+    it('null/none у аргумента игнорируется, обе пустые → null', () => {
+        expect(strongerReviewModel(null, 'claude-opus-4-8')).toBe('claude-opus-4-8');
+        expect(strongerReviewModel('claude-opus-4-8', 'none')).toBe('claude-opus-4-8');
+        expect(strongerReviewModel(null, undefined)).toBe(null);
+        expect(strongerReviewModel('none', null)).toBe(null);
+    });
+
+    it('известная модель всегда сильнее неизвестной строки', () => {
+        expect(strongerReviewModel('claude-haiku-4-5-20251001', 'claude-mystery')).toBe(
+            'claude-haiku-4-5-20251001',
+        );
+    });
+});
+
+describe('#217: removeBlockedLabel — снятие метки раннером (граница побочки, anti-injection)', () => {
+    const { removeBlockedLabel } = ralph;
+
+    it('находит открытый PR ветки и снимает label blocked', () => {
+        const calls = [];
+        const shFn = (cmd) => {
+            calls.push(cmd);
+            if (cmd.includes('gh pr list')) return '42\n';
+            return '';
+        };
+        const logs = [];
+        removeBlockedLabel('feature/m1', { shFn, logFn: (m) => logs.push(m) });
+        expect(calls.some((c) => c.includes('gh pr list') && c.includes('feature/m1'))).toBe(true);
+        expect(
+            calls.some((c) => c.includes('gh pr edit') && c.includes('--remove-label blocked')),
+        ).toBe(true);
+        expect(logs.join('\n')).toMatch(/снял label blocked с PR #42/);
+    });
+
+    it('открытого PR нет → метку не снимает (только list, без edit)', () => {
+        const calls = [];
+        const shFn = (cmd) => {
+            calls.push(cmd);
+            return ''; // gh pr list вернул пусто
+        };
+        removeBlockedLabel('feature/m1', { shFn, logFn: () => {} });
+        expect(calls.some((c) => c.includes('gh pr edit'))).toBe(false);
+    });
+
+    it('небезопасное имя ветки → отказ без единого вызова gh (anti-injection, инв. C3/7)', () => {
+        const shFn = vi.fn(() => '');
+        removeBlockedLabel('feature/m1; rm -rf /', { shFn, logFn: () => {} });
+        expect(shFn).not.toHaveBeenCalled();
+    });
+
+    it('сбой gh не роняет (fail-open): метка останется, гейт подберёт blocked', () => {
+        const shFn = () => {
+            throw new Error('gh boom');
+        };
+        const logs = [];
+        expect(() =>
+            removeBlockedLabel('feature/m1', { shFn, logFn: (m) => logs.push(m) }),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/не снял метку/);
+    });
+});
+
 describe('globToRegExp — ветки конвертера, не покрытые первой версией (#132)', () => {
     const { globToRegExp } = ralph;
 
@@ -4068,6 +4593,7 @@ describe('runLoop → промпт ревью получает контекст 
                 closeMilestoneByTitleFn: () => {},
                 syncProjectBoardFn: () => {}, // #199: см. дефолт в общем deps выше
                 getLastRedCheck: () => null,
+                getLastGatePr: () => null,
                 phaseDiffFilesFn: () => ['src/a.ts'],
                 reviewDiffContextFn: () => '\n\nМАРКЕР-КОНТЕКСТА-ДИФФА',
                 ...over,
