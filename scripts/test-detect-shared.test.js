@@ -47,6 +47,36 @@ describe('grepMarkerPattern', () => {
             grepMarkerPattern('skip').replace('.skip', '.MARK'),
         );
     });
+
+    // Поведенческие регрессии на 🔴 blocker ревью PR #230 (skip.each): паттерн уходит в
+    // `git grep -E` (POSIX ERE). Компилируем ту же строку JS-регэкспом (только `[[:space:]]`
+    // → `\s`, остальное — общий для ERE/JS сабсет), чтобы проверять сам матч, а не наличие
+    // подстроки. С якорем `^` и многострочностью не заморачиваемся: тестовые строки — одна
+    // строка кода, как их видит `git grep -n`.
+    const asJsRe = (marker) =>
+        new RegExp(grepMarkerPattern(marker).replaceAll('[[:space:]]', '\\s'));
+
+    it('ловит цепочку ПОСЛЕ маркера — it.skip.each(/describe.skip.each( (документированная форма vitest)', () => {
+        const skip = asJsRe('skip');
+        expect(skip.test("    it.skip.each([1, 2])('probe %i', () => {});")).toBe(true);
+        expect(skip.test("    describe.skip.each([3])('grp %i', () => {});")).toBe(true);
+        expect(asJsRe('only').test("    it.only.each([1])('p %i', () => {});")).toBe(true);
+    });
+
+    it('ловит цепочку ДО маркера и голый маркер — it.concurrent.skip(/it.skip(', () => {
+        const skip = asJsRe('skip');
+        expect(skip.test("    it.concurrent.skip('chain then skip', () => {});")).toBe(true);
+        expect(skip.test("    it.skip('plain skip', () => {});")).toBe(true);
+    });
+
+    it('НЕ ловит .each без маркера и голый вызов — иначе гейт краснел бы на легитимном it.each(', () => {
+        const skip = asJsRe('skip');
+        expect(skip.test("    it.each([1, 2])('NOT a skip %i', () => {});")).toBe(false);
+        expect(skip.test("    it('plain, no marker', () => {});")).toBe(false);
+        // `it.skipIf(` — условный скип vitest, маркер тут не отдельный сегмент цепочки:
+        // после `.skip` идёт `If(`, а не `.` или `(`, — не матчится (и не должен).
+        expect(skip.test("    it.skipIf(process.env.CI)('cond', () => {});")).toBe(false);
+    });
 });
 
 describe('parseGrepOutput', () => {
