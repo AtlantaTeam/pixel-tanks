@@ -17,6 +17,7 @@
         "test:count": "node scripts/test-count.mjs",
         "test:ratchet": "node scripts/test-ratchet.mjs",
         "test:only-detect": "node scripts/test-only-detect.mjs",
+        "test:skip-detect": "node scripts/test-skip-detect.mjs",
         "project:sync": "node scripts/project-sync.mjs",
         "prepare": "husky"
     },

@@ -1444,10 +1444,10 @@ const BASE_GATE_CHECKS = [
     // ниже эталона (scripts/test-count.baseline.json). Закрывает класс «гейт зелёный при
     // ослабшей проверке» (кто-то удалил тесты, покрытие формально держится) — порог
     // coverage (#82) этого не ловит. Выключенные (.only/.skip) храповик НЕ ловит: vitest
-    // list считает и пропущенные тесты, их детект — следующий чек (#160) и #161 (.skip).
-    // Стоит ПЕРВЫМ: `vitest list` (сбор без прогона) секундный, а следом идут минутный
-    // build и полный `test` — fail-fast от дешёвого к дорогому, красный храповик отменяет
-    // мердж, не оплатив их.
+    // list считает и пропущенные тесты, их детект — отдельные чеки test:only-detect (#160)
+    // и test:skip-detect (#161). Стоит ПЕРВЫМ: `vitest list` (сбор без прогона) секундный,
+    // а следом идут минутный build и полный `test` — fail-fast от дешёвого к дорогому,
+    // красный храповик отменяет мердж, не оплатив их.
     ['test:ratchet', 'npm run test:ratchet'],
     // #160: it.only/describe.only в unit-тестах красит гейт — аналог forbidOnly Playwright
     // (playwright.config.ts, CI=1), которого у vitest нативно тоже хватает (флаг
@@ -1455,6 +1455,12 @@ const BASE_GATE_CHECKS = [
     // без прогона, как и test:ratchet) — стоит вторым, сразу после храповика, до дорогих
     // build/test.
     ['test:only-detect', 'npm run test:only-detect'],
+    // #161: it.skip/describe.skip в unit-тестах красит гейт — режим (а) (research.md,
+    // #159): красный на ЛЮБОЙ новый skip вне точечных исключений с обоснованием
+    // (scripts/skip-baseline.json). В отличие от .only, у vitest нет флага «запретить
+    // .skip» — решение целиком на `git grep` (scripts/test-skip-detect.mjs), секундный,
+    // стоит третьим, сразу после only-детекта, до дорогих build/test.
+    ['test:skip-detect', 'npm run test:skip-detect'],
     // M1: build обязателен — ошибки next build (границы server/client, RSC-нюансы)
     // не ловятся ни tsc, ни vitest; без него в main мог уехать несобираемый код.
     ['build', 'npm run build'],

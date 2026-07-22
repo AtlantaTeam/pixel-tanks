@@ -2518,10 +2518,11 @@ describe('ветковая хореография в worktree раннера (#7
     describe('gateChecksFor — состав гейта по профилю (#80)', () => {
         const names = (checks) => checks.map(([name]) => name);
 
-        it('playground = ровно базовые 7 чеков, без толстых; храповик и only-детект первыми (#156, #160)', () => {
+        it('playground = ровно базовые 8 чеков, без толстых; храповик, only- и skip-детект первыми (#156, #160, #161)', () => {
             expect(names(gateChecksFor('playground'))).toEqual([
                 'test:ratchet',
                 'test:only-detect',
+                'test:skip-detect',
                 'build',
                 'lint',
                 'lint:fsd',
@@ -2534,6 +2535,7 @@ describe('ветковая хореография в worktree раннера (#7
             expect(names(gateChecksFor('prod'))).toEqual([
                 'test:ratchet',
                 'test:only-detect',
+                'test:skip-detect',
                 'build',
                 'lint',
                 'lint:fsd',
@@ -2544,16 +2546,18 @@ describe('ветковая хореография в worktree раннера (#7
             ]);
         });
 
-        it('#156/#160: храповик и only-детект стоят первыми — секундные, красный отменяет мердж до build/e2e', () => {
-            // «В начале fail-fast порядка»: `vitest list` (~6с каждый) дешевле build
-            // (минуты) и e2e (минуты), поэтому упавший чек не оплачивает дорогие следом.
-            expect(names(gateChecksFor('playground')).slice(0, 2)).toEqual([
+        it('#156/#160/#161: храповик, only- и skip-детект стоят первыми — секундные, красный отменяет мердж до build/e2e', () => {
+            // «В начале fail-fast порядка»: `vitest list`/`git grep` (секунды каждый) дешевле
+            // build (минуты) и e2e (минуты), поэтому упавший чек не оплачивает дорогие следом.
+            expect(names(gateChecksFor('playground')).slice(0, 3)).toEqual([
                 'test:ratchet',
                 'test:only-detect',
+                'test:skip-detect',
             ]);
-            expect(names(gateChecksFor('prod')).slice(0, 2)).toEqual([
+            expect(names(gateChecksFor('prod')).slice(0, 3)).toEqual([
                 'test:ratchet',
                 'test:only-detect',
+                'test:skip-detect',
             ]);
         });
 
