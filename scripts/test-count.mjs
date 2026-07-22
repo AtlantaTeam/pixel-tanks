@@ -6,41 +6,55 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 
-// #154: источник числа прогнанных unit-тестов для будущего храповика (#155/#156) —
-// детерминированный JSON-репортёр vitest (Jest-совместимый формат: numTotalTests и
-// соседние поля — контракт vitest, не наш), а НЕ парсинг человекочитаемого stdout.
-// Текстовый вывод (`vitest run`) меняется между версиями/локалями и никогда не был
-// контрактом — regex по нему рано или поздно молча ломается на безобидном апдейте.
+// #154: источник числа unit-тестов для храповика (#156) — детерминированный машинный
+// отчёт vitest, а НЕ парсинг человекочитаемого stdout (текстовый вывод меняется между
+// версиями/локалями и никогда не был контрактом — regex по нему рано или поздно молча
+// ломается на безобидном апдейте).
 //
-// --outputFile, не голый stdout: json-репортёр без outputFile печатает JSON в тот же
-// stdout, где могут всплыть console.log/warn из самих тестов — один смешанный поток
-// JSON.parse не переживёт. Файл на диске — чистый канал.
+// `vitest list` (СБОР тест-кейсов без прогона), а не `vitest run` (#156): храповику нужно
+// только число существующих тестов, а не результат прогона. Число совпадает с numTotalTests
+// полного прогона (сбор считает те же тест-кейсы, включая пропущенные) — проверено на этом
+// репозитории, — поэтому гейт-чек храповика попадает в НАЧАЛО fail-fast порядка
+// («секундный», #156) и не дублирует ~20-секундный `test`, который гейт и так гоняет.
+//
+// --no-isolate — вот что делает чек «секундным»: голый `vitest list` тратит ~20с (замер),
+// потому что изоляция поднимает свежее окружение (happy-dom) под КАЖДЫЙ из ~50 файлов
+// app-проекта; для СБОРА (файлы только импортируются ради перечня it(), тесты не
+// исполняются) изоляция не нужна. Без неё — ~6с, и число то же (флаг влияет на семантику
+// ИСПОЛНЕНИЯ, не на сбор — проверено). Это нижний предел честного независимого подсчёта:
+// трансформ исходников app эсбилдом; быстрее только читая артефакт чужого прогона, но тогда
+// чек уже не «в начале» и зависит от порядка чеков.
+//
+// Пул НЕ трогаем (дефолтные forks): `--pool=threads` под `--no-isolate` даёт НЕДЕТЕРМИНИРО-
+// ванный счёт (замер: 919/939/930 в разных прогонах) — потоки делят память и гонятся на
+// сборе, а храповику это отравой: счёт обязан быть детерминированным, иначе гейт краснеет по
+// флаку, а не по потере тестов. Forks — отдельные процессы, гонки нет, счёт стабилен от
+// прогона к прогону (проверено 5×).
+//
+// --json=<file>, не голый stdout: vite может подмешать в stdout предупреждения сбора —
+// один смешанный поток JSON.parse не переживёт. Файл на диске — чистый канал.
 function defaultOutputFile() {
-    return path.join(os.tmpdir(), `vitest-report-${process.pid}-${Date.now()}.json`);
+    return path.join(os.tmpdir(), `vitest-list-${process.pid}-${Date.now()}.json`);
 }
 
-// Ненулевой код спавна здесь ОЖИДАЕМ (упавшие тесты — обычный исход) — не сбой запуска,
-// поэтому статус процесса не проверяем. Сбой самого запуска (vitest не смог стартовать)
-// не пишет outputFile вовсе — это и ловится ниже при чтении, fail-closed.
+// Ненулевой код спавна тут возможен (например, ошибка сбора в одном файле) — но список
+// пишется в файл, и решение принимает чтение ниже: файла нет → fail-closed throw. Сбой
+// самого запуска (vitest не стартовал) файла не пишет — ловится там же.
 //
 // --no-install у npx: без него отсутствие локального vitest ушло бы в сеть за пакетом —
 // ровно та зависимость гейта от сети, которая уже один раз красила build (#206).
-export function runTestsJson(spawnFn = spawnSync, outputFile = defaultOutputFile()) {
-    spawnFn(
-        'npx',
-        ['--no-install', 'vitest', 'run', '--reporter=json', `--outputFile=${outputFile}`],
-        {
-            encoding: 'utf8',
-            maxBuffer: 16 * 1024 * 1024,
-        },
-    );
+export function collectTestsJson(spawnFn = spawnSync, outputFile = defaultOutputFile()) {
+    spawnFn('npx', ['--no-install', 'vitest', 'list', '--no-isolate', `--json=${outputFile}`], {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+    });
 
     let raw;
     try {
         raw = readFileSync(outputFile, 'utf8');
     } catch (e) {
         throw new Error(
-            `vitest не записал JSON-отчёт в ${outputFile} — сбой запуска: ${e.message}`,
+            `vitest не записал список тестов в ${outputFile} — сбой сбора: ${e.message}`,
         );
     } finally {
         try {
@@ -53,29 +67,36 @@ export function runTestsJson(spawnFn = spawnSync, outputFile = defaultOutputFile
     try {
         return JSON.parse(raw);
     } catch (e) {
-        throw new Error(`JSON-отчёт vitest в ${outputFile} не распарсился: ${e.message}`);
+        throw new Error(`список тестов vitest в ${outputFile} не распарсился: ${e.message}`);
     }
 }
 
-// Формат отчёта зафиксирован (vitest JSON-репортёр, Jest-совместимый): численное поле
-// numTotalTests. Нечитаемый/неожиданный формат — throw, не «посчитаем как 0»: тихий 0
-// на сломанном отчёте будущий храповик (#156) прочитал бы как «все тесты пропали» и
-// покрасил бы гейт по ложной причине, либо — того хуже — как «тестов нет, порог 0».
+// Формат зафиксирован (vitest list --json): МАССИВ записей о тест-кейсах, у каждой строковые
+// name и file. Число тестов = длина массива. Неожиданный формат (не массив, запись без
+// строковых name/file) — throw, не «посчитаем как есть»: тихий счёт по сломанному отчёту
+// храповик (#156) прочитал бы как «тесты пропали» и покрасил бы гейт по ложной причине.
 export function countTests(report) {
-    const n = report?.numTotalTests;
-    if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) {
+    if (!Array.isArray(report)) {
         throw new Error(
-            `vitest JSON-отчёт без корректного numTotalTests — формат репортёра неожиданный ` +
-                `(получено: ${JSON.stringify(n)})`,
+            `vitest list --json вернул не массив — формат репортёра неожиданный ` +
+                `(получено: ${JSON.stringify(report)})`,
         );
     }
-    return n;
+    for (const entry of report) {
+        if (typeof entry?.name !== 'string' || typeof entry?.file !== 'string') {
+            throw new Error(
+                `запись списка тестов без строковых name/file — формат vitest list изменился ` +
+                    `(получено: ${JSON.stringify(entry)})`,
+            );
+        }
+    }
+    return report.length;
 }
 
 function main() {
     let report;
     try {
-        report = runTestsJson();
+        report = collectTestsJson();
     } catch (e) {
         console.error(`⛔ test-count: ${e.message}`);
         process.exit(1);

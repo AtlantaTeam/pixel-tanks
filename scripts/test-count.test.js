@@ -2,51 +2,45 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { countTests, runTestsJson } from './test-count.mjs';
+import { collectTestsJson, countTests } from './test-count.mjs';
 
-// #154: источник числа тестов — JSON-репортёр vitest, не парсинг stdout. Фикстура ниже —
-// реальная форма отчёта (Jest-совместимый json-репортёр vitest), снятая прогоном
-// `vitest run --reporter=json --outputFile=...` на этом репозитории.
-const jsonReport = (overrides = {}) => ({
-    numTotalTestSuites: 7,
-    numPassedTestSuites: 7,
-    numFailedTestSuites: 0,
-    numPendingTestSuites: 0,
-    numTotalTests: 40,
-    numPassedTests: 40,
-    numFailedTests: 0,
-    numPendingTests: 0,
-    numTodoTests: 0,
-    success: true,
-    testResults: [],
+// #154: источник числа тестов — машинный отчёт vitest, не парсинг stdout. Здесь — форма
+// вывода `vitest list --json`: массив записей о тест-кейсах, у каждой строковые name/file
+// (снято реальным прогоном `vitest list --json=...` на этом репозитории).
+const listEntry = (overrides = {}) => ({
+    name: 'модуль > сценарий',
+    file: '/repo/scripts/foo.test.js',
+    projectName: 'ralph',
     ...overrides,
 });
 
 describe('countTests', () => {
-    it('берёт numTotalTests из машинного отчёта', () => {
-        expect(countTests(jsonReport({ numTotalTests: 123 }))).toBe(123);
+    it('число тестов = длина массива записей списка', () => {
+        expect(countTests([listEntry(), listEntry(), listEntry()])).toBe(3);
     });
 
-    it('падает на отчёте без numTotalTests — формат неожиданный, не «посчитаем как 0»', () => {
-        const withoutCount = jsonReport();
-        delete withoutCount.numTotalTests;
-        expect(() => countTests(withoutCount)).toThrow(/numTotalTests/);
+    it('пустой список — ноль тестов (валидный массив, не ошибка формата)', () => {
+        expect(countTests([])).toBe(0);
     });
 
-    it('падает, когда numTotalTests не число — испорченный/чужой формат отчёта', () => {
-        expect(() => countTests(jsonReport({ numTotalTests: '40' }))).toThrow(/numTotalTests/);
-    });
-
-    it('падает на отрицательном numTotalTests', () => {
-        expect(() => countTests(jsonReport({ numTotalTests: -1 }))).toThrow(/numTotalTests/);
+    it('падает, когда отчёт не массив — формат неожиданный, не «посчитаем как есть»', () => {
+        expect(() => countTests({ numTotalTests: 40 })).toThrow(/не массив/);
     });
 
     it('падает на null-отчёте — нечего читать', () => {
-        expect(() => countTests(null)).toThrow(/numTotalTests/);
+        expect(() => countTests(null)).toThrow(/не массив/);
+    });
+
+    it('падает, когда у записи нет строкового name — формат vitest list изменился', () => {
+        expect(() => countTests([listEntry({ name: undefined })])).toThrow(/name\/file/);
+    });
+
+    it('падает, когда у записи нет строкового file — формат vitest list изменился', () => {
+        expect(() => countTests([listEntry({ file: 123 })])).toThrow(/name\/file/);
     });
 });
 
-describe('runTestsJson', () => {
+describe('collectTestsJson', () => {
     let tmpDir;
 
     afterEach(() => {
@@ -56,51 +50,62 @@ describe('runTestsJson', () => {
 
     function tmpOutputFile() {
         tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'test-count-'));
-        return path.join(tmpDir, 'report.json');
+        return path.join(tmpDir, 'list.json');
     }
 
-    it('читает отчёт, который спавн-функция записала в outputFile', () => {
+    it('читает список, который спавн-функция записала в outputFile', () => {
         const outputFile = tmpOutputFile();
         const spawnFn = (cmd, args) => {
-            // Реальный vitest сам пишет JSON в --outputFile=... — здесь имитируем это,
+            // Реальный vitest сам пишет JSON в --json=<file> — здесь имитируем это,
             // не запуская настоящий процесс из теста.
-            expect(args).toContain(`--outputFile=${outputFile}`);
-            fs.writeFileSync(outputFile, JSON.stringify(jsonReport({ numTotalTests: 7 })));
+            expect(args).toContain(`--json=${outputFile}`);
+            fs.writeFileSync(outputFile, JSON.stringify([listEntry(), listEntry()]));
             return { status: 0 };
         };
-        expect(runTestsJson(spawnFn, outputFile)).toEqual(
-            expect.objectContaining({ numTotalTests: 7 }),
-        );
+        expect(collectTestsJson(spawnFn, outputFile)).toHaveLength(2);
     });
 
-    it('не парсит человекочитаемый вывод — команда зовётся с --reporter=json', () => {
+    it('собирает без прогона — команда зовётся с vitest list, не vitest run', () => {
         const outputFile = tmpOutputFile();
         let calledArgs;
         const spawnFn = (cmd, args) => {
             calledArgs = args;
-            fs.writeFileSync(outputFile, JSON.stringify(jsonReport()));
+            fs.writeFileSync(outputFile, JSON.stringify([listEntry()]));
             return { status: 0 };
         };
-        runTestsJson(spawnFn, outputFile);
-        expect(calledArgs).toContain('--reporter=json');
+        collectTestsJson(spawnFn, outputFile);
+        expect(calledArgs).toContain('list');
+        expect(calledArgs).not.toContain('run');
     });
 
-    it('ненулевой код спавна (упавшие тесты) — не сбой запуска, отчёт всё равно читается', () => {
+    it('секундный сбор — зовётся с --no-isolate (иначе изоляция раздувает сбор до ~20с)', () => {
         const outputFile = tmpOutputFile();
-        const spawnFn = () => {
-            fs.writeFileSync(
-                outputFile,
-                JSON.stringify(jsonReport({ numTotalTests: 5, numFailedTests: 1 })),
-            );
-            return { status: 1 };
+        let calledArgs;
+        const spawnFn = (cmd, args) => {
+            calledArgs = args;
+            fs.writeFileSync(outputFile, JSON.stringify([listEntry()]));
+            return { status: 0 };
         };
-        expect(runTestsJson(spawnFn, outputFile).numTotalTests).toBe(5);
+        collectTestsJson(spawnFn, outputFile);
+        expect(calledArgs).toContain('--no-isolate');
+    });
+
+    it('не ходит в сеть — npx зовётся с --no-install', () => {
+        const outputFile = tmpOutputFile();
+        let calledArgs;
+        const spawnFn = (cmd, args) => {
+            calledArgs = args;
+            fs.writeFileSync(outputFile, JSON.stringify([listEntry()]));
+            return { status: 0 };
+        };
+        collectTestsJson(spawnFn, outputFile);
+        expect(calledArgs).toContain('--no-install');
     });
 
     it('падает, если outputFile не появился — сбой самого запуска vitest', () => {
         const outputFile = tmpOutputFile();
         const spawnFn = () => ({ status: 1, error: new Error('spawn ENOENT') });
-        expect(() => runTestsJson(spawnFn, outputFile)).toThrow();
+        expect(() => collectTestsJson(spawnFn, outputFile)).toThrow(/сбой сбора/);
     });
 
     it('падает на нечитаемом/битом JSON в outputFile — fail-closed, не «пропустим»', () => {
@@ -109,6 +114,6 @@ describe('runTestsJson', () => {
             fs.writeFileSync(outputFile, '{ не json');
             return { status: 0 };
         };
-        expect(() => runTestsJson(spawnFn, outputFile)).toThrow();
+        expect(() => collectTestsJson(spawnFn, outputFile)).toThrow(/не распарсился/);
     });
 });
