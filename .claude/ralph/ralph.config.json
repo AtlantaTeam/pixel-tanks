@@ -13,6 +13,11 @@
         "gateHealAttempts": 2,
         "apiLimitMaxWaits": 3,
         "apiLimitGraceMin": 5,
+        "deployCheck": {
+            "workflow": "deploy.yml",
+            "timeoutMs": 1200000,
+            "pollIntervalMs": 15000
+        },
         "deadman": {
             "iterationGraceMs": 600000,
             "gateSilenceMs": 600000,

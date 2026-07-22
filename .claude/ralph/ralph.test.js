@@ -53,6 +53,8 @@ const {
     gateChecksFor,
     checksGreen,
     tryMergePhase,
+    waitForDeployRun,
+    mergedShaOf,
     getLastRedCheck,
     getVerifiedHead,
     getLastGatePr,
@@ -1374,6 +1376,11 @@ describe('runLoop — основной while-цикл: итерации коде
             // выше — без него тест, не переопределивший ensureMonitorAliveFn явно, звал бы
             // НАСТОЯЩИЙ ensureMonitorAlive (реальные fs.readFileSync/spawn монитора).
             ensureMonitorAliveFn: () => null,
+            // #163: безопасные заглушки пост-мердж проверки — без них prod-сценарий,
+            // доходящий до gate === 'merged', звал бы НАСТОЯЩИЕ mergedShaOf/waitForDeployRun
+            // (реальные gh-чтения через sh → предохранитель #138).
+            mergedShaOfFn: () => 'a'.repeat(40),
+            waitForDeployRunFn: () => ({ status: 'completed', conclusion: 'success' }),
             ...o,
         };
     };
@@ -1704,6 +1711,58 @@ describe('runLoop — основной while-цикл: итерации коде
         // #87: prod останавливается ПЕРЕД деплоем — второй проход while (следующая фаза)
         // не должен состояться, phaseIndexOfFn зовётся ровно 1 раз.
         expect(phaseIndexOfFn).toHaveBeenCalledTimes(1);
+        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+    });
+
+    it('#163 prod: после merged раннер дожидается итога deploy-workflow на смердженном sha', () => {
+        const logs = [];
+        const mergedShaOfFn = vi.fn(() => 'a'.repeat(40));
+        const waitForDeployRunFn = vi.fn(() => ({ status: 'completed', conclusion: 'success' }));
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                mergedShaOfFn,
+                waitForDeployRunFn,
+            }),
+        );
+        // sha мерджа получен и передан в ожидание итога workflow.
+        expect(mergedShaOfFn).toHaveBeenCalledTimes(1);
+        expect(waitForDeployRunFn).toHaveBeenCalledTimes(1);
+        expect(waitForDeployRunFn.mock.calls[0][0]).toBe('a'.repeat(40));
+        expect(logs.join('\n')).toMatch(/итог workflow — completed \(success\)/);
+    });
+
+    it('#163 prod: сбой получения sha/итога деплоя не роняет loop — логируется и стоп перед деплоем', () => {
+        const logs = [];
+        const waitForDeployRunFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                mergedShaOfFn: () => {
+                    throw new Error('gh недоступен');
+                },
+                waitForDeployRunFn,
+            }),
+        );
+        // sha получить не удалось → ожидание итога не зовём, но loop не падает.
+        expect(waitForDeployRunFn).not.toHaveBeenCalled();
+        expect(logs.join('\n')).toMatch(/не удалось дождаться итога деплоя/);
         expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
     });
 
@@ -2814,6 +2873,148 @@ describe('ветковая хореография в worktree раннера (#7
             expect(tryMergePhase(phase, deps)).toBe('not-merged');
             expect(findOpenPrFn).not.toHaveBeenCalled();
         });
+    });
+});
+
+describe('waitForDeployRun — ожидание итога deploy-workflow на смердженном sha (#163)', () => {
+    const SHA = 'a'.repeat(40);
+    const OTHER = 'b'.repeat(40);
+    // Детерминированные часы: nowFn читает clock, sleepFn его двигает. Так цикл
+    // ожидания завершается предсказуемо без реального времени/сна.
+    const mkClock = () => {
+        const c = { t: 0 };
+        return {
+            nowFn: () => c.t,
+            sleepFn: (ms) => {
+                c.t += ms;
+            },
+        };
+    };
+    // Конфиг с коротким таймаутом/поллом, чтобы фейковые часы упирались за пару шагов.
+    const cfg = (o = {}) => ({
+        deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20, ...o },
+    });
+
+    it('завершённый workflow на нужном sha → {status: completed, conclusion}', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 42, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
+        expect(out).toEqual({
+            status: 'completed',
+            conclusion: 'success',
+            sha: SHA,
+            url: 'u',
+            runId: 42,
+        });
+        // Досмотрен на первом же опросе — sleep не понадобился.
+        expect(sleepFn).toBeDefined();
+    });
+
+    it('поллит, пока workflow in_progress, и возвращает итог, когда завершится', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const responses = [
+            [{ databaseId: 7, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' }],
+            [{ databaseId: 7, headSha: SHA, status: 'queued', conclusion: null, url: 'u' }],
+            [{ databaseId: 7, headSha: SHA, status: 'completed', conclusion: 'failure', url: 'u' }],
+        ];
+        let i = 0;
+        const ghJsonFn = vi.fn(() => responses[Math.min(i++, responses.length - 1)]);
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        expect(out.status).toBe('completed');
+        expect(out.conclusion).toBe('failure');
+        expect(ghJsonFn).toHaveBeenCalledTimes(3);
+    });
+
+    it('сетевой чих (ghJson бросает) не роняет ожидание — следующий опрос доводит до итога', () => {
+        const { nowFn, sleepFn } = mkClock();
+        let call = 0;
+        const ghJsonFn = vi.fn(() => {
+            call++;
+            if (call === 1) throw new Error('gh: connection reset');
+            return [
+                {
+                    databaseId: 9,
+                    headSha: SHA,
+                    status: 'completed',
+                    conclusion: 'success',
+                    url: 'u',
+                },
+            ];
+        });
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        // Чих не дал ложного красного — дождались зелёного на следующем опросе.
+        expect(out.status).toBe('completed');
+        expect(out.conclusion).toBe('success');
+        expect(ghJsonFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('run на нужном sha так и не завершился за таймаут → status: timeout (не зелёный и не красный)', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 3, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
+        expect(out.status).toBe('timeout');
+        expect(out.conclusion).toBeNull();
+        expect(out.runId).toBe(3);
+    });
+
+    it('run на смердженном sha не появился за таймаут → status: not-found', () => {
+        const { nowFn, sleepFn } = mkClock();
+        // Есть чужие раны, но не на нашем sha — фильтр по headSha их игнорирует.
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 1, headSha: OTHER, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
+        expect(out.status).toBe('not-found');
+        expect(out.runId).toBeNull();
+    });
+
+    it('fail-closed: невалидный sha → бросает, а не «зелёный по умолчанию»', () => {
+        expect(() => waitForDeployRun('not-a-sha', cfg(), { ghJsonFn: () => [] })).toThrow();
+    });
+
+    it('workflow и параметры ожидания берутся из конфига (deployCheck)', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 5, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        waitForDeployRun(SHA, cfg({ workflow: 'release.yml' }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        expect(ghJsonFn.mock.calls[0][0]).toContain("--workflow 'release.yml'");
+    });
+});
+
+describe('mergedShaOf — sha squash-мерджа PR (#163)', () => {
+    const SHA = 'c'.repeat(40);
+
+    it('возвращает oid mergeCommit', () => {
+        const ghJsonFn = vi.fn(() => ({ mergeCommit: { oid: SHA } }));
+        expect(mergedShaOf(12, { ghJsonFn })).toBe(SHA);
+        expect(ghJsonFn.mock.calls[0][0]).toContain("gh pr view '12'");
+    });
+
+    it('fail-closed: mergeCommit отсутствует/невалиден → бросает', () => {
+        expect(() => mergedShaOf(12, { ghJsonFn: () => ({ mergeCommit: null }) })).toThrow();
+        expect(() =>
+            mergedShaOf(12, { ghJsonFn: () => ({ mergeCommit: { oid: 'x' } }) }),
+        ).toThrow();
     });
 });
 

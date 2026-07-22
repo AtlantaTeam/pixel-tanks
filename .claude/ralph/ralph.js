@@ -1912,14 +1912,116 @@ function tryMergePhase(
 
 // Деплой фазы (#87) — явный no-op-плейсхолдер. Боевой прод уже раскатывается
 // САМ CI (.github/workflows/deploy.yml → scripts/deploy-remote.sh) по факту пуша
-// в main — squash-мердж внутри tryMergePhase выше его и запускает. Раннеру
-// незачем дублировать деплой или дожидаться его статуса; эта функция — только
-// маркер точки цикла, где prod-loop логически передаёт фазу релизу и
-// останавливается (см. runLoop, gate === 'merged'), не читая исход CI-раскатки.
+// в main — squash-мердж внутри tryMergePhase выше его и запускает. Раннеру незачем
+// ДУБЛИРОВАТЬ деплой; эта функция — только маркер точки цикла, где prod-loop
+// логически передаёт фазу релизу. Исход CI-раскатки раннер, однако, ДОЖИДАЕТСЯ
+// (#163): сразу после этого маркера runLoop зовёт waitForDeployRun на смердженном
+// sha — иначе откат деплоя остался бы в main незамеченным (см. runLoop, gate === 'merged').
 function deployPhasePlaceholder(phase, { logFn = log } = {}) {
     logFn(
         `🚀 Деплой фазы "${phase.milestone}": плейсхолдер — раскатку уже делает CI по пушу в main, раннер её не дублирует.`,
     );
+}
+
+// #163: sha squash-мерджа PR. Это ровно тот коммит, что уехал в main и запустил
+// deploy-workflow (headSha его run'а), — по нему пост-мердж проверка и следит.
+// Чтение через ghJson (ретраи). Fail-closed: без валидного oid — бросаем, «не смог
+// узнать sha» и «деплой прошёл» — разные ответы, молчаливый пропуск здесь недопустим.
+function mergedShaOf(prNumber, { ghJsonFn = ghJson } = {}) {
+    const view = ghJsonFn(`gh pr view ${shq(prNumber)} --json mergeCommit`);
+    const oid = view && view.mergeCommit && view.mergeCommit.oid;
+    if (!SHA40_RE.test(String(oid))) {
+        throw new Error(`mergedShaOf: не удалось получить sha мерджа PR #${prNumber}`);
+    }
+    return oid;
+}
+
+// #163: После squash-мерджа фазы deploy-workflow раскатывает main на прод. Прежде
+// чем строить следующую фазу поверх этого main, раннер (prod) ДОЖИДАЕТСЯ итога
+// workflow на смердженном sha — иначе откат раскатки остаётся в main и следующий
+// мердж передеплоит битый коммит. Возвращает {status, conclusion, sha, url, runId}:
+//   status='completed' — workflow досмотрен, conclusion — его итог (success/failure/…);
+//   status='timeout'   — run найден, но не завершился за timeoutMs (итог не считаем ни
+//                        зелёным, ни красным — решение стоп+пуш за #165);
+//   status='not-found' — run на sha так и не появился за таймаут.
+// Только ЧТЕНИЕ gh run (ретраи внутри ghJson): прод и main не трогаем (#166). Устойчивый
+// сетевой чих (ghJson исчерпал свои ретраи) не роняет всё ожидание — впереди ещё поллы,
+// один чих не даёт ложного красного. Часы (nowFn) инжектируемы ради детерминизма тестов.
+function waitForDeployRun(
+    sha,
+    cfg = config,
+    { ghJsonFn = ghJson, sleepFn = sleep, logFn = log, nowFn = Date.now } = {},
+) {
+    // fail-closed: без валидного sha следить не за чем — это ошибка вызывающего,
+    // а не повод молча вернуть «всё хорошо».
+    if (!SHA40_RE.test(String(sha))) {
+        throw new Error(`waitForDeployRun: невалидный sha "${sha}"`);
+    }
+    const dc = (cfg && cfg.deployCheck) || {};
+    const workflow = typeof dc.workflow === 'string' && dc.workflow ? dc.workflow : 'deploy.yml';
+    const timeoutMs = positiveIntOrDefault(dc.timeoutMs, 1_200_000);
+    const pollIntervalMs = positiveIntOrDefault(dc.pollIntervalMs, 15_000);
+
+    logFn(
+        `⏳ Пост-мердж: жду итог deploy-workflow «${workflow}» на sha ${sha.slice(0, 8)} ` +
+            `(таймаут ${Math.round(timeoutMs / 60000)} мин).`,
+    );
+
+    const start = nowFn();
+    let lastSeen = null;
+    while (nowFn() - start < timeoutMs) {
+        let runs;
+        try {
+            runs = ghJsonFn(
+                `gh run list --workflow ${shq(workflow)} ` +
+                    `--json databaseId,headSha,status,conclusion,url --limit 30`,
+            );
+        } catch (e) {
+            // ghJson уже отретраил свой набор попыток; устойчивый чих не роняет всё
+            // ожидание — до таймаута ещё поллы, ложного красного он не даёт.
+            logFn(
+                `⚠ Пост-мердж: чтение gh run не удалось (${String(e.message).split('\n')[0]}) — ` +
+                    `повтор на следующем опросе.`,
+            );
+            sleepFn(pollIntervalMs);
+            continue;
+        }
+        const run = (Array.isArray(runs) ? runs : []).find((r) => r && r.headSha === sha);
+        if (run) {
+            lastSeen = run;
+            if (run.status === 'completed') {
+                logFn(
+                    `✓ Пост-мердж: deploy-workflow на ${sha.slice(0, 8)} завершён — ` +
+                        `итог «${run.conclusion}».`,
+                );
+                return {
+                    status: 'completed',
+                    conclusion: run.conclusion ?? null,
+                    sha,
+                    url: run.url ?? null,
+                    runId: run.databaseId ?? null,
+                };
+            }
+        }
+        sleepFn(pollIntervalMs);
+    }
+    // Таймаут. Итог не досмотрен — не выдаём его за зелёный (риск ложного красного на
+    // каждом мердже как раз в обратную сторону: молча «сойдёт» опаснее честного «не знаю»).
+    if (lastSeen) {
+        logFn(
+            `⚠ Пост-мердж: deploy-workflow на ${sha.slice(0, 8)} не завершился за таймаут ` +
+                `(последний статус «${lastSeen.status}»).`,
+        );
+        return {
+            status: 'timeout',
+            conclusion: null,
+            sha,
+            url: lastSeen.url ?? null,
+            runId: lastSeen.databaseId ?? null,
+        };
+    }
+    logFn(`⚠ Пост-мердж: deploy-workflow на ${sha.slice(0, 8)} не найден за таймаут ожидания.`);
+    return { status: 'not-found', conclusion: null, sha, url: null, runId: null };
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -2179,6 +2281,8 @@ function runLoop(
         getLastGatePr = () => lastGatePr,
         pushEventFn = pushEvent,
         deployPhaseFn = deployPhasePlaceholder,
+        mergedShaOfFn = mergedShaOf,
+        waitForDeployRunFn = waitForDeployRun,
         ensureMonitorAliveFn = ensureMonitorAlive,
         monitorConfigPath,
     } = {},
@@ -2532,6 +2636,24 @@ function runLoop(
                 // continue как раньше, следующая фаза стартует с обновлённого main.
                 if (cfg.profileName === 'prod') {
                     deployPhaseFn(phase, { logFn });
+                    // #163: дождаться итога deploy-workflow на смердженном sha прежде
+                    // чем отдать фазу релизу — иначе откат раскатки остаётся в main и
+                    // следующий мердж передеплоит битый коммит. Только ЧТЕНИЕ gh run
+                    // (ретраи внутри, прод/main не трогаем — #166). Реакция на красный
+                    // итог (стоп + пуш) — #165; здесь фиксируем факт в логе.
+                    try {
+                        const mergedSha = mergedShaOfFn(getLastGatePr());
+                        const outcome = waitForDeployRunFn(mergedSha, cfg, { logFn });
+                        logFn(
+                            `🚀 Пост-мердж деплой фазы "${phase.milestone}": итог workflow — ` +
+                                `${outcome.status}${outcome.conclusion ? ` (${outcome.conclusion})` : ''}.`,
+                        );
+                    } catch (e) {
+                        logFn(
+                            `⚠ Пост-мердж: не удалось дождаться итога деплоя фазы ` +
+                                `"${phase.milestone}" (${String(e.message).split('\n')[0]}).`,
+                        );
+                    }
                     logFn(
                         `⏸ Ralph: фаза "${phase.milestone}" — loop остановлен перед деплоем (prod). Следующая фаза начнётся со следующего запуска.`,
                     );
@@ -3212,6 +3334,8 @@ module.exports = {
     checksGreen,
     tryMergePhase,
     deployPhasePlaceholder,
+    mergedShaOf,
+    waitForDeployRun,
     getLastRedCheck: () => lastRedCheck,
     getVerifiedHead: () => lastVerifiedHead,
     getLastGatePr: () => lastGatePr,
