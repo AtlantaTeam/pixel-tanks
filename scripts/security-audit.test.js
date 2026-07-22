@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     collectAdvisories,
+    gitBaseBaseline,
+    gitChangedFiles,
     countBySeverity,
     diffBaseline,
     loadBaseline,
@@ -210,5 +212,41 @@ describe('runAudit', () => {
     it('бросает, если npm audit не вернул stdout (сеть недоступна и т.п.) — fail-closed', () => {
         const spawnFn = vi.fn(() => ({ stdout: '', status: null, error: new Error('ENOENT') }));
         expect(() => runAudit(spawnFn)).toThrow();
+    });
+});
+
+// #207: базовые факты для политики baseline берутся из git — их агент подделать не может.
+describe('gitChangedFiles / gitBaseBaseline', () => {
+    it('возвращает список изменённых файлов относительно origin/main', () => {
+        const spawnFn = vi.fn().mockReturnValue({ status: 0, stdout: 'package.json\nsrc/a.ts\n' });
+        expect(gitChangedFiles(spawnFn)).toEqual(['package.json', 'src/a.ts']);
+        expect(spawnFn.mock.calls[0][1]).toEqual(['diff', '--name-only', 'origin/main...HEAD']);
+    });
+
+    it('бросает, когда git недоступен — политику молча не пропускаем', () => {
+        const spawnFn = vi.fn().mockReturnValue({ status: 128, stdout: '', stderr: 'not a repo' });
+        expect(() => gitChangedFiles(spawnFn)).toThrow(/not a repo/);
+    });
+
+    it('пустой дифф — пустой список, не ошибка', () => {
+        const spawnFn = vi.fn().mockReturnValue({ status: 0, stdout: '' });
+        expect(gitChangedFiles(spawnFn)).toEqual([]);
+    });
+
+    it('читает базовую версию baseline из origin/main', () => {
+        const spawnFn = vi
+            .fn()
+            .mockReturnValue({ status: 0, stdout: JSON.stringify({ advisories: [{ id: 1 }] }) });
+        expect(gitBaseBaseline(spawnFn)).toEqual([{ id: 1 }]);
+    });
+
+    it('отсутствие файла в origin/main — пустой базовый набор (первое появление baseline)', () => {
+        const spawnFn = vi.fn().mockReturnValue({ status: 128, stdout: '' });
+        expect(gitBaseBaseline(spawnFn)).toEqual([]);
+    });
+
+    it('битый baseline в origin/main — стоп, а не «сверим как есть»', () => {
+        const spawnFn = vi.fn().mockReturnValue({ status: 0, stdout: '{"advisories":"нет"}' });
+        expect(() => gitBaseBaseline(spawnFn)).toThrow(/без массива advisories/);
     });
 });
