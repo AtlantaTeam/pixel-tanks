@@ -21,14 +21,17 @@ const statusField = {
     options: [todoOption, { id: 'opt-wip', name: 'In Progress' }, doneOption],
 };
 
-const item = (id, number, typename, state, optionId) => ({
+const item = (id, number, typename, state, optionId, extra = {}) => ({
     id,
+    isArchived: false,
     content: { __typename: typename, number, state },
     fieldValues: {
+        pageInfo: { hasNextPage: false },
         nodes: optionId
             ? [{ optionId, field: { name: 'Status' } }]
             : [{ field: { name: 'Labels' } }],
     },
+    ...extra,
 });
 
 const page = (nodes, { hasNextPage = false, endCursor = null, field = statusField } = {}) => ({
@@ -54,9 +57,21 @@ describe('isClosed', () => {
         expect(isClosed({ __typename: 'Issue', state: 'OPEN' })).toBe(false);
     });
 
-    it('незнакомый тип контента закрытым не считает — черновик доски не трогаем', () => {
-        expect(isClosed({ __typename: 'DraftIssue', state: 'CLOSED' })).toBe(false);
+    it('черновик доски пропускает молча — у него нет состояния, синкать нечего', () => {
+        expect(isClosed({ __typename: 'DraftIssue' })).toBe(false);
         expect(isClosed(undefined)).toBe(false);
+    });
+
+    it('бросает на незнакомом типе карточки — судить о нём синк не берётся', () => {
+        expect(() => isClosed({ __typename: 'Discussion', state: 'CLOSED' })).toThrow(
+            /незнакомый тип карточки "Discussion"/,
+        );
+    });
+
+    it('бросает на незнакомом состоянии — enum GitHub изменился, молчать нельзя', () => {
+        expect(() => isClosed({ __typename: 'Issue', number: 7, state: 'closed' })).toThrow(
+            /Issue #7 в незнакомом состоянии "closed"/,
+        );
     });
 });
 
@@ -74,6 +89,17 @@ describe('pickStale', () => {
     it('идемпотентность: карточка уже в Done в правку не попадает', () => {
         const items = [item('i1', 82, 'Issue', 'CLOSED', doneOption.id)];
         expect(pickStale(items, doneOption.id)).toEqual([]);
+    });
+
+    it('архивную карточку не трогает — мутацию по ней API отвергнет', () => {
+        const items = [item('i1', 80, 'Issue', 'CLOSED', 'opt-wip', { isArchived: true })];
+        expect(pickStale(items, doneOption.id)).toEqual([]);
+    });
+
+    it('бросает, когда значения полей карточки усечены — Status мог не попасть', () => {
+        const truncated = item('i1', 80, 'Issue', 'CLOSED', 'opt-wip');
+        truncated.fieldValues.pageInfo.hasNextPage = true;
+        expect(() => pickStale([truncated], doneOption.id)).toThrow(/сверка ненадёжна/);
     });
 
     it('открытый issue не трогает, даже если он в Todo', () => {
@@ -128,6 +154,11 @@ describe('fetchBoard', () => {
         expect(() => fetchBoard(ghFn)).toThrow(/формат Projects API изменился/);
     });
 
+    it('бросает, когда пагинация не сходится — защита от бесконечного цикла', () => {
+        const ghFn = vi.fn(() => page([], { hasNextPage: true, endCursor: 'cur' }));
+        expect(() => fetchBoard(ghFn)).toThrow(/не сошлась за 50 страниц/);
+    });
+
     it('бросает, когда hasNextPage=true без курсора — пагинация ненадёжна', () => {
         const ghFn = vi.fn().mockReturnValue(page([], { hasNextPage: true, endCursor: null }));
         expect(() => fetchBoard(ghFn)).toThrow(/без endCursor/);
@@ -138,6 +169,17 @@ describe('runGh', () => {
     it('бросает с текстом stderr, когда gh упал', () => {
         const spawnFn = vi.fn().mockReturnValue({ status: 1, stdout: '', stderr: 'HTTP 401' });
         expect(() => runGh(['api', 'graphql'], spawnFn)).toThrow(/HTTP 401/);
+    });
+
+    it('парсит JSON успешного ответа и ставит таймаут — повисший gh не вешает прогон', () => {
+        const spawnFn = vi.fn().mockReturnValue({ status: 0, stdout: '{"data":{"ok":true}}' });
+        expect(runGh(['api', 'graphql'], spawnFn)).toEqual({ data: { ok: true } });
+        expect(spawnFn.mock.calls[0][2].timeout).toBeGreaterThan(0);
+    });
+
+    it('не теряет диагностику, когда stderr пуст — сообщение не обрывается', () => {
+        const spawnFn = vi.fn().mockReturnValue({ status: 3, stdout: '', stderr: '' });
+        expect(() => runGh(['api', 'graphql'], spawnFn)).toThrow(/код 3/);
     });
 
     it('бросает, когда gh вернул пустой вывод при нулевом коде', () => {
@@ -201,6 +243,24 @@ describe('syncBoard', () => {
 
         expect(syncBoard({ ghFn, logFn: vi.fn() })).toEqual({ scanned: 1, updated: 0 });
         expect(ghFn).toHaveBeenCalledTimes(1); // только чтение
+    });
+
+    it('ошибка мутации доходит наружу, а уже применённые правки не откатываются', () => {
+        const items = [
+            item('i1', 80, 'Issue', 'CLOSED', 'opt-wip'),
+            item('i2', 81, 'Issue', 'CLOSED', 'opt-wip'),
+        ];
+        const logFn = vi.fn();
+        const ghFn = vi
+            .fn()
+            .mockReturnValueOnce(page(items))
+            .mockReturnValueOnce({ data: {} })
+            .mockImplementationOnce(() => {
+                throw new Error('secondary rate limit');
+            });
+
+        expect(() => syncBoard({ ghFn, logFn })).toThrow(/secondary rate limit/);
+        expect(logFn).toHaveBeenCalledTimes(1); // первая карточка успела примениться
     });
 
     it('не мутирует ничего, когда доска отдала непонятный формат', () => {

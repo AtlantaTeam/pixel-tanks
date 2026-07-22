@@ -1546,6 +1546,37 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(logs.join('\n')).toMatch(/уже прошла PR\/ревью\/правки/);
     });
 
+    it('зовёт синк в начале итерации — issues закрываются асинхронно после мерджа', () => {
+        const syncProjectBoardFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps([], {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => true, // фаза уже смерджена → выход после первой итерации
+                syncProjectBoardFn,
+            }),
+        );
+        expect(syncProjectBoardFn).toHaveBeenCalled();
+    });
+
+    it('в dry-run доску не трогает', () => {
+        const syncProjectBoardFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps([], {
+                dry: true,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => true,
+                syncProjectBoardFn,
+            }),
+        );
+        expect(syncProjectBoardFn).not.toHaveBeenCalled();
+    });
+
     it('полная сдача → гейт merged → закрыть milestone + advancePhase + пуш «готова к релизу»', () => {
         const logs = [];
         const closeMilestoneByTitleFn = vi.fn();
@@ -3791,6 +3822,7 @@ describe('runLoop → промпт ревью получает контекст 
                 advancePhaseFn: () => {},
                 tryMergePhaseFn: () => 'not-merged',
                 closeMilestoneByTitleFn: () => {},
+                syncProjectBoardFn: () => {}, // #199: см. дефолт в общем deps выше
                 getLastRedCheck: () => null,
                 phaseDiffFilesFn: () => ['src/a.ts'],
                 reviewDiffContextFn: () => '\n\nМАРКЕР-КОНТЕКСТА-ДИФФА',
