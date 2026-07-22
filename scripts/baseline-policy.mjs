@@ -30,6 +30,8 @@ const BASELINE_FILE = 'scripts/security-audit.baseline.json';
 // признание «живём с этим», и оно не должно быть вечным. Человек посмотрит утром и
 // спокойно, когда чек покраснеет, а не ночью в панике.
 export const DEFAULT_TTL_DAYS = 14;
+export const MAX_TTL_DAYS = 42; // потолок: 3 × рекомендуемый срок
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function classifyDiff(changedFiles = []) {
     const files = changedFiles.map((f) => f.trim()).filter(Boolean);
@@ -40,12 +42,40 @@ export function classifyDiff(changedFiles = []) {
     };
 }
 
-// Записи, которых не было в базовой версии файла. Сравниваем по id: перестановка строк
-// или правка reason у существующей записи прав не требует, добавление нового id —
-// требует. Удаление записей (протухшие) не ограничиваем: оно УЖЕСТОЧАЕТ гейт.
+// Записи, которых не было в базовой версии файла. Удаление записей не ограничиваем:
+// оно УЖЕСТОЧАЕТ гейт.
 export function addedEntries(headBaseline = [], baseBaseline = []) {
     const known = new Set(baseBaseline.map((b) => b.id));
     return headBaseline.filter((a) => !known.has(a.id));
+}
+
+// Правки СУЩЕСТВУЮЩИХ записей (ревью PR #208, находка 🔴 2): сверять только новые id
+// мало — тем же жестом, что и в инциденте 22.07, снимаются обе заявленные гарантии.
+//   • rank(severity) вверх у известной записи гасит `changed`-детект основного скана,
+//     то есть critical принимается автоматически и молча;
+//   • сдвиг expiresAt у просроченной записи гасит красный, который её и должен был
+//     вынести на пересмотр, — TTL против агента становится беззуб.
+// Поэтому: рост severity приравнивается к новой записи (со всеми правилами), а сдвиг
+// срока разрешён (AFK сохраняем), но обязан попасть в пуш — «не молча» важнее.
+const SEVERITY_RANK = ['info', 'low', 'moderate', 'high', 'critical'];
+
+export function changedEntries(headBaseline = [], baseBaseline = []) {
+    const base = new Map(baseBaseline.map((b) => [b.id, b]));
+    const severityRaised = [];
+    const ttlExtended = [];
+    for (const head of headBaseline) {
+        const old = base.get(head.id);
+        if (!old) continue;
+        if (SEVERITY_RANK.indexOf(head.severity) > SEVERITY_RANK.indexOf(old.severity)) {
+            severityRaised.push({ ...head, previousSeverity: old.severity });
+        }
+        const oldTs = old.expiresAt ? Date.parse(old.expiresAt) : NaN;
+        const newTs = head.expiresAt ? Date.parse(head.expiresAt) : NaN;
+        if (!Number.isNaN(newTs) && (Number.isNaN(oldTs) || newTs > oldTs)) {
+            ttlExtended.push({ ...head, previousExpiresAt: old.expiresAt ?? null });
+        }
+    }
+    return { severityRaised, ttlExtended };
 }
 
 // Fail-closed по образцу security-audit.mjs: непонятная запись — стоп, не «пропустим».
@@ -61,10 +91,18 @@ export function validateNewEntry(entry, { now = 0, ttlDays = DEFAULT_TTL_DAYS } 
         );
     } else {
         const ts = Date.parse(entry.expiresAt);
+        const ceiling = now + MAX_TTL_DAYS * DAY_MS;
         if (Number.isNaN(ts)) {
             problems.push(`expiresAt "${entry.expiresAt}" не парсится как дата`);
         } else if (ts <= now) {
             problems.push(`expiresAt "${entry.expiresAt}" уже в прошлом — так срок не ставят`);
+        } else if (ts > ceiling) {
+            // Ревью PR #208, находка 🟠 5: без потолка «срок с запасом» (2099-01-01)
+            // формально проходит правила и обнуляет весь механизм TTL.
+            problems.push(
+                `expiresAt "${entry.expiresAt}" дальше потолка ${MAX_TTL_DAYS} дней — ` +
+                    `срок «на вырост» обнуляет пересмотр; рекомендация +${ttlDays} дней`,
+            );
         }
     }
     return problems;
@@ -88,12 +126,40 @@ export function evaluateBaselineChange({
     headBaseline = [],
     baseBaseline = [],
     changedFiles = [],
+    foundAdvisoryIds = null,
     now = 0,
     ttlDays = DEFAULT_TTL_DAYS,
 } = {}) {
     const errors = [];
-    const { touchesDeps, depFiles } = classifyDiff(changedFiles);
+    const { touchesBaseline, touchesDeps, depFiles } = classifyDiff(changedFiles);
     const added = addedEntries(headBaseline, baseBaseline);
+    const { severityRaised, ttlExtended } = changedEntries(headBaseline, baseBaseline);
+
+    // Ревью PR #208, находка 🔴 1 — обход в два PR: PR №1 вписывает запись под advisory,
+    // которой ещё нет (для политики это «апстрим-дрейф», для скана — безобидный stale,
+    // всего лишь warning), PR №2 приносит уязвимую зависимость, baseline не трогая, и
+    // проходит по уже готовой записи. Каждый шаг по отдельности легитимен.
+    // Закрывается требованием: вписывать можно только advisory, которую скан ВИДИТ
+    // сейчас. Легитимного повода занести ненайденную advisory не существует.
+    if (foundAdvisoryIds) {
+        const found = new Set(foundAdvisoryIds);
+        for (const a of added.filter((x) => !found.has(x.id))) {
+            errors.push(
+                `запись ${a.id} (${a.package ?? '?'}) не соответствует ни одной advisory ` +
+                    `текущего скана — запись «на вырост» под будущую уязвимость не принимается`,
+            );
+        }
+    }
+
+    // Рост severity у известной записи — то же, что новая запись: правила применяются
+    // целиком, включая запрет автопринятия critical.
+    for (const a of severityRaised) {
+        errors.push(
+            `запись ${a.id} (${a.package}): severity поднята ${a.previousSeverity} → ` +
+                `${a.severity} прямо в baseline. Так гасится детект «severity выросла» ` +
+                `основного скана — переоценку апстрима принимает человек.`,
+        );
+    }
 
     // Случай Б: сам добавил зависимость — сам её и чини, а не вписывай в baseline.
     if (added.length && touchesDeps) {
@@ -128,16 +194,34 @@ export function evaluateBaselineChange({
         );
     }
 
-    return { ok: errors.length === 0, errors, accepted: errors.length ? [] : added, expired };
+    // Санити двух источников: записи изменились, а файл в диффе не помечен — значит
+    // список изменённых файлов и содержимое baseline приехали из разных состояний
+    // (несвежий ref, чужое дерево, битый дифф). Доверять такому сравнению нельзя.
+    if ((added.length || severityRaised.length || ttlExtended.length) && !touchesBaseline) {
+        errors.push(
+            `записи baseline отличаются от базовой версии, но сам файл в диффе не значится — ` +
+                `список изменённых файлов и содержимое приехали из разных состояний, сверка ненадёжна`,
+        );
+    }
+
+    // Сдвиг срока не запрещаем — иначе просроченная запись останавливала бы петлю ночью,
+    // а это ровно то, чего просили избежать. Но он обязан быть слышным: попадает в пуш
+    // наравне с новыми записями (ревью PR #208, находка 🔴 2).
+    const accepted = errors.length ? [] : [...added, ...ttlExtended];
+    return { ok: errors.length === 0, errors, accepted, expired, ttlExtended };
 }
 
 // Текст пуша об автопринятии. Молчаливость была проблемой, а не автономность:
 // петля идёт дальше, но человек узнаёт об ослаблении гейта сразу.
 export function acceptedPushText(accepted = []) {
-    const lines = accepted.map((a) => `• ${a.id} ${a.package} (${a.severity})`);
+    const lines = accepted.map((a) =>
+        a.previousExpiresAt !== undefined
+            ? `• ${a.id} ${a.package} — срок продлён ${a.previousExpiresAt ?? 'без срока'} → ${a.expiresAt}`
+            : `• ${a.id} ${a.package} (${a.severity}) — новая запись до ${a.expiresAt}`,
+    );
     return (
-        `⚠️ Ralph: security-baseline расширен автоматически на ${accepted.length} ` +
-        `advisory — зависимости в PR не менялись, это апстрим-дрейф:\n${lines.join('\n')}\n` +
-        `Гейт пропущен, петля продолжается. Срок пересмотра — в expiresAt каждой записи.`
+        `⚠️ Ralph: security-baseline изменён автоматически (${accepted.length}) — ` +
+        `зависимости в PR не менялись, это апстрим-дрейф:\n${lines.join('\n')}\n` +
+        `Гейт пропущен, петля продолжается. Проверь, что записи правда неустранимы.`
     );
 }

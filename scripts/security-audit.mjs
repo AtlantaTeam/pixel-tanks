@@ -40,24 +40,66 @@ const BASELINE_PATH = path.join(
 // Оба факта агент подделать не может, на них и строятся правила (baseline-policy.mjs).
 // Fail-closed: не смогли прочитать git — красный, а не «политику пропустим». Гейт всегда
 // исполняется в дереве со свежим origin/main (раннер делает fetch перед чеками).
-export function gitChangedFiles(spawnFn = spawnSync) {
-    const r = spawnFn('git', ['diff', '--name-only', 'origin/main...HEAD'], {
+// Ревью PR #208, находка 🟠 4: origin/main — обычный локальный ref, и на момент гейта он
+// может быть несвежим (checksGreen фетчит только ветку PR). Освежаем сами, fail-closed:
+// сравнивать с устаревшей или подменённой базой хуже, чем честно покраснеть.
+export function fetchOriginMain(spawnFn = spawnSync) {
+    const r = spawnFn('git', ['fetch', 'origin', 'main', '--quiet'], {
         encoding: 'utf8',
         maxBuffer: 16 * 1024 * 1024,
     });
     if (r.status !== 0) {
         throw new Error(
-            `не смог получить список изменённых файлов (git diff origin/main...HEAD): ` +
-                `${r.error?.message || r.stderr?.trim() || `код ${r.status}`}`,
+            `не смог обновить origin/main: ${r.error?.message || r.stderr?.trim() || `код ${r.status}`}`,
         );
     }
-    return (r.stdout || '').split('\n').filter(Boolean);
+}
+
+// Незакоммиченные правки в дифф по коммитам не попадают (ревью PR #208, находка 🟡 7):
+// на самом гейте дерево чистое, но локальный прогон чини-сессии иначе получал бы
+// ложный зелёный и слал пуш. Берём оба источника.
+export function gitChangedFiles(spawnFn = spawnSync) {
+    const committed = spawnFn(
+        'git',
+        ['diff', '--name-only', '--no-renames', 'origin/main...HEAD'],
+        { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+    );
+    if (committed.status !== 0) {
+        throw new Error(
+            `не смог получить список изменённых файлов (git diff origin/main...HEAD): ` +
+                `${committed.error?.message || committed.stderr?.trim() || `код ${committed.status}`}`,
+        );
+    }
+    const dirty = spawnFn('git', ['status', '--porcelain'], {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+    });
+    if (dirty.status !== 0) {
+        throw new Error(
+            `не смог прочитать состояние дерева (git status): ` +
+                `${dirty.error?.message || dirty.stderr?.trim() || `код ${dirty.status}`}`,
+        );
+    }
+    const uncommitted = (dirty.stdout || '')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => line.slice(3).trim())
+        .map((p) => p.split(' -> ').pop());
+    return [...new Set([...(committed.stdout || '').split('\n').filter(Boolean), ...uncommitted])];
 }
 
 export function gitBaseBaseline(spawnFn = spawnSync, file = `origin/main:${BASELINE_REPO_PATH}`) {
     const r = spawnFn('git', ['show', file], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-    // Файла нет в origin/main (первое появление baseline) — это не сбой: базовый набор пуст.
-    if (r.status !== 0) return [];
+    // Файла нет в origin/main (первое появление baseline) — это не сбой: базовый набор
+    // пуст. Но ЛЮБАЯ другая ошибка git — сбой (ревью PR #208, находка 🟡 8): битый объект
+    // или отсутствующий ref нельзя молча трактовать как «база пустая», иначе однажды это
+    // станет автопринятием на мусорных данных.
+    if (r.status !== 0) {
+        const err = r.stderr?.trim() || '';
+        if (/does not exist in|invalid object name|exists on disk, but not in/i.test(err))
+            return [];
+        throw new Error(`не смог прочитать базовую версию baseline: ${err || `код ${r.status}`}`);
+    }
     const parsed = JSON.parse(r.stdout);
     if (!Array.isArray(parsed?.advisories)) {
         throw new Error('baseline в origin/main без массива advisories — сверка ненадёжна');
@@ -175,13 +217,15 @@ export function looksBlind(advisories, baseline) {
 
 // #207: политика изменения baseline — до собственно сверки advisory. Порядок важен:
 // если правки baseline не имели права случиться, разбирать по ним находки бессмысленно.
-function enforceBaselinePolicy(baseline) {
+function enforceBaselinePolicy(baseline, foundAdvisoryIds) {
     let verdict;
     try {
+        fetchOriginMain();
         verdict = evaluateBaselineChange({
             headBaseline: baseline,
             baseBaseline: gitBaseBaseline(),
             changedFiles: gitChangedFiles(),
+            foundAdvisoryIds,
             now: Date.now(),
         });
     } catch (e) {
@@ -204,12 +248,17 @@ function enforceBaselinePolicy(baseline) {
     if (verdict.accepted.length) {
         const text = acceptedPushText(verdict.accepted);
         console.warn(text); // текст уже начинается с ⚠️ — второй эмодзи не нужен
-        try {
-            sendTelegramMessage(text);
-        } catch (e) {
-            // Недоставка пуша не красит гейт: запись уже признана легитимной, а текст
-            // остался в выводе чека и в логе раннера.
-            console.warn(`⚠️  пуш о расширении baseline не доставлен: ${e.message}`);
+        // sendTelegramMessage спроектирован fail-open и НИКОГДА не бросает (#85), поэтому
+        // try/catch здесь был мёртвым кодом, а недоставка — беззвучной: ровно та
+        // молчаливость, против которой весь механизм (ревью PR #208, находка 🟠 6).
+        // Гейт от недоставки не краснеет — запись уже признана легитимной, — но факт
+        // «громко не получилось» обязан быть виден в выводе чека.
+        const delivered = sendTelegramMessage(text, { logFn: console.warn });
+        if (!delivered) {
+            console.warn(
+                `⚠️  пуш о расширении baseline НЕ доставлен — событие осталось только ` +
+                    `в выводе гейта и логе раннера, проверь RALPH_TG_* и сеть`,
+            );
         }
     }
 }
@@ -225,8 +274,6 @@ function main() {
         process.exit(1);
     }
 
-    enforceBaselinePolicy(baseline);
-
     let advisories;
     let counts;
     try {
@@ -239,6 +286,14 @@ function main() {
         console.error(`⛔ security-audit: ${e.message}`);
         process.exit(1);
     }
+
+    // Политика — после сбора находок (нужен список реально найденных id, ревью PR #208,
+    // находка 🔴 1), но ДО решения по гейту: если правки baseline не имели права
+    // случиться, разбирать по ним находки бессмысленно.
+    enforceBaselinePolicy(
+        baseline,
+        advisories.map((a) => a.id),
+    );
 
     // Две разные величины, которые легко перепутать: counts из metadata — это ПАКЕТЫ
     // в свёрнутой оценке (одна дыра undici считается и за payload, и за @payloadcms/next,
