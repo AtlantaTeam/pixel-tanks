@@ -6,7 +6,7 @@
  *   - жив ли loop (по свежести ralph.log)
  *   - текущая фаза / submitted (из ralph.state.json)
  *   - прогресс issues текущего milestone (gh)
- *   - открытые PR игры game-next (gh)
+ *   - открытые PR текущей фазы (gh, по ветке из конфига #214)
  *   - последние значимые строки ralph.log (маркеры фаз/итераций/ревью/мерджа)
  *
  * Использование:
@@ -245,6 +245,31 @@ function issuesProgress(milestone) {
     return { open: o, closed: c, total: o + c };
 }
 
+// Поиск открытых PR текущей фазы по ветке из конфига (#214).
+// Параметры: config (резолвлен из конфига), state (из ralph.state.json), shFn (для тестов).
+// Fail-closed: если ветку фазы определить не удалось → { error: 'no-branch' },
+// иначе найденные PR или [].
+function openPhasePRs(config, state, shFn = sh) {
+    // Определяем текущую ветку фазы из конфига по milestone в state.
+    if (!config || !Array.isArray(config.phases) || !state?.milestone) {
+        return { error: 'no-branch' };
+    }
+    const phase = config.phases.find((p) => p.milestone === state.milestone);
+    if (!phase || !phase.branch) {
+        return { error: 'no-branch' };
+    }
+    // Ищем PR по фактической ветке фазы.
+    const out = shFn(
+        `gh pr list --state open --search "head:${phase.branch}" --json number,title,headRefName,mergeStateStatus,reviewDecision --jq "."`,
+    );
+    if (!out) return [];
+    try {
+        return JSON.parse(out);
+    } catch {
+        return [];
+    }
+}
+
 function openGamePRs() {
     const out = sh(
         `gh pr list --state open --search "head:feature/phase-" --json number,title,headRefName,mergeStateStatus,reviewDecision --jq "."`,
@@ -311,7 +336,7 @@ function snapshot() {
         milestoneName,
     });
     const prog = issuesProgress(milestoneName);
-    const prs = openGamePRs();
+    const prs = openPhasePRs(config, state);
     const head = sh('git rev-parse --short HEAD');
     const branch = sh('git rev-parse --abbrev-ref HEAD');
 
@@ -369,7 +394,9 @@ function snapshot() {
         out.push('Issues: (нет данных gh по milestone)');
     }
 
-    if (prs.length) {
+    if (prs.error === 'no-branch') {
+        out.push('Открытые PR фаз: (не удалось определить ветку фазы из конфига)');
+    } else if (prs.length) {
         out.push('Открытые PR фаз:');
         for (const pr of prs) {
             out.push(
@@ -409,6 +436,7 @@ module.exports = {
     shouldPushDeadman,
     deadmanPushMessage,
     maybePushDeadman,
+    openPhasePRs,
 };
 
 if (require.main === module) main();
