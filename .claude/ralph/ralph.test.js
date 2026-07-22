@@ -3418,6 +3418,49 @@ describe('mergedShaOf — sha squash-мерджа PR (#163)', () => {
     });
 });
 
+describe('Пост-мердж проверка — только чтение, без мутаций (#166)', () => {
+    const SHA = 'd'.repeat(40);
+
+    it('waitForDeployRun зовёт ТОЛЬКО "gh run list" — read-глагол, без merge/cancel/rerun/delete/close', () => {
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 1, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        waitForDeployRun(
+            SHA,
+            { deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20 } },
+            { ghJsonFn, sleepFn: () => {}, logFn: () => {}, nowFn: () => 0 },
+        );
+        expect(ghJsonFn).toHaveBeenCalledTimes(1);
+        const cmd = ghJsonFn.mock.calls[0][0];
+        expect(cmd).toMatch(/^gh run list\b/);
+        expect(cmd).not.toMatch(/\b(cancel|rerun|delete|merge|close|revert)\b/);
+    });
+
+    it('mergedShaOf зовёт ТОЛЬКО "gh pr view" — read-глагол, без merge/close/edit', () => {
+        const ghJsonFn = vi.fn(() => ({ mergeCommit: { oid: SHA } }));
+        mergedShaOf(1, { ghJsonFn });
+        expect(ghJsonFn).toHaveBeenCalledTimes(1);
+        const cmd = ghJsonFn.mock.calls[0][0];
+        expect(cmd).toMatch(/^gh pr view\b/);
+        expect(cmd).not.toMatch(/\b(merge|close|edit|delete)\b/);
+    });
+
+    it('checkProdHealth зовёт curl только на чтение (GET) — без -X/-d/--data/--upload-file', () => {
+        const execFn = vi.fn(() => '200');
+        checkProdHealth(
+            { deployCheck: { healthUrl: 'https://pixeltanks.ru', healthRetries: 1 } },
+            { execFn, sleepFn: () => {}, logFn: () => {} },
+        );
+        expect(execFn).toHaveBeenCalledTimes(1);
+        const [bin, args] = execFn.mock.calls[0];
+        expect(bin).toBe('curl');
+        expect(args).not.toContain('-X');
+        expect(args).not.toContain('-d');
+        expect(args).not.toContain('--data');
+        expect(args).not.toContain('--upload-file');
+    });
+});
+
 describe('classifyDeployOutcome — итог деплоя зелёный/красный (#165)', () => {
     it('workflow success + здоровый прод → зелёный (red=false)', () => {
         const v = classifyDeployOutcome(
