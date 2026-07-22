@@ -24,6 +24,9 @@ const { execSync } = require('child_process');
 // вторую копию правил мерджа. require безопасен: main() в ralph.js под guard
 // require.main === module, при импорте выполняются только объявления и консты.
 const { resolveProfile, parseProfileFlag } = require('./ralph.js');
+// Пороги тишины (#147): классификация хвоста лога по режиму + порог по режиму. Здесь
+// (в мониторе) — импёровая половина: чтение файла, «сейчас» и сравнение с порогом.
+const { classifyActivity, silenceThresholdMs } = require('./deadman.js');
 
 const RALPH_DIR = __dirname;
 const REPO_DIR = path.resolve(RALPH_DIR, '..', '..');
@@ -77,6 +80,54 @@ function fmtAge(ms) {
     if (m < 60) return `${m}м ${s % 60}с назад`;
     const h = Math.floor(m / 60);
     return `${h}ч ${m % 60}м назад`;
+}
+
+// Длительность без «назад» — для печати порога.
+function fmtDur(ms) {
+    const m = Math.round(ms / 60000);
+    if (m < 60) return `${m}м`;
+    return `${Math.floor(m / 60)}ч ${m % 60}м`;
+}
+
+// Сырой хвост лога (НЕ отфильтрованный по SIGNAL_RE) + время последней записи. deadman
+// классифицирует режим по маркерам ✓/✗/🚦, которых нет в SIGNAL_RE, поэтому детект
+// читает сырые строки, а не значимые из tailSignals. lastMtime = mtime файла: свежесть
+// лога и есть признак жизни петли (log() пишется на каждом шаге хореографии). logPath
+// параметром — чтобы тестировать на временном файле, а не только на боевом LOG_PATH.
+function readLogTail(n = 200, logPath = LOG_PATH) {
+    let raw;
+    try {
+        raw = fs.readFileSync(logPath, 'utf8');
+    } catch {
+        return { lines: [], lastMtime: null };
+    }
+    let lastMtime = null;
+    try {
+        lastMtime = fs.statSync(logPath).mtimeMs;
+    } catch {
+        /* ignore */
+    }
+    return { lines: raw.split('\n').slice(-n), lastMtime };
+}
+
+// Детект тишины: возраст последней записи лога (now − lastMtime) против порога режима
+// текущего шага (coder до 2ч, гейт/хоз-шаги — минуты). Чистая функция — все входы
+// аргументами, «сейчас» приходит извне: детект смотрит на ФАЙЛ, а не на процесс
+// раннера, поэтому переживает его смерть (kill -9, OOM). Сам пуш и дедуп — #149.
+function evalDeadman({ now, lastMtime, lines, config }) {
+    if (lastMtime == null) {
+        return {
+            silent: false,
+            reason: 'no-log',
+            activity: null,
+            thresholdMs: null,
+            silenceMs: null,
+        };
+    }
+    const activity = classifyActivity(lines);
+    const thresholdMs = silenceThresholdMs(activity, config);
+    const silenceMs = now - lastMtime;
+    return { silent: silenceMs > thresholdMs, reason: null, activity, thresholdMs, silenceMs };
 }
 
 function tailSignals(n) {
@@ -143,6 +194,16 @@ function snapshot() {
     // кривой конфиг для него повод показать «—», а не упасть (упасть должен ralph.js).
     const config = resolveProfile(readJSON(CONFIG_PATH), PROFILE, () => null);
     const { lines, lastMtime } = tailSignals(8);
+    // Детект тишины (#148): порог зависит от режима, а режим — от сырого хвоста лога
+    // (маркеры ✓/✗/🚦 в SIGNAL_RE не попадают), поэтому читаем его отдельно от значимых
+    // строк выше. Сам пуш о тишине и дедуп — #149; здесь только детект и его показ.
+    const rawTail = readLogTail(200);
+    const deadman = evalDeadman({
+        now,
+        lastMtime: rawTail.lastMtime,
+        lines: rawTail.lines,
+        config,
+    });
     const ms = currentMilestone(state, config);
     const milestoneName = ms?.phase?.milestone || state.milestone || '—';
     const prog = issuesProgress(milestoneName);
@@ -163,6 +224,13 @@ function snapshot() {
     out.push(`╔${bar}╗`);
     out.push(`  RALPH MONITOR   ${new Date(now).toLocaleString('ru-RU')}`);
     out.push(`  ${alive}`);
+    if (deadman.reason !== 'no-log') {
+        out.push(
+            deadman.silent
+                ? `  💀 DEADMAN: лог молчит ${fmtAge(deadman.silenceMs)} — дольше порога ${fmtDur(deadman.thresholdMs)} (режим ${deadman.activity})`
+                : `  ⏱  лог ${fmtAge(deadman.silenceMs)}, порог тишины ${fmtDur(deadman.thresholdMs)} (режим ${deadman.activity})`,
+        );
+    }
     out.push(`╚${bar}╝`);
     out.push(
         `Фаза: ${milestoneName}` +
@@ -211,4 +279,9 @@ function main() {
     setInterval(snapshot, INTERVAL_SEC * 1000);
 }
 
-main();
+// Экспорт чистых частей детекта — для тестов (#148). Гейт require.main === module:
+// при импорте из теста НЕ запускаем панель (gh-запросы, setInterval), выполняются
+// только объявления, как и с require('./ralph.js') выше.
+module.exports = { evalDeadman, readLogTail, fmtDur };
+
+if (require.main === module) main();

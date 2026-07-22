@@ -1,0 +1,174 @@
+// Юнит-тесты детекта тишины в monitor.js (#148).
+//
+// Монитор — сторож петли: detached, переживает смерть раннера (kill -9), знает путь
+// лога. Детект тишины = чтение времени последней записи ralph.log СНАРУЖИ процесса
+// сессии (runClaude — синхронный spawnSync до 2ч, сам heartbeat писать не может) и
+// сравнение возраста с порогом режима из deadman.js (#147).
+//
+// evalDeadman — чистая функция (все входы аргументами, «сейчас» приходит извне),
+// поэтому тестируется без файлов, без сети и БЕЗ живого раннера: именно эта
+// файло-ориентированность и делает детект живучим при мёртвом раннере — он смотрит на
+// файл, а не на процесс. readLogTail проверяем на реальном временном файле.
+import { describe, it, expect, afterEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { evalDeadman, readLogTail } from './monitor.js';
+
+// Строки лога как их пишет log() в ralph.js — ISO-таймстамп + маркер.
+const t = (msg) => `[2026-07-22T06:30:07.015Z] ${msg}`;
+
+// Резолвнутый конфиг (как отдаёт resolveProfile раннеру/монитору): пороги на верхнем
+// уровне. coder = claudeTimeoutMs + iterationGraceMs = 7.8M; gate = 600k; default = 300k.
+const CFG = {
+    claudeTimeoutMs: 7200000,
+    deadman: {
+        iterationGraceMs: 600000,
+        gateSilenceMs: 600000,
+        defaultSilenceMs: 300000,
+    },
+};
+const MIN = 60000;
+
+describe('evalDeadman — тишина как возраст последней записи лога против порога режима', () => {
+    it('хозяйственный шаг молчит дольше короткого дефолта → тишина', () => {
+        const r = evalDeadman({
+            now: 1000 * MIN,
+            lastMtime: 1000 * MIN - 6 * MIN, // 6 мин тишины > default 5 мин
+            lines: [t('🌳 Worktree раннера переведён на свежий origin/main.')],
+            config: CFG,
+        });
+        expect(r.silent).toBe(true);
+        expect(r.activity).toBe('default');
+        expect(r.thresholdMs).toBe(300000);
+        expect(r.silenceMs).toBe(6 * MIN);
+    });
+
+    it('хозяйственный шаг молчит меньше дефолта → не тишина', () => {
+        const r = evalDeadman({
+            now: 1000 * MIN,
+            lastMtime: 1000 * MIN - 4 * MIN, // 4 мин < 5 мин
+            lines: [t('📦 npm ci перед чеками...')],
+            config: CFG,
+        });
+        expect(r.silent).toBe(false);
+        expect(r.activity).toBe('default');
+    });
+
+    it('гейт молчит дольше порога гейта → тишина', () => {
+        const r = evalDeadman({
+            now: 1000 * MIN,
+            lastMtime: 1000 * MIN - 11 * MIN, // 11 мин > gate 10 мин
+            lines: [t('🚦 Гейт мерджа: ...'), t('  ✓ build')],
+            config: CFG,
+        });
+        expect(r.silent).toBe(true);
+        expect(r.activity).toBe('gate');
+    });
+
+    it('гейт в пределах порога → не тишина', () => {
+        const r = evalDeadman({
+            now: 1000 * MIN,
+            lastMtime: 1000 * MIN - 9 * MIN, // 9 мин < 10 мин
+            lines: [t('  ✗ test — красный')],
+            config: CFG,
+        });
+        expect(r.silent).toBe(false);
+        expect(r.activity).toBe('gate');
+    });
+
+    it('легитимно долгая кодер-сессия (30 мин молчания) → НЕ тишина (нет ложного пуша)', () => {
+        // Ключевой приёмочный сценарий PRD: кодер-сессия молчит до claudeTimeoutMs (2ч).
+        // 30 мин ≪ порог coder (2ч + запас) — ложного deadman быть не должно.
+        const r = evalDeadman({
+            now: 1000 * MIN,
+            lastMtime: 1000 * MIN - 30 * MIN,
+            lines: [t('▶ claude -p "…" --max-turns 200 --model claude-opus-4-8')],
+            config: CFG,
+        });
+        expect(r.silent).toBe(false);
+        expect(r.activity).toBe('coder');
+        expect(r.thresholdMs).toBe(7800000);
+    });
+
+    it('кодер-сессия молчит дольше claudeTimeoutMs + запас → тишина (зависла)', () => {
+        const r = evalDeadman({
+            now: 1000 * MIN,
+            lastMtime: 1000 * MIN - 131 * MIN, // 2ч11м > 2ч10м порог coder
+            lines: [t('🔄 Фаза X | итерация 1/10 | Issue #1')],
+            config: CFG,
+        });
+        expect(r.silent).toBe(true);
+        expect(r.activity).toBe('coder');
+    });
+
+    it('лог не найден (lastMtime = null) → не тишина, повод — no-log (а не ложный алерт)', () => {
+        const r = evalDeadman({ now: 1000 * MIN, lastMtime: null, lines: [], config: CFG });
+        expect(r.silent).toBe(false);
+        expect(r.reason).toBe('no-log');
+    });
+
+    it('детект не зависит от процесса раннера: только числа и хвост лога на входе', () => {
+        // Симуляция мёртвого раннера (kill -9): лог «замёрз» на старом mtime, монитор
+        // жив и считает по файлу. Никаких обращений к процессу — чистая функция.
+        const frozenAt = 500 * MIN;
+        const r = evalDeadman({
+            now: frozenAt + 20 * MIN, // раннер мёртв 20 мин, был на хоз-шаге
+            lastMtime: frozenAt,
+            lines: [t('🔀 Переключение на ветку feature/ralph-deadman')],
+            config: CFG,
+        });
+        expect(r.silent).toBe(true);
+        expect(r.activity).toBe('default');
+    });
+});
+
+describe('readLogTail — сырой хвост лога + время последней записи', () => {
+    const tmpFiles = [];
+    const mkTmp = (content) => {
+        const p = path.join(
+            os.tmpdir(),
+            `ralph-monitor-test-${tmpFiles.length}-${content.length}.log`,
+        );
+        fs.writeFileSync(p, content);
+        tmpFiles.push(p);
+        return p;
+    };
+    afterEach(() => {
+        while (tmpFiles.length) {
+            try {
+                fs.unlinkSync(tmpFiles.pop());
+            } catch {
+                /* ignore */
+            }
+        }
+    });
+
+    it('возвращает сырые строки (включая ✓/✗/🚦, которых нет в SIGNAL_RE) и mtime', () => {
+        // deadman классифицирует по ✓/✗/🚦 — фильтр SIGNAL_RE их теряет, поэтому детект
+        // обязан читать сырой хвост, а не отфильтрованные значимые строки.
+        const p = mkTmp(
+            [t('🚦 Гейт мерджа: ...'), t('  ✓ build'), t('  ✗ test — красный')].join('\n'),
+        );
+        const { lines, lastMtime } = readLogTail(200, p);
+        expect(lines.some((l) => /✓/.test(l))).toBe(true);
+        expect(lines.some((l) => /✗/.test(l))).toBe(true);
+        expect(typeof lastMtime).toBe('number');
+    });
+
+    it('отдаёт последние n строк', () => {
+        const p = mkTmp(Array.from({ length: 50 }, (_, i) => t(`строка ${i}`)).join('\n'));
+        const { lines } = readLogTail(5, p);
+        expect(lines).toHaveLength(5);
+        expect(lines[4]).toContain('строка 49');
+    });
+
+    it('нет файла → пустой хвост и lastMtime = null (fail-safe, не падение)', () => {
+        const { lines, lastMtime } = readLogTail(
+            200,
+            path.join(os.tmpdir(), 'нет-такого-лога.log'),
+        );
+        expect(lines).toEqual([]);
+        expect(lastMtime).toBeNull();
+    });
+});
