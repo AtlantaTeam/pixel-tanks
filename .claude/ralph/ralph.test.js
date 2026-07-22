@@ -1892,6 +1892,11 @@ describe('runLoop — основной while-цикл: итерации коде
                 allOpenIssuesFn: () => [],
                 phaseMergedFn: () => false,
                 tryMergePhaseFn: () => 'red-checks',
+                // #223: red-checks — пост-меточный исход, tryMergePhase уже прочитал PR
+                // (lastGatePr выставлен) и лишь потом упёрся в чеки. Сброс blockedHeals
+                // теперь требует getLastGatePr() !== null (пуш «снят автоматически» не
+                // должен стрелять на путях, где метку гейт не читал) — симулируем номер.
+                getLastGatePr: () => 909,
                 getLastRedCheck: () => ({ name: 'test', cmd: 'npm run test', excerpt: 'boom' }),
                 runClaudeFn: () => 0,
             }),

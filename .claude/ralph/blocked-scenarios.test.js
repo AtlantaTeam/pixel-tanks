@@ -22,103 +22,17 @@
 // Побочки запрещены и здесь (RALPH_NO_SIDE_EFFECTS=1, guardSideEffect, общий afterEach
 // в test-setup.js): все коллабораторы с побочками (sh/gh/сеть/state/runClaude/снятие
 // метки) инжектированы фейками через DI — ни одного реального вызова gh или сети.
-import { describe, it, expect, vi } from 'vitest';
-import ralph, { runLoop } from './ralph.js';
-
-const REVIEW_MODEL = 'claude-opus-4-8';
-const B_MAX = 3; // blockedHealAttempts по умолчанию для фазы
-
-// state сдачи: сессии кодера уже позади (submitted=true) — каждый проход стартует прямо
-// с гейта. lastReviewModel — модель, поставившая блок (по ней встаёт планка #217).
-const mkState = (o = {}) => ({
-    count: 0,
-    milestone: 'M1',
-    submitted: true,
-    noProgress: 0,
-    gateHeals: 0,
-    blockedHeals: 0,
-    lastReviewModel: REVIEW_MODEL,
-    ...o,
-});
-
-// Профиль НЕ prod: merged завершается continue (мердж — финал), а не паузой перед
-// деплоем. blockedHealAttempts=3 — стоп после трёх подряд ревью, оставивших блок.
-const CFG = (o = {}) => ({
-    model: 'claude-coder',
-    prompt: 'сделай {milestone} в ветке {branch}',
-    authorAllowlist: ['owner'],
-    blockedHealAttempts: B_MAX,
-    phases: [{ milestone: 'M1', branch: 'feature/m1' }],
-    ...o,
-});
-
-// Оркестратор сценария: держит один state и кумулятивные спаи, гоняет проходы гейта.
-// pass(gate, {redCheck}) = один проход раннера с заданным вердиктом гейта. restart()
-// пересобирает state из последнего saveState-снимка — модель «раннер убит и поднят
-// заново, state прочитан с диска». Все побочки — фейки, реального gh/сети нет.
-function scenario(initialState = {}) {
-    const logs = [];
-    const saved = [];
-    const runClaudeFn = vi.fn(() => 0);
-    const pushEventFn = vi.fn();
-    const removeBlockedLabelFn = vi.fn();
-    let state = mkState(initialState);
-
-    function pass(gate, { redCheck = null } = {}) {
-        let idxCalls = 0;
-        runLoop(
-            CFG(),
-            { state, maxIterations: 10, maxTurns: 200 },
-            {
-                once: false,
-                dry: false,
-                logFn: (m) => logs.push(m),
-                shFn: () => '',
-                saveStateFn: (s) => saved.push({ ...s }),
-                openIssuesFn: () => [],
-                allOpenIssuesFn: () => [],
-                // 1-е обращение → фаза 0; 2-е → «за концом» → break. Один гейт на проход.
-                phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
-                pickModelFn: () => 'claude-coder',
-                pickReviewModelFn: () => REVIEW_MODEL,
-                reviewDiffContextFn: () => '',
-                phaseDiffFilesFn: () => [],
-                removeBlockedLabelFn,
-                runClaudeFn,
-                ensureCleanFn: () => true,
-                phaseMergedFn: () => false,
-                advancePhaseFn: () => {},
-                tryMergePhaseFn: () => gate,
-                closeMilestoneByTitleFn: () => {},
-                syncProjectBoardFn: () => {},
-                getLastRedCheck: () => redCheck,
-                getLastGatePr: () => 777,
-                pushEventFn,
-                ensureMonitorAliveFn: () => null,
-            },
-        );
-    }
-
-    function restart() {
-        state = { ...saved[saved.length - 1] };
-        return state;
-    }
-
-    return {
-        get state() {
-            return state;
-        },
-        pass,
-        restart,
-        logs,
-        saved,
-        runClaudeFn,
-        pushEventFn,
-        removeBlockedLabelFn,
-        pushTexts: () => pushEventFn.mock.calls.map((c) => c[0]),
-        maxBlockedHeals: () => Math.max(0, ...saved.map((s) => s.blockedHeals ?? 0)),
-    };
-}
+//
+// Оркестратор сценария (makeRunLoopScenario) и константы вынесены в test-helpers.js
+// (#223) — общие с hold-scenarios.test.js: правку сигнатуры deps runLoop синхронизируем
+// в одном месте. Здесь остаются только сценарные describe этого файла.
+import { describe, it, expect } from 'vitest';
+import ralph from './ralph.js';
+import {
+    makeRunLoopScenario as scenario,
+    SCENARIO_REVIEW_MODEL as REVIEW_MODEL,
+    SCENARIO_B_MAX as B_MAX,
+} from './test-helpers.js';
 
 const RED_CHECK = { name: 'test', cmd: 'npm run test', excerpt: 'boom' };
 

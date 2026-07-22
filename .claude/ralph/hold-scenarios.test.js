@@ -14,90 +14,12 @@
 // Побочки запрещены (RALPH_NO_SIDE_EFFECTS=1, guardSideEffect, общий afterEach в
 // test-setup.js): все коллабораторы с побочками — фейки через DI, ни одного реального
 // вызова gh или сети.
-import { describe, it, expect, vi } from 'vitest';
-import ralph, { runLoop } from './ralph.js';
-
-const REVIEW_MODEL = 'claude-opus-4-8';
-const B_MAX = 3;
-
-const mkState = (o = {}) => ({
-    count: 0,
-    milestone: 'M1',
-    submitted: true,
-    noProgress: 0,
-    gateHeals: 0,
-    blockedHeals: 0,
-    lastReviewModel: REVIEW_MODEL,
-    ...o,
-});
-
-const CFG = (o = {}) => ({
-    model: 'claude-coder',
-    prompt: 'сделай {milestone} в ветке {branch}',
-    authorAllowlist: ['owner'],
-    blockedHealAttempts: B_MAX,
-    phases: [{ milestone: 'M1', branch: 'feature/m1' }],
-    ...o,
-});
-
-// Тот же оркестратор, что в blocked-scenarios.test.js: один state, кумулятивные спаи,
-// pass(gate) = один проход раннера с заданным вердиктом гейта (tryMergePhase замокан —
-// сама проверка hold-раньше-blocked покрыта юнит-тестами tryMergePhase в ralph.test.js).
-function scenario(initialState = {}) {
-    const logs = [];
-    const saved = [];
-    const runClaudeFn = vi.fn(() => 0);
-    const pushEventFn = vi.fn();
-    const removeBlockedLabelFn = vi.fn();
-    let state = mkState(initialState);
-
-    function pass(gate, { redCheck = null } = {}) {
-        let idxCalls = 0;
-        runLoop(
-            CFG(),
-            { state, maxIterations: 10, maxTurns: 200 },
-            {
-                once: false,
-                dry: false,
-                logFn: (m) => logs.push(m),
-                shFn: () => '',
-                saveStateFn: (s) => saved.push({ ...s }),
-                openIssuesFn: () => [],
-                allOpenIssuesFn: () => [],
-                phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
-                pickModelFn: () => 'claude-coder',
-                pickReviewModelFn: () => REVIEW_MODEL,
-                reviewDiffContextFn: () => '',
-                phaseDiffFilesFn: () => [],
-                removeBlockedLabelFn,
-                runClaudeFn,
-                ensureCleanFn: () => true,
-                phaseMergedFn: () => false,
-                advancePhaseFn: () => {},
-                tryMergePhaseFn: () => gate,
-                closeMilestoneByTitleFn: () => {},
-                syncProjectBoardFn: () => {},
-                getLastRedCheck: () => redCheck,
-                getLastGatePr: () => 777,
-                pushEventFn,
-                ensureMonitorAliveFn: () => null,
-            },
-        );
-    }
-
-    return {
-        get state() {
-            return state;
-        },
-        pass,
-        logs,
-        saved,
-        runClaudeFn,
-        pushEventFn,
-        removeBlockedLabelFn,
-        pushTexts: () => pushEventFn.mock.calls.map((c) => c[0]),
-    };
-}
+//
+// Оркестратор сценария (makeRunLoopScenario) вынесен в test-helpers.js (#223) — общий с
+// blocked-scenarios.test.js. Здесь остаются только hold-специфичные describe.
+import { describe, it, expect } from 'vitest';
+import ralph from './ralph.js';
+import { makeRunLoopScenario as scenario } from './test-helpers.js';
 
 describe('hold: стоп + пуш, без разбора, без чини-сессий, без повторного ревью', () => {
     it('гейт hold → ни одной сессии, счётчики не тронуты, ровно один пуш с PR', () => {

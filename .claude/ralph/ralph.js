@@ -333,6 +333,12 @@ function resolveProfile(raw, name, failFn = fail) {
     // raw после резолва никто не таскает.
     const merged = deepMerge(raw.common, raw.profiles[wanted], failFn, wanted);
     if (!isPlainObject(merged)) return merged; // мягкий failFn — наверх как есть
+    // #223: модели ревью (review.default/escalated) обязаны быть известны планке #217.
+    // Незнакомая модель, поставившая блок, получила бы rank -1 и проиграла ЛЮБОму
+    // известному кандидату — планка инвертировалась бы (haiku судит блок сильнейшей).
+    // Ловим на старте (fail-closed дешевле тихой инверсии), а не в момент разбора.
+    const known = assertKnownReviewModels(merged, wanted, failFn);
+    if (known !== true) return known; // мягкий failFn — наверх как есть
     return { ...merged, profileName: wanted };
 }
 
@@ -1237,8 +1243,15 @@ function pickReviewModel(
 // барьеру #217: повторное ревью после разбора blocked НЕ должно судиться моделью
 // слабее той, что поставила блок, — иначе эскалацию обходят удешевлением ревьюера
 // (взять haiku после блока от fable). Список закрыт (сравниваем не любую строку):
-// неизвестная модель = ранг -1, то есть слабее любой известной — при флоринге это
-// заставит выбрать известную планку, а не довериться незнакомцу.
+// неизвестная модель = ранг -1, то есть слабее любой известной.
+//
+// Ранг -1 корректен только когда неизвестен КАНДИДАТ (он проиграет известной планке).
+// Если же неизвестна модель, ПОСТАВИВШАЯ блок (floor), rank -1 инвертирует барьер:
+// floor проиграл бы любому известному кандидату, и блок сильнейшей судил бы haiku
+// (#223). Поэтому дрейф закрыт на входе: assertKnownReviewModels на валидации конфига
+// требует, чтобы review.default/escalated входили в этот список — сюда неизвестная
+// модель-ревьюер попасть уже не может (новый id модели в конфиге = fail на старте, а
+// не тихая инверсия планки в момент разбора).
 const REVIEW_MODEL_STRENGTH = [
     'claude-haiku-4-5-20251001',
     'claude-sonnet-5',
@@ -1249,6 +1262,29 @@ const REVIEW_MODEL_STRENGTH = [
 // Ранг силы модели ревью (индекс в REVIEW_MODEL_STRENGTH). Неизвестная/пустая → -1.
 function reviewModelRank(model) {
     return REVIEW_MODEL_STRENGTH.indexOf(model);
+}
+
+// #223: fail-closed на старте — все модели ревью конфига обязаны быть известны планке.
+// В reviewModelRank/strongerReviewModel уходят только review.default и review.escalated
+// (pickReviewModel других источников не имеет; modelRouting.* — КОДЕРСКИЕ модели, во
+// floor не попадают, поэтому их здесь не проверяем — иначе честный coder-only id ложно
+// красил бы старт). Значение 'none' и отсутствие ключа допустимы (review отключён/дефолт).
+// Возврат: true — все известны; иначе результат failFn (мягкий failFn пробрасываем наверх).
+function assertKnownReviewModels(cfg, profileName, failFn = fail) {
+    const review = cfg.review;
+    if (!isPlainObject(review)) return true; // review не задан — планке нечего проверять
+    for (const key of ['default', 'escalated']) {
+        const model = review[key];
+        if (model === undefined || model === null || model === 'none') continue;
+        if (reviewModelRank(model) === -1) {
+            return failFn(
+                `ralph.config.json (профиль "${profileName}"): review.${key} = "${model}" не входит в REVIEW_MODEL_STRENGTH. ` +
+                    `Планка повторного ревью (#217) сравнивает модели по этому списку; незнакомая модель-ревьюер инвертировала бы барьер (блок сильнейшей судила бы слабейшая). ` +
+                    `Добавь модель в REVIEW_MODEL_STRENGTH в ralph.js или поправь конфиг. Известные: ${REVIEW_MODEL_STRENGTH.join(', ')}.`,
+            );
+        }
+    }
+    return true;
 }
 
 // Сильнейшая из двух моделей ревью — это и есть операция «поднять планку». null /
@@ -1266,9 +1302,10 @@ function strongerReviewModel(a, b) {
 // #217: снятие label blocked — прерогатива РАННЕРА, не кодер-сессии (тот же принцип,
 // что в #207: решение принимает не тот, кого проверяют). Раннер снимает метку ПЕРЕД
 // повторным ревью — чистый лист, — и повторное ревью (судья) вешает её заново, если
-// блокеры не устранены. Идемпотентно и fail-open: не нашли PR / не смогли снять —
+// блокеры не устранены. Идемпотентно и fail-closed: не нашли PR / не смогли снять —
 // метка остаётся, гейт увидит blocked и уведёт круг разбора дальше (в пределе — к
-// человеку), несмерджённым это не станет. Имя ветки — только через SAFE_BRANCH_RE и
+// человеку), несмерджённым это не станет (отказ ужесточает, а не пропускает). Имя
+// ветки — только через SAFE_BRANCH_RE и
 // shq (anti-injection, инв. C3/7): значение уходит в шелл gh.
 function removeBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
     if (!safeBranch(branch, { logFn, where: 'removeBlockedLabel' })) return;
@@ -1288,6 +1325,35 @@ function removeBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
         logFn(
             `⚠ removeBlockedLabel не снял метку (гейт подберёт blocked): ${String(e?.message ?? e).split('\n')[0]}`,
         );
+    }
+}
+
+// #223: симметрична removeBlockedLabel — детерминированно ВОЗВРАЩАЕТ label blocked на
+// PR ветки. Нужна fail-closed'у разбора: раннер снимает метку ПЕРЕД повторным ревью, и
+// если ревью-сессия упала (overload при noFallback, api-limit, таймаут) — метку надо
+// вернуть, иначе гейт следующего прохода увидит PR без метки и смерджит фазу БЕЗ
+// вердикта повторного ревью (обход барьера #217). Окно «раннер убит между снятием и
+// вердиктом» этим не закрывается — его держит персистентный флаг reReviewPending (см.
+// runLoop). Тот же anti-injection-путь, что removeBlockedLabel: имя ветки через
+// SAFE_BRANCH_RE и shq (инв. C3/7), значение уходит в шелл gh.
+function addBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
+    if (!safeBranch(branch, { logFn, where: 'addBlockedLabel' })) return;
+    try {
+        const num = String(
+            shFn(
+                `gh pr list --head ${shq(branch)} --state open --json number --jq '.[0].number // empty'`,
+            ),
+        ).trim();
+        if (!num) {
+            logFn(`⚠ addBlockedLabel: открытый PR ветки ${branch} не найден — метку не вернул.`);
+            return;
+        }
+        shFn(`gh pr edit ${shq(num)} --add-label blocked`);
+        logFn(
+            `🏷 Раннер вернул label blocked на PR #${num} — повторное ревью не дало вердикта (#223).`,
+        );
+    } catch (e) {
+        logFn(`⚠ addBlockedLabel не вернул метку: ${String(e?.message ?? e).split('\n')[0]}`);
     }
 }
 
@@ -1850,6 +1916,9 @@ function defaultState() {
         // этой фазе) и модель последнего проведённого ревью — из них считается floor.
         reviewModelFloor: null,
         lastReviewModel: null,
+        // #223: раннер снял label blocked, но повторное ревью ещё не дало вердикта.
+        // Флаг переживает рестарт → гейт вернёт метку, если сессия ревью погибла.
+        reReviewPending: false,
     };
 }
 
@@ -1892,6 +1961,8 @@ function advancePhase(st, idx) {
     // прошлой фазы зря задрал бы модель повторного ревью следующей).
     st.reviewModelFloor = null;
     st.lastReviewModel = null;
+    // #223: разбор blocked остался в прошлой фазе — новая начинает без «висящего» окна.
+    st.reReviewPending = false;
     saveState(st);
 }
 
@@ -2067,6 +2138,7 @@ function runLoop(
         reviewDiffContextFn = reviewDiffContext,
         phaseDiffFilesFn = phaseDiffFiles,
         removeBlockedLabelFn = removeBlockedLabel,
+        addBlockedLabelFn = addBlockedLabel,
         runClaudeFn = runClaude,
         ensureCleanFn = ensureClean,
         phaseMergedFn = phaseMerged,
@@ -2372,6 +2444,21 @@ function runLoop(
                 break;
             }
 
+            // #223 fail-closed: раннер снимает label blocked ПЕРЕД повторным ревью и
+            // ставит флаг reReviewPending, снимая его только по вердикту (rCode === 0).
+            // Флаг ещё стоит на входе в гейт → раннер был убит между снятием метки и
+            // вердиктом ревью: метки на PR нет, а вердикта не было. Слепой мердж здесь
+            // обошёл бы барьер #217 — возвращаем метку, гейт прочитает blocked и прогонит
+            // ещё один круг разбора (повторное ревью заново), а не смерджит без вердикта.
+            if (state.reReviewPending) {
+                logFn(
+                    '♻️ Повторное ревью blocked не доведено до вердикта (рестарт посреди) — возвращаю label blocked, гейт переоценит фазу.',
+                );
+                addBlockedLabelFn(phase.branch, { shFn, logFn });
+                state.reReviewPending = false;
+                saveStateFn(state);
+            }
+
             // 4. Детерминированный гейт: раннер сам проверяет hold + blocked + HEAD==PR + чеки.
             logFn('🚦 Гейт мерджа: проверка label hold/blocked + сверка HEAD + прогон чеков...');
             const gate = tryMergePhaseFn(phase, { profileName: cfg.profileName });
@@ -2384,7 +2471,17 @@ function runLoop(
             // gate === 'hold' исключён нарочно (#222): hold проверяется в tryMergePhase
             // РАНЬШЕ blocked, поэтому при обеих метках сразу gate='hold' не говорит,
             // снят ли фактически blocked — «снят автоматически» здесь была бы ложью.
-            if (gate !== 'blocked' && gate !== 'hold' && (state.blockedHeals || 0) > 0) {
+            // #223: getLastGatePr() !== null — гейт реально дошёл до чтения меток. Без
+            // этого пуш «снят автоматически» стрелял бы и на путях, где tryMergePhase
+            // вернул not-merged ДО метки (грязное дерево ensureClean, «открытый PR не
+            // найден» — человек закрыл PR посреди разбора): там lastGatePr === null,
+            // снятия блока гейт не подтверждал, а blockedHeals обнулялся зря.
+            if (
+                gate !== 'blocked' &&
+                gate !== 'hold' &&
+                getLastGatePr() !== null &&
+                (state.blockedHeals || 0) > 0
+            ) {
                 const liftedPr = getLastGatePr();
                 pushEventFn(
                     `✅ Ralph: фаза "${phase.milestone}" — блокер на PR #${liftedPr ?? '?'} снят автоматически после повторного ревью моделью ${state.lastReviewModel ?? '?'}.`,
@@ -2540,11 +2637,27 @@ function runLoop(
                         cfg,
                         { logFn },
                     );
+                    // #223: та же чистка state, что в обеих соседних ветках «оставлен
+                    // человеку» — иначе после перезапуска гейт снова увидит blocked, bDone
+                    // < bMax запустит ЕЩЁ одну чини-сессию и упрётся в тот же стоп, сжигая
+                    // сессию впустую. Ветка недостижима (strongerReviewModel не даёт
+                    // результат ниже floor), но раз заявлена «пояс+подтяжки» — ведёт себя
+                    // как соседи.
+                    state.blockedHeals = 0;
+                    state.reviewModelFloor = null;
+                    state.lastReviewModel = null;
+                    saveStateFn(state);
                     break;
                 }
                 state.lastReviewModel = reReviewModel;
                 saveStateFn(state);
 
+                // #223: флаг ставим ДО снятия метки и сохраняем на диск — он маркирует
+                // окно «метки нет, вердикта ещё нет». Если раннер погибнет между снятием
+                // и вердиктом (rCode === 0), на рестарте гейт увидит флаг и вернёт метку
+                // (см. recovery перед tryMergePhase). Снимается флаг только по вердикту.
+                state.reReviewPending = true;
+                saveStateFn(state);
                 // Раннер снимает метку — чистый лист для повторного ревью. Если блокеры
                 // остались, ревью повесит blocked заново; устранены — метки нет, и гейт
                 // следующего прохода смерджит. Так снятие метки всегда результат ревью
@@ -2567,11 +2680,24 @@ function runLoop(
                     },
                 );
                 if (rCode !== 0) {
+                    // #223: ревью-сессия упала (overload при noFallback, api-limit,
+                    // таймаут) — вердикта нет, а метку раннер уже снял. БЕЗ возврата метки
+                    // рестарт (submitted === true) сразу ушёл бы на гейт, увидел PR без
+                    // blocked, зелёные чеки → смердж фазы ВООБЩЕ без вердикта повторного
+                    // ревью (обход барьера #217). Детерминированно возвращаем метку и
+                    // снимаем флаг — гейт следующего прохода перечитает blocked.
+                    addBlockedLabelFn(phase.branch, { shFn, logFn });
+                    state.reReviewPending = false;
+                    saveStateFn(state);
                     logFn(
-                        `⛔ Повторное ревью blocked упало (код ${rCode}) — БЕЗ ревью фазу не мерджим (fail-closed). Перезапусти loop.`,
+                        `⛔ Повторное ревью blocked упало (код ${rCode}) — БЕЗ ревью фазу не мерджим (fail-closed), label blocked возвращён. Перезапусти loop.`,
                     );
                     break;
                 }
+                // #223: вердикт получен — окно «метки нет, вердикта нет» закрыто. Ревью
+                // само повесило blocked заново, если блокеры устояли; сняло флаг здесь.
+                state.reReviewPending = false;
+                saveStateFn(state);
                 // submitted остаётся true → следующий проход сразу на гейт, который
                 // детерминированно перечитает label: ревью вернуло blocked → снова
                 // 'blocked' (инкремент счётчика); чисто → мердж.
@@ -3031,6 +3157,7 @@ module.exports = {
     reviewModelRank,
     strongerReviewModel,
     removeBlockedLabel,
+    addBlockedLabel,
     API_LIMIT_RE,
     spawnClaude,
     runClaude,
