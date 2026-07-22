@@ -13,6 +13,11 @@
         "gateHealAttempts": 2,
         "apiLimitMaxWaits": 3,
         "apiLimitGraceMin": 5,
+        "deadman": {
+            "iterationGraceMs": 600000,
+            "gateSilenceMs": 600000,
+            "defaultSilenceMs": 300000
+        },
         "modelRouting": {
             "default": "claude-opus-4-8",
             "labels": {

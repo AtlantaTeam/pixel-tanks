@@ -33,6 +33,46 @@
             "url": "https://github.com/advisories/GHSA-hm92-r4w5-c3mj",
             "title": "Cross-origin request routing via SOCKS5 proxy pool reuse",
             "reason": "Транзитивная зависимость Payload 3 (бета); не чинится без --force на фреймворк. SOCKS5-прокси в проде не используется"
+        },
+        {
+            "id": 1124008,
+            "package": "immutable",
+            "severity": "high",
+            "url": "https://github.com/advisories/GHSA-v56q-mh7h-f735",
+            "title": "Immutable.js `List` 32-bit trie overflow → unrecoverable DoS",
+            "reason": "Транзитивная зависимость @payloadcms/next 3 (бета) → immutable@4.3.8; не чинится без --force на фреймворк. immutable живёт во внутренностях админки Payload, не на публичной прод-поверхности игры"
+        },
+        {
+            "id": 1124018,
+            "package": "immutable",
+            "severity": "high",
+            "url": "https://github.com/advisories/GHSA-xvcm-6775-5m9r",
+            "title": "Hash-collision algorithmic complexity denial of service in Immutable.Map/Set",
+            "reason": "Транзитивная зависимость @payloadcms/next 3 (бета) → immutable@4.3.8; не чинится без --force на фреймворк. immutable живёт во внутренностях админки Payload, не на публичной прод-поверхности игры"
+        },
+        {
+            "id": 1124015,
+            "package": "fast-uri",
+            "severity": "high",
+            "url": "https://github.com/advisories/GHSA-4c8g-83qw-93j6",
+            "title": "fast-uri vulnerable to host confusion via failed IDN canonicalization",
+            "reason": "Транзитивная зависимость payload 3 (бета) → fast-uri@3.1.2; не чинится без --force на фреймворк. Ждём, пока Payload поднимет диапазон"
+        },
+        {
+            "id": 1124064,
+            "package": "fast-uri",
+            "severity": "high",
+            "url": "https://github.com/advisories/GHSA-v2hh-gcrm-f6hx",
+            "title": "fast-uri vulnerable to host confusion via literal backslash authority delimiter",
+            "reason": "Транзитивная зависимость payload 3 (бета) → fast-uri@3.1.2; не чинится без --force на фреймворк. Ждём, пока Payload поднимет диапазон"
+        },
+        {
+            "id": 1124066,
+            "package": "sharp",
+            "severity": "high",
+            "url": "https://github.com/advisories/GHSA-f88m-g3jw-g9cj",
+            "title": "sharp inherited vulnerabilities in libvips: CVE-2026-33327, CVE-2026-33328, CVE-2026-35590, CVE-2026-35591",
+            "reason": "Транзитивная зависимость next@16 и payload 3 → sharp@0.34.5; фикс только в semver-major sharp@0.35.x, не ставится без --force. Ждём, пока Next/Payload поднимут диапазон. Поверхность НЕ только билд: sharp — рантайм next/image в prod (unoptimized лишь в dev), т.е. каждый /_next/image декодирует картинку уязвимым libvips на сервере. Сейчас риск ограничен тем, что источники только локальные (remotePatterns не настроены — атакующий не может скормить свои байты). ПЕРЕСМОТРЕТЬ эту запись обязательно при добавлении удалённых источников (remotePatterns) ИЛИ Payload-коллекции upload — тогда через декодер пойдут внешние байты"
         }
     ]
 }

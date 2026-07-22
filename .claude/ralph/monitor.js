@@ -23,7 +23,10 @@ const { execSync } = require('child_process');
 // Резолв профилей (#71) — единый источник правды с раннером, чтобы монитор не завёл
 // вторую копию правил мерджа. require безопасен: main() в ralph.js под guard
 // require.main === module, при импорте выполняются только объявления и консты.
-const { resolveProfile, parseProfileFlag } = require('./ralph.js');
+const { resolveProfile, parseProfileFlag, pushEvent } = require('./ralph.js');
+// Пороги тишины (#147): классификация хвоста лога по режиму + порог по режиму. Здесь
+// (в мониторе) — импёровая половина: чтение файла, «сейчас» и сравнение с порогом.
+const { classifyActivity, silenceThresholdMs } = require('./deadman.js');
 
 const RALPH_DIR = __dirname;
 const REPO_DIR = path.resolve(RALPH_DIR, '..', '..');
@@ -79,21 +82,140 @@ function fmtAge(ms) {
     return `${h}ч ${m % 60}м назад`;
 }
 
-function tailSignals(n) {
+// Длительность без «назад» — для печати порога.
+function fmtDur(ms) {
+    const m = Math.round(ms / 60000);
+    if (m < 60) return `${m}м`;
+    return `${Math.floor(m / 60)}ч ${m % 60}м`;
+}
+
+// Сырой хвост лога (НЕ отфильтрованный по SIGNAL_RE) + время последней записи. deadman
+// классифицирует режим по маркерам ✓/✗/🚦, которых нет в SIGNAL_RE, поэтому детект
+// читает сырые строки, а панель значимые получает фильтром signalTail поверх этого же
+// чтения (одно чтение на тик). lastMtime = mtime файла: свежесть
+// лога и есть признак жизни петли (log() пишется на каждом шаге хореографии). logPath
+// параметром — чтобы тестировать на временном файле, а не только на боевом LOG_PATH.
+// n — сколько последних строк вернуть; n === null → ВЕСЬ файл (явный контракт вместо
+// slice(-Infinity), который «случайно» отдавал весь массив). Детекту нужен весь хвост
+// (маркер режима может быть глубоко), панели — последние n через signalTail.
+function readLogTail(n = 200, logPath = LOG_PATH) {
     let raw;
     try {
-        raw = fs.readFileSync(LOG_PATH, 'utf8');
+        raw = fs.readFileSync(logPath, 'utf8');
     } catch {
         return { lines: [], lastMtime: null };
     }
-    const lines = raw.split('\n').filter((l) => SIGNAL_RE.test(l));
     let lastMtime = null;
     try {
-        lastMtime = fs.statSync(LOG_PATH).mtimeMs;
+        lastMtime = fs.statSync(logPath).mtimeMs;
     } catch {
         /* ignore */
     }
-    return { lines: lines.slice(-n), lastMtime };
+    const all = raw.split('\n');
+    return { lines: n == null ? all : all.slice(-n), lastMtime };
+}
+
+// Детект тишины: возраст последней записи лога (now − lastMtime) против порога режима
+// текущего шага (coder до 2ч, гейт/хоз-шаги — минуты). Чистая функция — все входы
+// аргументами, «сейчас» приходит извне: детект смотрит на ФАЙЛ, а не на процесс
+// раннера, поэтому переживает его смерть (kill -9, OOM). Сам пуш и дедуп — #149.
+function evalDeadman({ now, lastMtime, lines, config }) {
+    if (lastMtime == null) {
+        return {
+            silent: false,
+            reason: 'no-log',
+            activity: null,
+            thresholdMs: null,
+            silenceMs: null,
+        };
+    }
+    const activity = classifyActivity(lines);
+    // lines прокидываем — режиму apiwait порог берётся из строки паузы `Жду N мин`.
+    const thresholdMs = silenceThresholdMs(activity, config, lines);
+    // Math.max(0, …): mtime снимается ПОСЛЕ чтения контента, а now — до обоих. Запись в
+    // лог между этими точками (или скачок системных часов назад) дала бы lastMtime > now
+    // → отрицательный silenceMs и косметический `⏱ лог -1с назад`. Зажимаем в ноль.
+    const silenceMs = Math.max(0, now - lastMtime);
+    return { silent: silenceMs > thresholdMs, reason: null, activity, thresholdMs, silenceMs };
+}
+
+// Дедуп повторных пушей об одной и той же тишине (#149 — alert fatigue главный риск
+// по PRD). Эпизод тишины идентифицируем по lastMtime — моменту, когда лог перестал
+// расти: пока файл не сдвинулся дальше, это ТА ЖЕ тишина, повторный пуш не нужен. Как
+// только лог снова пишется (loop ожил или человек вмешался), lastMtime меняется —
+// следующая тишина, если наступит, будет уже новым эпизодом со своим ключом.
+function shouldPushDeadman(deadman, lastMtime, lastPushedForMtime) {
+    return deadman.silent && lastMtime !== lastPushedForMtime;
+}
+
+// Текст пуша — та же формулировка, что и на панели (evalDeadman/fmtAge/fmtDur), плюс
+// имя фазы и явное «цикл не остановлен» — по PRD автостоп не делаем, ложный ночной
+// стоп дороже лишнего пуша, и человек должен понимать, что раннер продолжит идти.
+function deadmanPushMessage(deadman, milestoneName) {
+    return (
+        `💀 Ralph: DEADMAN на фазе "${milestoneName}" — лог молчит ${fmtAge(deadman.silenceMs)}, ` +
+        `дольше порога ${fmtDur(deadman.thresholdMs)} (режим ${deadman.activity}). ` +
+        'Цикл продолжается без остановки — проверь вручную.'
+    );
+}
+
+// Оценка + сам пуш, вынесено из snapshot(), чтобы тестировать без реальных gh-вызовов
+// остального снапшота — тот же приём, что evalDeadman/readLogTail (#147/#148): чистая
+// логика решения отдельно от побочек панели. pushFn инжектируется (как pushEventFn в
+// ralph.js) — тесты мокают сам вызов, не profileName/Telegram. Возвращает новый ключ
+// дедупа (вызывающий код держит его в состоянии между тиками).
+// logFn у pushFn — НЕ log() раннера: та функция дописывает СТРОКУ В ТОТ ЖЕ ralph.log,
+// по свежести которого детект и определяет тишину. Если бы пуш писал туда же,
+// lastMtime «ожил» бы от собственного пуша монитора, и реальная тишина маскировалась
+// бы навсегда (мёртвый раннер выглядел бы живым из-за пуша про его смерть). Печатаем
+// в свой stdout — monitor.out, куда и так льётся вся панель, tail -f видит и его.
+function maybePushDeadman(
+    deadman,
+    lastMtime,
+    lastPushedForMtime,
+    { pushFn = pushEvent, cfg, milestoneName } = {},
+) {
+    if (!shouldPushDeadman(deadman, lastMtime, lastPushedForMtime)) {
+        return lastPushedForMtime;
+    }
+    // Кривой/нечитаемый конфиг (resolveProfile → null): в prod pushEvent молча вернёт
+    // false ДО доставки, то есть деадман обезоружен ровно в аварийном состоянии, о
+    // котором watchdog и должен кричать. Fail-safe-доставка при null-конфиге — фаза 2;
+    // здесь минимум — раз на эпизод явно предупредить в свой stdout (monitor.out).
+    if (!cfg) {
+        console.log(
+            '⚠ Ralph deadman: конфиг не резолвится — deadman-пуши НЕ доставляются (проверь ralph.config.json / --profile).',
+        );
+    }
+    // dry: false явно. У монитора нет своего dry-режима, но pushEvent по умолчанию берёт
+    // dry из argv СВОЕГО процесса (require('./ralph.js') парсит DRY из process.argv). Если
+    // монитор на prod-хосте запустить со случайно скопированным `--dry-run` в argv,
+    // pushEvent вернул бы false ДО проверки профиля → maybePushDeadman счёл бы это сбоем
+    // доставки (deliveryAttempted) → вечный ретрай с маркером каждый тик, при «доставка
+    // пушей: вкл» на панели. Прокидываем false — доставка deadman не зависит от argv.
+    const delivered = pushFn(deadmanPushMessage(deadman, milestoneName), cfg, {
+        logFn: console.log,
+        dry: false,
+    });
+    // Дедуп-ключ защёлкиваем не безусловно: в prod false у pushEvent = доставка НЕ удалась
+    // (сбой curl/сети/Telegram, fail-open вернул false) — единственный алерт о мёртвом
+    // ночном раннере нельзя терять, поэтому ключ НЕ двигаем, следующий тик повторит.
+    // В non-prod/при null-конфиге false = пуш штатно подавлен профилем (доставки нет и не
+    // будет) — тогда защёлкиваем, иначе наивный ретрай спамил бы monitor.out каждый тик.
+    const deliveryAttempted = !!cfg && cfg.profileName === 'prod';
+    if (deliveryAttempted && !delivered) {
+        return lastPushedForMtime;
+    }
+    return lastMtime;
+}
+
+// Значимые строки (маркеры этапов) из УЖЕ прочитанного хвоста — последние n. Своего
+// чтения файла НЕ делает: и панель значимых строк, и детект тишины идут от одного
+// readLogTail в snapshot(). Так у тика ровно одно чтение (растущий многодневный лог не
+// читается дважды за тик) и ровно один mtime — иначе два независимых statSync могли бы
+// разойтись, и возраст одного файла в строках `🟢 активен` и `⏱ лог` показал бы разное.
+function signalTail(lines, n) {
+    return lines.filter((l) => SIGNAL_RE.test(l)).slice(-n);
 }
 
 function currentMilestone(state, config) {
@@ -135,6 +257,15 @@ function openGamePRs() {
     }
 }
 
+// Ключ дедупа деадмана (#149) — переживает между тиками setInterval (тот же процесс
+// monitor.js на весь прогон петли), но НЕ переживает перезапуск самого монитора: это
+// уже фаза 2 (взаимный контроль раннер↔монитор), здесь не в скоупе.
+let lastDeadmanPushMtime = null;
+
+// Разовое предупреждение об исчезнувшем логе (см. snapshot). Сбрасывается, когда лог
+// снова находится, — чтобы каждый эпизод отсутствия файла предупреждал ровно раз.
+let warnedNoLog = false;
+
 function snapshot() {
     const now = Date.now();
     const state = readJSON(STATE_PATH) || {};
@@ -142,9 +273,43 @@ function snapshot() {
     // что и раннер, а не читаем сырой JSON. failFn → null: монитор наблюдательный,
     // кривой конфиг для него повод показать «—», а не упасть (упасть должен ralph.js).
     const config = resolveProfile(readJSON(CONFIG_PATH), PROFILE, () => null);
-    const { lines, lastMtime } = tailSignals(8);
+    // Одно чтение лога на тик — источник правды и для панели, и для детекта. readLogTail
+    // отдаёт весь хвост (n=null — явный контракт «весь файл») и ОДИН mtime: от него и
+    // признак жизни (alive), и детект тишины, и последние значимые строки. Детект смотрит
+    // сырой хвост (маркеры ✓/✗/🚦 в SIGNAL_RE не попадают), панель — только значимые
+    // (signalTail). Сам пуш о тишине и дедуп — #149; здесь только детект и его показ.
+    const { lines: allLogLines, lastMtime } = readLogTail(null);
+    const lines = signalTail(allLogLines, 8);
+    const deadman = evalDeadman({
+        now,
+        lastMtime,
+        lines: allLogLines.slice(-200),
+        config,
+    });
+    // reason:'no-log' сам по себе НЕ алертит (silent:false): если ralph.log пропал
+    // (чистка, ротация, снесённый worktree — а раннер при этом мёртв), детект навсегда
+    // возвращал бы silent:false и watchdog молча обезоружен в состоянии, которое сам
+    // должен ловить. Fail-safe-доставка — фаза 2; здесь минимум, как у null-конфига в
+    // maybePushDeadman: раз на эпизод отсутствия файла предупредить в свой stdout
+    // (monitor.out). Флаг сбрасывается, когда лог снова находится.
+    if (deadman.reason === 'no-log') {
+        if (!warnedNoLog) {
+            console.log(
+                '⚠ Ralph deadman: ralph.log не найден — watchdog не может судить о тишине (проверь путь/worktree/ротацию).',
+            );
+            warnedNoLog = true;
+        }
+    } else {
+        warnedNoLog = false;
+    }
     const ms = currentMilestone(state, config);
     const milestoneName = ms?.phase?.milestone || state.milestone || '—';
+    // Пуш о тишине (#149): только доставка события, цикл раннера монитор не трогает —
+    // он вообще не властен над ним, у монитора нет доступа к процессу сессии/loop.
+    lastDeadmanPushMtime = maybePushDeadman(deadman, lastMtime, lastDeadmanPushMtime, {
+        cfg: config,
+        milestoneName,
+    });
     const prog = issuesProgress(milestoneName);
     const prs = openGamePRs();
     const head = sh('git rev-parse --short HEAD');
@@ -163,6 +328,19 @@ function snapshot() {
     out.push(`╔${bar}╗`);
     out.push(`  RALPH MONITOR   ${new Date(now).toLocaleString('ru-RU')}`);
     out.push(`  ${alive}`);
+    if (deadman.activity === 'stopped') {
+        // Штатная остановка петли: порог +∞, тишина сюда не применяется. Отдельная
+        // строка, а не «порог Infinityм» — раннер вышел из loop корректно, не завис.
+        out.push(
+            `  ⏹  петля штатно остановлена (лог ${fmtAge(deadman.silenceMs)} назад) — watchdog не считает это тишиной`,
+        );
+    } else if (deadman.reason !== 'no-log') {
+        out.push(
+            deadman.silent
+                ? `  💀 DEADMAN: лог молчит ${fmtAge(deadman.silenceMs)} — дольше порога ${fmtDur(deadman.thresholdMs)} (режим ${deadman.activity})`
+                : `  ⏱  лог ${fmtAge(deadman.silenceMs)}, порог тишины ${fmtDur(deadman.thresholdMs)} (режим ${deadman.activity})`,
+        );
+    }
     out.push(`╚${bar}╝`);
     out.push(
         `Фаза: ${milestoneName}` +
@@ -170,6 +348,15 @@ function snapshot() {
             `   submitted=${state.submitted ? 'да' : 'нет'}   iter=${state.count ?? '?'}`,
     );
     out.push(`git: ${branch} @ ${head}`);
+    // Профиль и статус доставки пушей. Операционный шов: ручной перезапуск монитора без
+    // --profile берёт defaultProfile (playground) — и на prod-хосте deadman-пуши молча не
+    // доставляются (pushEvent шлёт только в prod). Именно ручной рестарт после смерти
+    // монитора — аварийный сценарий, где watchdog нужнее всего, поэтому статус доставки
+    // виден в панели, а не молча выключен. null-конфиг → доставки тоже нет (см. maybePush).
+    const deliveryOn = !!config && config.profileName === 'prod';
+    out.push(
+        `профиль: ${config?.profileName || '—'}   доставка пушей: ${deliveryOn ? 'вкл' : 'выкл (только prod)'}`,
+    );
 
     if (prog) {
         const pct = prog.total ? Math.round((prog.closed / prog.total) * 100) : 0;
@@ -211,4 +398,17 @@ function main() {
     setInterval(snapshot, INTERVAL_SEC * 1000);
 }
 
-main();
+// Экспорт чистых частей детекта — для тестов (#147/#148) и пуша с дедупом (#149).
+// Гейт require.main === module: при импорте из теста НЕ запускаем панель (gh-запросы,
+// setInterval), выполняются только объявления, как и с require('./ralph.js') выше.
+module.exports = {
+    evalDeadman,
+    readLogTail,
+    fmtDur,
+    fmtAge,
+    shouldPushDeadman,
+    deadmanPushMessage,
+    maybePushDeadman,
+};
+
+if (require.main === module) main();
