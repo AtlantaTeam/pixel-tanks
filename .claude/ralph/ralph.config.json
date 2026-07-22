@@ -7,7 +7,7 @@
         "claudeTimeoutMs": 7200000,
         "authorAllowlist": ["Pelmenya"],
         "model": "claude-opus-4-8",
-        "fallbackModel": "claude-sonnet-5",
+        "fallbackModel": "claude-opus-4-8",
         "permissionMode": "bypassPermissions",
         "blockedHealAttempts": 3,
         "gateHealAttempts": 2,
