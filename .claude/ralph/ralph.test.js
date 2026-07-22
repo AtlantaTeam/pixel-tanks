@@ -55,6 +55,8 @@ const {
     tryMergePhase,
     waitForDeployRun,
     mergedShaOf,
+    probeHttpStatus,
+    checkProdHealth,
     getLastRedCheck,
     getVerifiedHead,
     getLastGatePr,
@@ -1381,6 +1383,10 @@ describe('runLoop — основной while-цикл: итерации коде
             // (реальные gh-чтения через sh → предохранитель #138).
             mergedShaOfFn: () => 'a'.repeat(40),
             waitForDeployRunFn: () => ({ status: 'completed', conclusion: 'success' }),
+            // #164: тот же безопасный дефолт-паттерн — без него prod-сценарий с зелёным
+            // workflow (conclusion: 'success' выше) звал бы НАСТОЯЩИЙ checkProdHealth
+            // (реальный curl к https://pixeltanks.ru).
+            checkProdHealthFn: () => ({ ok: true, status: 200, url: 'https://pixeltanks.ru' }),
             ...o,
         };
     };
@@ -1764,6 +1770,69 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(waitForDeployRunFn).not.toHaveBeenCalled();
         expect(logs.join('\n')).toMatch(/не удалось дождаться итога деплоя/);
         expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+    });
+
+    it('#164 prod: зелёный workflow (conclusion success) → healthcheck прода зовётся', () => {
+        const logs = [];
+        const checkProdHealthFn = vi.fn(() => ({ ok: true, status: 200, url: 'u' }));
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({ status: 'completed', conclusion: 'success' }),
+                checkProdHealthFn,
+            }),
+        );
+        expect(checkProdHealthFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('#164 prod: упавший workflow (conclusion failure) → healthcheck НЕ зовётся, красный итог уже сигнал сам по себе', () => {
+        const logs = [];
+        const checkProdHealthFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({ status: 'completed', conclusion: 'failure' }),
+                checkProdHealthFn,
+            }),
+        );
+        expect(checkProdHealthFn).not.toHaveBeenCalled();
+    });
+
+    it('#164 prod: недосмотренный workflow (status timeout) → healthcheck НЕ зовётся', () => {
+        const logs = [];
+        const checkProdHealthFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({ status: 'timeout', conclusion: null }),
+                checkProdHealthFn,
+            }),
+        );
+        expect(checkProdHealthFn).not.toHaveBeenCalled();
     });
 
     it('#87 playground: гейт merged → деплой-плейсхолдер НЕ зовётся, мердж остаётся финалом (continue как раньше)', () => {
@@ -2998,6 +3067,111 @@ describe('waitForDeployRun — ожидание итога deploy-workflow на 
             nowFn,
         });
         expect(ghJsonFn.mock.calls[0][0]).toContain("--workflow 'release.yml'");
+    });
+});
+
+describe('checkProdHealth — HTTP-healthcheck главной страницы прода (#164)', () => {
+    const cfg = (o = {}) => ({
+        deployCheck: { healthUrl: 'https://pixeltanks.ru', healthRetryDelayMs: 1, ...o },
+    });
+
+    it('первая же попытка отдаёт 200 → {ok: true, status: 200}, без ретраев', () => {
+        const execFn = vi.fn(() => '200');
+        const sleepFn = vi.fn();
+        const out = checkProdHealth(cfg(), { execFn, sleepFn, logFn: () => {} });
+        expect(out).toEqual({ ok: true, status: 200, url: 'https://pixeltanks.ru' });
+        expect(execFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+    });
+
+    it('флаки-запрос (первая попытка падает) не роняет проверку — вторая попытка доставляет 200', () => {
+        let call = 0;
+        const execFn = vi.fn(() => {
+            call++;
+            if (call === 1) throw new Error('curl: connection reset');
+            return '200';
+        });
+        const sleepFn = vi.fn();
+        const out = checkProdHealth(cfg({ healthRetries: 3 }), {
+            execFn,
+            sleepFn,
+            logFn: () => {},
+        });
+        expect(out).toEqual({ ok: true, status: 200, url: 'https://pixeltanks.ru' });
+        expect(execFn).toHaveBeenCalledTimes(2);
+        // Пауза выдержана между попытками — петля не забита busy-loop'ом.
+        expect(sleepFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('исчерпание попыток на упорно красном коде → {ok: false, status}, не бросает', () => {
+        const execFn = vi.fn(() => '503');
+        const sleepFn = vi.fn();
+        const logs = [];
+        const out = checkProdHealth(cfg({ healthRetries: 3 }), {
+            execFn,
+            sleepFn,
+            logFn: (m) => logs.push(m),
+        });
+        expect(out).toEqual({ ok: false, status: 503, url: 'https://pixeltanks.ru' });
+        expect(execFn).toHaveBeenCalledTimes(3);
+        expect(logs.join('\n')).toMatch(/не вернул 200 после 3 попыток/);
+    });
+
+    it('исчерпание попыток на упорном сетевом сбое → {ok: false, status: 0}, не бросает', () => {
+        const execFn = vi.fn(() => {
+            throw new Error('curl: timeout');
+        });
+        const out = checkProdHealth(cfg({ healthRetries: 2 }), {
+            execFn,
+            sleepFn: () => {},
+            logFn: () => {},
+        });
+        expect(out).toEqual({ ok: false, status: 0, url: 'https://pixeltanks.ru' });
+    });
+
+    it('url и число попыток берутся из конфига (deployCheck)', () => {
+        const execFn = vi.fn(() => '200');
+        checkProdHealth(cfg({ healthUrl: 'https://staging.example.com', healthRetries: 1 }), {
+            execFn,
+            sleepFn: () => {},
+            logFn: () => {},
+        });
+        expect(execFn.mock.calls[0][1]).toContain('https://staging.example.com');
+    });
+
+    it('без конфига deployCheck использует прод-дефолт https://pixeltanks.ru', () => {
+        const execFn = vi.fn(() => '200');
+        checkProdHealth({}, { execFn, sleepFn: () => {}, logFn: () => {} });
+        expect(execFn.mock.calls[0][1]).toContain('https://pixeltanks.ru');
+    });
+});
+
+describe('probeHttpStatus — HTTP-код через curl (#164)', () => {
+    it('корректный числовой код от curl → возвращает его как число', () => {
+        const execFn = vi.fn(() => '200');
+        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(200);
+    });
+
+    it('curl бросает (таймаут/DNS) → 0, не пробрасывает исключение', () => {
+        const execFn = vi.fn(() => {
+            throw new Error('curl: (28) timeout');
+        });
+        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(0);
+    });
+
+    it('нечисловой вывод curl → 0 (fail-closed, не «сойдёт за живой»)', () => {
+        const execFn = vi.fn(() => '');
+        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(0);
+    });
+
+    it('только ЧТЕНИЕ: аргументы curl не содержат мутирующих флагов, url доходит как отдельный элемент argv', () => {
+        const execFn = vi.fn(() => '200');
+        probeHttpStatus('https://pixeltanks.ru', 10, execFn);
+        const [bin, args] = execFn.mock.calls[0];
+        expect(bin).toBe('curl');
+        expect(args).toContain('https://pixeltanks.ru');
+        expect(args).not.toContain('-X');
+        expect(args).not.toContain('POST');
     });
 });
 

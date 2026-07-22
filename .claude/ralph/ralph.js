@@ -2024,6 +2024,75 @@ function waitForDeployRun(
     return { status: 'not-found', conclusion: null, sha, url: null, runId: null };
 }
 
+// #164: HTTP-код главной страницы прода. Только ЧТЕНИЕ (GET) — прод не трогаем (#166).
+// Аргументы curl — МАССИВ через execFileSync (тот же anti-RCE паттерн, что и
+// probeEgress/restartTunnel выше), не строка через sh(): url приходит из конфига в
+// гите, но защита ничего не стоит. Пустая/нечисловая строка ответа (таймаут, DNS-сбой)
+// → код 0, не 200 — вызывающий трактует как «не здоров», та же логика, что у probeEgress.
+function probeHttpStatus(url, timeoutSec, execFn = execFileSync) {
+    try {
+        const out = execFn(
+            'curl',
+            [
+                '-4',
+                '-s',
+                '-o',
+                '/dev/null',
+                '-w',
+                '%{http_code}',
+                '--max-time',
+                String(timeoutSec),
+                url,
+            ],
+            { encoding: 'utf-8' },
+        ).trim();
+        const code = Number(out);
+        return Number.isInteger(code) ? code : 0;
+    } catch {
+        return 0;
+    }
+}
+
+// #164: Healthcheck прода после деплоя — MVP-определение «живо» (PRD/plan фаза 5):
+// workflow success (waitForDeployRun выше) + HTTP 200 главной страницы. Игровой смоук
+// (Playwright по проду) — кандидат в бэклог, не MVP.
+// Флаки-запрос (сетевой чих до прода) ретраится с фиксированной паузой между попытками
+// (дефолт 3×5с, как таймауты/паузы остальных пост-мердж проверок) — не должен стопить
+// петлю зря (критерий готовности #164). Итог не используется здесь для решения
+// стоп/пуш — это #165; #164 только сообщает {ok, status, url} и логирует попытки.
+function checkProdHealth(
+    cfg = config,
+    { execFn = execFileSync, sleepFn = sleep, logFn = log } = {},
+) {
+    const dc = (cfg && cfg.deployCheck) || {};
+    const url =
+        typeof dc.healthUrl === 'string' && dc.healthUrl ? dc.healthUrl : 'https://pixeltanks.ru';
+    const timeoutSec = Math.max(
+        1,
+        Math.round(positiveIntOrDefault(dc.healthTimeoutMs, 10_000) / 1000),
+    );
+    const retries = positiveIntOrDefault(dc.healthRetries, 3);
+    const retryDelayMs = positiveIntOrDefault(dc.healthRetryDelayMs, 5_000);
+
+    let status = 0;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        status = probeHttpStatus(url, timeoutSec, execFn);
+        if (status === 200) {
+            logFn(`✓ Пост-мердж: healthcheck ${url} — HTTP 200 (попытка ${attempt}/${retries}).`);
+            return { ok: true, status, url };
+        }
+        logFn(
+            `⚠ Пост-мердж: healthcheck ${url} — HTTP ${status || '—'} (попытка ${attempt}/${retries}).`,
+        );
+        if (attempt < retries) sleepFn(retryDelayMs);
+    }
+    logFn(
+        `⚠ Пост-мердж: healthcheck ${url} не вернул 200 после ${retries} попыток ` +
+            `(последний код ${status || '—'}).`,
+    );
+    return { ok: false, status, url };
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 // Схема: { count, milestone, submitted }.
 //   milestone — ИМЯ текущей фазы (M7). Позиционный phaseIndex ломался при любой
@@ -2283,6 +2352,7 @@ function runLoop(
         deployPhaseFn = deployPhasePlaceholder,
         mergedShaOfFn = mergedShaOf,
         waitForDeployRunFn = waitForDeployRun,
+        checkProdHealthFn = checkProdHealth,
         ensureMonitorAliveFn = ensureMonitorAlive,
         monitorConfigPath,
     } = {},
@@ -2648,6 +2718,13 @@ function runLoop(
                             `🚀 Пост-мердж деплой фазы "${phase.milestone}": итог workflow — ` +
                                 `${outcome.status}${outcome.conclusion ? ` (${outcome.conclusion})` : ''}.`,
                         );
+                        // #164: MVP-определение «живо» — workflow success + HTTP 200 главной
+                        // страницы. Healthcheck зовём только после зелёного workflow: красный/
+                        // недосмотренный итог сам по себе уже сигнал, здоровье прода на нём не
+                        // проверить (реакция стоп+пуш на любой из красных исходов — #165).
+                        if (outcome.status === 'completed' && outcome.conclusion === 'success') {
+                            checkProdHealthFn(cfg, { logFn });
+                        }
                     } catch (e) {
                         logFn(
                             `⚠ Пост-мердж: не удалось дождаться итога деплоя фазы ` +
@@ -3273,6 +3350,11 @@ if (require.main === module) main();
 // syncDepsIfLockChanged/lockHash (#SiaUX) — авто-npm ci при смене package-lock перед чеками.
 // ensureClean (#78) — проверка чистоты дерева раннера; shFn/logFn инжектируемы, что
 // даёт прямой тест изоляции от правок человека в соседнем worktree.
+// probeHttpStatus/checkProdHealth (#164) — пост-мердж healthcheck прода (только GET,
+// #166): MVP «живо» = зелёный workflow (waitForDeployRun) + HTTP 200 главной страницы.
+// Флаки-запрос ретраится (дефолт 3×5с из deployCheck), execFn/sleepFn инжектируемы, как
+// у probeEgress/restartTunnel; итог (ok/status/url) пока только логируется — решение
+// стоп+пуш на его основе остаётся за #165.
 module.exports = {
     resolveProfile,
     deepMerge,
@@ -3336,6 +3418,8 @@ module.exports = {
     deployPhasePlaceholder,
     mergedShaOf,
     waitForDeployRun,
+    probeHttpStatus,
+    checkProdHealth,
     getLastRedCheck: () => lastRedCheck,
     getVerifiedHead: () => lastVerifiedHead,
     getLastGatePr: () => lastGatePr,
