@@ -1,21 +1,8 @@
 import type { Metadata, Viewport } from 'next';
-import { Montserrat, Press_Start_2P } from 'next/font/google';
 import { QueryProvider } from '@/shared/api';
 import { APP_NAME } from '@/shared/config';
 import { AudioUnlock } from '@/shared/lib/audio';
 import '../globals.css';
-
-const montserrat = Montserrat({
-    subsets: ['latin', 'cyrillic'],
-    display: 'swap',
-});
-
-const pressStart = Press_Start_2P({
-    weight: '400',
-    subsets: ['latin', 'cyrillic'],
-    variable: '--font-press-start',
-    display: 'swap',
-});
 
 export const metadata: Metadata = {
     title: `${APP_NAME} — танковая дуэль на Canvas`,
@@ -35,7 +22,7 @@ export default function FrontendLayout({
 }>) {
     return (
         <html lang="ru" suppressHydrationWarning>
-            <body className={`${montserrat.className} ${pressStart.variable} antialiased`}>
+            <body className="font-sans antialiased">
                 <QueryProvider>
                     <AudioUnlock />
                     {children}
