@@ -14,6 +14,8 @@
         "test:coverage": "vitest run --coverage",
         "test:e2e": "playwright test",
         "security:audit": "node scripts/security-audit.mjs",
+        "test:count": "node scripts/test-count.mjs",
+        "test:ratchet": "node scripts/test-ratchet.mjs",
         "project:sync": "node scripts/project-sync.mjs",
         "prepare": "husky"
     },

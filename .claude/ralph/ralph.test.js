@@ -2518,8 +2518,9 @@ describe('ветковая хореография в worktree раннера (#7
     describe('gateChecksFor — состав гейта по профилю (#80)', () => {
         const names = (checks) => checks.map(([name]) => name);
 
-        it('playground = ровно базовые 5 чеков, без толстых', () => {
+        it('playground = ровно базовые 6 чеков, без толстых; храповик первым (#156)', () => {
             expect(names(gateChecksFor('playground'))).toEqual([
+                'test:ratchet',
                 'build',
                 'lint',
                 'lint:fsd',
@@ -2530,6 +2531,7 @@ describe('ветковая хореография в worktree раннера (#7
 
         it('prod = база (без дубля test) + fail-fast security/coverage/e2e', () => {
             expect(names(gateChecksFor('prod'))).toEqual([
+                'test:ratchet',
                 'build',
                 'lint',
                 'lint:fsd',
@@ -2538,6 +2540,13 @@ describe('ветковая хореография в worktree раннера (#7
                 'coverage',
                 'e2e',
             ]);
+        });
+
+        it('#156: храповик тестов стоит ПЕРВЫМ — секундный, красный отменяет мердж до build/e2e', () => {
+            // «В начале fail-fast порядка»: `vitest list` (~6с) дешевле build (минуты) и
+            // e2e (минуты), поэтому упавший храповик не оплачивает дорогие чеки.
+            expect(names(gateChecksFor('playground'))[0]).toBe('test:ratchet');
+            expect(names(gateChecksFor('prod'))[0]).toBe('test:ratchet');
         });
 
         it('prod дедупит базовый test в пользу coverage (строгое надмножество)', () => {
