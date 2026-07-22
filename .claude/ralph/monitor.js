@@ -23,7 +23,7 @@ const { execSync } = require('child_process');
 // Резолв профилей (#71) — единый источник правды с раннером, чтобы монитор не завёл
 // вторую копию правил мерджа. require безопасен: main() в ralph.js под guard
 // require.main === module, при импорте выполняются только объявления и консты.
-const { resolveProfile, parseProfileFlag } = require('./ralph.js');
+const { resolveProfile, parseProfileFlag, pushEvent } = require('./ralph.js');
 // Пороги тишины (#147): классификация хвоста лога по режиму + порог по режиму. Здесь
 // (в мониторе) — импёровая половина: чтение файла, «сейчас» и сравнение с порогом.
 const { classifyActivity, silenceThresholdMs } = require('./deadman.js');
@@ -130,6 +130,49 @@ function evalDeadman({ now, lastMtime, lines, config }) {
     return { silent: silenceMs > thresholdMs, reason: null, activity, thresholdMs, silenceMs };
 }
 
+// Дедуп повторных пушей об одной и той же тишине (#149 — alert fatigue главный риск
+// по PRD). Эпизод тишины идентифицируем по lastMtime — моменту, когда лог перестал
+// расти: пока файл не сдвинулся дальше, это ТА ЖЕ тишина, повторный пуш не нужен. Как
+// только лог снова пишется (loop ожил или человек вмешался), lastMtime меняется —
+// следующая тишина, если наступит, будет уже новым эпизодом со своим ключом.
+function shouldPushDeadman(deadman, lastMtime, lastPushedForMtime) {
+    return deadman.silent && lastMtime !== lastPushedForMtime;
+}
+
+// Текст пуша — та же формулировка, что и на панели (evalDeadman/fmtAge/fmtDur), плюс
+// имя фазы и явное «цикл не остановлен» — по PRD автостоп не делаем, ложный ночной
+// стоп дороже лишнего пуша, и человек должен понимать, что раннер продолжит идти.
+function deadmanPushMessage(deadman, milestoneName) {
+    return (
+        `💀 Ralph: DEADMAN на фазе "${milestoneName}" — лог молчит ${fmtAge(deadman.silenceMs)}, ` +
+        `дольше порога ${fmtDur(deadman.thresholdMs)} (режим ${deadman.activity}). ` +
+        'Цикл продолжается без остановки — проверь вручную.'
+    );
+}
+
+// Оценка + сам пуш, вынесено из snapshot(), чтобы тестировать без реальных gh-вызовов
+// остального снапшота — тот же приём, что evalDeadman/readLogTail (#147/#148): чистая
+// логика решения отдельно от побочек панели. pushFn инжектируется (как pushEventFn в
+// ralph.js) — тесты мокают сам вызов, не profileName/Telegram. Возвращает новый ключ
+// дедупа (вызывающий код держит его в состоянии между тиками).
+// logFn у pushFn — НЕ log() раннера: та функция дописывает СТРОКУ В ТОТ ЖЕ ralph.log,
+// по свежести которого детект и определяет тишину. Если бы пуш писал туда же,
+// lastMtime «ожил» бы от собственного пуша монитора, и реальная тишина маскировалась
+// бы навсегда (мёртвый раннер выглядел бы живым из-за пуша про его смерть). Печатаем
+// в свой stdout — monitor.out, куда и так льётся вся панель, tail -f видит и его.
+function maybePushDeadman(
+    deadman,
+    lastMtime,
+    lastPushedForMtime,
+    { pushFn = pushEvent, cfg, milestoneName } = {},
+) {
+    if (!shouldPushDeadman(deadman, lastMtime, lastPushedForMtime)) {
+        return lastPushedForMtime;
+    }
+    pushFn(deadmanPushMessage(deadman, milestoneName), cfg, { logFn: console.log });
+    return lastMtime;
+}
+
 function tailSignals(n) {
     let raw;
     try {
@@ -186,6 +229,11 @@ function openGamePRs() {
     }
 }
 
+// Ключ дедупа деадмана (#149) — переживает между тиками setInterval (тот же процесс
+// monitor.js на весь прогон петли), но НЕ переживает перезапуск самого монитора: это
+// уже фаза 2 (взаимный контроль раннер↔монитор), здесь не в скоупе.
+let lastDeadmanPushMtime = null;
+
 function snapshot() {
     const now = Date.now();
     const state = readJSON(STATE_PATH) || {};
@@ -206,6 +254,12 @@ function snapshot() {
     });
     const ms = currentMilestone(state, config);
     const milestoneName = ms?.phase?.milestone || state.milestone || '—';
+    // Пуш о тишине (#149): только доставка события, цикл раннера монитор не трогает —
+    // он вообще не властен над ним, у монитора нет доступа к процессу сессии/loop.
+    lastDeadmanPushMtime = maybePushDeadman(deadman, rawTail.lastMtime, lastDeadmanPushMtime, {
+        cfg: config,
+        milestoneName,
+    });
     const prog = issuesProgress(milestoneName);
     const prs = openGamePRs();
     const head = sh('git rev-parse --short HEAD');
@@ -279,9 +333,17 @@ function main() {
     setInterval(snapshot, INTERVAL_SEC * 1000);
 }
 
-// Экспорт чистых частей детекта — для тестов (#148). Гейт require.main === module:
-// при импорте из теста НЕ запускаем панель (gh-запросы, setInterval), выполняются
-// только объявления, как и с require('./ralph.js') выше.
-module.exports = { evalDeadman, readLogTail, fmtDur };
+// Экспорт чистых частей детекта — для тестов (#147/#148) и пуша с дедупом (#149).
+// Гейт require.main === module: при импорте из теста НЕ запускаем панель (gh-запросы,
+// setInterval), выполняются только объявления, как и с require('./ralph.js') выше.
+module.exports = {
+    evalDeadman,
+    readLogTail,
+    fmtDur,
+    fmtAge,
+    shouldPushDeadman,
+    deadmanPushMessage,
+    maybePushDeadman,
+};
 
 if (require.main === module) main();

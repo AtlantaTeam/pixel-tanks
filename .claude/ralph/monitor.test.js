@@ -9,11 +9,18 @@
 // поэтому тестируется без файлов, без сети и БЕЗ живого раннера: именно эта
 // файло-ориентированность и делает детект живучим при мёртвом раннере — он смотрит на
 // файл, а не на процесс. readLogTail проверяем на реальном временном файле.
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { evalDeadman, readLogTail } from './monitor.js';
+import {
+    evalDeadman,
+    readLogTail,
+    shouldPushDeadman,
+    deadmanPushMessage,
+    maybePushDeadman,
+} from './monitor.js';
+import { pushEvent as pushEventReal } from './ralph.js';
 
 // Строки лога как их пишет log() в ralph.js — ISO-таймстамп + маркер.
 const t = (msg) => `[2026-07-22T06:30:07.015Z] ${msg}`;
@@ -170,5 +177,122 @@ describe('readLogTail — сырой хвост лога + время после
         );
         expect(lines).toEqual([]);
         expect(lastMtime).toBeNull();
+    });
+});
+
+// Пуш о тишине без остановки цикла + дедуп повторных пушей об одном эпизоде (#149).
+// Действие при срабатывании — только pushEvent() (см. docs/ralph-reliability/plan.md,
+// фаза 1, п. «Действие при срабатывании»): раннер продолжает идти, монитор к тому же
+// не властен над его процессом — детект живёт снаружи и не может его остановить, даже
+// если бы захотел.
+describe('shouldPushDeadman — эпизод тишины по ключу lastMtime (#149)', () => {
+    it('не тихо → пуш не нужен независимо от ключа дедупа', () => {
+        expect(shouldPushDeadman({ silent: false }, 100, null)).toBe(false);
+        expect(shouldPushDeadman({ silent: false }, 100, 999)).toBe(false);
+    });
+
+    it('тихо и ключ ещё не пушился (новый эпизод) → пуш нужен', () => {
+        expect(shouldPushDeadman({ silent: true }, 100, null)).toBe(true);
+        expect(shouldPushDeadman({ silent: true }, 100, 50)).toBe(true);
+    });
+
+    it('тихо, но за этот lastMtime уже пушили (тот же эпизод) → повторный пуш не нужен', () => {
+        expect(shouldPushDeadman({ silent: true }, 100, 100)).toBe(false);
+    });
+});
+
+describe('deadmanPushMessage — текст пуша', () => {
+    it('содержит фазу, длительность/порог/режим тишины и явное «цикл продолжается»', () => {
+        const msg = deadmanPushMessage(
+            { silenceMs: 11 * 60000, thresholdMs: 10 * 60000, activity: 'gate' },
+            'Наблюдаемость ralph · Фаза 1',
+        );
+        expect(msg).toContain('Наблюдаемость ralph · Фаза 1');
+        expect(msg).toContain('DEADMAN');
+        expect(msg).toContain('режим gate');
+        expect(msg).toMatch(/цикл продолжается/i);
+    });
+});
+
+describe('maybePushDeadman — доставка через pushEvent() + дедуп по эпизоду (#149)', () => {
+    const deadman = { silent: true, silenceMs: 700000, thresholdMs: 600000, activity: 'gate' };
+    const notSilent = { silent: false, silenceMs: 100, thresholdMs: 600000, activity: 'gate' };
+
+    it('тихо → зовёт pushFn ОДИН раз с сообщением и cfg, возвращает lastMtime новым ключом дедупа', () => {
+        const pushFn = vi.fn();
+        const cfg = { profileName: 'prod' };
+        const next = maybePushDeadman(deadman, 12345, null, {
+            pushFn,
+            cfg,
+            milestoneName: 'Фаза 1',
+        });
+        expect(pushFn).toHaveBeenCalledTimes(1);
+        expect(pushFn.mock.calls[0][0]).toContain('Фаза 1');
+        expect(pushFn.mock.calls[0][1]).toBe(cfg);
+        expect(next).toBe(12345);
+    });
+
+    it('повторный вызов с тем же lastMtime (та же тишина) — pushFn второй раз не зовётся', () => {
+        const pushFn = vi.fn();
+        const first = maybePushDeadman(deadman, 12345, null, {
+            pushFn,
+            cfg: {},
+            milestoneName: 'Фаза 1',
+        });
+        const second = maybePushDeadman(deadman, 12345, first, {
+            pushFn,
+            cfg: {},
+            milestoneName: 'Фаза 1',
+        });
+        expect(pushFn).toHaveBeenCalledTimes(1);
+        expect(second).toBe(12345);
+    });
+
+    it('лог ожил и снова замолчал (новый lastMtime) — второй, уже другой эпизод пушится', () => {
+        const pushFn = vi.fn();
+        const first = maybePushDeadman(deadman, 12345, null, {
+            pushFn,
+            cfg: {},
+            milestoneName: 'Фаза 1',
+        });
+        const second = maybePushDeadman(deadman, 99999, first, {
+            pushFn,
+            cfg: {},
+            milestoneName: 'Фаза 1',
+        });
+        expect(pushFn).toHaveBeenCalledTimes(2);
+        expect(second).toBe(99999);
+    });
+
+    it('не тихо — pushFn не зовётся, ключ дедупа не меняется', () => {
+        const pushFn = vi.fn();
+        const next = maybePushDeadman(notSilent, 12345, 'старый-ключ', {
+            pushFn,
+            cfg: {},
+            milestoneName: 'Фаза 1',
+        });
+        expect(pushFn).not.toHaveBeenCalled();
+        expect(next).toBe('старый-ключ');
+    });
+
+    it('logFn пуша печатает в свой stdout (console.log), а НЕ в log() раннера — иначе пуш обновил бы mtime ralph.log и замаскировал бы собственную тишину', () => {
+        const pushFn = vi.fn();
+        maybePushDeadman(deadman, 1, null, { pushFn, cfg: {}, milestoneName: 'Фаза 1' });
+        expect(pushFn.mock.calls[0][2].logFn).toBe(console.log);
+    });
+
+    it('интеграция с реальным pushEvent() (не мок pushFn): маркер 🔔 PUSH уходит в logFn без обращения к сети', () => {
+        // profileName !== 'prod' — pushEvent возвращает false ДО вызова sendFn (сети),
+        // но маркер печатает всегда (см. комментарий в ralph.js у pushEvent) — этим и
+        // проверяем реальную доставку через pushEvent(), а не через мок его вызова.
+        const logSpy = vi.fn();
+        maybePushDeadman(deadman, 1, null, {
+            cfg: { profileName: 'playground' },
+            milestoneName: 'Фаза 1',
+            pushFn: (msg, cfg, opts) => pushEventReal(msg, cfg, { ...opts, logFn: logSpy }),
+        });
+        expect(logSpy).toHaveBeenCalledTimes(1);
+        expect(logSpy.mock.calls[0][0]).toContain('🔔 PUSH');
+        expect(logSpy.mock.calls[0][0]).toContain('DEADMAN');
     });
 });
