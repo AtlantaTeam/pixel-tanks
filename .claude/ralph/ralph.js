@@ -1274,6 +1274,25 @@ function closeMilestoneByTitle(title) {
     }
 }
 
+// #199: доска Projects расходилась с реальностью молча — встроенная автоматизация
+// «Item closed» срабатывала не для всех карточек и об этом не сообщала (13 закрытых
+// issues висели в «In Progress»). Синк идёт сразу после мерджа фазы: именно тогда
+// закрываются issues фазы, и это единственный момент, когда раннер точно знает, что
+// доска устарела.
+//
+// Best-effort, в отличие от самого скрипта: `npm run project:sync` fail-closed и
+// краснеет на любых сомнительных данных — это правильно для гейта и для человека, но
+// ронять из-за косметики доски уже смердженную фазу нельзя. Поэтому здесь — лог, как у
+// closeMilestoneByTitle: следующий прогон подберёт (синк идемпотентен).
+function syncProjectBoard(shFn = sh, logFn = log) {
+    try {
+        const out = shFn('node scripts/project-sync.mjs');
+        logFn(`🗂 ${String(out).trim().split('\n').pop()}`);
+    } catch (e) {
+        logFn(`⚠ Синк доски не удался (следующий прогон подберёт): ${e.message.split('\n')[0]}`);
+    }
+}
+
 // ── AFK-гейт мерджа фазы ─────────────────────────────────────────────────────
 // После PR → ревью → авто-правки раннер САМ проверяет качество (детерминированно,
 // не доверяя агенту на слово): PR не помечен 'blocked' И локальный HEAD совпадает
@@ -1947,6 +1966,7 @@ function runLoop(
         advancePhaseFn = advancePhase,
         tryMergePhaseFn = tryMergePhase,
         closeMilestoneByTitleFn = closeMilestoneByTitle,
+        syncProjectBoardFn = syncProjectBoard,
         getLastRedCheck = () => lastRedCheck,
         pushEventFn = pushEvent,
         deployPhaseFn = deployPhasePlaceholder,
@@ -2220,6 +2240,7 @@ function runLoop(
                 const mergedMsg = `✅ Ralph: фаза "${phase.milestone}" смерджена в main — готова к релизу.`;
                 pushEventFn(mergedMsg, cfg, { logFn });
                 closeMilestoneByTitleFn(phase.milestone); // закрыть milestone сразу, не ждать свипа
+                syncProjectBoardFn(); // #199: закрытые issues фазы → Done на доске
                 advancePhaseFn(state, idx);
                 // #87: prod — стоп перед деплоем. Деплой уже в руках CI (мердж его и
                 // запустил), но loop не должен тут же хвататься за следующую фазу без
@@ -2644,6 +2665,7 @@ module.exports = {
     sh,
     log,
     sideEffectAttempts,
+    syncProjectBoard,
     formatExcerpt,
     parseResetWaitMs,
     apiLimitWaitMs,
