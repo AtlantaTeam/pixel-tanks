@@ -4,6 +4,14 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+import { acceptedPushText, evaluateBaselineChange } from './baseline-policy.mjs';
+
+// telegram-notifier.js — CommonJS-модуль раннера (#85), самостоятельный: он не тянет
+// ralph.js и уже носит собственный guardSideEffect, поэтому в тестах побочка не улетит.
+const { sendTelegramMessage } = createRequire(import.meta.url)(
+    '../.claude/ralph/telegram-notifier.js',
+);
 
 // #83/#140: детерминированный security-скан прод-гейта.
 //
@@ -22,10 +30,40 @@ import path from 'node:path';
 // отношения не имеет и только размывал порог.
 const GATED_SEVERITIES = ['critical', 'high'];
 const KNOWN_SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
+const BASELINE_REPO_PATH = 'scripts/security-audit.baseline.json';
 const BASELINE_PATH = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     'security-audit.baseline.json',
 );
+
+// #207: базовая версия baseline и список изменённых файлов — из git, не из аргументов.
+// Оба факта агент подделать не может, на них и строятся правила (baseline-policy.mjs).
+// Fail-closed: не смогли прочитать git — красный, а не «политику пропустим». Гейт всегда
+// исполняется в дереве со свежим origin/main (раннер делает fetch перед чеками).
+export function gitChangedFiles(spawnFn = spawnSync) {
+    const r = spawnFn('git', ['diff', '--name-only', 'origin/main...HEAD'], {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+    });
+    if (r.status !== 0) {
+        throw new Error(
+            `не смог получить список изменённых файлов (git diff origin/main...HEAD): ` +
+                `${r.error?.message || r.stderr?.trim() || `код ${r.status}`}`,
+        );
+    }
+    return (r.stdout || '').split('\n').filter(Boolean);
+}
+
+export function gitBaseBaseline(spawnFn = spawnSync, file = `origin/main:${BASELINE_REPO_PATH}`) {
+    const r = spawnFn('git', ['show', file], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    // Файла нет в origin/main (первое появление baseline) — это не сбой: базовый набор пуст.
+    if (r.status !== 0) return [];
+    const parsed = JSON.parse(r.stdout);
+    if (!Array.isArray(parsed?.advisories)) {
+        throw new Error('baseline в origin/main без массива advisories — сверка ненадёжна');
+    }
+    return parsed.advisories;
+}
 
 export function loadBaseline(readFn = readFileSync, file = BASELINE_PATH) {
     const raw = JSON.parse(readFn(file, 'utf8'));
@@ -135,6 +173,47 @@ export function looksBlind(advisories, baseline) {
     return baseline.length > 0 && advisories.length === 0;
 }
 
+// #207: политика изменения baseline — до собственно сверки advisory. Порядок важен:
+// если правки baseline не имели права случиться, разбирать по ним находки бессмысленно.
+function enforceBaselinePolicy(baseline) {
+    let verdict;
+    try {
+        verdict = evaluateBaselineChange({
+            headBaseline: baseline,
+            baseBaseline: gitBaseBaseline(),
+            changedFiles: gitChangedFiles(),
+            now: Date.now(),
+        });
+    } catch (e) {
+        console.error(`⛔ security-audit (политика baseline): ${e.message}`);
+        process.exit(1);
+    }
+
+    if (!verdict.ok) {
+        console.error(
+            `⛔ security-audit: изменение baseline не принято:\n` +
+                verdict.errors.map((x) => `   • ${x}`).join('\n'),
+        );
+        process.exit(1);
+    }
+
+    // Автономность сохранена, молчаливость — нет: петля идёт дальше, но человек узнаёт
+    // об ослаблении гейта сразу. Пуш при каждом прогоне гейта с теми же новыми записями
+    // осознан: повторов мало (гейт на фазу гоняется 1–3 раза), а пропустить событие
+    // дороже, чем получить его дважды.
+    if (verdict.accepted.length) {
+        const text = acceptedPushText(verdict.accepted);
+        console.warn(text); // текст уже начинается с ⚠️ — второй эмодзи не нужен
+        try {
+            sendTelegramMessage(text);
+        } catch (e) {
+            // Недоставка пуша не красит гейт: запись уже признана легитимной, а текст
+            // остался в выводе чека и в логе раннера.
+            console.warn(`⚠️  пуш о расширении baseline не доставлен: ${e.message}`);
+        }
+    }
+}
+
 function main() {
     let auditJson;
     let baseline;
@@ -145,6 +224,8 @@ function main() {
         console.error(`⛔ security-audit: ${e.message}`);
         process.exit(1);
     }
+
+    enforceBaselinePolicy(baseline);
 
     let advisories;
     let counts;
