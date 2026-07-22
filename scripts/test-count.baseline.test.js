@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest';
 
 // #155: эталон числа тестов лежит в репозитории по образцу
 // scripts/security-audit.baseline.json — тот же паттерн «осознанное исключение
-// с reason». Гейт-чек, который сравнивает фактическое число тестов с этим
-// файлом, — отдельная задача (#156); здесь проверяется только форма эталона.
+// с reason». Сравнение с фактом — scripts/test-ratchet.mjs (#156); здесь
+// проверяется только форма эталона.
 const BASELINE_PATH = path.join(import.meta.dirname, 'test-count.baseline.json');
 
 function readBaseline() {

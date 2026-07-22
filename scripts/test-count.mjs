@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,8 +33,13 @@ import path from 'node:path';
 //
 // --json=<file>, не голый stdout: vite может подмешать в stdout предупреждения сбора —
 // один смешанный поток JSON.parse не переживёт. Файл на диске — чистый канал.
+// mkdtempSync — каталог 0700 со случайным суффиксом. Предсказуемое имя в общем /tmp
+// (pid+таймштамп угадываются) — классическая поверхность для symlink-подмены в multi-user
+// окружении: vitest перезаписал бы то, куда указывает подложенная ссылка. На выделенном
+// VDS риск теоретический, но так и непредсказуемость, и приватный каталог — дешевле, чем
+// спорить о модели угроз.
 function defaultOutputFile() {
-    return path.join(os.tmpdir(), `vitest-list-${process.pid}-${Date.now()}.json`);
+    return path.join(mkdtempSync(path.join(os.tmpdir(), 'test-count-')), 'vitest-list.json');
 }
 
 // Ненулевой код спавна тут возможен (например, ошибка сбора в одном файле) — но список
@@ -44,30 +49,59 @@ function defaultOutputFile() {
 // --no-install у npx: без него отсутствие локального vitest ушло бы в сеть за пакетом —
 // ровно та зависимость гейта от сети, которая уже один раз красила build (#206).
 export function collectTestsJson(spawnFn = spawnSync, outputFile = defaultOutputFile()) {
-    spawnFn('npx', ['--no-install', 'vitest', 'list', '--no-isolate', `--json=${outputFile}`], {
-        encoding: 'utf8',
-        maxBuffer: 16 * 1024 * 1024,
-    });
+    const result = spawnFn(
+        'npx',
+        ['--no-install', 'vitest', 'list', '--no-isolate', `--json=${outputFile}`],
+        {
+            encoding: 'utf8',
+            maxBuffer: 16 * 1024 * 1024,
+        },
+    );
 
     let raw;
     try {
         raw = readFileSync(outputFile, 'utf8');
     } catch (e) {
+        // При реальном сбое сбора (синтаксическая ошибка в тест-файле, упавший конфиг)
+        // vitest пишет причину в stderr — без неё чини-сессия видела бы только ENOENT и
+        // чинить ей нечего (тот же класс, что чинили в security-audit.mjs по ревью #141).
+        const why =
+            result?.error?.message ||
+            (typeof result?.status === 'number'
+                ? `код выхода ${result.status}`
+                : 'причина неизвестна');
+        const stderrTail = (result?.stderr || '').trim().slice(-2000);
         throw new Error(
-            `vitest не записал список тестов в ${outputFile} — сбой сбора: ${e.message}`,
+            `vitest не записал список тестов (${outputFile}) — сбой сбора: ${e.message}; ` +
+                `${why}${stderrTail ? `; stderr: ${stderrTail}` : ''}`,
         );
     } finally {
+        // Убираем и файл, и созданный под него временный каталог (mkdtemp). Каталог сносим
+        // только если это наш temp (test-count-*), чтобы переданный через DI путь не задеть.
         try {
             unlinkSync(outputFile);
         } catch {
             /* временный файл — не критично, если уже удалён или недоступен */
+        }
+        const dir = path.dirname(outputFile);
+        if (path.basename(dir).startsWith('test-count-')) {
+            try {
+                rmSync(dir, { recursive: true, force: true });
+            } catch {
+                /* временный каталог — не критично, если уже удалён или недоступен */
+            }
         }
     }
 
     try {
         return JSON.parse(raw);
     } catch (e) {
-        throw new Error(`список тестов vitest в ${outputFile} не распарсился: ${e.message}`);
+        // Файл к этому моменту уже удалён в finally — путь бесполезен; показываем начало
+        // самого нераспарсенного вывода, иначе битый отчёт пришлось бы отлаживать вслепую.
+        throw new Error(
+            `список тестов vitest не распарсился: ${e.message} — начало вывода: ` +
+                `${raw.slice(0, 200)}`,
+        );
     }
 }
 
