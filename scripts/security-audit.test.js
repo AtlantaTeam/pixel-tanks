@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     collectAdvisories,
+    fetchOriginMain,
     gitBaseBaseline,
     gitChangedFiles,
     countBySeverity,
@@ -218,9 +219,25 @@ describe('runAudit', () => {
 // #207: базовые факты для политики baseline берутся из git — их агент подделать не может.
 describe('gitChangedFiles / gitBaseBaseline', () => {
     it('возвращает список изменённых файлов относительно origin/main', () => {
-        const spawnFn = vi.fn().mockReturnValue({ status: 0, stdout: 'package.json\nsrc/a.ts\n' });
+        const spawnFn = vi
+            .fn()
+            .mockReturnValueOnce({ status: 0, stdout: 'package.json\nsrc/a.ts\n' })
+            .mockReturnValueOnce({ status: 0, stdout: '' });
         expect(gitChangedFiles(spawnFn)).toEqual(['package.json', 'src/a.ts']);
-        expect(spawnFn.mock.calls[0][1]).toEqual(['diff', '--name-only', 'origin/main...HEAD']);
+        expect(spawnFn.mock.calls[0][1]).toEqual([
+            'diff',
+            '--name-only',
+            '--no-renames',
+            'origin/main...HEAD',
+        ]);
+    });
+
+    it('видит незакоммиченные правки — иначе локальный прогон даёт ложный зелёный', () => {
+        const spawnFn = vi
+            .fn()
+            .mockReturnValueOnce({ status: 0, stdout: 'src/a.ts\n' })
+            .mockReturnValueOnce({ status: 0, stdout: ' M package.json\n?? new.txt\n' });
+        expect(gitChangedFiles(spawnFn)).toEqual(['src/a.ts', 'package.json', 'new.txt']);
     });
 
     it('бросает, когда git недоступен — политику молча не пропускаем', () => {
@@ -228,7 +245,7 @@ describe('gitChangedFiles / gitBaseBaseline', () => {
         expect(() => gitChangedFiles(spawnFn)).toThrow(/not a repo/);
     });
 
-    it('пустой дифф — пустой список, не ошибка', () => {
+    it('пустой дифф и чистое дерево — пустой список, не ошибка', () => {
         const spawnFn = vi.fn().mockReturnValue({ status: 0, stdout: '' });
         expect(gitChangedFiles(spawnFn)).toEqual([]);
     });
@@ -241,8 +258,27 @@ describe('gitChangedFiles / gitBaseBaseline', () => {
     });
 
     it('отсутствие файла в origin/main — пустой базовый набор (первое появление baseline)', () => {
-        const spawnFn = vi.fn().mockReturnValue({ status: 128, stdout: '' });
+        const spawnFn = vi.fn().mockReturnValue({
+            status: 128,
+            stdout: '',
+            stderr: "path 'scripts/x.json' does not exist in 'origin/main'",
+        });
         expect(gitBaseBaseline(spawnFn)).toEqual([]);
+    });
+
+    it('прочая git-ошибка — стоп, а не «база пустая» (иначе автопринятие на мусоре)', () => {
+        const spawnFn = vi
+            .fn()
+            .mockReturnValue({ status: 128, stdout: '', stderr: 'fatal: bad object' });
+        expect(() => gitBaseBaseline(spawnFn)).toThrow(/не смог прочитать базовую версию/);
+    });
+
+    it('fetchOriginMain освежает ref и падает при сбое — сравнивать со старой базой нельзя', () => {
+        const ok = vi.fn().mockReturnValue({ status: 0, stdout: '' });
+        expect(() => fetchOriginMain(ok)).not.toThrow();
+        expect(ok.mock.calls[0][1]).toEqual(['fetch', 'origin', 'main', '--quiet']);
+        const bad = vi.fn().mockReturnValue({ status: 1, stdout: '', stderr: 'no network' });
+        expect(() => fetchOriginMain(bad)).toThrow(/no network/);
     });
 
     it('битый baseline в origin/main — стоп, а не «сверим как есть»', () => {

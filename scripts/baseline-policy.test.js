@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     acceptedPushText,
     addedEntries,
+    changedEntries,
     classifyDiff,
     evaluateBaselineChange,
     expiredEntries,
@@ -224,8 +225,98 @@ describe('evaluateBaselineChange', () => {
 describe('acceptedPushText', () => {
     it('называет число и пакеты — человек узнаёт об ослаблении гейта сразу', () => {
         const t = acceptedPushText(UPSTREAM_DRIFT);
-        expect(t).toMatch(/расширен автоматически на 3/);
+        expect(t).toMatch(/изменён автоматически \(3\)/);
         expect(t).toMatch(/immutable/);
         expect(t).toMatch(/петля продолжается/i);
+    });
+});
+
+// Обходы, найденные ревью fable на PR #208. Каждый — сценарий нарушителя целиком,
+// а не проверка отдельной функции: политика ценна ровно настолько, насколько её нельзя обойти.
+describe('обходы политики (ревью PR #208)', () => {
+    const FOUND = [1124008, 1124015, 1124066];
+
+    it('🔴 1: запись «на вырост» под ещё не найденную advisory не принимается', () => {
+        const future = { id: 4242, package: 'future', severity: 'high', reason: 'заранее', expiresAt: '2026-08-05' };
+        const r = evaluateBaselineChange({
+            headBaseline: [...OLD, future],
+            baseBaseline: OLD,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisoryIds: FOUND,
+            now: NOW,
+        });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join()).toMatch(/не соответствует ни одной advisory текущего скана/);
+    });
+
+    it('🔴 1: запись под реально найденную advisory проходит', () => {
+        const r = evaluateBaselineChange({
+            headBaseline: [...OLD, UPSTREAM_DRIFT[0]],
+            baseBaseline: OLD,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisoryIds: FOUND,
+            now: NOW,
+        });
+        expect(r.ok).toBe(true);
+    });
+
+    it('🔴 2: поднятие severity у существующей записи красит гейт', () => {
+        const base = [{ id: 7, package: 'x', severity: 'high', reason: 'r' }];
+        const head = [{ ...base[0], severity: 'critical' }];
+        const r = evaluateBaselineChange({
+            headBaseline: head,
+            baseBaseline: base,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisoryIds: [7],
+            now: NOW,
+        });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join()).toMatch(/severity поднята high → critical/);
+    });
+
+    it('🔴 2: продление срока разрешено, но обязано попасть в пуш', () => {
+        const base = [{ id: 7, package: 'x', severity: 'high', reason: 'r', expiresAt: '2026-07-20' }];
+        const head = [{ ...base[0], expiresAt: '2026-08-01' }];
+        const r = evaluateBaselineChange({
+            headBaseline: head,
+            baseBaseline: base,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisoryIds: [7],
+            now: NOW,
+        });
+        expect(r.ok).toBe(true);
+        expect(r.accepted).toHaveLength(1);
+        expect(acceptedPushText(r.accepted)).toMatch(/срок продлён 2026-07-20 → 2026-08-01/);
+    });
+
+    it('🟠 5: срок «на вырост» за потолком не принимается', () => {
+        const far = { ...UPSTREAM_DRIFT[0], expiresAt: '2099-01-01' };
+        const r = evaluateBaselineChange({
+            headBaseline: [...OLD, far],
+            baseBaseline: OLD,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisoryIds: FOUND,
+            now: NOW,
+        });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join()).toMatch(/дальше потолка/);
+    });
+
+    it('⚪ 10: записи изменились, а файла нет в диффе — источники разошлись, стоп', () => {
+        const r = evaluateBaselineChange({
+            headBaseline: [...OLD, UPSTREAM_DRIFT[0]],
+            baseBaseline: OLD,
+            changedFiles: ['src/a.ts'],
+            foundAdvisoryIds: FOUND,
+            now: NOW,
+        });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join()).toMatch(/приехали из разных состояний/);
+    });
+
+    it('снижение severity в записи гейт не красит — реальную оценку даёт скан', () => {
+        const base = [{ id: 7, package: 'x', severity: 'critical', reason: 'r' }];
+        const head = [{ ...base[0], severity: 'high' }];
+        expect(changedEntries(head, base).severityRaised).toEqual([]);
     });
 });
