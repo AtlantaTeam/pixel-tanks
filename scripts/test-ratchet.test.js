@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkRatchet, loadBaseline } from './test-ratchet.mjs';
+import { checkRatchet, loadBaseline, runRatchetCheck } from './test-ratchet.mjs';
 
 // #156: храповик числа тестов. Гейт краснеет, когда фактическое число собранных тестов
 // падает НИЖЕ эталона (count из test-count.baseline.json), — не когда оно просто
@@ -51,5 +51,93 @@ describe('checkRatchet', () => {
         const { ok, message } = checkRatchet(940, { count: 928 });
         expect(ok).toBe(true);
         expect(message).toMatch(/12/); // прирост показан
+    });
+});
+
+// #157: fail-closed на недоверенных данных. Проверяется склейка целиком (runRatchetCheck),
+// не отдельные throw'ы loadBaseline/countTests — сомнение в формате данных должно
+// долетать до итогового { ok: false }, а не теряться где-то между функциями.
+describe('runRatchetCheck — fail-closed на недоверенных данных (#157)', () => {
+    it('нечитаемый эталон (битый JSON) — красный, не зелёный', () => {
+        const result = runRatchetCheck({
+            loadBaselineFn: () => {
+                throw new Error('test-count.baseline.json не распарсился');
+            },
+            collectTestsJsonFn: () => [],
+            countTestsFn: () => 928,
+        });
+        expect(result.ok).toBe(false);
+        expect(result.message).toMatch(/не распарсился/);
+    });
+
+    it('эталон неожиданного формата (нет count) — красный', () => {
+        const result = runRatchetCheck({
+            loadBaselineFn: () => loadBaseline(() => JSON.stringify({ reason: 'нет count' }), 'x'),
+            collectTestsJsonFn: () => [],
+            countTestsFn: () => 928,
+        });
+        expect(result.ok).toBe(false);
+    });
+
+    it('отчёт репортёра не собрался (сбой vitest list) — красный', () => {
+        const result = runRatchetCheck({
+            loadBaselineFn: () => ({ count: 928 }),
+            collectTestsJsonFn: () => {
+                throw new Error('vitest не записал список тестов — сбой сбора');
+            },
+            countTestsFn: () => 928,
+        });
+        expect(result.ok).toBe(false);
+        expect(result.message).toMatch(/сбой сбора/);
+    });
+
+    it('отчёт репортёра неожиданной формы (не массив записей) — красный', () => {
+        const result = runRatchetCheck({
+            loadBaselineFn: () => ({ count: 928 }),
+            collectTestsJsonFn: () => ({ numTotalTests: 928 }),
+            countTestsFn: () => {
+                throw new Error('vitest list --json вернул не массив');
+            },
+        });
+        expect(result.ok).toBe(false);
+        expect(result.message).toMatch(/не массив/);
+    });
+
+    it('ни один сбойный путь не возвращает ok: true — мягкого режима нет', () => {
+        const failing = [
+            {
+                loadBaselineFn: () => {
+                    throw new Error('a');
+                },
+            },
+            {
+                loadBaselineFn: () => ({ count: 928 }),
+                collectTestsJsonFn: () => {
+                    throw new Error('b');
+                },
+            },
+            {
+                loadBaselineFn: () => ({ count: 928 }),
+                collectTestsJsonFn: () => [],
+                countTestsFn: () => {
+                    throw new Error('c');
+                },
+            },
+        ];
+        for (const overrides of failing) {
+            expect(runRatchetCheck(overrides).ok).toBe(false);
+        }
+    });
+
+    it('доверенные данные без ошибок — обычная сверка с эталоном (регресс склейки)', () => {
+        const result = runRatchetCheck({
+            loadBaselineFn: () => ({ count: 928 }),
+            collectTestsJsonFn: () => [],
+            countTestsFn: () => 928,
+        });
+        expect(result).toEqual({
+            ok: true,
+            message: expect.stringMatching(/928/),
+        });
     });
 });

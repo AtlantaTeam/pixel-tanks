@@ -57,18 +57,29 @@ export function checkRatchet(actual, baseline) {
     };
 }
 
-function main() {
+// #157: сборка чека в одну тестируемую функцию — иначе fail-closed на битых/недоверенных
+// данных (нечитаемый эталон, отчёт репортёра не распарсился или неожиданной формы) живёт
+// только внутри main() и непроверяем без спавна процесса. Мягкого режима нет: единственный
+// catch превращает ЛЮБУЮ ошибку чтения в { ok: false }, ни один путь не возвращает
+// { ok: true } на основании того, что «прочитать не вышло, но авось всё в порядке».
+export function runRatchetCheck({
+    loadBaselineFn = loadBaseline,
+    collectTestsJsonFn = collectTestsJson,
+    countTestsFn = countTests,
+} = {}) {
     let baseline;
     let actual;
     try {
-        baseline = loadBaseline();
-        actual = countTests(collectTestsJson());
+        baseline = loadBaselineFn();
+        actual = countTestsFn(collectTestsJsonFn());
     } catch (e) {
-        console.error(`⛔ test-ratchet: ${e.message}`);
-        process.exit(1);
+        return { ok: false, message: e.message };
     }
+    return checkRatchet(actual, baseline);
+}
 
-    const { ok, message } = checkRatchet(actual, baseline);
+function main() {
+    const { ok, message } = runRatchetCheck();
     if (!ok) {
         console.error(`⛔ test-ratchet: ${message}`);
         process.exit(1);
