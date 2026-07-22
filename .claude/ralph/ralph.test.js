@@ -57,6 +57,7 @@ const {
     mergedShaOf,
     probeHttpStatus,
     checkProdHealth,
+    classifyDeployOutcome,
     getLastRedCheck,
     getVerifiedHead,
     getLastGatePr,
@@ -1284,6 +1285,84 @@ describe('preflight — валидация конфига/среды и подг
         expect(state.submitted).toBe(false);
         expect(saveStateFn).toHaveBeenCalledWith(state);
     });
+
+    it('#165 барьер: state.deployBlock задан → пуш на старте + fail (следующая фаза не начинается)', () => {
+        const state = {
+            count: 0,
+            milestone: 'M2',
+            submitted: false,
+            noProgress: 0,
+            deployBlock: {
+                milestone: 'M1',
+                sha: 'a'.repeat(40),
+                status: 'completed',
+                conclusion: 'failure',
+                url: 'https://gh/run/1',
+                reason: 'workflow completed (failure)',
+            },
+        };
+        const pushEventFn = vi.fn();
+        expect(() =>
+            preflight(validCfg(), okDeps({ loadStateFn: () => state, pushEventFn })),
+        ).toThrow(/деплой.*красн|#165/i);
+        // допушивает на старте — страховка от потерянного пуша прошлого прогона
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/aaaaaaaa/);
+    });
+
+    it('#165 --deploy-resolved → снимает блок через saveStateFn, fail не бросается', () => {
+        const state = {
+            count: 0,
+            milestone: 'M2',
+            submitted: false,
+            noProgress: 0,
+            deployBlock: { milestone: 'M1', reason: 'workflow timeout', sha: null, url: null },
+        };
+        const saveStateFn = vi.fn();
+        const pushEventFn = vi.fn();
+        expect(() =>
+            preflight(
+                validCfg(),
+                okDeps({
+                    loadStateFn: () => state,
+                    saveStateFn,
+                    pushEventFn,
+                    deployResolved: true,
+                    // фаза M2 — идёт проверка C4 предыдущей M1; phaseMergedFn=true (okDeps)
+                    phaseIndexOfFn: () => 0,
+                }),
+            ),
+        ).not.toThrow();
+        expect(state.deployBlock).toBe(null);
+        expect(saveStateFn).toHaveBeenCalledWith(state);
+        // барьер снят → красного пуша на старте нет
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('#165 --deploy-resolved без активного блока → флаг проигнорирован, не падает', () => {
+        const state = { count: 0, milestone: 'M1', submitted: false, noProgress: 0 };
+        const logs = [];
+        expect(() =>
+            preflight(
+                validCfg(),
+                okDeps({
+                    loadStateFn: () => state,
+                    logFn: (m) => logs.push(m),
+                    deployResolved: true,
+                }),
+            ),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/проигнорирован/);
+    });
+
+    it('#165 без deployBlock → барьера нет, зелёный старт проходит', () => {
+        const state = { count: 0, milestone: 'M1', submitted: false, noProgress: 0 };
+        const pushEventFn = vi.fn();
+        expect(() =>
+            preflight(validCfg(), okDeps({ loadStateFn: () => state, pushEventFn })),
+        ).not.toThrow();
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
 });
 
 describe('loadState — резолв state с диска (прямой тест, #99)', () => {
@@ -1833,6 +1912,153 @@ describe('runLoop — основной while-цикл: итерации коде
             }),
         );
         expect(checkProdHealthFn).not.toHaveBeenCalled();
+    });
+
+    it('#165 prod: упавший workflow → барьер в state.deployBlock + пуш с sha и итогом, стоп', () => {
+        const logs = [];
+        const saved = [];
+        const pushEventFn = vi.fn();
+        const state = mkState();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                saveStateFn: (s) => saved.push({ ...s }),
+                waitForDeployRunFn: () => ({
+                    status: 'completed',
+                    conclusion: 'failure',
+                    sha: 'a'.repeat(40),
+                    url: 'https://gh/run/1',
+                }),
+                pushEventFn,
+            }),
+        );
+        // барьер сохранён в state
+        expect(state.deployBlock).toMatchObject({ milestone: 'M1', conclusion: 'failure' });
+        expect(saved.some((s) => s.deployBlock)).toBe(true);
+        // пуш с sha и итогом workflow — критерий #165
+        const redPush = pushEventFn.mock.calls.find((c) => /деплой красный/.test(c[0]));
+        expect(redPush).toBeTruthy();
+        expect(redPush[0]).toMatch(/aaaaaaaa/); // укороченный sha
+        expect(redPush[0]).toMatch(/failure/);
+        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+    });
+
+    it('#165 prod: недосмотренный workflow (timeout) → тоже барьер + пуш', () => {
+        const logs = [];
+        const pushEventFn = vi.fn();
+        const state = mkState();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({
+                    status: 'timeout',
+                    conclusion: null,
+                    sha: 'b'.repeat(40),
+                }),
+                pushEventFn,
+            }),
+        );
+        expect(state.deployBlock).toMatchObject({ milestone: 'M1', status: 'timeout' });
+        expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
+    });
+
+    it('#165 prod: зелёный workflow + здоровый прод → барьера НЕТ, красного пуша нет', () => {
+        const logs = [];
+        const pushEventFn = vi.fn();
+        const state = mkState();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({
+                    status: 'completed',
+                    conclusion: 'success',
+                    sha: 'a'.repeat(40),
+                }),
+                checkProdHealthFn: () => ({ ok: true, status: 200, url: 'u' }),
+                pushEventFn,
+            }),
+        );
+        expect(state.deployBlock == null).toBe(true);
+        expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(false);
+        // при этом обычный пуш «готова к релизу» уходит
+        expect(pushEventFn.mock.calls.some((c) => /готова к релизу/.test(c[0]))).toBe(true);
+    });
+
+    it('#165 prod: зелёный workflow, но прод не отвечает → барьер + пуш', () => {
+        const state = mkState();
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps([], {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({
+                    status: 'completed',
+                    conclusion: 'success',
+                    sha: 'a'.repeat(40),
+                }),
+                checkProdHealthFn: () => ({ ok: false, status: 502, url: 'u' }),
+                pushEventFn,
+            }),
+        );
+        expect(state.deployBlock).toBeTruthy();
+        expect(state.deployBlock.reason).toMatch(/прод не отвечает/);
+        expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
+    });
+
+    it('#165 prod: сбой чтения итога (mergedShaOf бросает) → fail-closed барьер + пуш, не тихий пропуск', () => {
+        const state = mkState();
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps([], {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                mergedShaOfFn: () => {
+                    throw new Error('gh недоступен');
+                },
+                pushEventFn,
+            }),
+        );
+        expect(state.deployBlock).toMatchObject({ status: 'error' });
+        expect(state.deployBlock.reason).toMatch(/ошибка проверки деплоя/);
+        expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
     });
 
     it('#87 playground: гейт merged → деплой-плейсхолдер НЕ зовётся, мердж остаётся финалом (continue как раньше)', () => {
@@ -3189,6 +3415,57 @@ describe('mergedShaOf — sha squash-мерджа PR (#163)', () => {
         expect(() =>
             mergedShaOf(12, { ghJsonFn: () => ({ mergeCommit: { oid: 'x' } }) }),
         ).toThrow();
+    });
+});
+
+describe('classifyDeployOutcome — итог деплоя зелёный/красный (#165)', () => {
+    it('workflow success + здоровый прод → зелёный (red=false)', () => {
+        const v = classifyDeployOutcome(
+            { status: 'completed', conclusion: 'success' },
+            { ok: true, status: 200 },
+        );
+        expect(v.red).toBe(false);
+    });
+
+    it('workflow success без healthcheck (health=null) → зелёный: до проверки не дошли, но workflow ок', () => {
+        // В коде health=null означает «workflow сам не зелёный, healthcheck не звали»;
+        // но если outcome ЗЕЛЁНЫЙ, а health не передан — это тоже зелёный (страховка).
+        const v = classifyDeployOutcome({ status: 'completed', conclusion: 'success' }, null);
+        expect(v.red).toBe(false);
+    });
+
+    it('workflow failure → красный, reason содержит conclusion', () => {
+        const v = classifyDeployOutcome({ status: 'completed', conclusion: 'failure' }, null);
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/failure/);
+    });
+
+    it('workflow timeout (не досмотрен) → красный: «не знаю» опаснее ложного «ок»', () => {
+        const v = classifyDeployOutcome({ status: 'timeout', conclusion: null }, null);
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/timeout/);
+    });
+
+    it('workflow not-found → красный', () => {
+        const v = classifyDeployOutcome({ status: 'not-found', conclusion: null }, null);
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/not-found/);
+    });
+
+    it('зелёный workflow, но прод не отвечает (health.ok=false) → красный, reason про прод', () => {
+        const v = classifyDeployOutcome(
+            { status: 'completed', conclusion: 'success' },
+            { ok: false, status: 502 },
+        );
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/прод не отвечает/);
+        expect(v.reason).toMatch(/502/);
+    });
+
+    it('outcome=null (аномалия) → красный, не падает', () => {
+        const v = classifyDeployOutcome(null, null);
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/unknown/);
     });
 });
 

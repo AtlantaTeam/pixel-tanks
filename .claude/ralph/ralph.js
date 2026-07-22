@@ -60,6 +60,7 @@
  *   node .claude/ralph/ralph.js --dry-run   показать что будет сделано; строго read-only
  *   node .claude/ralph/ralph.js --reset     сбросить state на первую фазу конфига
  *   node .claude/ralph/ralph.js --resubmit  повторить полный цикл сдачи фазы (PR/ревью/правки)
+ *   node .claude/ralph/ralph.js --deploy-resolved  снять барьер красного пост-мердж деплоя (#165) и продолжить
  *   node .claude/ralph/ralph.js --profile <name>   профиль конфига (по умолчанию defaultProfile)
  *
  * Требования: gh CLI авторизован, git-репозиторий, ralph.config.json настроен, active: true.
@@ -97,6 +98,10 @@ const ONCE = args.includes('--once');
 const DRY = args.includes('--dry-run');
 const RESET = args.includes('--reset');
 const RESUBMIT = args.includes('--resubmit');
+// #165: человек разобрался с красным пост-мердж деплоем (откат/передеплой за deploy-workflow)
+// и снимает барьер, не дающий раннеру строить следующую фазу поверх недоехавшего main.
+// Только человек — снятие блока не может решать сам раннер (тот же принцип, что и hold).
+const DEPLOY_RESOLVED = args.includes('--deploy-resolved');
 
 // Конфиг — module-level: заполняется в main() (см. низ файла). Держим здесь, а не
 // const на top-level, чтобы `require`/import ФАЙЛА (юнит-тесты) не запускал preflight
@@ -2093,6 +2098,25 @@ function checkProdHealth(
     return { ok: false, status, url };
 }
 
+// #165: классификация пост-мердж итога → зелёный/красный (alert-first, fail-closed).
+// GREEN только при ПОДТВЕРЖДЁННО успешном workflow И здоровом проде. Всё прочее —
+// упавший/недосмотренный workflow (failure/timeout/not-found), недоступный прод,
+// брошенная ошибка чтения — красный: «не знаю» опаснее ложного «всё хорошо», иначе
+// следующий мердж передеплоит недоехавший main. Чистая функция (тестируема без gh/сети);
+// `reason` — человекочитаемая причина для пуша и лога. health=null трактуем как
+// «не проверяли» (workflow сам уже не зелёный) — до healthcheck дело не дошло.
+function classifyDeployOutcome(outcome, health) {
+    if (!outcome || outcome.status !== 'completed' || outcome.conclusion !== 'success') {
+        const status = outcome && outcome.status ? outcome.status : 'unknown';
+        const concl = outcome && outcome.conclusion ? ` (${outcome.conclusion})` : '';
+        return { red: true, reason: `workflow ${status}${concl}` };
+    }
+    if (health && health.ok === false) {
+        return { red: true, reason: `прод не отвечает (HTTP ${health.status || '—'})` };
+    }
+    return { red: false, reason: 'workflow success + прод HTTP 200' };
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 // Схема: { count, milestone, submitted }.
 //   milestone — ИМЯ текущей фазы (M7). Позиционный phaseIndex ломался при любой
@@ -2119,6 +2143,12 @@ function defaultState() {
         // #223: раннер снял label blocked, но повторное ревью ещё не дало вердикта.
         // Флаг переживает рестарт → гейт вернёт метку, если сессия ревью погибла.
         reReviewPending: false,
+        // #165: красный/недосмотренный пост-мердж деплой прошлой фазы. Пока не null —
+        // барьер в preflight не даёт строить следующую фазу поверх недоехавшего до
+        // прода main; снимает только человек флагом --deploy-resolved (см. preflight).
+        // advancePhase его НЕ обнуляет: блок ставится уже ПОСЛЕ advancePhase и обязан
+        // пережить и переход фазы, и рестарт.
+        deployBlock: null,
     };
 }
 
@@ -2196,9 +2226,11 @@ function preflight(
         phaseIndexOfFn = phaseIndexOf,
         phaseMergedFn = phaseMerged,
         saveStateFn = saveState,
+        pushEventFn = pushEvent,
         once = ONCE,
         dry = DRY,
         resubmit = RESUBMIT,
+        deployResolved = DEPLOY_RESOLVED,
     } = {},
 ) {
     if (!cfg.active)
@@ -2268,6 +2300,43 @@ function preflight(
         state.submitted = false;
         saveStateFn(state);
         logFn('🔁 --resubmit: цикл сдачи фазы (PR/ревью/правки) будет выполнен заново.');
+    }
+
+    // #165: барьер красного пост-мердж деплоя. Прошлый прогон смерджил фазу, но
+    // deploy-workflow упал / прод не ответил / итог не досмотрен → в state.deployBlock
+    // лежит блок. Не строим следующую фазу поверх недоехавшего до прода main.
+    // Снять может ТОЛЬКО человек флагом --deploy-resolved (тот же принцип владения, что
+    // и у hold: снятие блока — не решение раннера). Клир идёт ДО проверки барьера, чтобы
+    // флаг гарантированно снимал активный блок.
+    if (deployResolved) {
+        if (state.deployBlock) {
+            logFn(
+                `🔧 --deploy-resolved: снят барьер красного деплоя фазы "${state.deployBlock.milestone}" — продолжаю.`,
+            );
+            state.deployBlock = null;
+            saveStateFn(state);
+        } else {
+            logFn('🔧 --deploy-resolved: активного барьера деплоя нет — флаг проигнорирован.');
+        }
+    }
+    if (state.deployBlock) {
+        const b = state.deployBlock;
+        const shaStr = b.sha ? String(b.sha).slice(0, 8) : '—';
+        // Допушиваем на старте — если прошлый прогон умер между saveState и пушем, это
+        // единственный шанс не оставить красный деплой немой тишиной (fail-closed,
+        // alert-first). failFn ниже — стоп до разбора человеком; откат за deploy-workflow.
+        pushEventFn(
+            `⛔ Ralph: старт заблокирован — деплой фазы "${b.milestone}" красный (${b.reason}, ` +
+                `sha ${shaStr}${b.url ? `, ${b.url}` : ''}). Следующая фаза НЕ начнётся. Разберись с ` +
+                `деплоем (откат за deploy-workflow, main раннер не трогает) и запусти loop с --deploy-resolved.`,
+            cfg,
+            { logFn },
+        );
+        failFn(
+            `Пост-мердж деплой фазы "${b.milestone}" был красным (${b.reason}) — следующая фаза не ` +
+                `начинается (#165). Почини прод/деплой и запусти с --deploy-resolved, либо очисти ` +
+                `state.deployBlock в ${STATE_PATH}.`,
+        );
     }
 
     // C4: инвариант зависимых фаз — ВСЕ фазы до текущей обязаны быть реально смерджены.
@@ -2706,11 +2775,13 @@ function runLoop(
                 // continue как раньше, следующая фаза стартует с обновлённого main.
                 if (cfg.profileName === 'prod') {
                     deployPhaseFn(phase, { logFn });
-                    // #163: дождаться итога deploy-workflow на смердженном sha прежде
+                    // #163/#165: дождаться итога deploy-workflow на смердженном sha прежде
                     // чем отдать фазу релизу — иначе откат раскатки остаётся в main и
                     // следующий мердж передеплоит битый коммит. Только ЧТЕНИЕ gh run
-                    // (ретраи внутри, прод/main не трогаем — #166). Реакция на красный
-                    // итог (стоп + пуш) — #165; здесь фиксируем факт в логе.
+                    // (ретраи внутри, прод/main не трогаем — #166).
+                    // block !== null → красный/недосмотренный итог: alert-first (пуш + барьер
+                    // в state), main раннер НЕ трогает — откат за deploy-workflow.
+                    let block = null;
                     try {
                         const mergedSha = mergedShaOfFn(getLastGatePr());
                         const outcome = waitForDeployRunFn(mergedSha, cfg, { logFn });
@@ -2721,14 +2792,54 @@ function runLoop(
                         // #164: MVP-определение «живо» — workflow success + HTTP 200 главной
                         // страницы. Healthcheck зовём только после зелёного workflow: красный/
                         // недосмотренный итог сам по себе уже сигнал, здоровье прода на нём не
-                        // проверить (реакция стоп+пуш на любой из красных исходов — #165).
+                        // проверить.
+                        let health = null;
                         if (outcome.status === 'completed' && outcome.conclusion === 'success') {
-                            checkProdHealthFn(cfg, { logFn });
+                            health = checkProdHealthFn(cfg, { logFn });
+                        }
+                        const verdict = classifyDeployOutcome(outcome, health);
+                        if (verdict.red) {
+                            block = {
+                                milestone: phase.milestone,
+                                sha: outcome.sha ?? null,
+                                status: outcome.status ?? null,
+                                conclusion: outcome.conclusion ?? null,
+                                url: outcome.url ?? null,
+                                reason: verdict.reason,
+                            };
                         }
                     } catch (e) {
+                        // fail-closed: не смогли ПОДТВЕРДИТЬ зелёный деплой = красный, а не
+                        // тихий пропуск (иначе рестарт построил бы фазу поверх неизвестного
+                        // исхода). Сама ошибка чтения — это тоже «не знаю» = блок.
+                        const msg = String(e.message).split('\n')[0];
                         logFn(
                             `⚠ Пост-мердж: не удалось дождаться итога деплоя фазы ` +
-                                `"${phase.milestone}" (${String(e.message).split('\n')[0]}).`,
+                                `"${phase.milestone}" (${msg}).`,
+                        );
+                        block = {
+                            milestone: phase.milestone,
+                            sha: null,
+                            status: 'error',
+                            conclusion: null,
+                            url: null,
+                            reason: `ошибка проверки деплоя: ${msg}`,
+                        };
+                    }
+                    if (block) {
+                        // #165: сначала персистим барьер, потом пушим — если процесс умрёт
+                        // между ними, блок в state переживёт рестарт и preflight допушит
+                        // (иначе класс «пуш потерян, деплой красный, тишина» из брифа).
+                        state.deployBlock = block;
+                        saveStateFn(state);
+                        const shaStr = block.sha ? String(block.sha).slice(0, 8) : '—';
+                        pushEventFn(
+                            `⛔ Ralph: фаза "${phase.milestone}" смерджена, но деплой красный — ` +
+                                `${block.reason} (sha ${shaStr}${block.url ? `, ${block.url}` : ''}). ` +
+                                `Следующая фаза НЕ начнётся, пока не разберёшь: почини прод/деплой и ` +
+                                `запусти loop с --deploy-resolved. Откат релиза — за deploy-workflow, main раннер не трогает.`,
+                            cfg,
+                            { logFn },
                         );
                     }
                     logFn(
@@ -3353,8 +3464,10 @@ if (require.main === module) main();
 // probeHttpStatus/checkProdHealth (#164) — пост-мердж healthcheck прода (только GET,
 // #166): MVP «живо» = зелёный workflow (waitForDeployRun) + HTTP 200 главной страницы.
 // Флаки-запрос ретраится (дефолт 3×5с из deployCheck), execFn/sleepFn инжектируемы, как
-// у probeEgress/restartTunnel; итог (ok/status/url) пока только логируется — решение
-// стоп+пуш на его основе остаётся за #165.
+// у probeEgress/restartTunnel.
+// classifyDeployOutcome (#165) — чистая классификация итога деплоя зелёный/красный
+// (alert-first, fail-closed): красный ставит барьер в state.deployBlock + пуш, а preflight
+// на старте не даёт строить следующую фазу поверх недоехавшего main до --deploy-resolved.
 module.exports = {
     resolveProfile,
     deepMerge,
@@ -3420,6 +3533,7 @@ module.exports = {
     waitForDeployRun,
     probeHttpStatus,
     checkProdHealth,
+    classifyDeployOutcome,
     getLastRedCheck: () => lastRedCheck,
     getVerifiedHead: () => lastVerifiedHead,
     getLastGatePr: () => lastGatePr,
