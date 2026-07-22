@@ -1975,6 +1975,72 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(mergedMsg).not.toBe(liftedMsg);
     });
 
+    // #222: hold — человеческий стоп-кран. Гейт стоп + пуш, БЕЗ чини-сессий, БЕЗ
+    // повторного ревью, счётчики blockedHeals/gateHeals не трогаются.
+    it('#222: гейт hold → стоп + пуш с номером PR, ни одной сессии не запущено', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 0, gateHeals: 0 });
+        const runClaudeFn = vi.fn(() => 0);
+        const removeBlockedLabelFn = vi.fn();
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'hold',
+                getLastGatePr: () => 909,
+                runClaudeFn,
+                removeBlockedLabelFn,
+                pushEventFn,
+            }),
+        );
+        expect(runClaudeFn).not.toHaveBeenCalled();
+        expect(removeBlockedLabelFn).not.toHaveBeenCalled();
+        expect(state.blockedHeals).toBe(0);
+        expect(state.gateHeals).toBe(0);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        const msg = pushEventFn.mock.calls[0][0];
+        expect(msg).toContain('#909');
+        expect(msg).toMatch(/hold/);
+        expect(msg).toMatch(/человек/);
+    });
+
+    // #222: hold проверяется в tryMergePhase раньше blocked — если предыдущий круг
+    // разбора оставил blockedHeals > 0, а этот проход внезапно видит hold (человек
+    // поставил метку параллельно), пуш «блокер снят автоматически» НЕ должен уйти —
+    // мы не знаем, снят ли фактически blocked, гейт вообще до него не дошёл.
+    it('#222: гейт hold при blockedHeals > 0 НЕ шлёт «снят автоматически», счётчик не трогается', () => {
+        const logs = [];
+        const state = mkState({
+            submitted: true,
+            blockedHeals: 2,
+            lastReviewModel: 'claude-opus-4-8',
+        });
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'hold',
+                getLastGatePr: () => 909,
+                runClaudeFn: () => 0,
+                pushEventFn,
+            }),
+        );
+        expect(state.blockedHeals).toBe(2); // не сброшен и не увеличен
+        const messages = pushEventFn.mock.calls.map((c) => c[0]);
+        expect(messages.some((m) => m.includes('снят автоматически'))).toBe(false);
+        expect(messages.some((m) => /hold/.test(m))).toBe(true);
+    });
+
     // #216: prod больше не ставит blockedHealAttempts: 0, но ветка «явно выключено»
     // осталась для конфигов, где разбор выключат сознательно. Обещание ветки: не «в
     // конфиге 0», а «чини-сессия не запускается вовсе». Регресс `?? 3` → `|| 3` ловится
@@ -2608,6 +2674,40 @@ describe('ветковая хореография в worktree раннера (#7
             });
             expect(tryMergePhase(phase, deps)).toBe('blocked');
             expect(checksGreenFn).not.toHaveBeenCalled();
+        });
+
+        // #222: hold — человеческий стоп-кран, раннер его не снимает никогда.
+        it('#222: PR с label hold → hold, чеки не гонялись', () => {
+            const checksGreenFn = vi.fn();
+            const { deps } = mkDeps({
+                findOpenPrFn: () => ({ number: 5, labels: [{ name: 'hold' }] }),
+                checksGreenFn,
+            });
+            expect(tryMergePhase(phase, deps)).toBe('hold');
+            expect(checksGreenFn).not.toHaveBeenCalled();
+        });
+
+        // #222 критерий 3: hold и blocked одновременно на PR → hold сильнее, стоп без
+        // разбора (негативный тест — blocked НЕ должен взять верх).
+        it('#222: PR с label hold И blocked одновременно → hold (сильнее), не blocked', () => {
+            const checksGreenFn = vi.fn();
+            const { deps } = mkDeps({
+                findOpenPrFn: () => ({
+                    number: 5,
+                    labels: [{ name: 'hold' }, { name: 'blocked' }],
+                }),
+                checksGreenFn,
+            });
+            expect(tryMergePhase(phase, deps)).toBe('hold');
+            expect(checksGreenFn).not.toHaveBeenCalled();
+        });
+
+        it('#222: PR с label hold → lastGatePr всё равно выставлен (нужен пушу об остановке)', () => {
+            const { deps } = mkDeps({
+                findOpenPrFn: () => ({ number: 88, labels: [{ name: 'hold' }] }),
+            });
+            expect(tryMergePhase(phase, deps)).toBe('hold');
+            expect(getLastGatePr()).toBe(88);
         });
 
         // #218: lastGatePr — источник номера PR для пуша «блокер снят автоматически»
