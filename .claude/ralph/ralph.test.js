@@ -1790,9 +1790,80 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(pushEventFn.mock.calls[0][0]).toMatch(/blocked устоял/);
     });
 
-    // Ключевое поведенческое обещание профиля prod (#73): не «в конфиге стоит 0», а
-    // «чини-сессия не запускается вовсе». Регресс `?? 3` → `|| 3` ловится только так.
-    it('профиль prod (blockedHealAttempts=0) → блокер сразу человеку, чини-сессия НЕ зовётся, пуш уходит', () => {
+    // #216: prod (с включённым разбором) блокер запускает чини-сессию, а не немедленный
+    // стоп человеку. Тестируем именно поведение при profileName='prod' + ненулевом лимите.
+    it('#216: prod с включённым разбором → блокер запускает чини-сессию, человека не зовём', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 0 });
+        const runClaudeFn = vi.fn(() => 0);
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ blockedHealAttempts: 3, profileName: 'prod' }),
+            ctx(state),
+            // phaseIndexOfFn НЕ переопределяем: дефолтный счётчик (0 → 99) даёт ровно
+            // один рабочий проход, иначе continue после разбора крутил бы цикл до брейкера.
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                runClaudeFn,
+                pushEventFn,
+            }),
+        );
+        expect(runClaudeFn).toHaveBeenCalledTimes(1); // разбор пошёл
+        expect(state.blockedHeals).toBe(1);
+        expect(pushEventFn).not.toHaveBeenCalled(); // блокер не ушёл человеку
+    });
+
+    // #216: счётчик не в памяти процесса — новое значение уходит в state ДО чини-сессии,
+    // поэтому перезапуск раннера посреди разбора его не обнулит (loadState прочитает 2).
+    it('#216: инкремент blockedHeals персистится через saveState (переживает перезапуск)', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 1 });
+        const saved = [];
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                runClaudeFn: () => 0,
+                saveStateFn: (s) => saved.push({ ...s }),
+            }),
+        );
+        expect(saved.some((s) => s.blockedHeals === 2)).toBe(true);
+    });
+
+    // #216: чистое повторное ревью завершает разбор — счётчик оставивших блок ревью в
+    // ноль. Гейт дошёл до чеков (red-checks) = на PR нет label blocked = ревью блок не
+    // поставило. Без сброса чередование «блок → чисто → блок» набирало бы «три подряд»
+    // и зря дёргало человека. Считаем ПОДРЯД идущие блок-ревью, а не круги вообще.
+    it('#216: чистое повторное ревью (red-checks) обнуляет blockedHeals — чередование не копит счётчик', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, blockedHeals: 2 });
+        runLoop(
+            validCfg({ blockedHealAttempts: 3, gateHealAttempts: 2 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'red-checks',
+                getLastRedCheck: () => ({ name: 'test', cmd: 'npm run test', excerpt: 'boom' }),
+                runClaudeFn: () => 0,
+            }),
+        );
+        expect(state.blockedHeals).toBe(0);
+    });
+
+    // #216: prod больше не ставит blockedHealAttempts: 0, но ветка «явно выключено»
+    // осталась для конфигов, где разбор выключат сознательно. Обещание ветки: не «в
+    // конфиге 0», а «чини-сессия не запускается вовсе». Регресс `?? 3` → `|| 3` ловится
+    // только так. profileName взят произвольный — важно само значение 0, не имя профиля.
+    it('blockedHealAttempts=0 (разбор выключен явно) → блокер сразу человеку, чини-сессия НЕ зовётся, пуш уходит', () => {
         const logs = [];
         const state = mkState({ submitted: true, blockedHeals: 0 });
         const runClaudeFn = vi.fn(() => 0);
@@ -2639,8 +2710,11 @@ describe('боевой ralph.config.json — профили playground/prod (#73
         expect(cfg.apiLimitMaxWaits).toBe(3);
     });
 
-    it('prod: blocked-разбор выключен — блокер ревью уходит человеку, не чинится сам', () => {
-        expect(resolveProfile(raw, 'prod', boom).blockedHealAttempts).toBe(0);
+    // #216: prod больше НЕ выключает разбор blocked (был blockedHealAttempts: 0) —
+    // блокер ревью, устранённый правками, снимается сам после чистого повторного ревью,
+    // а не ждёт человека. Значение наследуется из common (дефолт 3), профиль его не дублирует.
+    it('prod: blocked-разбор включён — наследует лимит из common (дефолт 3)', () => {
+        expect(resolveProfile(raw, 'prod', boom).blockedHealAttempts).toBe(3);
     });
 
     it('prod наследует всё остальное из common, не дублируя его', () => {
@@ -2650,8 +2724,10 @@ describe('боевой ralph.config.json — профили playground/prod (#73
         expect(prod.review).toEqual(pg.review);
         expect(prod.phases).toEqual(pg.phases);
         expect(prod.authorAllowlist).toEqual(pg.authorAllowlist);
-        // Дельта prod в файле — ровно то, что заявлено, без случайных дублей.
-        expect(Object.keys(raw.profiles.prod)).toEqual(['blockedHealAttempts']);
+        expect(prod.blockedHealAttempts).toEqual(pg.blockedHealAttempts);
+        // #216: дельта prod пуста — разбор blocked теперь идёт по общим правилам, отличие
+        // прода от playground держит код по profileName (толстый гейт, TG, стоп на деплой).
+        expect(Object.keys(raw.profiles.prod)).toEqual([]);
     });
 });
 
