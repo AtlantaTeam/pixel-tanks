@@ -14,7 +14,7 @@
 // общий afterEach в test-setup.js): сеть/шелл/state не трогаем, доставка пуша — через
 // инжектируемый pushFn/logFn (DI), реальный pushEvent зовём в non-prod профиле, где он
 // печатает маркер, но НЕ ходит в Telegram (проверяется отдельным assert'ом ниже).
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -38,9 +38,13 @@ const GATE_THRESHOLD = 600000; // 10м
 const DEFAULT_THRESHOLD = 300000; // 5м
 
 // ── Реальный временный лог на диске (как боевой ralph.log) ────────────────────────
+// Приватный tmp-каталог (mkdtemp даёт уникальное имя): иначе имена в общем os.tmpdir()
+// детерминированы и два параллельных прогона vitest (гейт раннера в своём worktree +
+// человек в своём) писали бы и unlink'али одни и те же файлы → флак.
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ralph-deadman-scn-'));
 const tmpFiles = [];
 function writeLog(lines) {
-    const p = path.join(os.tmpdir(), `ralph-deadman-scn-${tmpFiles.length}-${lines.length}.log`);
+    const p = path.join(tmpDir, `log-${tmpFiles.length}-${lines.length}.log`);
     fs.writeFileSync(p, lines.join('\n'));
     tmpFiles.push(p);
     return p;
@@ -52,6 +56,13 @@ afterEach(() => {
         } catch {
             /* ignore */
         }
+    }
+});
+afterAll(() => {
+    try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+        /* ignore */
     }
 });
 
@@ -188,6 +199,34 @@ describe('полный живой прогон фазы → ни одного л
         // …но пуш был ровно один: тот же эпизод (mtime не сдвинулся) не пушится дважды.
         expect(logSpy.mock.calls.filter((c) => /🔔 PUSH/.test(c[0]))).toHaveLength(1);
         expect(second.key).toBe(first.key);
+    });
+});
+
+describe('пауза API-лимита → длинный сон не даёт ложного deadman-пуша (apiwait, не coder)', () => {
+    // runClaude синхронно спит N мин на строке `🔔 PUSH ⏳ … Жду N мин`; лог заморожен всё
+    // это время. Порог режима apiwait = N мин + запас, поэтому пауза длиннее coder-порога
+    // (2ч10м), но короче своего apiwait-порога, ложного пуша НЕ даёт. Раньше строка была
+    // нейтральной → скан уходил к ▶ claude → coder → ложный DEADMAN примерно на 2ч10м.
+    const apiWaitTail = [
+        t('▶ claude -p "…" --max-turns 200 --model claude-opus-4-8'),
+        t(
+            '🔔 PUSH: ⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду 305 мин до сброса окна и повторяю (попытка 1/3).',
+        ),
+    ];
+    const API_WAIT_THRESHOLD = 305 * MIN + 600000; // N мин + iterationGraceMs
+
+    it('сон 140 мин (> coder-порога 130м, но < своего apiwait-порога) → пуша НЕТ', () => {
+        const r = tick(writeLog(apiWaitTail), 140 * MIN);
+        expect(r.deadman.activity).toBe('apiwait');
+        expect(r.deadman.silent).toBe(false);
+        expect(r.pushedText).toEqual([]);
+    });
+
+    it('пауза перешагнула свой порог (N + запас) → deadman-пуш (пауза действительно зависла)', () => {
+        const r = tick(writeLog(apiWaitTail), API_WAIT_THRESHOLD + MIN);
+        expect(r.deadman.activity).toBe('apiwait');
+        expect(r.deadman.silent).toBe(true);
+        expect(r.pushedText).toHaveLength(1);
     });
 });
 

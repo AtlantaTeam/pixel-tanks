@@ -7,6 +7,7 @@ import {
     classifyActivity,
     silenceThresholdMs,
     thresholdForTail,
+    parseApiWaitMs,
     DEFAULT_DEADMAN,
 } from './deadman.js';
 
@@ -88,6 +89,42 @@ describe('classifyActivity — режим петли по хвосту лога'
         ];
         expect(classifyActivity(lines)).toBe('coder');
     });
+
+    it('пауза API-лимита (🔔 PUSH ⏳ Жду N мин) поверх ▶ claude → apiwait, а НЕ coder', () => {
+        // runClaude синхронно спит N минут на этой строке; без отдельного режима скан ушёл
+        // бы назад к ▶ claude, взял бы coder-порог (2ч10м) и дал ложный пуш на паузе >2ч.
+        const lines = [
+            t('▶ claude -p "…" --max-turns 200 --model claude-opus-4-8'),
+            t(
+                '🔔 PUSH: ⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду 305 мин до сброса окна и повторяю (попытка 1/3).',
+            ),
+        ];
+        expect(classifyActivity(lines)).toBe('apiwait');
+    });
+
+    it('после сна API-лимита новая сессия (▶ claude свежее паузы) → снова coder', () => {
+        const lines = [
+            t('🔔 PUSH: ⏳ Ralph: API-лимит — … Жду 305 мин … (попытка 1/3).'),
+            t('▶ claude -p "…" --max-turns 200 --model claude-opus-4-8'),
+        ];
+        expect(classifyActivity(lines)).toBe('coder');
+    });
+});
+
+describe('parseApiWaitMs — порог паузы из строки «Жду N мин»', () => {
+    const cfg = {
+        claudeTimeoutMs: 7200000,
+        deadman: { iterationGraceMs: 600000, gateSilenceMs: 600000, defaultSilenceMs: 300000 },
+    };
+
+    it('вынимает N минут и добавляет запас iterationGraceMs', () => {
+        const lines = [t('🔔 PUSH: ⏳ Ralph: API-лимит — … Жду 305 мин … (попытка 1/3).')];
+        expect(parseApiWaitMs(lines, cfg)).toBe(305 * 60000 + 600000);
+    });
+
+    it('нет строки паузы в хвосте → null (вызывающий возьмёт консервативный порог)', () => {
+        expect(parseApiWaitMs([t('▶ claude -p "…"')], cfg)).toBeNull();
+    });
 });
 
 describe('silenceThresholdMs — порог по режиму и конфигу', () => {
@@ -125,15 +162,28 @@ describe('silenceThresholdMs — порог по режиму и конфигу'
         );
     });
 
-    it('принимает и полный конфиг с секцией common (до резолва профиля)', () => {
+    it('сырой конфиг с секцией common (до резолва) НЕ читается — берутся дефолты', () => {
+        // Контракт узкий: подаётся только резолвнутый профилем конфиг (поля на верхнем
+        // уровне). Сырой { common } без имени профиля честно слить нельзя, поэтому его
+        // оверрайды игнорируются и берётся DEFAULT_DEADMAN — и раннер, и монитор резолвят
+        // профиль ДО вызова детекта, так что в бою это недостижимо.
         const raw = {
             common: { claudeTimeoutMs: 7200000, deadman: { gateSilenceMs: 111 } },
         };
-        expect(silenceThresholdMs('gate', raw)).toBe(111);
+        expect(silenceThresholdMs('gate', raw)).toBe(DEFAULT_DEADMAN.gateSilenceMs);
     });
 
     it('неизвестный режим трактуется как default (fail-safe)', () => {
         expect(silenceThresholdMs('что-то', cfg)).toBe(300000);
+    });
+
+    it('apiwait → N мин из строки паузы + запас (lines прокинуты)', () => {
+        const lines = [t('🔔 PUSH: ⏳ Ralph: API-лимит — … Жду 90 мин … (попытка 1/3).')];
+        expect(silenceThresholdMs('apiwait', cfg, lines)).toBe(90 * 60000 + 600000);
+    });
+
+    it('apiwait без строки паузы (lines пустые) → консервативно coder-порог', () => {
+        expect(silenceThresholdMs('apiwait', cfg, [])).toBe(7200000 + 600000);
     });
 });
 
@@ -153,5 +203,13 @@ describe('thresholdForTail — хвост лога → порог', () => {
 
     it('хозяйственный хвост → короткий дефолт', () => {
         expect(thresholdForTail([t('🌳 Worktree раннера ...')], cfg)).toBe(300000);
+    });
+
+    it('хвост с паузой API-лимита → порог самой паузы (N мин + запас), а не coder', () => {
+        const lines = [
+            t('▶ claude -p "…"'),
+            t('🔔 PUSH: ⏳ Ralph: API-лимит — … Жду 45 мин … (попытка 1/3).'),
+        ];
+        expect(thresholdForTail(lines, cfg)).toBe(45 * 60000 + 600000);
     });
 });
