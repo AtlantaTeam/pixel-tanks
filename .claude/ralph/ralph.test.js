@@ -483,6 +483,27 @@ describe('pushEvent — доставка событий в Telegram, prod-only (
         );
     });
 
+    it('#224: текст события остаётся в логе даже когда доставка (все ретраи нотифаера) провалилась', () => {
+        // 🔔 PUSH печатается ПЕРВОЙ строкой pushEvent, до вызова sendFn — недоставка
+        // (в т.ч. исчерпание ретраев telegram-notifier) не должна стирать событие
+        // из ralph.log, иначе разбор постфактум не находит, что вообще произошло.
+        const sendFn = vi.fn().mockReturnValue(false);
+        const logFn = vi.fn();
+        pushEvent(
+            'громкое событие, которое нельзя потерять',
+            { profileName: 'prod' },
+            {
+                sendFn,
+                logFn,
+            },
+        );
+        expect(
+            logFn.mock.calls.some(([msg]) =>
+                msg.includes('громкое событие, которое нельзя потерять'),
+            ),
+        ).toBe(true);
+    });
+
     it('prod, но dry=true (--dry-run) — лог-маркер есть, но sendFn НЕ зовётся, false (C1: read-only)', () => {
         // Регрессия: breaker maxIterations проверяется до первого dry-guard'а в loop,
         // так что pushEvent достижим в --dry-run. Guard в самой точке доставки (как

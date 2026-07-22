@@ -6,6 +6,7 @@ import {
     sendTelegramMessage,
     telegramConfigFromEnv,
     TELEGRAM_API_BASE,
+    TELEGRAM_DEFAULT_ATTEMPTS,
 } from './telegram-notifier.js';
 
 describe('telegramConfigFromEnv', () => {
@@ -138,12 +139,21 @@ describe('sendTelegramMessage', () => {
         });
         const logFn = vi.fn();
 
-        const result = sendTelegramMessage('событие', { token, chatId: 'C', execFn, logFn });
+        // attempts: 1 — тест проверяет маскирование токена в одной попытке, не
+        // ретраи (те — отдельный describe ниже).
+        const result = sendTelegramMessage('событие', {
+            token,
+            chatId: 'C',
+            execFn,
+            logFn,
+            attempts: 1,
+        });
 
         expect(result).toBe(false);
-        expect(logFn).toHaveBeenCalledTimes(1);
-        expect(logFn.mock.calls[0][0]).not.toContain(token);
-        expect(logFn.mock.calls[0][0]).toContain('***');
+        for (const [msg] of logFn.mock.calls) {
+            expect(msg).not.toContain(token);
+        }
+        expect(logFn.mock.calls.some(([msg]) => msg.includes('***'))).toBe(true);
     });
 
     it('fail-open: не бросает и возвращает false, если нет token/chatId', () => {
@@ -163,10 +173,24 @@ describe('sendTelegramMessage', () => {
         });
         const logFn = vi.fn();
 
+        // attempts: 1 — без ретраев, чтобы не тянуть реальный sleepFn в тесте на
+        // единичный отказ (ретраи проверяются отдельным describe).
         expect(() =>
-            sendTelegramMessage('событие', { token: 'T', chatId: 'C', execFn, logFn }),
+            sendTelegramMessage('событие', {
+                token: 'T',
+                chatId: 'C',
+                execFn,
+                logFn,
+                attempts: 1,
+            }),
         ).not.toThrow();
-        const result = sendTelegramMessage('событие', { token: 'T', chatId: 'C', execFn, logFn });
+        const result = sendTelegramMessage('событие', {
+            token: 'T',
+            chatId: 'C',
+            execFn,
+            logFn,
+            attempts: 1,
+        });
 
         expect(result).toBe(false);
         expect(logFn).toHaveBeenCalledWith(expect.stringContaining('отправка не удалась'));
@@ -178,7 +202,13 @@ describe('sendTelegramMessage', () => {
             .mockReturnValue(JSON.stringify({ ok: false, description: 'chat not found' }));
         const logFn = vi.fn();
 
-        const result = sendTelegramMessage('событие', { token: 'T', chatId: 'C', execFn, logFn });
+        const result = sendTelegramMessage('событие', {
+            token: 'T',
+            chatId: 'C',
+            execFn,
+            logFn,
+            attempts: 1,
+        });
 
         expect(result).toBe(false);
         expect(logFn).toHaveBeenCalledWith(expect.stringContaining('chat not found'));
@@ -188,9 +218,139 @@ describe('sendTelegramMessage', () => {
         const execFn = vi.fn().mockReturnValue('<html>502 Bad Gateway</html>');
         const logFn = vi.fn();
 
-        const result = sendTelegramMessage('событие', { token: 'T', chatId: 'C', execFn, logFn });
+        const result = sendTelegramMessage('событие', {
+            token: 'T',
+            chatId: 'C',
+            execFn,
+            logFn,
+            attempts: 1,
+        });
 
         expect(result).toBe(false);
         expect(logFn).toHaveBeenCalledWith(expect.stringContaining('не удалось разобрать ответ'));
+    });
+});
+
+describe('sendTelegramMessage — ретраи доставки (#224)', () => {
+    it('транзиентный сбой первой попытки не теряет событие: вторая попытка доставляет', () => {
+        const execFn = vi
+            .fn()
+            .mockImplementationOnce(() => {
+                throw new Error('curl: (28) Connection timed out');
+            })
+            .mockReturnValueOnce(JSON.stringify({ ok: true }));
+        const logFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const result = sendTelegramMessage('срочное событие', {
+            token: 'T',
+            chatId: 'C',
+            execFn,
+            logFn,
+            sleepFn,
+        });
+
+        expect(result).toBe(true);
+        expect(execFn).toHaveBeenCalledTimes(2);
+        expect(sleepFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).toHaveBeenCalledWith(5000); // retryBaseMs(5000) × попытка(1)
+        expect(logFn).toHaveBeenCalledWith(expect.stringContaining('попытка 1/3'));
+        // Раз доставлено — «ПУШ НЕ ДОСТАВЛЕН» появляться не должно.
+        expect(logFn.mock.calls.some(([msg]) => msg.includes('ПУШ НЕ ДОСТАВЛЕН'))).toBe(false);
+    });
+
+    it('транзиентный сбой первых двух попыток не теряет событие: третья доставляет, пауза нарастает', () => {
+        const execFn = vi
+            .fn()
+            .mockImplementationOnce(() => {
+                throw new Error('curl: (28) Connection timed out');
+            })
+            .mockImplementationOnce(() => {
+                throw new Error('curl: (7) Couldn’t connect');
+            })
+            .mockReturnValueOnce(JSON.stringify({ ok: true }));
+        const logFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const result = sendTelegramMessage('срочное событие', {
+            token: 'T',
+            chatId: 'C',
+            execFn,
+            logFn,
+            sleepFn,
+        });
+
+        expect(result).toBe(true);
+        expect(execFn).toHaveBeenCalledTimes(3);
+        expect(sleepFn).toHaveBeenCalledTimes(2);
+        // Нарастающая пауза: retryBaseMs × номер попытки (образец — ghJson в ralph.js).
+        expect(sleepFn.mock.calls[0][0]).toBe(5000);
+        expect(sleepFn.mock.calls[1][0]).toBe(10000);
+    });
+
+    it('исчерпание всех попыток: прогон продолжается (fail-open) + заметная строка о потере события', () => {
+        const execFn = vi.fn().mockImplementation(() => {
+            throw new Error('curl: (28) Connection timed out');
+        });
+        const logFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        let result;
+        expect(() => {
+            result = sendTelegramMessage('критичное событие потерялось бы', {
+                token: 'T',
+                chatId: 'C',
+                execFn,
+                logFn,
+                sleepFn,
+            });
+        }).not.toThrow();
+
+        expect(result).toBe(false);
+        expect(execFn).toHaveBeenCalledTimes(TELEGRAM_DEFAULT_ATTEMPTS);
+        expect(sleepFn).toHaveBeenCalledTimes(TELEGRAM_DEFAULT_ATTEMPTS - 1);
+        expect(
+            logFn.mock.calls.some(([msg]) =>
+                msg.includes('⚠ ПУШ НЕ ДОСТАВЛЕН: критичное событие потерялось бы'),
+            ),
+        ).toBe(true);
+    });
+
+    it('число попыток и пауза настраиваются (attempts/retryBaseMs), дефолт — 3 попытки', () => {
+        const execFn = vi.fn().mockImplementation(() => {
+            throw new Error('curl: (28) Connection timed out');
+        });
+        const logFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        sendTelegramMessage('событие', {
+            token: 'T',
+            chatId: 'C',
+            execFn,
+            logFn,
+            sleepFn,
+            attempts: 5,
+            retryBaseMs: 1000,
+        });
+
+        expect(execFn).toHaveBeenCalledTimes(5);
+        expect(sleepFn).toHaveBeenCalledTimes(4);
+        expect(sleepFn.mock.calls[0][0]).toBe(1000);
+        expect(sleepFn.mock.calls[3][0]).toBe(4000);
+    });
+
+    it('реальных вызовов curl/сети нет: execFn — единственная точка, sleepFn — единственная пауза', () => {
+        const execFn = vi.fn().mockImplementation(() => {
+            throw new Error('curl: (28) Connection timed out');
+        });
+        const logFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        sendTelegramMessage('событие', { token: 'T', chatId: 'C', execFn, logFn, sleepFn });
+
+        // Единственная побочка — через инжектированные execFn/sleepFn; realExecFn/
+        // realSleep (боевые curl/Atomics.wait) сюда не долетают.
+        expect(execFn).toHaveBeenCalled();
+        expect(sleepFn).toHaveBeenCalled();
     });
 });
