@@ -19,10 +19,19 @@ const DEFAULT_NUMBER = 1;
 const STATUS_FIELD = 'Status';
 const DONE_OPTION = 'Done';
 
-// Закрытая карточка — это Issue в CLOSED и PR в CLOSED/MERGED. Список исчерпывающий
-// намеренно: незнакомое состояние (новый тип content, переименованный enum) не должно
-// молча трактоваться как «не закрыт» — иначе синк тихо перестанет замечать часть доски.
-const CLOSED_STATES = { Issue: ['CLOSED'], PullRequest: ['CLOSED', 'MERGED'] };
+// Закрытая карточка — это Issue в CLOSED и PR в CLOSED/MERGED. Списки состояний
+// ПОЛНЫЕ, а не только «закрытые»: незнакомое состояние (переименованный enum, новый
+// регистр) не имеет права молча трактоваться как «не закрыт» — так синк тихо перестал
+// бы замечать часть доски, ровно тот отказ, против которого он написан. Поэтому ниже
+// на неизвестном state — throw, а не false.
+const KNOWN_STATES = {
+    Issue: { open: ['OPEN'], closed: ['CLOSED'] },
+    PullRequest: { open: ['OPEN'], closed: ['CLOSED', 'MERGED'] },
+};
+
+// Типы контента без состояния вовсе: у черновика доски нечего синкать, это легальный
+// пропуск, а не сомнительные данные.
+const STATELESS_TYPES = ['DraftIssue'];
 
 const BOARD_QUERY = `
 query($owner: String!, $number: Int!, $cursor: String) {
@@ -36,12 +45,14 @@ query($owner: String!, $number: Int!, $cursor: String) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
+          isArchived
           content {
             __typename
             ... on Issue { number state }
             ... on PullRequest { number state }
           }
-          fieldValues(first: 20) {
+          fieldValues(first: 100) {
+            pageInfo { hasNextPage }
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
                 optionId
@@ -67,9 +78,14 @@ mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
 // внятной строки — те же грабли чинили в security-audit.mjs). maxBuffer 16 МБ: дефолт
 // 1 МБ, при переполнении child убивается и JSON.parse падает на обрезанном выводе.
 export function runGh(args, spawnFn = spawnSync) {
-    const result = spawnFn('gh', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    const result = spawnFn('gh', args, {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 60_000, // повисший gh не должен подвешивать прогон фазы
+    });
     if (result.status !== 0 || !result.stdout) {
-        const why = result.error?.message ?? result.stderr?.trim() ?? `код ${result.status}`;
+        // || , а не ??: пустой stderr не nullish, и сообщение обрезалось бы до «: »
+        const why = result.error?.message || result.stderr?.trim() || `код ${result.status}`;
         throw new Error(`gh ${args[0]} ${args[1] ?? ''} не вернул вывод: ${why}`);
     }
     return JSON.parse(result.stdout);
@@ -135,12 +151,32 @@ export function resolveDone(field) {
 }
 
 export function isClosed(content) {
-    const states = CLOSED_STATES[content?.__typename];
-    if (!states) return false;
-    return states.includes(content.state);
+    const type = content?.__typename;
+    if (!type || STATELESS_TYPES.includes(type)) return false;
+    const states = KNOWN_STATES[type];
+    if (!states) {
+        throw new Error(
+            `незнакомый тип карточки "${type}" — синк не берётся судить, закрыта ли она`,
+        );
+    }
+    if (states.closed.includes(content.state)) return true;
+    if (states.open.includes(content.state)) return false;
+    throw new Error(
+        `${type} #${content.number ?? '?'} в незнакомом состоянии "${content.state}" — ` +
+            `enum GitHub изменился, сверка ненадёжна`,
+    );
 }
 
+// Усечение списка значений полей обязано быть слышным: если Status не попал в выборку,
+// «статуса нет» неотличимо от «статус Done», и карточка правилась бы каждый прогон —
+// заявленная идемпотентность ломалась бы молча.
 export function currentStatusOptionId(item) {
+    if (item?.fieldValues?.pageInfo?.hasNextPage) {
+        throw new Error(
+            `у карточки #${item.content?.number ?? '?'} значений полей больше, чем запрошено — ` +
+                `Status мог не попасть в выборку, сверка ненадёжна`,
+        );
+    }
     const values = item?.fieldValues?.nodes ?? [];
     return values.find((v) => v?.field?.name === STATUS_FIELD)?.optionId ?? null;
 }
@@ -149,10 +185,16 @@ export function currentStatusOptionId(item) {
 // условие — и есть идемпотентность: повторный прогон не делает ни одной мутации.
 // Открытые issues не трогаются вовсе, каким бы ни был их статус: двигать Todo →
 // Done по открытому issue — не синк, а порча доски.
+// Архивные карточки исключаются намеренно: архив — это человеческое «убрать с доски»,
+// а мутацию по архивной карточке API отвергает. Одна такая (а auto-archive — частая
+// настройка доски) делала бы синк вечно красным на одной и той же записи.
 export function pickStale(items, doneOptionId) {
     return items.filter(
         (item) =>
-            item?.id && isClosed(item.content) && currentStatusOptionId(item) !== doneOptionId,
+            item?.id &&
+            !item.isArchived &&
+            isClosed(item.content) &&
+            currentStatusOptionId(item) !== doneOptionId,
     );
 }
 
