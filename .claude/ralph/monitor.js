@@ -95,6 +95,9 @@ function fmtDur(ms) {
 // чтения (одно чтение на тик). lastMtime = mtime файла: свежесть
 // лога и есть признак жизни петли (log() пишется на каждом шаге хореографии). logPath
 // параметром — чтобы тестировать на временном файле, а не только на боевом LOG_PATH.
+// n — сколько последних строк вернуть; n === null → ВЕСЬ файл (явный контракт вместо
+// slice(-Infinity), который «случайно» отдавал весь массив). Детекту нужен весь хвост
+// (маркер режима может быть глубоко), панели — последние n через signalTail.
 function readLogTail(n = 200, logPath = LOG_PATH) {
     let raw;
     try {
@@ -108,7 +111,8 @@ function readLogTail(n = 200, logPath = LOG_PATH) {
     } catch {
         /* ignore */
     }
-    return { lines: raw.split('\n').slice(-n), lastMtime };
+    const all = raw.split('\n');
+    return { lines: n == null ? all : all.slice(-n), lastMtime };
 }
 
 // Детект тишины: возраст последней записи лога (now − lastMtime) против порога режима
@@ -183,8 +187,15 @@ function maybePushDeadman(
             '⚠ Ralph deadman: конфиг не резолвится — deadman-пуши НЕ доставляются (проверь ralph.config.json / --profile).',
         );
     }
+    // dry: false явно. У монитора нет своего dry-режима, но pushEvent по умолчанию берёт
+    // dry из argv СВОЕГО процесса (require('./ralph.js') парсит DRY из process.argv). Если
+    // монитор на prod-хосте запустить со случайно скопированным `--dry-run` в argv,
+    // pushEvent вернул бы false ДО проверки профиля → maybePushDeadman счёл бы это сбоем
+    // доставки (deliveryAttempted) → вечный ретрай с маркером каждый тик, при «доставка
+    // пушей: вкл» на панели. Прокидываем false — доставка deadman не зависит от argv.
     const delivered = pushFn(deadmanPushMessage(deadman, milestoneName), cfg, {
         logFn: console.log,
+        dry: false,
     });
     // Дедуп-ключ защёлкиваем не безусловно: в prod false у pushEvent = доставка НЕ удалась
     // (сбой curl/сети/Telegram, fail-open вернул false) — единственный алерт о мёртвом
@@ -251,6 +262,10 @@ function openGamePRs() {
 // уже фаза 2 (взаимный контроль раннер↔монитор), здесь не в скоупе.
 let lastDeadmanPushMtime = null;
 
+// Разовое предупреждение об исчезнувшем логе (см. snapshot). Сбрасывается, когда лог
+// снова находится, — чтобы каждый эпизод отсутствия файла предупреждал ровно раз.
+let warnedNoLog = false;
+
 function snapshot() {
     const now = Date.now();
     const state = readJSON(STATE_PATH) || {};
@@ -259,11 +274,11 @@ function snapshot() {
     // кривой конфиг для него повод показать «—», а не упасть (упасть должен ralph.js).
     const config = resolveProfile(readJSON(CONFIG_PATH), PROFILE, () => null);
     // Одно чтение лога на тик — источник правды и для панели, и для детекта. readLogTail
-    // отдаёт весь хвост (n=Infinity) и ОДИН mtime: от него и признак жизни (alive), и
-    // детект тишины, и последние значимые строки. Детект смотрит сырой хвост (маркеры
-    // ✓/✗/🚦 в SIGNAL_RE не попадают), панель — только значимые (signalTail). Сам пуш о
-    // тишине и дедуп — #149; здесь только детект и его показ.
-    const { lines: allLogLines, lastMtime } = readLogTail(Infinity);
+    // отдаёт весь хвост (n=null — явный контракт «весь файл») и ОДИН mtime: от него и
+    // признак жизни (alive), и детект тишины, и последние значимые строки. Детект смотрит
+    // сырой хвост (маркеры ✓/✗/🚦 в SIGNAL_RE не попадают), панель — только значимые
+    // (signalTail). Сам пуш о тишине и дедуп — #149; здесь только детект и его показ.
+    const { lines: allLogLines, lastMtime } = readLogTail(null);
     const lines = signalTail(allLogLines, 8);
     const deadman = evalDeadman({
         now,
@@ -271,6 +286,22 @@ function snapshot() {
         lines: allLogLines.slice(-200),
         config,
     });
+    // reason:'no-log' сам по себе НЕ алертит (silent:false): если ralph.log пропал
+    // (чистка, ротация, снесённый worktree — а раннер при этом мёртв), детект навсегда
+    // возвращал бы silent:false и watchdog молча обезоружен в состоянии, которое сам
+    // должен ловить. Fail-safe-доставка — фаза 2; здесь минимум, как у null-конфига в
+    // maybePushDeadman: раз на эпизод отсутствия файла предупредить в свой stdout
+    // (monitor.out). Флаг сбрасывается, когда лог снова находится.
+    if (deadman.reason === 'no-log') {
+        if (!warnedNoLog) {
+            console.log(
+                '⚠ Ralph deadman: ralph.log не найден — watchdog не может судить о тишине (проверь путь/worktree/ротацию).',
+            );
+            warnedNoLog = true;
+        }
+    } else {
+        warnedNoLog = false;
+    }
     const ms = currentMilestone(state, config);
     const milestoneName = ms?.phase?.milestone || state.milestone || '—';
     // Пуш о тишине (#149): только доставка события, цикл раннера монитор не трогает —
@@ -297,7 +328,13 @@ function snapshot() {
     out.push(`╔${bar}╗`);
     out.push(`  RALPH MONITOR   ${new Date(now).toLocaleString('ru-RU')}`);
     out.push(`  ${alive}`);
-    if (deadman.reason !== 'no-log') {
+    if (deadman.activity === 'stopped') {
+        // Штатная остановка петли: порог +∞, тишина сюда не применяется. Отдельная
+        // строка, а не «порог Infinityм» — раннер вышел из loop корректно, не завис.
+        out.push(
+            `  ⏹  петля штатно остановлена (лог ${fmtAge(deadman.silenceMs)} назад) — watchdog не считает это тишиной`,
+        );
+    } else if (deadman.reason !== 'no-log') {
         out.push(
             deadman.silent
                 ? `  💀 DEADMAN: лог молчит ${fmtAge(deadman.silenceMs)} — дольше порога ${fmtDur(deadman.thresholdMs)} (режим ${deadman.activity})`

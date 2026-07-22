@@ -59,8 +59,15 @@
 }
 
 @theme {
-    --font-sans: 'Montserrat', system-ui, sans-serif;
-    --font-pixel: 'Press Start 2P', monospace;
+    /* Полный fallback-стек как в дефолтных --font-sans/--font-mono Tailwind 4: emoji-
+       фолбэки нужны, т.к. в UI есть эмодзи (реплики бота, share-тексты) — без них на
+       части линуксов без Noto Color Emoji в базовом sans/mono они станут тофу. */
+    --font-sans:
+        'Montserrat', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-pixel:
+        'Press Start 2P', ui-monospace, monospace, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
 }
 
 /* NES-рамка: 4 box-shadow по сторонам, углы остаются пустыми — пиксельный вид.

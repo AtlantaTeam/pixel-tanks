@@ -786,6 +786,15 @@ function apiLimitWaitMs(output, cfg) {
     return (parseResetWaitMs(output) ?? fallbackMs) + graceMs;
 }
 
+// Текст события API-лимитной паузы — ЕДИНСТВЕННЫЙ источник правды его формата. deadman.js
+// (режим apiwait) парсит из него «Жду N мин» через API_WAIT_RE; раньше формат жил в двух
+// местах, связанных лишь копией текста, и правка формулировки здесь молча ломала бы
+// классификатор → ложный пуш ночью. Теперь функция экспортирована и её выход сверяется с
+// API_WAIT_RE тестом (deadman.test.js), так что рассинхрон краснит гейт, а не всплывает в бою.
+function apiLimitMessage(waitMs, attempt, maxWaits) {
+    return `⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`;
+}
+
 /**
  * Запуск claude -p. Возвращает exit-код процесса (0 = успех; DRY всегда 0).
  * H2: код возвращаем, а не глотаем, потому что фатальность решает ВЫЗЫВАЮЩИЙ:
@@ -832,7 +841,7 @@ function runClaude(
         const limitHit = code !== 0 && API_LIMIT_RE.test(output);
         if (!limitHit || cfg.waitOnApiLimit === false || attempt >= maxWaits) return code;
         const waitMs = apiLimitWaitMs(output, cfg);
-        const limitMsg = `⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`;
+        const limitMsg = apiLimitMessage(waitMs, attempt, maxWaits);
         // pushEvent — единственный логгер события (маркер 🔔 PUSH печатается всегда,
         // даже без Telegram): парный log() выше давал двойную строку в логе.
         pushEventFn(limitMsg, cfg);
@@ -2682,6 +2691,7 @@ module.exports = {
     formatExcerpt,
     parseResetWaitMs,
     apiLimitWaitMs,
+    apiLimitMessage,
     safeBranch,
     sliceWholeChars,
     minutesOrDefault,

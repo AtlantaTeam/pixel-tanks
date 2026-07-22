@@ -10,7 +10,6 @@
 // файло-ориентированность и делает детект живучим при мёртвом раннере — он смотрит на
 // файл, а не на процесс. readLogTail проверяем на реальном временном файле.
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
-import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
@@ -22,9 +21,7 @@ import {
 } from './monitor.js';
 import { pushEvent as pushEventReal } from './ralph.js';
 import { DEFAULT_DEADMAN } from './deadman.js';
-
-// Строки лога как их пишет log() в ralph.js — ISO-таймстамп + маркер.
-const t = (msg) => `[2026-07-22T06:30:07.015Z] ${msg}`;
+import { logLine as t, makeTmpLog } from './test-helpers.js';
 
 // Резолвнутый конфиг (как отдаёт resolveProfile раннеру/монитору): пороги на верхнем
 // уровне. coder = claudeTimeoutMs + iterationGraceMs = 7.8M; gate = 600k; default = 300k.
@@ -110,6 +107,19 @@ describe('evalDeadman — тишина как возраст последней 
         expect(r.activity).toBe('coder');
     });
 
+    it('штатная остановка петли (⏸ прод-стоп) → режим stopped, порог +∞, НЕ тишина', () => {
+        // Раннер вышел из loop, лог заморожен корректно на 3ч — это не зависший шаг.
+        const r = evalDeadman({
+            now: 1000 * MIN,
+            lastMtime: 1000 * MIN - 180 * MIN, // 3ч ≫ любого рабочего порога
+            lines: [t('⏸ Ralph: фаза "X" — loop остановлен перед деплоем (prod).')],
+            config: CFG,
+        });
+        expect(r.silent).toBe(false);
+        expect(r.activity).toBe('stopped');
+        expect(r.thresholdMs).toBe(Infinity);
+    });
+
     it('лог не найден (lastMtime = null) → не тишина, повод — no-log (а не ложный алерт)', () => {
         const r = evalDeadman({ now: 1000 * MIN, lastMtime: null, lines: [], config: CFG });
         expect(r.silent).toBe(false);
@@ -147,33 +157,11 @@ describe('evalDeadman — тишина как возраст последней 
 });
 
 describe('readLogTail — сырой хвост лога + время последней записи', () => {
-    // Приватный tmp-каталог на сьют (mkdtemp даёт уникальное имя): иначе имена в общем
-    // os.tmpdir() детерминированы и два параллельных прогона vitest (гейт раннера в своём
-    // worktree + человек в своём) писали бы и unlink'али одни файлы → флак.
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ralph-monitor-test-'));
-    const tmpFiles = [];
-    const mkTmp = (content) => {
-        const p = path.join(tmpDir, `log-${tmpFiles.length}-${content.length}.log`);
-        fs.writeFileSync(p, content);
-        tmpFiles.push(p);
-        return p;
-    };
-    afterEach(() => {
-        while (tmpFiles.length) {
-            try {
-                fs.unlinkSync(tmpFiles.pop());
-            } catch {
-                /* ignore */
-            }
-        }
-    });
-    afterAll(() => {
-        try {
-            fs.rmSync(tmpDir, { recursive: true, force: true });
-        } catch {
-            /* ignore */
-        }
-    });
+    // Общая фабрика временного лога (test-helpers.js) — приватный tmp-каталог + cleanup
+    // в одном месте на все тесты deadman/monitor. mkTmp принимает готовый контент-строку.
+    const { writeLog: mkTmp, cleanupFiles, removeDir } = makeTmpLog('ralph-monitor-test-');
+    afterEach(cleanupFiles);
+    afterAll(removeDir);
 
     it('возвращает сырые строки (включая ✓/✗/🚦, которых нет в SIGNAL_RE) и mtime', () => {
         // deadman классифицирует по ✓/✗/🚦 — фильтр SIGNAL_RE их теряет, поэтому детект

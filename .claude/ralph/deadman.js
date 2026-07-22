@@ -38,6 +38,10 @@
 //   e2e); playground-гейт быстрее, ложных пушей тем более не даст.
 // Дефолт (git/gh-шаги, обновление worktree, закрытие milestone): секунды; худшее —
 //   стартовый npm ci нового worktree (~1–2 мин). defaultSilenceMs=5 мин с запасом.
+// Штатная остановка (⏸ прод-стоп фазы, ✋ HITL, ⛔ circuit breaker и прочие стопы, 🎉 все
+//   фазы): раннер вышел из loop, лог заморожен НАВСЕГДА и корректно. Свой режим stopped с
+//   порогом +∞ — тишины тут нет и пуша быть не должно (без него default 5 мин давал бы
+//   ложный 💀 после каждой сданной прод-фазы). См. STOPPED_RE ниже.
 
 // Маркеры claude-сессии: старт сессии (▶ claude -p логируется перед каждой) плюс
 // шаговые эмодзи — итерация/ревью/правки. Любого достаточно, чтобы понять «идёт
@@ -48,13 +52,27 @@ const CODER_RE = /▶ claude -p|🔄|🔍 Ревью|🔧 Правки/u;
 // строку таймстампом, ✓/✗ идёт в середине. ✓/✗ — U+2713/U+2717, это НЕ ✅ U+2705 из
 // completion-маркеров.
 const GATE_RE = /🚦|[✓✗]\s/u;
-// Маркеры завершения/остановки/старта — закрывают предыдущий режим и переводят в
-// короткий дефолт: мердж (✅ PR), сдача фазы/туннель (✅), закрытие milestone (🏁),
-// стопы (⛔/✋), баннер старта (🚀), переключение веток (🔀).
-const DEFAULT_RE = /✅|🏁|⛔|✋|🚀|🔀/u;
-// Маркер API-лимитной паузы: runClaude пишет её ровно так (pushEvent префиксит `🔔 PUSH:`,
-// сам текст — из ralph.js: `⏳ Ralph: API-лимит — … Жду N мин …`). N (минуты сна до сброса
-// окна) захватываем группой — по нему считаем порог именно этой паузы, а не coder-режима.
+// Терминальные маркеры ШТАТНОЙ остановки петли: прод-стоп фазы перед деплоем (⏸),
+// HITL-стоп (✋), circuit breaker и прочие ⛔-стопы, «все фазы завершены» (🎉). После них
+// раннер выходит из loop и процесс завершается — лог замерзает НАВСЕГДА, и это НЕ тишина
+// зависшего шага, а корректный конец. Без своего режима эти строки уводили классификатор
+// назад к ✅/🏁 → default (5 мин) → ложный 💀 DEADMAN «цикл продолжается» после КАЖДОЙ
+// сданной прод-фазы (нарушение критерия PRD «ноль ложных пушей» + вклад в alert fatigue).
+// Режим stopped порога не имеет (Infinity) и пуша не даёт. ⛔ проверяется в scanTail ДО
+// GATE/DEFAULT: транзитных ⛔ нет — ⛔ как ПОСЛЕДНИЙ стабильный маркер всегда означает
+// выход из loop, а гейт-отказ тут же сменяется маркером чини-сессии (▶ claude), который
+// свежее ⛔ и выигрывает классификацию.
+const STOPPED_RE = /⏸|✋|🎉|⛔/u;
+// Маркеры завершения/старта — закрывают предыдущий режим и переводят в короткий дефолт:
+// мердж (✅ PR), сдача фазы/туннель (✅), закрытие milestone (🏁), баннер старта (🚀),
+// переключение веток (🔀). Стопы (⏸/✋/⛔/🎉) — не сюда: у них свой режим stopped.
+const DEFAULT_RE = /✅|🏁|🚀|🔀/u;
+// Маркер API-лимитной паузы. Формат строки — единственный источник правды в ralph.js
+// (функция apiLimitMessage(); pushEvent префиксит `🔔 PUSH:`): `⏳ Ralph: API-лимит — …
+// Жду N мин …`. Синхронность текста и этого regex закреплена тестом (deadman.test.js:
+// apiLimitMessage из ralph.js ↔ API_WAIT_RE) — правка формулировки в ралфе, ломающая
+// матч, покраснит гейт, а не всплывёт ночью ложным пушем. N (минуты сна до сброса окна)
+// захватываем группой — по нему порог именно этой паузы, а не coder-режима.
 const API_WAIT_RE = /⏳ Ralph: API-лимит[\s\S]*?Жду (\d+) мин/u;
 
 // Дефолты порогов (мс) — если в ralph.config.json нет блока deadman. Совпадают с
@@ -67,45 +85,48 @@ const DEFAULT_DEADMAN = {
 
 const DEFAULT_CLAUDE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // как в runClaudeOnce (ralph.js)
 
-// Режим петли по хвосту лога. Скан от последней строки к первой; возвращаем режим
-// первой встреченной ЗНАЧИМОЙ строки (apiwait/coder/gate/default-маркер). Нейтральные
-// строки (обычные ⚠, многострочные хвосты ошибок без маркера) пропускаем — они не меняют
-// режим, иначе стрелой ⚠ посреди сессии режим упал бы в default и короткий порог дал бы
-// ложный пуш. Именно этот ПРОПУСК нейтральных строк и есть заявленное смещение «к более
-// длинному порогу при неоднозначности» (активная coder/gate-сессия переживает шум). Если
-// же во всём хвосте нет ни одного значимого маркера — это не активный шаг, отдаём короткий
-// default (fail-safe от обратного: длинный порог на неизвестном хвосте замаскировал бы
-// реальную тишину). На практике хвост почти всегда содержит маркер log(), так что ветка
-// достижима редко.
-function classifyActivity(lines) {
+// Единый скан хвоста лога (один проход, один список «значимых» RE — источник правды и
+// для режима, и для порога apiwait). От последней строки к первой; возвращаем режим И
+// саму строку первого встреченного ЗНАЧИМОГО маркера (stopped/apiwait/coder/gate/default).
+// Нейтральные строки (обычные ⚠, многострочные хвосты ошибок без маркера) пропускаем —
+// они не меняют режим, иначе стрелой ⚠ посреди сессии режим упал бы в default и короткий
+// порог дал бы ложный пуш. Именно этот ПРОПУСК нейтральных строк и есть заявленное
+// смещение «к более длинному порогу при неоднозначности» (активная coder/gate-сессия
+// переживает шум). Если же во всём хвосте нет ни одного значимого маркера — это не
+// активный шаг, отдаём короткий default (fail-safe от обратного: длинный порог на
+// неизвестном хвосте замаскировал бы реальную тишину). На практике хвост почти всегда
+// содержит маркер log(), так что ветка достижима редко.
+function scanTail(lines) {
     for (let i = lines.length - 1; i >= 0; i--) {
         const l = lines[i];
         if (typeof l !== 'string') continue;
-        if (API_WAIT_RE.test(l)) return 'apiwait';
-        if (CODER_RE.test(l)) return 'coder';
-        if (GATE_RE.test(l)) return 'gate';
-        if (DEFAULT_RE.test(l)) return 'default';
+        if (STOPPED_RE.test(l)) return { activity: 'stopped', line: l };
+        if (API_WAIT_RE.test(l)) return { activity: 'apiwait', line: l };
+        if (CODER_RE.test(l)) return { activity: 'coder', line: l };
+        if (GATE_RE.test(l)) return { activity: 'gate', line: l };
+        if (DEFAULT_RE.test(l)) return { activity: 'default', line: l };
         // прочее — нейтрально, продолжаем скан к более раннему маркеру
     }
-    return 'default';
+    return { activity: 'default', line: null };
 }
 
-// Порог паузы API-лимита (мс) из строки `🔔 PUSH: ⏳ … Жду N мин`. Скан идентичен
-// classifyActivity: от конца до первого значимого маркера. N мин × 60000 + запас
-// (iterationGraceMs кроет рестарт сессии после сна и такт монитора). Не нашли — null
-// (вызывающий возьмёт консервативный coder-порог: не занижаем).
+// Режим петли по хвосту лога — тонкая обёртка над единым сканом.
+function classifyActivity(lines) {
+    return scanTail(lines).activity;
+}
+
+// Порог паузы API-лимита (мс) из строки `🔔 PUSH: ⏳ … Жду N мин`. Тот же единый скан,
+// что и у классификатора: значимая строка одна на оба, break-логика не может разойтись.
+// N мин × 60000 + запас (iterationGraceMs кроет рестарт сессии после сна и такт монитора).
+// Хвост не в режиме apiwait или N не распарсилось — null (вызывающий возьмёт консервативный
+// coder-порог: не занижаем).
 function parseApiWaitMs(lines, cfg) {
-    for (let i = lines.length - 1; i >= 0; i--) {
-        const l = lines[i];
-        if (typeof l !== 'string') continue;
-        const m = API_WAIT_RE.exec(l);
-        if (m) {
-            const { deadman } = readCfg(cfg);
-            return parseInt(m[1], 10) * 60000 + deadman.iterationGraceMs;
-        }
-        if (CODER_RE.test(l) || GATE_RE.test(l) || DEFAULT_RE.test(l)) break;
-    }
-    return null;
+    const { activity, line } = scanTail(lines);
+    if (activity !== 'apiwait' || line == null) return null;
+    const m = API_WAIT_RE.exec(line);
+    if (!m) return null;
+    const { deadman } = readCfg(cfg);
+    return parseInt(m[1], 10) * 60000 + deadman.iterationGraceMs;
 }
 
 // Секция deadman и claudeTimeoutMs из УЖЕ резолвнутого профилем конфига (resolveProfile
@@ -114,12 +135,31 @@ function parseApiWaitMs(lines, cfg) {
 // оверрайды нельзя — взяли бы `common`, молча потеряв возможные prod-пороги (ровно тот
 // «гадаем», которого docblock обещал избегать). И раннер, и монитор резолвят профиль до
 // вызова детекта, так что сужение ничего в бою не ломает. null/битый конфиг → дефолты.
+// По-полевая проверка порогов deadman. Опечатка в ralph.config.json (`"gateSilenceMs":
+// "600000"` строкой, null, вложенный объект) без неё дала бы NaN/конкатенацию в
+// арифметике порога → `silenceMs > thresholdMs` навсегда false → watchdog молча
+// обезоружен, ровно тот класс тихого отказа, с которым борется этот модуль. Годное
+// значение — конечное неотрицательное число (0 у iterationGraceMs легитимен: нулевой
+// запас); всё остальное (строка/null/объект/NaN/±∞/отрицательное) откатывается на
+// DEFAULT_DEADMAN по-полевно, а не роняет весь блок.
+function coerceDeadmanThresholds(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const out = {};
+    for (const key of Object.keys(DEFAULT_DEADMAN)) {
+        const v = src[key];
+        out[key] = typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : DEFAULT_DEADMAN[key];
+    }
+    return out;
+}
+
 function readCfg(cfg) {
     const src = cfg && typeof cfg === 'object' ? cfg : {};
     return {
-        deadman: { ...DEFAULT_DEADMAN, ...(src.deadman ?? {}) },
+        deadman: coerceDeadmanThresholds(src.deadman),
         claudeTimeoutMs:
-            typeof src.claudeTimeoutMs === 'number'
+            typeof src.claudeTimeoutMs === 'number' &&
+            Number.isFinite(src.claudeTimeoutMs) &&
+            src.claudeTimeoutMs > 0
                 ? src.claudeTimeoutMs
                 : DEFAULT_CLAUDE_TIMEOUT_MS,
     };
@@ -131,6 +171,11 @@ function readCfg(cfg) {
 function silenceThresholdMs(activity, cfg, lines) {
     const { deadman, claudeTimeoutMs } = readCfg(cfg);
     switch (activity) {
+        case 'stopped':
+            // Штатная остановка петли: процесс вышел из loop, лог заморожен КОРРЕКТНО —
+            // это не зависший шаг. Порог = +∞: silenceMs > Infinity всегда false → пуша
+            // нет (см. STOPPED_RE и docblock режима stopped).
+            return Infinity;
         case 'coder':
             return claudeTimeoutMs + deadman.iterationGraceMs;
         case 'apiwait':
@@ -152,6 +197,7 @@ function thresholdForTail(lines, cfg) {
 }
 
 module.exports = {
+    scanTail,
     classifyActivity,
     silenceThresholdMs,
     thresholdForTail,
@@ -160,6 +206,7 @@ module.exports = {
     DEFAULT_CLAUDE_TIMEOUT_MS,
     CODER_RE,
     GATE_RE,
+    STOPPED_RE,
     DEFAULT_RE,
     API_WAIT_RE,
 };

@@ -9,10 +9,11 @@ import {
     thresholdForTail,
     parseApiWaitMs,
     DEFAULT_DEADMAN,
+    DEFAULT_CLAUDE_TIMEOUT_MS,
+    API_WAIT_RE,
 } from './deadman.js';
-
-// Строки лога как их пишет log() в ralph.js — с ISO-таймстампом и маркером.
-const t = (msg) => `[2026-07-22T06:30:07.015Z] ${msg}`;
+import { apiLimitMessage } from './ralph.js';
+import { logLine as t } from './test-helpers.js';
 
 describe('classifyActivity — режим петли по хвосту лога', () => {
     it('claude-сессия в работе (▶ claude -p последней строкой) → coder', () => {
@@ -111,6 +112,76 @@ describe('classifyActivity — режим петли по хвосту лога'
     });
 });
 
+describe('classifyActivity — штатные остановки петли не считаются тишиной (режим stopped)', () => {
+    // Терминальные маркеры: после них раннер вышел из loop и процесс завершился — лог
+    // заморожен корректно. Без режима stopped скан уходил бы к ✅/🏁 → default (5 мин) →
+    // ложный 💀 DEADMAN «цикл продолжается» после КАЖДОЙ сданной прод-фазы.
+    it('прод-стоп фазы перед деплоем (⏸) поверх ✅/🏁 → stopped, а НЕ default', () => {
+        const lines = [
+            t('✅ PR #150 смерджен (squash), дерево на свежем origin/main.'),
+            t('🏁 Milestone "Наблюдаемость ralph · Фаза 1" закрыт.'),
+            t('⏸ Ralph: фаза "X" — loop остановлен перед деплоем (prod).'),
+        ];
+        expect(classifyActivity(lines)).toBe('stopped');
+    });
+
+    it('HITL-стоп (✋) → stopped', () => {
+        expect(classifyActivity([t('✋ HITL: одна итерация выполнена, стоп.')])).toBe('stopped');
+    });
+
+    it('circuit breaker (🔔 PUSH ⛔ Ralph: circuit breaker) → stopped', () => {
+        expect(
+            classifyActivity([
+                t('🔔 PUSH: ⛔ Ralph: circuit breaker — лимит итераций (10) на фазу "X".'),
+            ]),
+        ).toBe('stopped');
+    });
+
+    it('все фазы завершены (🎉) → stopped', () => {
+        expect(classifyActivity([t('🎉 Все фазы завершены!')])).toBe('stopped');
+    });
+
+    it('транзитный ⛔ гейта сменяется свежей чини-сессией (▶ claude) → снова coder, не stopped', () => {
+        // ⛔ гейт-отказ не терминален: за ним идёт чини-сессия, чей ▶ claude свежее ⛔ и
+        // выигрывает скан. Порог возвращается к coder — watchdog не обезоружен на живой петле.
+        const lines = [
+            t('⛔ Гейт красный после 1 чини-сессии — PR оставлен человеку.'),
+            t('▶ claude -p "…" --max-turns 200 --model claude-opus-4-8'),
+        ];
+        expect(classifyActivity(lines)).toBe('coder');
+    });
+
+    it('stopped → порог +∞: тишина не срабатывает никогда (нет ложного пуша)', () => {
+        const cfg = {
+            claudeTimeoutMs: 7200000,
+            deadman: { iterationGraceMs: 600000, gateSilenceMs: 600000, defaultSilenceMs: 300000 },
+        };
+        expect(silenceThresholdMs('stopped', cfg)).toBe(Infinity);
+        expect(
+            thresholdForTail([t('⏸ Ralph: фаза "X" — loop остановлен перед деплоем.')], cfg),
+        ).toBe(Infinity);
+    });
+});
+
+describe('API_WAIT_RE синхронизирован с форматом apiLimitMessage() из ralph.js', () => {
+    // Формат строки паузы живёт в одном месте (ralph.apiLimitMessage). Этот тест —
+    // барьер против рассинхрона: если формулировку в ралфе поправят так, что regex
+    // перестанет матчить/захватывать N, гейт покраснеет здесь, а не всплывёт ночью
+    // ложным пушем (строка станет нейтральной → скан уйдёт к coder-порогу 2ч10м).
+    it('фактический apiLimitMessage матчится API_WAIT_RE и отдаёт N', () => {
+        const msg = `🔔 PUSH: ${apiLimitMessage(140 * 60000, 0, 3)}`;
+        const m = API_WAIT_RE.exec(msg);
+        expect(m).not.toBeNull();
+        expect(m[1]).toBe('140');
+    });
+
+    it('parseApiWaitMs берёт N именно из фактической строки ралфа (сквозной путь)', () => {
+        const cfg = { claudeTimeoutMs: 7200000, deadman: { iterationGraceMs: 600000 } };
+        const lines = [t(`🔔 PUSH: ${apiLimitMessage(45 * 60000, 1, 3)}`)];
+        expect(parseApiWaitMs(lines, cfg)).toBe(45 * 60000 + 600000);
+    });
+});
+
 describe('parseApiWaitMs — порог паузы из строки «Жду N мин»', () => {
     const cfg = {
         claudeTimeoutMs: 7200000,
@@ -160,6 +231,49 @@ describe('silenceThresholdMs — порог по режиму и конфигу'
         expect(silenceThresholdMs('coder', { deadman: { iterationGraceMs: 0 } })).toBe(
             2 * 60 * 60 * 1000,
         );
+    });
+
+    it('битые значения полей deadman (строка/null/объект/NaN) → по-полевой откат на DEFAULT', () => {
+        // Опечатка "600000" строкой без проверки дала бы NaN в арифметике порога →
+        // silenceMs > NaN навсегда false → watchdog молча обезоружен. По-полевой откат ловит.
+        const broken = {
+            claudeTimeoutMs: 7200000,
+            deadman: {
+                gateSilenceMs: '600000',
+                defaultSilenceMs: null,
+                iterationGraceMs: {},
+            },
+        };
+        expect(silenceThresholdMs('gate', broken)).toBe(DEFAULT_DEADMAN.gateSilenceMs);
+        expect(silenceThresholdMs('default', broken)).toBe(DEFAULT_DEADMAN.defaultSilenceMs);
+        expect(silenceThresholdMs('coder', broken)).toBe(
+            7200000 + DEFAULT_DEADMAN.iterationGraceMs,
+        );
+    });
+
+    it('отрицательный/±∞ порог тоже откатывается на DEFAULT (не занижаем/не ломаем)', () => {
+        const bad = { deadman: { gateSilenceMs: -1, defaultSilenceMs: Infinity } };
+        expect(silenceThresholdMs('gate', bad)).toBe(DEFAULT_DEADMAN.gateSilenceMs);
+        expect(silenceThresholdMs('default', bad)).toBe(DEFAULT_DEADMAN.defaultSilenceMs);
+    });
+
+    it('iterationGraceMs: 0 — легитимный нулевой запас, НЕ откатывается', () => {
+        // Граница: 0 — валидное значение (нет запаса), в отличие от строки/null.
+        expect(
+            silenceThresholdMs('coder', {
+                claudeTimeoutMs: 7200000,
+                deadman: { iterationGraceMs: 0 },
+            }),
+        ).toBe(7200000);
+    });
+
+    it('битый claudeTimeoutMs (строка) → дефолт 2ч, а не NaN', () => {
+        expect(
+            silenceThresholdMs('coder', {
+                claudeTimeoutMs: '7200000',
+                deadman: { iterationGraceMs: 0 },
+            }),
+        ).toBe(DEFAULT_CLAUDE_TIMEOUT_MS);
     });
 
     it('сырой конфиг с секцией common (до резолва) НЕ читается — берутся дефолты', () => {

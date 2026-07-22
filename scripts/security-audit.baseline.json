@@ -72,7 +72,7 @@
             "severity": "high",
             "url": "https://github.com/advisories/GHSA-f88m-g3jw-g9cj",
             "title": "sharp inherited vulnerabilities in libvips: CVE-2026-33327, CVE-2026-33328, CVE-2026-35590, CVE-2026-35591",
-            "reason": "Транзитивная зависимость next@16 и payload 3 → sharp@0.34.5; фикс только в semver-major sharp@0.35.x, не ставится без --force. Ждём, пока Next/Payload поднимут диапазон"
+            "reason": "Транзитивная зависимость next@16 и payload 3 → sharp@0.34.5; фикс только в semver-major sharp@0.35.x, не ставится без --force. Ждём, пока Next/Payload поднимут диапазон. Поверхность НЕ только билд: sharp — рантайм next/image в prod (unoptimized лишь в dev), т.е. каждый /_next/image декодирует картинку уязвимым libvips на сервере. Сейчас риск ограничен тем, что источники только локальные (remotePatterns не настроены — атакующий не может скормить свои байты). ПЕРЕСМОТРЕТЬ эту запись обязательно при добавлении удалённых источников (remotePatterns) ИЛИ Payload-коллекции upload — тогда через декодер пойдут внешние байты"
         }
     ]
 }

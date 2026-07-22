@@ -15,14 +15,10 @@
 // инжектируемый pushFn/logFn (DI), реальный pushEvent зовём в non-prod профиле, где он
 // печатает маркер, но НЕ ходит в Telegram (проверяется отдельным assert'ом ниже).
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
 import { readLogTail, evalDeadman, maybePushDeadman } from './monitor.js';
 import ralph, { pushEvent as pushEventReal } from './ralph.js';
+import { logLine as t, makeTmpLog } from './test-helpers.js';
 
-// Строка лога как её пишет log() в ralph.js — ISO-таймстамп + маркер.
-const t = (msg) => `[2026-07-22T06:30:07.015Z] ${msg}`;
 const MIN = 60000;
 
 // Резолвнутый профилем конфиг (пороги на верхнем уровне): coder = claudeTimeoutMs +
@@ -38,33 +34,11 @@ const GATE_THRESHOLD = 600000; // 10м
 const DEFAULT_THRESHOLD = 300000; // 5м
 
 // ── Реальный временный лог на диске (как боевой ralph.log) ────────────────────────
-// Приватный tmp-каталог (mkdtemp даёт уникальное имя): иначе имена в общем os.tmpdir()
-// детерминированы и два параллельных прогона vitest (гейт раннера в своём worktree +
-// человек в своём) писали бы и unlink'али одни и те же файлы → флак.
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ralph-deadman-scn-'));
-const tmpFiles = [];
-function writeLog(lines) {
-    const p = path.join(tmpDir, `log-${tmpFiles.length}-${lines.length}.log`);
-    fs.writeFileSync(p, lines.join('\n'));
-    tmpFiles.push(p);
-    return p;
-}
-afterEach(() => {
-    while (tmpFiles.length) {
-        try {
-            fs.unlinkSync(tmpFiles.pop());
-        } catch {
-            /* ignore */
-        }
-    }
-});
-afterAll(() => {
-    try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-        /* ignore */
-    }
-});
+// Общая фабрика (test-helpers.js): приватный tmp-каталог + writeLog + cleanup — чтобы
+// формат/жизненный цикл временного лога жил в одном месте, а не в трёх тест-файлах.
+const { writeLog, cleanupFiles, removeDir } = makeTmpLog('ralph-deadman-scn-');
+afterEach(cleanupFiles);
+afterAll(removeDir);
 
 // Один такт монитора над РЕАЛЬНЫМ файлом: читаем хвост и mtime с диска, «сейчас» =
 // mtime + ageMs (детерминированно, без гонки с реальными часами), гоняем evalDeadman и
@@ -228,6 +202,42 @@ describe('пауза API-лимита → длинный сон не даёт л
         expect(r.deadman.silent).toBe(true);
         expect(r.pushedText).toHaveLength(1);
     });
+});
+
+describe('штатная остановка петли в КОНЦЕ прогона → ни одного ложного deadman-пуша', () => {
+    // Разрыв в покрытии LIVE_PHASE: тот тест кончается СЛЕДУЮЩЕЙ итерацией, а не концом
+    // прогона. В prod же каждая сданная фаза кончается ⏸-стопом и выходом процесса — лог
+    // замерзает НАВСЕГДА. Без режима stopped через 5 мин (default) монитор слал бы 💀 с
+    // ложным «цикл продолжается» после КАЖДОЙ прод-фазы. Проверяем на реальном замёрзшем
+    // логе далеко за любым порогом.
+    const stopTails = [
+        {
+            name: 'прод-стоп фазы перед деплоем (⏸)',
+            tail: [
+                t('✅ PR #150 смерджен (squash), дерево на свежем origin/main.'),
+                t('🏁 Milestone "Наблюдаемость ralph · Фаза 1" закрыт.'),
+                t(
+                    '⏸ Ralph: фаза "Наблюдаемость ralph · Фаза 1" — loop остановлен перед деплоем (prod).',
+                ),
+            ],
+        },
+        {
+            name: 'circuit breaker (⛔)',
+            tail: [t('🔔 PUSH: ⛔ Ralph: circuit breaker — лимит итераций (10) на фазу "X".')],
+        },
+        { name: 'HITL-стоп (✋)', tail: [t('✋ HITL: одна итерация выполнена, стоп.')] },
+        { name: 'все фазы завершены (🎉)', tail: [t('🎉 Все фазы завершены!')] },
+    ];
+
+    for (const { name, tail } of stopTails) {
+        it(`${name}: лог замёрз на 3ч после стопа → режим stopped, пуша НЕТ`, () => {
+            const r = tick(writeLog(tail), 180 * MIN); // 3ч ≫ любого рабочего порога
+            expect(r.deadman.activity).toBe('stopped');
+            expect(r.deadman.silent).toBe(false);
+            expect(r.pushedText).toEqual([]);
+            expect(r.key).toBeNull(); // ключ дедупа не встаёт — пуша не было
+        });
+    }
 });
 
 describe('побочки в тестах запрещены (критерий #150: RALPH_NO_SIDE_EFFECTS/guardSideEffect/DI)', () => {
