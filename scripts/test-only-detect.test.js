@@ -17,6 +17,13 @@ import {
 // report для «места находки» бесполезен, поэтому локация — отдельный best-effort шаг
 // (`git grep` по каноничной форме it.only(/describe.only(), не влияющий на red/green.
 
+// #230: маркер собираем конкатенацией — иначе после фикса pathspec `:(glob)` реальный
+// `git grep` локатора нашёл бы `it.only(` в исходнике этой фикстуры и указал бы на неё как
+// на «место находки» (для .only grep — лишь подсказка, red/green решает vitest, но
+// сообщение врало бы). Значение в рантайме — обычные "it.only("/"describe.only(".
+const IT_ONLY = 'it' + '.only';
+const DESCRIBE_ONLY = 'describe' + '.only';
+
 const listEntry = (overrides = {}) => ({
     name: 'модуль > сценарий',
     file: '/repo/src/foo.test.ts',
@@ -32,7 +39,7 @@ describe('checkOnly', () => {
 
     it('ненулевой код + непустой отчёт — красный, называет место из локатора', () => {
         const result = checkOnly({ status: 1, report: [listEntry()] }, () => [
-            { file: 'src/foo.test.ts', line: '4', snippet: "it.only('x', ...)" },
+            { file: 'src/foo.test.ts', line: '4', snippet: `${IT_ONLY}('x', ...)` },
         ]);
         expect(result.ok).toBe(false);
         expect(result.message).toMatch(/src\/foo\.test\.ts:4/);
@@ -53,9 +60,22 @@ describe('checkOnly', () => {
         expect(result.message).toMatch(/не наш/);
     });
 
+    it('локатор пуст, но есть stderr сбора — его хвост попадает в сообщение (причина ненулевого кода)', () => {
+        // #230, minor: ненулевой код бывает и не из-за .only (сбой projects, teardown).
+        // Тогда «ищи .only вручную» отправляет чинить то, чего нет — поэтому прокидываем
+        // хвост stderr, чтобы истинная причина была видна сразу.
+        const result = checkOnly(
+            { status: 1, report: [listEntry()], stderr: 'boom teardown fail' },
+            () => [],
+        );
+        expect(result.ok).toBe(false);
+        expect(result.message).toMatch(/boom teardown fail/);
+    });
+
     it('дефолтный локатор — используется, когда явно не передан (не throw на вызове)', () => {
-        // locateOnlyUsages зовёт реальный git grep — в этом репозитории на момент теста
-        // .only нет нигде, поэтому вызов безопасен и просто не найдёт совпадений.
+        // locateOnlyUsages зовёт реальный git grep — здесь проверяем только, что дефолт
+        // подставляется и вызов не бросает (для .only grep — best-effort подсказка, red/green
+        // на нём не завязан, так что живое состояние репозитория на исход не влияет).
         expect(() => checkOnly({ status: 1, report: [listEntry()] })).not.toThrow();
     });
 
@@ -72,17 +92,17 @@ describe('locateOnlyUsages', () => {
     it('парсит вывод git grep в { file, line, snippet }', () => {
         const spawnFn = () => ({
             status: 0,
-            stdout: "src/foo.test.ts:4:    it.only('x', () => {\n",
+            stdout: `src/foo.test.ts:4:    ${IT_ONLY}('x', () => {\n`,
         });
         expect(locateOnlyUsages(spawnFn)).toEqual([
-            { file: 'src/foo.test.ts', line: '4', snippet: "it.only('x', () => {" },
+            { file: 'src/foo.test.ts', line: '4', snippet: `${IT_ONLY}('x', () => {` },
         ]);
     });
 
     it('несколько находок — несколько записей', () => {
         const spawnFn = () => ({
             status: 0,
-            stdout: 'src/a.test.ts:4:it.only(1)\nsrc/b.test.ts:9:describe.only(2)\n',
+            stdout: `src/a.test.ts:4:${IT_ONLY}(1)\nsrc/b.test.ts:9:${DESCRIBE_ONLY}(2)\n`,
         });
         expect(locateOnlyUsages(spawnFn)).toHaveLength(2);
     });

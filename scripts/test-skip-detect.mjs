@@ -4,7 +4,8 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { ONLY_TEST_GLOBS as TEST_FILE_GLOBS } from './test-only-detect.mjs';
+import { TEST_FILE_GLOBS, grepMarkerPattern, parseGrepOutput } from './test-detect-shared.mjs';
+import { DEFAULT_TTL_DAYS, MAX_TTL_DAYS } from './baseline-policy.mjs';
 
 // #161: осознанные исключения по .skip через baseline-механизм — вариант (а)
 // (docs/ralph-reliability/phase4-only-skip-detect/research.md, #159): гейт красный на
@@ -19,27 +20,12 @@ import { ONLY_TEST_GLOBS as TEST_FILE_GLOBS } from './test-only-detect.mjs';
 // молча трактоваться как «skip не найден».
 const BASELINE_REPO_PATH = 'scripts/skip-baseline.json';
 const BASELINE_PATH = path.join(import.meta.dirname, 'skip-baseline.json');
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Каноничная форма — `it.skip(`/`test.skip(`/`describe.skip(`, включая модификаторные
-// цепочки (`it.concurrent.skip(`), тем же паттерном, что ONLY_PATTERN в test-only-detect.mjs.
-const SKIP_PATTERN = '\\b(it|test|describe)(\\.[A-Za-z]+)*\\.skip[[:space:]]*\\(';
-
-function parseGrepOutput(stdout) {
-    return stdout
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-            const sepIdx = line.indexOf(':');
-            const file = line.slice(0, sepIdx);
-            const rest = line.slice(sepIdx + 1);
-            const lineSepIdx = rest.indexOf(':');
-            return {
-                file,
-                line: rest.slice(0, lineSepIdx),
-                snippet: rest.slice(lineSepIdx + 1).trim(),
-            };
-        });
-}
+// цепочки (`it.concurrent.skip(`), общим grepMarkerPattern (scripts/test-detect-shared.mjs) —
+// тем же, что ONLY_PATTERN в test-only-detect.mjs, только маркер другой.
+const SKIP_PATTERN = grepMarkerPattern('skip');
 
 // Источник решения red/green целиком: код 0 — есть находки (парсим), код 1 — находок нет
 // (легитимный «чисто»), ЛЮБОЙ другой код (128 — не git-репозиторий, 2 — битый regex, …) —
@@ -60,10 +46,19 @@ export function locateSkipUsages(spawnFn = spawnSync) {
     );
 }
 
+// Конструкции glob, которых globToRegExp НЕ поддерживает: brace-expansion `{ts,tsx}`,
+// одиночный `?`, классы `[...]`. Их символы попадают в ветку экранирования и становятся
+// литералами — привычная по vitest-конфигу запись `src/**/*.test.{ts,tsx}` тихо не
+// заматчила бы НИЧЕГО (исключение просто не сработало бы), а гейт сказал бы «skip вне
+// baseline», хотя автор честно записал исключение. Падение в сторону красного, но с
+// нулевой диагностикой — поэтому loadBaseline отвергает такой path явно (ревью PR #230, nit).
+const UNSUPPORTED_GLOB_RE = /[{}?[\]]/;
+
 // glob → RegExp: поддержка `**` (в т.ч. `**/` как «ноль или больше сегментов пути») и `*`
 // (любые символы внутри одного сегмента) — тот же синтаксис, которым уже пишут пути в
 // TEST_FILE_GLOBS и research.md. Не претендует на полноту glob-стандарта — ровно то
-// подмножество, которым в этом проекте описывают пути к тестам.
+// подмножество, которым в этом проекте описывают пути к тестам (brace/`?`/классы —
+// не поддержаны, loadBaseline их отклоняет, см. UNSUPPORTED_GLOB_RE).
 export function globToRegExp(glob) {
     let re = '';
     for (let i = 0; i < glob.length; i++) {
@@ -91,8 +86,20 @@ export function globToRegExp(glob) {
 // неожиданная форма или запись без обоснования — throw, не «пропустим». Уникально для
 // этого baseline (в отличие от security-audit) — нет разделения на «апстрим-дрейф» и
 // «сам притащил»: скип всегда пишет автор PR сам, поэтому единственное требование к
-// исключению — непустой reason и валидный path/pattern.
-export function loadBaseline(readFn = readFileSync, file = BASELINE_PATH) {
+// исключению — непустой reason, валидный path/pattern и срок пересмотра (expiresAt).
+//
+// expiresAt (ревью PR #230, major): исключение не должно быть вечным. Инцидентный сценарий —
+// чини-сессия гейта сама дописывает сюда исключение с формально непустым reason и проходит
+// мердж без повторного ревью (re-review в цикле есть только у blocked, не у gate-heal). TTL
+// не закрывает окно немедленно (полный барьер — git-факт «запись появилась после последнего
+// ревью», отдельная кросс-задача по образцу baseline-policy.mjs #207/#155, см. research.md),
+// но гарантирует, что исключение выносится человеку на пересмотр, а не живёт молча навсегда —
+// тем же механизмом DEFAULT_TTL_DAYS/MAX_TTL_DAYS, что и security-baseline.
+export function loadBaseline(
+    readFn = readFileSync,
+    file = BASELINE_PATH,
+    { now = Date.now() } = {},
+) {
     const raw = JSON.parse(readFn(file, 'utf8'));
     const skips = raw?.skips;
     if (!Array.isArray(skips)) {
@@ -101,10 +108,18 @@ export function loadBaseline(readFn = readFileSync, file = BASELINE_PATH) {
                 `(получено: ${JSON.stringify(skips)})`,
         );
     }
+    const ceiling = now + MAX_TTL_DAYS * DAY_MS;
     for (const entry of skips) {
         if (typeof entry?.path !== 'string' || !entry.path.trim()) {
             throw new Error(
                 `запись baseline без корректного path (получено: ${JSON.stringify(entry?.path)})`,
+            );
+        }
+        if (UNSUPPORTED_GLOB_RE.test(entry.path)) {
+            throw new Error(
+                `запись baseline "${entry.path}": path содержит неподдержанную glob-конструкцию ` +
+                    `({...}, ?, [...]) — globToRegExp экранирует эти символы как литералы, и ` +
+                    `исключение никогда не сработает. Опиши путь через ** и *.`,
             );
         }
         if (typeof entry?.pattern !== 'string' || !entry.pattern.trim()) {
@@ -126,8 +141,38 @@ export function loadBaseline(readFn = readFileSync, file = BASELINE_PATH) {
                     `должно быть обосновано (почему этот скип не потеря покрытия)`,
             );
         }
+        if (typeof entry?.expiresAt !== 'string' || !entry.expiresAt.trim()) {
+            throw new Error(
+                `запись baseline "${entry.path}" без expiresAt — исключение обязано иметь срок ` +
+                    `пересмотра (рекомендация: +${DEFAULT_TTL_DAYS} дней от даты добавления)`,
+            );
+        }
+        const ts = Date.parse(entry.expiresAt);
+        if (Number.isNaN(ts)) {
+            throw new Error(
+                `запись baseline "${entry.path}": expiresAt "${entry.expiresAt}" не парсится как дата`,
+            );
+        }
+        if (ts > ceiling) {
+            // Потолок (как в baseline-policy.mjs): срок «на вырост» (2099-01-01) формально
+            // прошёл бы, но обнулил бы весь смысл пересмотра.
+            throw new Error(
+                `запись baseline "${entry.path}": expiresAt "${entry.expiresAt}" дальше потолка ` +
+                    `${MAX_TTL_DAYS} дней — срок «на вырост» обнуляет пересмотр (рекомендация +${DEFAULT_TTL_DAYS} дней)`,
+            );
+        }
     }
     return raw;
+}
+
+// Просроченные записи baseline красят гейт независимо от того, есть ли сейчас скип под
+// исключением: срок вышел — исключение выносится человеку на пересмотр (починил ли, всё
+// ещё ли актуально), а не продлевается молча. По образцу expiredEntries в baseline-policy.mjs.
+export function expiredBaselineEntries(baseline, now = Date.now()) {
+    return (baseline?.skips ?? []).filter((e) => {
+        const ts = Date.parse(e?.expiresAt);
+        return !Number.isNaN(ts) && ts <= now;
+    });
 }
 
 export function matchesBaselineEntry(usage, entry) {
@@ -172,10 +217,22 @@ export function checkSkip(usages, baseline) {
 export function runSkipDetectCheck({
     locateSkipUsagesFn = locateSkipUsages,
     loadBaselineFn = loadBaseline,
+    now = Date.now(),
 } = {}) {
     try {
         const usages = locateSkipUsagesFn();
         const baseline = loadBaselineFn();
+        const expired = expiredBaselineEntries(baseline, now);
+        if (expired.length) {
+            return {
+                ok: false,
+                message:
+                    `в ${BASELINE_REPO_PATH} просрочены исключения .skip ` +
+                    `(${expired.map((e) => `${e.path} до ${e.expiresAt}`).join(', ')}) — ` +
+                    `срок пересмотра вышел: проверь, актуально ли обоснование, и продли expiresAt ` +
+                    `осознанно либо убери запись.`,
+            };
+        }
         return checkSkip(usages, baseline);
     } catch (e) {
         return { ok: false, message: e.message };

@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import os from 'node:os';
-import path from 'node:path';
+import { collectVitestList, defaultOutputFile } from './test-detect-shared.mjs';
 
 // #154: источник числа unit-тестов для храповика (#156) — детерминированный машинный
 // отчёт vitest, а НЕ парсинг человекочитаемого stdout (текстовый вывод меняется между
@@ -31,78 +29,16 @@ import path from 'node:path';
 // флаку, а не по потере тестов. Forks — отдельные процессы, гонки нет, счёт стабилен от
 // прогона к прогону (проверено 5×).
 //
-// --json=<file>, не голый stdout: vite может подмешать в stdout предупреждения сбора —
-// один смешанный поток JSON.parse не переживёт. Файл на диске — чистый канал.
-// mkdtempSync — каталог 0700 со случайным суффиксом. Предсказуемое имя в общем /tmp
-// (pid+таймштамп угадываются) — классическая поверхность для symlink-подмены в multi-user
-// окружении: vitest перезаписал бы то, куда указывает подложенная ссылка. На выделенном
-// VDS риск теоретический, но так и непредсказуемость, и приватный каталог — дешевле, чем
-// спорить о модели угроз.
-function defaultOutputFile() {
-    return path.join(mkdtempSync(path.join(os.tmpdir(), 'test-count-')), 'vitest-list.json');
-}
-
-// Ненулевой код спавна тут возможен (например, ошибка сбора в одном файле) — но список
-// пишется в файл, и решение принимает чтение ниже: файла нет → fail-closed throw. Сбой
-// самого запуска (vitest не стартовал) файла не пишет — ловится там же.
-//
-// --no-install у npx: без него отсутствие локального vitest ушло бы в сеть за пакетом —
-// ровно та зависимость гейта от сети, которая уже один раз красила build (#206).
-export function collectTestsJson(spawnFn = spawnSync, outputFile = defaultOutputFile()) {
-    const result = spawnFn(
-        'npx',
-        ['--no-install', 'vitest', 'list', '--no-isolate', `--json=${outputFile}`],
-        {
-            encoding: 'utf8',
-            maxBuffer: 16 * 1024 * 1024,
-        },
-    );
-
-    let raw;
-    try {
-        raw = readFileSync(outputFile, 'utf8');
-    } catch (e) {
-        // При реальном сбое сбора (синтаксическая ошибка в тест-файле, упавший конфиг)
-        // vitest пишет причину в stderr — без неё чини-сессия видела бы только ENOENT и
-        // чинить ей нечего (тот же класс, что чинили в security-audit.mjs по ревью #141).
-        const why =
-            result?.error?.message ||
-            (typeof result?.status === 'number'
-                ? `код выхода ${result.status}`
-                : 'причина неизвестна');
-        const stderrTail = (result?.stderr || '').trim().slice(-2000);
-        throw new Error(
-            `vitest не записал список тестов (${outputFile}) — сбой сбора: ${e.message}; ` +
-                `${why}${stderrTail ? `; stderr: ${stderrTail}` : ''}`,
-        );
-    } finally {
-        // Убираем и файл, и созданный под него временный каталог (mkdtemp). Каталог сносим
-        // только если это наш temp (test-count-*), чтобы переданный через DI путь не задеть.
-        try {
-            unlinkSync(outputFile);
-        } catch {
-            /* временный файл — не критично, если уже удалён или недоступен */
-        }
-        const dir = path.dirname(outputFile);
-        if (path.basename(dir).startsWith('test-count-')) {
-            try {
-                rmSync(dir, { recursive: true, force: true });
-            } catch {
-                /* временный каталог — не критично, если уже удалён или недоступен */
-            }
-        }
-    }
-
-    try {
-        return JSON.parse(raw);
-    } catch (e) {
-        // Файл к этому моменту уже удалён в finally — путь бесполезен; показываем начало
-        // самого нераспарсенного вывода, иначе битый отчёт пришлось бы отлаживать вслепую.
-        throw new Error(
-            `список тестов vitest не распарсился: ${e.message} — начало вывода: ` +
-                `${raw.slice(0, 200)}`,
-        );
-    }
+// Сбор списка — общим collectVitestList (scripts/test-detect-shared.mjs): вся механика
+// (--json=<file>, --no-isolate ~6с, --no-install без сети #206, приватный tmp-каталог,
+// fail-closed на нечитаемом/битом отчёте) вынесена туда, потому что тот же паттерн нужен
+// only-детекту (ревью PR #230). Храповику нужен только список — возвращаем report (код
+// выхода спавна тут безразличен: решение принимает countTests по длине массива).
+export function collectTestsJson(
+    spawnFn = spawnSync,
+    outputFile = defaultOutputFile('test-count-'),
+) {
+    return collectVitestList({ spawnFn, outputFile, tmpPrefix: 'test-count-' }).report;
 }
 
 // Формат зафиксирован (vitest list --json): МАССИВ записей о тест-кейсах, у каждой строковые

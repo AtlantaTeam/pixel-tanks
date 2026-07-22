@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import os from 'node:os';
-import path from 'node:path';
+import {
+    TEST_FILE_GLOBS,
+    collectVitestList,
+    defaultOutputFile,
+    grepMarkerPattern,
+    parseGrepOutput,
+} from './test-detect-shared.mjs';
 
 // #160: детект it.only/describe.only в unit-гейте. Vitest умеет это нативно — PRD
 // (docs/ralph-reliability/prd.md) решил, что аналога forbidOnly (Playwright, CI=1) у
@@ -23,83 +27,23 @@ import path from 'node:path';
 // каноничной форме it.only(/describe.only( — единственный синтаксис, которым в этом
 // проекте пишут тесты). git grep — только ПОДСКАЗКА для сообщения; решение red/green
 // целиком на vitest (fail-closed: если grep ничего не нашёл, гейт всё равно красный).
-function defaultOutputFile() {
-    return path.join(mkdtempSync(path.join(os.tmpdir(), 'test-only-detect-')), 'vitest-list.json');
+//
+// Сбор — общим collectVitestList (scripts/test-detect-shared.mjs): та же механика, что у
+// храповика (#154), с добавкой --allowOnly=false. Возвращает { report, status, stderr } —
+// status авторитетен для .only, stderr прокидывается в checkOnly для диагностики.
+export function collectOnlyReport(
+    spawnFn = spawnSync,
+    outputFile = defaultOutputFile('test-only-detect-'),
+) {
+    return collectVitestList({
+        spawnFn,
+        outputFile,
+        extraArgs: ['--allowOnly=false'],
+        tmpPrefix: 'test-only-detect-',
+    });
 }
 
-export function collectOnlyReport(spawnFn = spawnSync, outputFile = defaultOutputFile()) {
-    const result = spawnFn(
-        'npx',
-        [
-            '--no-install',
-            'vitest',
-            'list',
-            '--no-isolate',
-            '--allowOnly=false',
-            `--json=${outputFile}`,
-        ],
-        { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
-    );
-
-    let raw;
-    try {
-        raw = readFileSync(outputFile, 'utf8');
-    } catch (e) {
-        const why =
-            result?.error?.message ||
-            (typeof result?.status === 'number'
-                ? `код выхода ${result.status}`
-                : 'причина неизвестна');
-        const stderrTail = (result?.stderr || '').trim().slice(-2000);
-        throw new Error(
-            `vitest не записал список тестов (${outputFile}) — сбой сбора: ${e.message}; ` +
-                `${why}${stderrTail ? `; stderr: ${stderrTail}` : ''}`,
-        );
-    } finally {
-        try {
-            unlinkSync(outputFile);
-        } catch {
-            /* временный файл — не критично, если уже удалён или недоступен */
-        }
-        const dir = path.dirname(outputFile);
-        if (path.basename(dir).startsWith('test-only-detect-')) {
-            try {
-                rmSync(dir, { recursive: true, force: true });
-            } catch {
-                /* временный каталог — не критично, если уже удалён или недоступен */
-            }
-        }
-    }
-
-    let report;
-    try {
-        report = JSON.parse(raw);
-    } catch (e) {
-        throw new Error(
-            `список тестов vitest не распарсился: ${e.message} — начало вывода: ` +
-                `${raw.slice(0, 200)}`,
-        );
-    }
-
-    return { report, status: result.status };
-}
-
-// Те же glob'ы, которыми vitest.config.ts описывает test-файлы обоих проектов (app + ralph).
-export const ONLY_TEST_GLOBS = [
-    'src/**/*.test.ts',
-    'src/**/*.test.tsx',
-    '.claude/ralph/**/*.test.js',
-    '.claude/ralph/**/*.test.ts',
-    '*.config.test.ts',
-    'scripts/**/*.test.js',
-    'scripts/**/*.test.ts',
-];
-
-// Каноничная форма — `it.only(`/`test.only(`/`describe.only(`, включая модификаторные
-// цепочки (`it.concurrent.only(`). Переименованные импорты (`import { it as t }`) регекс
-// не поймает — редкий случай для этого проекта (ESLint/конвенции не поощряют алиасы), и
-// решение red/green это не задевает: он только подсказка к сообщению.
-const ONLY_PATTERN = '\\b(it|test|describe)(\\.[A-Za-z]+)*\\.only[[:space:]]*\\(';
+const ONLY_PATTERN = grepMarkerPattern('only');
 
 // git grep — best-effort локатор для сообщения красного гейта, НЕ источник решения
 // (см. checkOnly). Статус 1 (нет совпадений) или 128 (не git-репозиторий/иная ошибка) —
@@ -108,32 +52,24 @@ const ONLY_PATTERN = '\\b(it|test|describe)(\\.[A-Za-z]+)*\\.only[[:space:]]*\\(
 export function locateOnlyUsages(spawnFn = spawnSync) {
     const result = spawnFn(
         'git',
-        ['grep', '--untracked', '-n', '-E', ONLY_PATTERN, '--', ...ONLY_TEST_GLOBS],
+        ['grep', '--untracked', '-n', '-E', ONLY_PATTERN, '--', ...TEST_FILE_GLOBS],
         { encoding: 'utf8' },
     );
     if (result.status !== 0 || typeof result.stdout !== 'string') return [];
-    return result.stdout
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-            const sepIdx = line.indexOf(':');
-            const file = line.slice(0, sepIdx);
-            const rest = line.slice(sepIdx + 1);
-            const lineSepIdx = rest.indexOf(':');
-            return {
-                file,
-                line: rest.slice(0, lineSepIdx),
-                snippet: rest.slice(lineSepIdx + 1).trim(),
-            };
-        });
+    return parseGrepOutput(result.stdout);
 }
 
 // Код 0 — .only нет, зелёный. Ненулевой — allowOnly сработал; отчёт обязан быть непустым
 // массивом (форма подтверждена реальным сбором), иначе формат неожиданный — throw, не
 // «зелёный» (fail-closed, аналог countTests в test-count.mjs). Место находки — из
-// locateOnlyUsagesFn (best-effort); если пусто, гейт всё равно красный, сообщение честно
-// говорит, что автопоиск места не сработал.
-export function checkOnly({ status, report }, locateOnlyUsagesFn = locateOnlyUsages) {
+// locateOnlyUsagesFn (best-effort); если пусто, гейт всё равно красный.
+//
+// Когда локатор пуст (ревью PR #230, minor): ненулевой код от vitest НЕ обязательно значит
+// «.only найден» — сбой одного из projects после записи отчёта, unhandled rejection на
+// teardown сбора тоже дают ненулевой код при валидном JSON. Тогда «ищи .only вручную»
+// отправило бы чини-сессию искать то, чего нет. Поэтому в эту ветку добавляем хвост stderr
+// сбора — истинная причина ненулевого кода видна сразу.
+export function checkOnly({ status, report, stderr }, locateOnlyUsagesFn = locateOnlyUsages) {
     if (status === 0) {
         return {
             ok: true,
@@ -147,9 +83,17 @@ export function checkOnly({ status, report }, locateOnlyUsagesFn = locateOnlyUsa
         );
     }
     const usages = locateOnlyUsagesFn();
-    const location = usages.length
-        ? usages.map((u) => `${u.file}:${u.line}`).join(', ')
-        : 'точное место не нашёл статический поиск — ищи `it.only`/`describe.only`/`test.only` вручную';
+    let location;
+    if (usages.length) {
+        location = usages.map((u) => `${u.file}:${u.line}`).join(', ');
+    } else {
+        const stderrTail = (stderr || '').trim().slice(-500);
+        location =
+            'точное место не нашёл статический поиск — ищи `it.only`/`describe.only`/`test.only` вручную' +
+            (stderrTail
+                ? ` (ненулевой код мог быть и не из-за .only — хвост stderr сбора: ${stderrTail})`
+                : '');
+    }
     return {
         ok: false,
         message:
