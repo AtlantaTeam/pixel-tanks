@@ -2518,9 +2518,10 @@ describe('ветковая хореография в worktree раннера (#7
     describe('gateChecksFor — состав гейта по профилю (#80)', () => {
         const names = (checks) => checks.map(([name]) => name);
 
-        it('playground = ровно базовые 6 чеков, без толстых; храповик первым (#156)', () => {
+        it('playground = ровно базовые 7 чеков, без толстых; храповик и only-детект первыми (#156, #160)', () => {
             expect(names(gateChecksFor('playground'))).toEqual([
                 'test:ratchet',
+                'test:only-detect',
                 'build',
                 'lint',
                 'lint:fsd',
@@ -2532,6 +2533,7 @@ describe('ветковая хореография в worktree раннера (#7
         it('prod = база (без дубля test) + fail-fast security/coverage/e2e', () => {
             expect(names(gateChecksFor('prod'))).toEqual([
                 'test:ratchet',
+                'test:only-detect',
                 'build',
                 'lint',
                 'lint:fsd',
@@ -2542,11 +2544,17 @@ describe('ветковая хореография в worktree раннера (#7
             ]);
         });
 
-        it('#156: храповик тестов стоит ПЕРВЫМ — секундный, красный отменяет мердж до build/e2e', () => {
-            // «В начале fail-fast порядка»: `vitest list` (~6с) дешевле build (минуты) и
-            // e2e (минуты), поэтому упавший храповик не оплачивает дорогие чеки.
-            expect(names(gateChecksFor('playground'))[0]).toBe('test:ratchet');
-            expect(names(gateChecksFor('prod'))[0]).toBe('test:ratchet');
+        it('#156/#160: храповик и only-детект стоят первыми — секундные, красный отменяет мердж до build/e2e', () => {
+            // «В начале fail-fast порядка»: `vitest list` (~6с каждый) дешевле build
+            // (минуты) и e2e (минуты), поэтому упавший чек не оплачивает дорогие следом.
+            expect(names(gateChecksFor('playground')).slice(0, 2)).toEqual([
+                'test:ratchet',
+                'test:only-detect',
+            ]);
+            expect(names(gateChecksFor('prod')).slice(0, 2)).toEqual([
+                'test:ratchet',
+                'test:only-detect',
+            ]);
         });
 
         it('prod дедупит базовый test в пользу coverage (строгое надмножество)', () => {

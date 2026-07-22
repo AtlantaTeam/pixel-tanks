@@ -16,6 +16,7 @@
         "security:audit": "node scripts/security-audit.mjs",
         "test:count": "node scripts/test-count.mjs",
         "test:ratchet": "node scripts/test-ratchet.mjs",
+        "test:only-detect": "node scripts/test-only-detect.mjs",
         "project:sync": "node scripts/project-sync.mjs",
         "prepare": "husky"
     },
