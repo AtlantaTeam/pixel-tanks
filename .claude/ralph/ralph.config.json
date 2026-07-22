@@ -55,8 +55,16 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Надёжность ralph · Фаза 3: Разбор blocked без человека",
-                "branch": "feature/ralph-blocked-review"
+                "milestone": "Наблюдаемость ralph · Фаза 3: Храповик числа тестов",
+                "branch": "feature/ralph-test-ratchet"
+            },
+            {
+                "milestone": "Наблюдаемость ralph · Фаза 4: Детект .only/.skip в unit-гейте",
+                "branch": "feature/ralph-only-skip-detect"
+            },
+            {
+                "milestone": "Наблюдаемость ralph · Фаза 5: Пост-мердж проверка деплоя",
+                "branch": "feature/ralph-post-merge-check"
             }
         ]
     },
