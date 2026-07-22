@@ -5,7 +5,9 @@
         "maxIterations": 10,
         "maxTurns": 200,
         "claudeTimeoutMs": 7200000,
-        "authorAllowlist": ["Pelmenya"],
+        "authorAllowlist": [
+            "Pelmenya"
+        ],
         "model": "claude-opus-4-8",
         "fallbackModel": "claude-opus-4-8",
         "permissionMode": "bypassPermissions",
@@ -55,8 +57,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Наблюдаемость ralph · Фаза 1: Deadman — тишина как алерт",
-                "branch": "feature/ralph-deadman"
+                "milestone": "Наблюдаемость ralph · Фаза 2: Взаимный контроль раннер↔монитор",
+                "branch": "feature/ralph-monitor-mutual"
             }
         ]
     },
