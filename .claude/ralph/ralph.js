@@ -1997,12 +1997,6 @@ function runLoop(
     let iterationsThisRun = 0;
 
     while (true) {
-        // #151: живость монитора проверяем на КАЖДОМ проходе цикла, не только в
-        // main() на старте — иначе смерть сторожа посреди ночной фазы оставалась бы
-        // тишиной до следующего ручного перезапуска. dry read-only: не спавнит и
-        // не проверяет (в DRY монитор и не поднимается).
-        if (!dry) ensureMonitorAliveFn({ profile: cfg.profileName, configPath: monitorConfigPath });
-
         const idx = phaseIndexOfFn(state);
         const phase = cfg.phases[idx];
         if (!phase) {
@@ -2021,6 +2015,21 @@ function runLoop(
             logFn('✋ HITL: одна итерация выполнена, стоп.');
             break;
         }
+
+        // #151: живость монитора проверяем на КАЖДОМ проходе цикла, не только в main()
+        // на старте — иначе смерть сторожа посреди ночной фазы оставалась бы тишиной до
+        // следующего ручного перезапуска. НО после брейкеров (все фазы пройдены,
+        // maxIterations, HITL-стоп): на терминальном проходе раннер уже выходит, и
+        // переподнятый здесь монитор тут же получил бы SIGTERM в exit-хендлере — спавн
+        // ради немедленной смерти. logFn прокидываем, как и в pushEventFn ниже, чтобы
+        // строка «Монитор не отвечает» шла через инжектированный логгер, а не боевой log.
+        // dry read-only: не спавнит и не проверяет (в DRY монитор и не поднимается).
+        if (!dry)
+            ensureMonitorAliveFn({
+                profile: cfg.profileName,
+                configPath: monitorConfigPath,
+                logFn,
+            });
 
         // M2: между итерациями дерево должно быть чистым — сессия могла быть убита по
         // maxTurns посреди работы, и следующая (возможно, другой моделью по другому
@@ -2434,6 +2443,30 @@ function isMonitorProcess(pid, readFn = fs.readFileSync) {
     }
 }
 
+// PID-файл монитора один на все профили. Читаем его в одном месте: и adoptMonitor
+// (подхват сироты на старте), и ensureMonitorAlive (переподнятие между итерациями)
+// брали одинаковый дефолт readPidFn — при смене формата файла пришлось бы править два
+// места. Number('') / Number(мусор) → NaN, дальше monitorAlive(NaN) честно вернёт false.
+function readMonitorPid() {
+    return Number(fs.readFileSync(MONITOR_PID, 'utf-8'));
+}
+
+// Профиль живого монитора по его cmdline (аргументы \0-разделены, парсер тот же, что
+// у раннера). MONITOR_PID один на все профили, поэтому монитор соседнего профиля
+// (playground рядом с prod), перезаписавший файл, не должен сойти за наш — и adopt, и
+// ensureMonitorAlive сверяют профиль этой функцией. cmdline не читается / нет --profile
+// → null (старый сирота без флага резолвил бы defaultProfile — не факт что наш).
+function monitorProfileOf(
+    pid,
+    readCmdlineFn = (p) => fs.readFileSync(`/proc/${p}/cmdline`, 'utf-8'),
+) {
+    try {
+        return parseProfileFlag(readCmdlineFn(pid).split('\0'), () => null);
+    } catch {
+        return null;
+    }
+}
+
 // Монитор мог пережить прошлый прогон (kill -9, OOM, смерть по сигналу — 'exit'-хендлер
 // тогда не зовётся). PID-файл пишет только сам раннер, поэтому живой monitor.js по этому
 // pid — ральфов же монитор-сирота. Второй спавн удвоил бы gh-запросы, а бросить сироту —
@@ -2442,7 +2475,7 @@ function isMonitorProcess(pid, readFn = fs.readFileSync) {
 function adoptMonitor(deps = {}) {
     const {
         logFn = log,
-        readPidFn = () => Number(fs.readFileSync(MONITOR_PID, 'utf-8')),
+        readPidFn = readMonitorPid,
         aliveFn = monitorAlive,
         isMonitorFn = isMonitorProcess,
         readCmdlineFn = (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
@@ -2456,16 +2489,13 @@ function adoptMonitor(deps = {}) {
     } catch {}
     if (!aliveFn(prev) || !isMonitorFn(prev)) return null;
 
-    // Сверка профиля сироты — по его же cmdline (аргументы разделены \0, парсер тот же,
-    // что у раннера). Сирота от прогона в ДРУГОМ профиле показывал бы чужие phases —
-    // та же дыра, что спавн без --profile: подхватывать нельзя, глушим здесь, свой
-    // (в верном профиле) main() поднимет после preflight. profile не задан (прямой
-    // вызов без ожиданий) — сверку пропускаем, подхватываем как есть.
+    // Сверка профиля сироты — по его же cmdline (monitorProfileOf). Сирота от прогона в
+    // ДРУГОМ профиле показывал бы чужие phases — та же дыра, что спавн без --profile:
+    // подхватывать нельзя, глушим здесь, свой (в верном профиле) main() поднимет после
+    // preflight. profile не задан (прямой вызов без ожиданий) — сверку пропускаем,
+    // подхватываем как есть.
     if (profile) {
-        let orphanProfile = null;
-        try {
-            orphanProfile = parseProfileFlag(readCmdlineFn(prev).split('\0'), () => null);
-        } catch {}
+        const orphanProfile = monitorProfileOf(prev, readCmdlineFn);
         if (orphanProfile !== profile) {
             logFn(
                 `👁  Монитор от прошлого прогона жив (pid ${prev}), но в профиле "${orphanProfile ?? '—'}" вместо "${profile}" — глушу, подниму свой.`,
@@ -2570,30 +2600,39 @@ function stopMonitor(child, deps = {}) {
 // Взаимный контроль раннер↔монитор (#151, наблюдаемость фаза 2): раньше монитор
 // поднимался только один раз в main() на старте — смерть между итерациями (OOM,
 // kill -9) оставалась тишиной до следующего ручного перезапуска раннера. Проверка —
-// той же сверкой, что и adoptMonitor при старте (pid-файл + monitorAlive +
-// isMonitorProcess; cmdline-сверка отсекает чужой процесс с переиспользованным pid),
-// поэтому молчит на каждой живой итерации и не шумит в лог, пока монитор жив.
-// startMonitor сам умеет адаптировать сироту/спавнить нового и перезаписать
-// pid-файл — вызываем его напрямую, второй механизм спавна не заводим.
+// ПОЛНЫЙ паритет с adoptMonitor: pid-файл + monitorAlive + isMonitorProcess (cmdline
+// отсекает чужой процесс с переиспользованным pid) + сверка ПРОФИЛЯ (monitorProfileOf).
+// Без профильной сверки монитор соседнего профиля (playground рядом с prod),
+// перезаписавший общий MONITOR_PID, всю ночь выдавался бы за наш, а свой мёртвый так и
+// не переподнялся бы — ровно та тишина, с которой фаза 2 борется. Молчит на каждой
+// живой итерации своего профиля и не шумит в лог. startMonitor сам умеет адаптировать
+// сироту/спавнить нового и перезаписать pid-файл (а на чужой профиль — заглушить его
+// через adoptMonitor и поднять свой) — вызываем его напрямую, второй механизм не заводим.
+// deps прокидываем в startMonitor целиком: инжектированные фейки (logFn, readPidFn,
+// aliveFn, isMonitorFn, readCmdlineFn) доезжают до внутреннего adoptMonitor теми же.
 function ensureMonitorAlive(deps = {}) {
     const {
         logFn = log,
-        readPidFn = () => Number(fs.readFileSync(MONITOR_PID, 'utf-8')),
+        readPidFn = readMonitorPid,
         aliveFn = monitorAlive,
         isMonitorFn = isMonitorProcess,
+        readCmdlineFn = (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
         startMonitorFn = startMonitor,
         profile,
-        configPath,
     } = deps;
 
     let pid = 0;
     try {
         pid = readPidFn();
     } catch {}
-    if (aliveFn(pid) && isMonitorFn(pid)) return null;
+    const mineAlive =
+        aliveFn(pid) &&
+        isMonitorFn(pid) &&
+        (!profile || monitorProfileOf(pid, readCmdlineFn) === profile);
+    if (mineAlive) return null;
 
     logFn(`👁  Монитор не отвечает (pid ${pid || '—'}) — переподнимаю.`);
-    return startMonitorFn({ profile, configPath });
+    return startMonitorFn(deps);
 }
 
 // main: тонкая оркестровка — загрузка конфига в module-level config (его читают
@@ -2672,7 +2711,20 @@ function main() {
     // #151: monitorConfigPath — единственный dep, который прод обязан передать явно
     // (тот же runnerConfigPath, что уходил монитору выше при спавне): ensureMonitorAlive
     // внутри runLoop зовёт startMonitor тем же путём при переподнятии.
-    runLoop(config, ctx, { monitorConfigPath: runnerConfigPath });
+    // Обёртка вокруг ensureMonitorAlive обновляет захваченную exit-хендлером ссылку
+    // `monitor`: при переподнятии посреди прогона (старый монитор умер) exit-хендлер
+    // обязан заглушить ИМЕННО нового ребёнка. Без этого он звал бы stopMonitor со старым
+    // мёртвым pid → isMonitorProcess=false → ветка rmPidFn удаляет pid-файл, где уже
+    // записан pid НОВОГО монитора: новый не получает SIGTERM и остаётся вечным сиротой,
+    // а без pid-файла его не подберёт и adoptMonitor следующего прогона.
+    runLoop(config, ctx, {
+        monitorConfigPath: runnerConfigPath,
+        ensureMonitorAliveFn: (o) => {
+            const fresh = ensureMonitorAlive(o);
+            if (fresh) monitor = fresh;
+            return fresh;
+        },
+    });
 }
 
 // Запуск loop — только когда файл исполнен как скрипт (node ralph.js). При import
