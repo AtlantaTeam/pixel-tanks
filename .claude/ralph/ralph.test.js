@@ -2143,7 +2143,8 @@ describe('runLoop — основной while-цикл: итерации коде
         // sha получить не удалось → ожидание итога не зовём, но loop не падает.
         expect(waitForDeployRunFn).not.toHaveBeenCalled();
         expect(logs.join('\n')).toMatch(/не удалось дождаться итога деплоя/);
-        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+        // Не удалось подтвердить деплой = красный (fail-closed) → красный текст стопа.
+        expect(logs.join('\n')).toMatch(/стоп: деплой красный/);
     });
 
     it('#164 prod: зелёный workflow (conclusion success) → healthcheck прода зовётся', () => {
@@ -2243,7 +2244,7 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(redPush).toBeTruthy();
         expect(redPush[0]).toMatch(/aaaaaaaa/); // укороченный sha
         expect(redPush[0]).toMatch(/failure/);
-        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+        expect(logs.join('\n')).toMatch(/стоп: деплой красный/);
     });
 
     it('#165 prod: недосмотренный workflow (timeout) → тоже барьер + пуш', () => {
@@ -2378,11 +2379,14 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(logs.join('\n')).toMatch(/Все фазы завершены/);
     });
 
-    it('#249 prod: haltBeforeDeploy не задан (дефолт) → сохраняет #87, стоп после фазы даже без red', () => {
+    it('#249 prod: haltBeforeDeploy=true (явно) → стоп после фазы, документированный «либо true»', () => {
+        // Undefined-дефолт покрыт тестом #87 выше; здесь — явный true. Документация
+        // обещает «не задан ЛИБО true», и регрессию при будущей правке условия `!== false`
+        // поймает именно явный кейс (undefined его не отличит от прочих falsy-путей).
         const logs = [];
         const phaseIndexOfFn = vi.fn(() => 0);
         runLoop(
-            validCfg({ profileName: 'prod' }), // haltBeforeDeploy не задан
+            validCfg({ profileName: 'prod', haltBeforeDeploy: true }),
             ctx(mkState()),
             deps(logs, {
                 phaseIndexOfFn,
@@ -2396,16 +2400,17 @@ describe('runLoop — основной while-цикл: итерации коде
                 checkProdHealthFn: () => ({ ok: true, status: 200, url: 'u' }),
             }),
         );
-        // Дефолт = #87: стоп сразу после фазы, вторая фаза этим же процессом не начинается.
+        // Явный true = #87: стоп сразу после фазы, вторая фаза этим же процессом не начинается.
         expect(phaseIndexOfFn).toHaveBeenCalledTimes(1);
         expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
     });
 
     it('#249 prod: haltBeforeDeploy=false + зелёный пост-мердж деплой → фазы катятся подряд без рестарта', () => {
         const logs = [];
-        const phaseIndexOfFn = vi.fn(() =>
-            phaseIndexOfFn.mock.calls.length <= 2 ? phaseIndexOfFn.mock.calls.length - 1 : 99,
-        );
+        // Счётчик-замыкание (как дефолтный deps.phaseIndexOfFn): фаза 0, затем 1, затем
+        // «за концом» массива → break. Прозрачнее самоссылки на mock.calls.length.
+        let i = 0;
+        const phaseIndexOfFn = vi.fn(() => (i < 2 ? i++ : 99));
         const deployPhaseFn = vi.fn();
         const advancePhaseFn = vi.fn();
         runLoop(
@@ -2473,7 +2478,10 @@ describe('runLoop — основной while-цикл: итерации коде
         // Красный деплой стопорит трек несмотря на haltBeforeDeploy=false — вторая фаза не
         // начинается этим же процессом (phaseIndexOfFn зовётся ровно 1 раз).
         expect(phaseIndexOfFn).toHaveBeenCalledTimes(1);
-        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+        // Красный исход даёт СВОЙ текст стопа (деплой уже случился и он красный), а не
+        // общее «остановлен перед деплоем» флага halt.
+        expect(logs.join('\n')).toMatch(/стоп: деплой красный.*--deploy-resolved/s);
+        expect(logs.join('\n')).not.toMatch(/loop остановлен перед деплоем/);
         expect(logs.join('\n')).not.toMatch(/haltBeforeDeploy=false — продолжаю без остановки/);
         expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
     });
@@ -4463,6 +4471,50 @@ describe('resolveProfile — сборка итогового конфига из
         expect(resolveProfile(null, null, softFail)).toBe(null);
         expect(resolveProfile({ common: {} }, null, softFail)).toBe(null);
         expect(resolveProfile(raw(), 'staging', softFail)).toBe(null);
+    });
+
+    // #249: haltBeforeDeploy валидируется на старте (fail-closed, инвариант №1) —
+    // строгое `!== false` в цикле молча приняло бы строку/число/null за halt.
+    it('#249 haltBeforeDeploy в prod: boolean проходит (true/false), undefined = дефолт', () => {
+        const withHalt = (v) => ({
+            defaultProfile: 'prod',
+            common: { phases: [{ milestone: 'M', branch: 'b' }] },
+            profiles: { prod: v === undefined ? {} : { haltBeforeDeploy: v } },
+        });
+        expect(resolveProfile(withHalt(undefined), 'prod', boom).haltBeforeDeploy).toBeUndefined();
+        expect(resolveProfile(withHalt(true), 'prod', boom).haltBeforeDeploy).toBe(true);
+        expect(resolveProfile(withHalt(false), 'prod', boom).haltBeforeDeploy).toBe(false);
+    });
+
+    it('#249 haltBeforeDeploy не-boolean → стоп (строка "false"/число/null не считаются)', () => {
+        const withHalt = (v) => ({
+            defaultProfile: 'prod',
+            common: { phases: [{ milestone: 'M', branch: 'b' }] },
+            profiles: { prod: { haltBeforeDeploy: v } },
+        });
+        expect(() => resolveProfile(withHalt('false'), 'prod', boom)).toThrow(/ожидался boolean/);
+        expect(() => resolveProfile(withHalt(0), 'prod', boom)).toThrow(/ожидался boolean/);
+        expect(() => resolveProfile(withHalt(null), 'prod', boom)).toThrow(/ожидался boolean/);
+    });
+
+    it('#249 haltBeforeDeploy вне профиля prod → стоп (флаг там молча ничего не значит)', () => {
+        const cfg = {
+            defaultProfile: 'playground',
+            common: { phases: [{ milestone: 'M', branch: 'b' }] },
+            profiles: { playground: { haltBeforeDeploy: false }, prod: {} },
+        };
+        expect(() => resolveProfile(cfg, 'playground', boom)).toThrow(/только в профиле "prod"/);
+    });
+
+    it('#249 haltBeforeDeploy в common ловится на не-prod профиле (протекает из общего блока)', () => {
+        const cfg = {
+            defaultProfile: 'playground',
+            common: { phases: [{ milestone: 'M', branch: 'b' }], haltBeforeDeploy: true },
+            profiles: { playground: {}, prod: {} },
+        };
+        expect(() => resolveProfile(cfg, 'playground', boom)).toThrow(/только в профиле "prod"/);
+        // Тот же флаг в common на prod — валиден.
+        expect(resolveProfile(cfg, 'prod', boom).haltBeforeDeploy).toBe(true);
     });
 });
 
