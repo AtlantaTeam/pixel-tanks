@@ -3509,6 +3509,83 @@ function stopMonitor(child, deps = {}) {
     return true;
 }
 
+// Список pid ВСЕХ живых monitor.js сканом /proc (#235) — не по одному pid-файлу.
+// adoptMonitor видит только тот pid, что туда записал startMonitor: сирота мимо файла
+// (ручной `node monitor.js`, гонка, перезапись файла новым до остановки старого)
+// накапливается вечно. readdirFn возвращает список каталогов /proc (числовые — pid'ы
+// процессов, остальное — служебные /proc/self и т.п., отсекаем регэкспом).
+function listMonitorPids(deps = {}) {
+    const { readdirFn = fs.readdirSync, isMonitorFn = isMonitorProcess } = deps;
+    let entries;
+    try {
+        entries = readdirFn('/proc');
+    } catch {
+        return [];
+    }
+    return entries
+        .filter((name) => /^\d+$/.test(name))
+        .map(Number)
+        .filter((pid) => isMonitorFn(pid));
+}
+
+// PPID процесса из /proc/<pid>/stat. Формат ядра: `pid (comm) state ppid …` — comm
+// (имя команды) в скобках может содержать пробелы, поэтому режем СРЕЗОМ после
+// ПОСЛЕДНЕЙ закрывающей скобки, а не split(' ')[3]: чужой comm со скобкой внутри
+// сдвинул бы индексы. state — однобуквенный, ppid — второе поле после среза.
+function monitorPpid(pid, readFn = fs.readFileSync) {
+    try {
+        const stat = readFn(`/proc/${pid}/stat`, 'utf-8');
+        const afterComm = stat.slice(stat.lastIndexOf(')') + 2);
+        return Number(afterComm.split(' ')[1]);
+    } catch {
+        return null;
+    }
+}
+
+// Уборка сирот-мониторов мимо monitor.pid (#235, ночь 23.07 — сирота pid 742406,
+// ppid=1, uptime ~10ч, adoptMonitor его не увидел). Сканим /proc целиком, оставляем
+// РОВНО ОДИН (в нужном профиле), остальных — stopMonitor, с логом скольких прибрали.
+// Штатная tmux-панель (RUNBOOK, окно 3 — `node monitor.js --profile prod` в живой
+// tmux-панели) — тот же monitor.js, но с живым родителем-shell: ppid≠1. В уборку не
+// попадают ВООБЩЕ никакие процессы с ppid≠1 — только настоящие сироты (родитель умер,
+// init их усыновил, ppid==1) участвуют в отборе и в остановке. Вызывается один раз на
+// старте (main(), до preflight) — не встроена в ensureMonitorAlive: там своя узкая
+// задача («жив ли МОЙ отслеживаемый монитор»), а не сканирование системы каждую
+// итерацию цикла.
+function sweepOrphanMonitors(deps = {}) {
+    const {
+        logFn = log,
+        listPidsFn = listMonitorPids,
+        ppidFn = monitorPpid,
+        readCmdlineFn = (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
+        stopFn = stopMonitor,
+        writePidFn = (pid) => fs.writeFileSync(MONITOR_PID, String(pid)),
+        profile,
+    } = deps;
+
+    const orphans = listPidsFn(deps).filter((pid) => ppidFn(pid) === 1);
+    if (orphans.length === 0) return null;
+
+    // Среди сирот выбираем ту, что в нужном профиле — как profile-сверка в adoptMonitor
+    // (monitorProfileOf), но здесь решает, КОГО оставить, а не только глушить ли одну.
+    const candidates = profile
+        ? orphans.filter((pid) => monitorProfileOf(pid, readCmdlineFn) === profile)
+        : orphans;
+    const keep = candidates.length > 0 ? candidates[0] : null;
+    const toStop = orphans.filter((pid) => pid !== keep);
+
+    if (toStop.length > 0) {
+        toStop.forEach((pid) => stopFn({ pid }, deps));
+        logFn(
+            `👁  Прибрано сирот-мониторов мимо pid-файла: ${toStop.length} (оставлен ${keep ?? 'ни один'}).`,
+        );
+    }
+    if (keep == null) return null;
+
+    writePidFn(keep);
+    return { pid: keep };
+}
+
 // Взаимный контроль раннер↔монитор (#151, наблюдаемость фаза 2): раньше монитор
 // поднимался только один раз в main() на старте — смерть между итерациями (OOM,
 // kill -9) оставалась тишиной до следующего ручного перезапуска раннера. Проверка —
@@ -3615,7 +3692,15 @@ function main() {
     // preflight и отвергает запуск (грязное дерево, active=false), а брошенный монитор
     // в это время продолжает долбить gh каждые 5 минут. Свой поднимаем позже.
     // profile — для сверки: сироту чужого профиля глушим, а не подхватываем.
-    let monitor = DRY ? null : adoptMonitor({ profile: config.profileName });
+    // sweepOrphanMonitors ПЕРЕД adoptMonitor (#235): сканит /proc целиком и глушит
+    // ВСЕХ сирот мимо monitor.pid (ручной запуск, гонка, перезапись файла), оставляя
+    // ровно одну (в нужном профиле) и записывая её в pid-файл — adoptMonitor следом
+    // подхватывает уже её штатным путём (профильная сверка не дублируется вручную).
+    // Ничего не нашла (нет сирот вне pid-файла) → null, adoptMonitor работает как раньше.
+    let monitor = DRY
+        ? null
+        : sweepOrphanMonitors({ profile: config.profileName }) ||
+          adoptMonitor({ profile: config.profileName });
 
     // Стоп монитора — ТОЛЬКО на 'exit'. Обработчики сигналов здесь ставить нельзя:
     // process.on('SIGTERM'|'SIGINT'|'SIGHUP') снимает дефолтное действие сигнала, а
@@ -3712,6 +3797,9 @@ module.exports = {
     adoptMonitor,
     monitorAlive,
     isMonitorProcess,
+    listMonitorPids,
+    monitorPpid,
+    sweepOrphanMonitors,
     ensureMonitorAlive,
     buildClaudeArgs,
     shq,

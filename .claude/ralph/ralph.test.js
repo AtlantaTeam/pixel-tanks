@@ -27,6 +27,9 @@ const {
     adoptMonitor,
     monitorAlive,
     isMonitorProcess,
+    listMonitorPids,
+    monitorPpid,
+    sweepOrphanMonitors,
     ensureMonitorAlive,
     buildClaudeArgs,
     formatExcerpt,
@@ -4479,6 +4482,140 @@ describe('adoptMonitor — подбор монитора-сироты от пр�
                 },
             }),
         ).toEqual({ pid: 77 });
+    });
+});
+
+describe('listMonitorPids — все живые monitor.js сканом /proc, не по pid-файлу (#235)', () => {
+    it('фильтрует нечисловые записи /proc и оставляет только monitor.js', () => {
+        const readdirFn = () => ['1', '77', 'self', 'net', '200'];
+        const isMonitorFn = (pid) => pid === 77 || pid === 200;
+        expect(listMonitorPids({ readdirFn, isMonitorFn })).toEqual([77, 200]);
+    });
+
+    it('/proc не читается → пустой список, без исключения', () => {
+        const readdirFn = () => {
+            throw new Error('ENOENT');
+        };
+        expect(listMonitorPids({ readdirFn, isMonitorFn: () => true })).toEqual([]);
+    });
+
+    it('ни один pid не monitor.js → пустой список', () => {
+        const readdirFn = () => ['1', '2', '3'];
+        expect(listMonitorPids({ readdirFn, isMonitorFn: () => false })).toEqual([]);
+    });
+});
+
+describe('monitorPpid — ppid процесса из /proc/<pid>/stat (#235)', () => {
+    it('парсит ppid из штатного stat (comm простой)', () => {
+        const readFn = () => '77 (node) S 1 77 77 0 -1 4194560 …';
+        expect(monitorPpid(77, readFn)).toBe(1);
+    });
+
+    it('comm со скобками внутри не сдвигает индекс ppid (режем по ПОСЛЕДНЕЙ закрывающей скобке)', () => {
+        const readFn = () => '77 (node (weird)) S 4242 77 77 0 -1 4194560 …';
+        expect(monitorPpid(77, readFn)).toBe(4242);
+    });
+
+    it('/proc/<pid>/stat не читается → null, без исключения', () => {
+        const readFn = () => {
+            throw new Error('ENOENT');
+        };
+        expect(monitorPpid(999, readFn)).toBe(null);
+    });
+});
+
+describe('sweepOrphanMonitors — уборка сирот-мониторов мимо monitor.pid (#235)', () => {
+    it('две сироты + одна легитимная (тот же профиль) → остаётся одна, две глушим', () => {
+        const stopFn = vi.fn();
+        const writePidFn = vi.fn();
+        const logFn = vi.fn();
+        const got = sweepOrphanMonitors({
+            profile: 'prod',
+            logFn,
+            listPidsFn: () => [100, 200, 300],
+            ppidFn: () => 1, // все трое — настоящие сироты (родитель умер, init усыновил)
+            readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0',
+            stopFn,
+            writePidFn,
+        });
+
+        expect(got).toEqual({ pid: 100 });
+        expect(stopFn).toHaveBeenCalledTimes(2);
+        expect(stopFn).toHaveBeenCalledWith({ pid: 200 }, expect.any(Object));
+        expect(stopFn).toHaveBeenCalledWith({ pid: 300 }, expect.any(Object));
+        expect(writePidFn).toHaveBeenCalledWith(100);
+        expect(logFn).toHaveBeenCalledWith(expect.stringContaining('2'));
+    });
+
+    it('сирот нет → null, ничего не глушим и не пишем', () => {
+        const stopFn = vi.fn();
+        const writePidFn = vi.fn();
+        expect(
+            sweepOrphanMonitors({
+                profile: 'prod',
+                listPidsFn: () => [],
+                ppidFn: () => 1,
+                stopFn,
+                writePidFn,
+            }),
+        ).toBe(null);
+        expect(stopFn).not.toHaveBeenCalled();
+        expect(writePidFn).not.toHaveBeenCalled();
+    });
+
+    // Штатная tmux-панель (RUNBOOK, окно 3) — тот же monitor.js, но с живым
+    // родителем-shell (ppid≠1). Уборка её не трогает вовсе: не глушим, не считаем
+    // кандидатом на «оставить».
+    it('живой родитель (ppid≠1, tmux-панель) → не глушим и не подхватываем', () => {
+        const stopFn = vi.fn();
+        const writePidFn = vi.fn();
+        const got = sweepOrphanMonitors({
+            profile: 'prod',
+            listPidsFn: () => [500],
+            ppidFn: (pid) => (pid === 500 ? 4242 : 1), // родитель жив — не сирота
+            readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0',
+            stopFn,
+            writePidFn,
+        });
+        expect(got).toBe(null);
+        expect(stopFn).not.toHaveBeenCalled();
+        expect(writePidFn).not.toHaveBeenCalled();
+    });
+
+    it('ни одна сирота не в нужном профиле → глушим всех, не подхватываем ни одну', () => {
+        const stopFn = vi.fn();
+        const writePidFn = vi.fn();
+        const logFn = vi.fn();
+        const got = sweepOrphanMonitors({
+            profile: 'prod',
+            logFn,
+            listPidsFn: () => [100, 200],
+            ppidFn: () => 1,
+            readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0playground\0',
+            stopFn,
+            writePidFn,
+        });
+        expect(got).toBe(null);
+        expect(stopFn).toHaveBeenCalledTimes(2);
+        expect(writePidFn).not.toHaveBeenCalled();
+    });
+
+    it('profile не задан → сверки нет, оставляем первую сироту как есть', () => {
+        const stopFn = vi.fn();
+        const writePidFn = vi.fn();
+        const got = sweepOrphanMonitors({
+            listPidsFn: () => [100, 200],
+            ppidFn: () => 1,
+            readCmdlineFn: () => {
+                throw new Error('не должен читаться без profile');
+            },
+            stopFn,
+            writePidFn,
+        });
+        expect(got).toEqual({ pid: 100 });
+        expect(stopFn).toHaveBeenCalledTimes(1);
+        expect(stopFn).toHaveBeenCalledWith({ pid: 200 }, expect.any(Object));
+        expect(writePidFn).toHaveBeenCalledWith(100);
     });
 });
 
