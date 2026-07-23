@@ -25,6 +25,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 // Список — рядом с модулем, в репозитории (не в env-файле секретов и не в коде).
+//
+// ПРОВЕНАНС (ревью #247). `__dirname` — каталог, ОТКУДА ЗАГРУЖЕН модуль, то есть
+// launch-дерево человека (`node .claude/ralph/ralph.js` из /root/pixel-tanks, см. RUNBOOK),
+// а НЕ worktree раннера, детаченный на origin/main. Это осознанный выбор, но у него другая
+// модель деплоя, чем у ralph.config.json (тот читается по относительному пути ПОСЛЕ
+// process.chdir(worktreePath) — то есть из origin/main, подхватывается сам):
+//   • Смердженная правка allowlist НЕ действует, пока в launch-дереве не сделан `git pull`
+//     (в отличие от ralph.config.json). Порядок деплоя правок списка — в RUNBOOK.
+//   • Локальная незакоммиченная правка списка в launch-дереве действует сразу — но именно
+//     потому список читается НЕ из cwd, код проверяемого PR не может подменить его на
+//     детаче PR-головы (частичное смягчение класса #209; сам скрипт канарейки и npm-скрипты
+//     при этом остаются кодом PR). Ради этого свойства чтение оставлено на __dirname, а не
+//     переведено на cwd.
 const DEFAULT_ALLOWLIST_PATH = path.join(__dirname, 'gate-env-allowlist.json');
 
 // Ключи, которыми объект-env мог бы отравить прототип, если строить его обычным `{}`.
@@ -56,6 +69,15 @@ function normalizeAllowlist(parsed, source = '<inline>') {
     };
     check(exact, 'exact');
     check(prefixes, 'prefixes');
+    // Пустой exact — форма корректна (проверять нечего), но это ровно тот «пустой список»,
+    // что докблок называет недопустимым: чеки не получат ни PATH, ни HOME и упадут невнятным
+    // "command not found" вместо честного сообщения санации, а fail-closed-ветка checksGreen
+    // не сработает. Усечённый/обнулённый файл должен давать тот же стоп, что и битый JSON.
+    if (exact.length === 0)
+        throw new Error(
+            `gate-env allowlist (${source}): "exact" не может быть пустым — без PATH/HOME чеки не запустятся; ` +
+                `усечённый allowlist — это стоп (fail-closed), а не «пустой список»`,
+        );
     return { exact: new Set(exact), prefixes: [...prefixes] };
 }
 

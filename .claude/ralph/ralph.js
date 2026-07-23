@@ -732,10 +732,20 @@ function ensureRunnerWorktree(
         return failFn(`git worktree add ${worktreePath} упал: ${e.message}`);
     }
     logFn('📦 npm ci в новом worktree (git worktree add не копирует node_modules)...');
+    // Санацию env считаем ОТДЕЛЬНЫМ шагом с собственной атрибуцией (как в checksGreen):
+    // битый allowlist → санировать нельзя → fail-closed, но это не «npm ci упал» (он даже
+    // не стартовал), а «санация не удалась» — иначе диагностика врёт про несуществующий сбой.
+    let gateEnv;
     try {
-        // buildGateEnvFn() внутри try: битый allowlist → санировать нельзя → fail-closed
-        // (тот же стоп, что и упавший npm ci), а не npm ci с полным env.
-        installFn(worktreePath, buildGateEnvFn());
+        gateEnv = buildGateEnvFn();
+    } catch (e) {
+        return failFn(
+            `санация env для npm ci не удалась (allowlist не читается): ${e.message} — ` +
+                `чеки без allowlist не запускаем (fail-closed)`,
+        );
+    }
+    try {
+        installFn(worktreePath, gateEnv);
     } catch (e) {
         return failFn(`npm ci в ${worktreePath} упал: ${e.message}`);
     }

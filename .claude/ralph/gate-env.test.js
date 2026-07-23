@@ -52,6 +52,14 @@ describe('normalizeAllowlist — валидация формы (#188)', () => {
         expect(() => normalizeAllowlist({ exact: [123], prefixes: [] })).toThrow();
         expect(() => normalizeAllowlist({ exact: [], prefixes: [null] })).toThrow();
     });
+
+    // #247: форма { exact: [], prefixes: [] } валидна по типам, но это ровно «пустой список»,
+    // который отрезал бы PATH/HOME и покрасил бы гейт инфраструктурной ошибкой. Усечённый/
+    // обнулённый файл должен давать тот же честный стоп, что и битый JSON.
+    it('fail-closed: пустой exact (усечённый файл) отвергается', () => {
+        expect(() => normalizeAllowlist({ exact: [], prefixes: [] })).toThrow(/пуст/i);
+        expect(() => normalizeAllowlist({ exact: [], prefixes: ['LC_'] })).toThrow(/пуст/i);
+    });
 });
 
 describe('isAllowed — точное имя и префикс (#188)', () => {
@@ -110,9 +118,14 @@ describe('sanitizeEnv — allowlist, а не blocklist (#188)', () => {
         expect(src.GH_TOKEN).toBe('ghp_x');
     });
 
-    it('не отравляется именем __proto__ во входном env', () => {
-        const out = sanitizeEnv({ PATH: '/usr/bin', __proto__: { polluted: true } }, a);
+    it('не отравляется own-ключом __proto__ во входном env', () => {
+        // Own-ключ __proto__ появляется только через JSON.parse: в объектном литерале
+        // `__proto__: {...}` — спец-синтаксис, задающий ПРОТОТИП, own-ключа бы не было и
+        // ветка UNSAFE_ENV_KEYS не исполнялась бы (#247). Так guard реально гоняется.
+        const env = JSON.parse('{"PATH":"/usr/bin","__proto__":{"polluted":true}}');
+        const out = sanitizeEnv(env, a);
         expect(out.PATH).toBe('/usr/bin');
+        expect('__proto__' in out).toBe(false);
         expect({}.polluted).toBeUndefined();
     });
 });

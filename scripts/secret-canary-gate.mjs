@@ -3,14 +3,14 @@
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { SECRET_FILE_CHANNELS, buildReport, formatReport } from './secret-canary.mjs';
+import { buildReport, formatReport } from './secret-canary.mjs';
 
 // #190 (Изоляция ralph · Фаза 4): канарейка секретов становится ОБЯЗАТЕЛЬНЫМ красным
 // чеком гейта.
 //
-// secret-canary.mjs (фаза 3, #184) остаётся РУЧНЫМ измерением (`npm run canary:secrets`)
+// secret-canary.mjs (фаза 3, #184) остаётся РУЧНЫМ измерением (`npm run security:canary:baseline`)
 // с вечным exit 0 — его докблок объясняет, зачем: это baseline-снятие
-// (`canary:secrets > snapshot.txt`), а не гейт. Эта обёртка — отдельный скрипт для
+// (`security:canary:baseline > snapshot.txt`), а не гейт. Эта обёртка — отдельный скрипт для
 // гейта, на ТОЙ ЖЕ логике детекта (buildReport/scanEnvChannels/scanFileChannels),
 // с вердиктом зелёный/красный вместо голого отчёта.
 //
@@ -20,9 +20,19 @@ import { SECRET_FILE_CHANNELS, buildReport, formatReport } from './secret-canary
 // ОСТАТОЧНЫЙ РИСК (#192), не брак этой фазы (PRD docs/ralph-isolation/prd.md, скоуп п. 2).
 // Красный чек на КАЖДЫЙ прогон гейта из-за уже принятого риска обесценил бы "красный" —
 // научил бы его игнорировать. Поэтому вердикт сверяет открытые каналы с явным списком
-// ПРИНЯТОГО риска (RESIDUAL_RISK_CHANNELS — файловые каналы secret-canary.mjs): открыт
-// канал СВЕРХ этого списка (в первую очередь любой env:*, который санация обязана
-// закрыть, либо новый файловый канал) — это утечка, гейт краснеет.
+// ПРИНЯТОГО риска (RESIDUAL_RISK_CHANNELS): открыт канал СВЕРХ этого списка (в первую
+// очередь любой env:*, который санация обязана закрыть, либо файловый канал вне списка) —
+// это утечка, гейт краснеет.
+//
+// ПОЧЕМУ ЯВНЫЙ ЛИТЕРАЛ, А НЕ "все файловые каналы детектора" (ревью #247). Если принять
+// РОВНО те файловые каналы, что сканирует канарейка, ни один file:-канал не сможет попасть
+// в leaked в проде: каждый файловый канал, который канарейка способна увидеть, по построению
+// принят — «новый файловый канал = красный» тогда достижим только инъекцией пустого accepted
+// в тесте, а не в бою. Поэтому список — осознанный литерал ровно тех каналов, что реально
+// открыты и приняты в #192: `~/.claude/.credentials.json` (токен claude CLI, есть на VDS) и
+// `/root/ralph.env` (env-файл секретов раннера). `~/.config/gh/hosts.yml` СОЗНАТЕЛЬНО НЕ в
+// списке: на VDS его сегодня нет (токен gh идёт из env `GH_TOKEN`), и его появление после
+// `gh auth login` — ровно то событие «канал открылся», которое гейт обязан покрасить.
 //
 // РАЗЛИЧИЕ СООБЩЕНИЙ (критерий готовности #190). Красный этого чека всегда говорит
 // "СЕКРЕТ НАЙДЕН" — фиксированной строкой, отдельной от любого другого красного чека
@@ -32,12 +42,16 @@ import { SECRET_FILE_CHANNELS, buildReport, formatReport } from './secret-canary
 // чинится добавлением в .claude/ralph/gate-env-allowlist.json), и его нельзя спутать с
 // находкой канарейки именно потому, что канарейка — отдельный чек с этим текстом.
 
-export const RESIDUAL_RISK_CHANNELS = new Set(SECRET_FILE_CHANNELS.map((c) => `file:${c.path}`));
+export const RESIDUAL_RISK_CHANNELS = new Set([
+    'file:~/.claude/.credentials.json',
+    'file:/root/ralph.env',
+]);
 
 // Разбирает отчёт canary на принятое (остаточный риск #192) и утечку (всё прочее
 // открытое). acceptedOpenChannels — Set каналов, за которые гейт не краснит;
-// дефолт — файловые каналы secret-canary.mjs, инжектируется для теста "новый файловый
-// канал вне списка = красный" (fail-closed: неизвестный канал не принимается молча).
+// дефолт — RESIDUAL_RISK_CHANNELS (явный литерал принятых каналов, см. докблок),
+// инжектируется для теста "файловый канал вне списка = красный" (fail-closed:
+// неизвестный канал не принимается молча).
 export function evaluateGateVerdict(report, acceptedOpenChannels = RESIDUAL_RISK_CHANNELS) {
     const openChannels = report.channels.filter((c) => c.open);
     const leaked = openChannels.filter((c) => !acceptedOpenChannels.has(c.channel));
@@ -80,7 +94,10 @@ function main() {
     const verdict = evaluateGateVerdict(report);
     console.log(formatReport(report));
     console.log(formatVerdict(verdict));
-    if (!verdict.ok) process.exit(1);
+    // process.exitCode, а не process.exit(1): при пайп-выводе (checksGreen ловит stdout
+    // через execSync и строит из него excerpt чини-сессии) exit не ждёт сброса stdout и
+    // может обрезать отчёт. Тот же приём уже принят в соседе secret-canary.mjs.
+    if (!verdict.ok) process.exitCode = 1;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main();
