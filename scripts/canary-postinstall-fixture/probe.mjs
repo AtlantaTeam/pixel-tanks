@@ -1,9 +1,6 @@
-#!/usr/bin/env node
-
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 // #185 (Изоляция ralph · Фаза 3): фикстура npm-зависимости с lifecycle-скриптом.
 //
@@ -109,7 +106,10 @@ export function scanFileChannels(readFileFn, homedir, channels = SECRET_FILE_CHA
 }
 
 // Сводный отчёт: список каналов (env + файлы) с флагом open и число открытых.
-export function buildReport({ env, readFileFn, homedir, secretVars, fileChannels } = {}) {
+// env/readFileFn/homedir обязательны (коллабораторы скана) — дефолта у объекта нет
+// намеренно: вызов без аргументов — ошибка, а не «пустой отчёт». Боевые дефолты живут в
+// runProbe (тонкая обёртка), сюда их не дублируем.
+export function buildReport({ env, readFileFn, homedir, secretVars, fileChannels }) {
     const channels = [
         ...scanEnvChannels(env, secretVars),
         ...scanFileChannels(readFileFn, homedir, fileChannels),
@@ -138,6 +138,10 @@ export function formatReport(report) {
 
 // Живой скан текущего окружения и файлов. Вынесен в функцию, чтобы postinstall.mjs остался
 // тонкой обёрткой; readFileFn/homedir/env инжектируемы для тестируемости.
+//
+// probe.mjs — чистая БИБЛИОТЕКА, без своего main()/shebang: единственная точка входа
+// фикстуры — postinstall.mjs (тонкая обёртка над runProbe/formatReport). Отдельный main()
+// был бы третьей недокументированной и нетестируемой точкой входа в ту же логику (#185).
 export function runProbe({
     env = process.env,
     readFileFn = readFileSync,
@@ -145,10 +149,3 @@ export function runProbe({
 } = {}) {
     return buildReport({ env, readFileFn, homedir });
 }
-
-function main() {
-    console.log(formatReport(runProbe()));
-    process.exit(0);
-}
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) main();

@@ -127,6 +127,15 @@ describe('scanFileChannels — детект секрета в файлах (#184
         expect(res[0].detail).toContain('EACCES');
     });
 
+    it('ошибка чтения без code (не-Error/экзотика fs) — канал закрыт с отметкой <ошибка>', () => {
+        const readFileFn = () => {
+            throw new Error('boom'); // нет .code — ветка e?.code ?? "ошибка"
+        };
+        const res = scanFileChannels(readFileFn, '/home/ralph', channels);
+        expect(res[0].open).toBe(false);
+        expect(res[0].detail).toBe('<не читается: ошибка>');
+    });
+
     it('в readFileFn уходит РАСКРЫТЫЙ путь (~ развёрнут)', () => {
         let seen = null;
         const readFileFn = (p) => {

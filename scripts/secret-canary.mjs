@@ -113,7 +113,9 @@ export function scanFileChannels(readFileFn, homedir, channels = SECRET_FILE_CHA
 }
 
 // Сводный отчёт: список каналов (env + файлы) с флагом open и число открытых.
-export function buildReport({ env, readFileFn, homedir, secretVars, fileChannels } = {}) {
+// env/readFileFn/homedir обязательны (это коллабораторы скана) — дефолта у объекта нет
+// намеренно: вызов без аргументов — ошибка, а не «пустой отчёт».
+export function buildReport({ env, readFileFn, homedir, secretVars, fileChannels }) {
     const channels = [
         ...scanEnvChannels(env, secretVars),
         ...scanFileChannels(readFileFn, homedir, fileChannels),
@@ -146,9 +148,11 @@ function main() {
         homedir: os.homedir(),
     });
     console.log(formatReport(report));
-    // Фаза 3: измерение, а не красный гейт — всегда exit 0 (см. докблок выше). Красным
-    // канарейка становится в фазе 4 (#190).
-    process.exit(0);
+    // Фаза 3: измерение, а не красный гейт — естественное завершение даёт код 0 (см.
+    // докблок выше). Явный process.exit(0) НЕ ставим: при пайп-выводе
+    // (`npm run canary:secrets > snapshot.txt`, baseline #187) он не ждёт сброса stdout и
+    // может обрезать отчёт. main() — последняя операция, так что exit 0 и без него.
+    // Красным обязательным чеком канарейка становится в фазе 4 (#190).
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main();
