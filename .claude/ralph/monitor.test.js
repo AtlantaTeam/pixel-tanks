@@ -18,6 +18,7 @@ import {
     shouldPushDeadman,
     deadmanPushMessage,
     maybePushDeadman,
+    openPhasePRs,
 } from './monitor.js';
 import { pushEvent as pushEventReal } from './ralph.js';
 import { DEFAULT_DEADMAN } from './deadman.js';
@@ -363,9 +364,7 @@ describe('maybePushDeadman — доставка через pushEvent() + дед�
 });
 
 describe('openPhasePRs — поиск PR текущей фазы по ветке из конфига (#214)', () => {
-    // Экспортируем функцию для тестирования. Её вызывает snapshot() изнутри monitor.js,
-    // но она чистая (кроме шелл-вызова gh) и тестируется с DI: shFn мокируется.
-    it('находит PR по ветке фазы из конфига', () => {
+    it('находит PR по ветке фазы из конфига (строгий --head, ветка через shq)', () => {
         const config = {
             phases: [
                 { milestone: 'Фаза 1', branch: 'feature/phase-1' },
@@ -378,11 +377,16 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
                 { number: 123, title: 'PR Фаза 2', headRefName: 'feature/ralph-post-merge' },
             ]),
         );
-        const result = require('./monitor.js').openPhasePRs(config, state, shFn);
+        const result = openPhasePRs(config, state, shFn);
         expect(result).toEqual([
             { number: 123, title: 'PR Фаза 2', headRefName: 'feature/ralph-post-merge' },
         ]);
-        expect(shFn).toHaveBeenCalledWith(expect.stringContaining('head:feature/ralph-post-merge'));
+        // #THS8X: строгий --head, а не --search "head:…" (тот ловил бы соседние ветки по
+        // префиксу); ветка — через shq (одинарные кавычки), а не двойные.
+        expect(shFn).toHaveBeenCalledWith(
+            expect.stringContaining("--head 'feature/ralph-post-merge'"),
+        );
+        expect(shFn).not.toHaveBeenCalledWith(expect.stringContaining('--search'));
     });
 
     it('возвращает пустой массив когда PR нет, но ветка определена', () => {
@@ -391,9 +395,9 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
         };
         const state = { milestone: 'Фаза 1' };
         const shFn = vi.fn(() => '[]');
-        const result = require('./monitor.js').openPhasePRs(config, state, shFn);
+        const result = openPhasePRs(config, state, shFn);
         expect(result).toEqual([]);
-        expect(shFn).toHaveBeenCalledWith(expect.stringContaining('head:feature/phase-1'));
+        expect(shFn).toHaveBeenCalledWith(expect.stringContaining("--head 'feature/phase-1'"));
     });
 
     it('возвращает { error: "no-branch" } когда фаза не найдена в конфиге', () => {
@@ -402,7 +406,7 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
         };
         const state = { milestone: 'Фаза 1' };
         const shFn = vi.fn();
-        const result = require('./monitor.js').openPhasePRs(config, state, shFn);
+        const result = openPhasePRs(config, state, shFn);
         expect(result).toEqual({ error: 'no-branch' });
         expect(shFn).not.toHaveBeenCalled();
     });
@@ -411,26 +415,41 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
         const config = { phases: null };
         const state = { milestone: 'Фаза 1' };
         const shFn = vi.fn();
-        const result = require('./monitor.js').openPhasePRs(config, state, shFn);
+        const result = openPhasePRs(config, state, shFn);
         expect(result).toEqual({ error: 'no-branch' });
         expect(shFn).not.toHaveBeenCalled();
     });
 
     it('возвращает { error: "no-branch" } когда config null', () => {
         const shFn = vi.fn();
-        const result = require('./monitor.js').openPhasePRs(null, { milestone: 'Фаза 1' }, shFn);
+        const result = openPhasePRs(null, { milestone: 'Фаза 1' }, shFn);
         expect(result).toEqual({ error: 'no-branch' });
         expect(shFn).not.toHaveBeenCalled();
     });
 
-    it('обрабатывает ошибку gh парсинга (невалидный JSON) как пустой PR список', () => {
-        const config = {
-            phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }],
-        };
+    it('#THS8M: milestone === null (все фазы сданы) → { error: "all-done" }, не no-branch', () => {
+        const config = { phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }] };
+        const state = { milestone: null };
+        const shFn = vi.fn();
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual({ error: 'all-done' });
+        expect(shFn).not.toHaveBeenCalled();
+    });
+
+    it('#THS8Z: gh упал (пустой вывод) → { error: "gh-failed" }, не молчаливое «нет PR»', () => {
+        const config = { phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }] };
+        const state = { milestone: 'Фаза 1' };
+        const shFn = vi.fn(() => '');
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual({ error: 'gh-failed' });
+    });
+
+    it('#THS8Z: gh вернул мусор (невалидный JSON) → { error: "gh-failed" }', () => {
+        const config = { phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }] };
         const state = { milestone: 'Фаза 1' };
         const shFn = vi.fn(() => 'не-json');
-        const result = require('./monitor.js').openPhasePRs(config, state, shFn);
-        expect(result).toEqual([]);
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual({ error: 'gh-failed' });
     });
 
     it('не падает когда state пустой', () => {
@@ -439,7 +458,7 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
         };
         const state = {};
         const shFn = vi.fn(() => '[]');
-        const result = require('./monitor.js').openPhasePRs(config, state, shFn);
+        const result = openPhasePRs(config, state, shFn);
         expect(result).toEqual({ error: 'no-branch' });
     });
 });

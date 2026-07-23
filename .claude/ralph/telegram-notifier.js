@@ -122,10 +122,31 @@ function attemptSend({ execFn, curlConfig, finalChatId, finalToken, safeText }) 
             };
         }
         if (!parsed.ok) {
-            return {
-                ok: false,
-                reason: `API отклонил сообщение — ${parsed.description || 'без описания'}`,
-            };
+            const code = Number(parsed.error_code);
+            const desc = parsed.description || 'без описания';
+            // 429 (rate-limit) — транзиентно, но Telegram сам подсказывает паузу в
+            // parameters.retry_after (сек). Уважаем её: фиксированные 5с могли бы повторно
+            // упереться в лимит. retryAfterMs !== undefined перекрывает нарастающую паузу.
+            if (code === 429) {
+                const ra = parsed.parameters && Number(parsed.parameters.retry_after);
+                return {
+                    ok: false,
+                    reason: `API rate-limit (429) — ${desc}`,
+                    retryAfterMs: Number.isInteger(ra) && ra > 0 ? ra * 1000 : undefined,
+                };
+            }
+            // Прочие 4xx (chat not found, bad request, unauthorized) — ПОСТОЯННЫЙ отказ:
+            // вторая попытка тем же телом успехом не станет, а раннер синхронно спит
+            // секунды на каждом пуше. retriable:false → цикл прекращает ретраи сразу.
+            if (Number.isInteger(code) && code >= 400 && code < 500) {
+                return {
+                    ok: false,
+                    reason: `API отклонил сообщение (${code}) — ${desc}`,
+                    retriable: false,
+                };
+            }
+            // 5xx / неизвестный код — транзиентно, ретраим (retriable по умолчанию).
+            return { ok: false, reason: `API отклонил сообщение — ${desc}` };
         }
         return { ok: true, reason: '' };
     } catch (e) {
@@ -183,13 +204,27 @@ function sendTelegramMessage(
     const safeText = [...String(text)].slice(0, TELEGRAM_MAX_TEXT).join('');
 
     const totalAttempts = Math.max(1, positiveIntOrDefault(attempts, TELEGRAM_DEFAULT_ATTEMPTS));
+    // retryBaseMs валидируем так же, как attempts выше: мусор (NaN, строка) дал бы
+    // waitMs=NaN, а Atomics.wait трактует NaN-таймаут как +∞ — realSleep(NaN) повесил бы
+    // раннер НАВСЕГДА посреди пуша. Сегодня параметр передают только тесты, но асимметрия
+    // валидации приглашает однажды прокинуть его из конфига.
+    const base = positiveIntOrDefault(retryBaseMs, TELEGRAM_RETRY_BASE_MS);
     let lastReason = '';
     for (let attempt = 1; attempt <= totalAttempts; attempt++) {
         const result = attemptSend({ execFn, curlConfig, finalChatId, finalToken, safeText });
         if (result.ok) return true;
         lastReason = result.reason;
+        // Постоянный отказ (4xx, кроме 429): ретрай тем же телом бесполезен — прекращаем
+        // сразу, не тратя синхронные паузы раннера на каждом пуше.
+        if (result.retriable === false) {
+            logFn(
+                `⚠ Telegram-нотифаер: постоянный отказ API — ${result.reason} — ретрай бесполезен, прекращаю.`,
+            );
+            break;
+        }
         if (attempt < totalAttempts) {
-            const waitMs = retryBaseMs * attempt;
+            // 429 диктует свою паузу (retry_after); иначе — нарастающая base × номер попытки.
+            const waitMs = result.retryAfterMs != null ? result.retryAfterMs : base * attempt;
             logFn(
                 `⚠ Telegram-нотифаер: попытка ${attempt}/${totalAttempts} не удалась — ${result.reason} — повтор через ${waitMs / 1000}с`,
             );

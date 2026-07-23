@@ -353,4 +353,88 @@ describe('sendTelegramMessage — ретраи доставки (#224)', () => {
         expect(execFn).toHaveBeenCalled();
         expect(sleepFn).toHaveBeenCalled();
     });
+
+    it('#TFO9Q: постоянный 4xx (chat not found) НЕ ретраится — одна попытка, без синхронных пауз', () => {
+        const execFn = vi
+            .fn()
+            .mockReturnValue(
+                JSON.stringify({
+                    ok: false,
+                    error_code: 400,
+                    description: 'Bad Request: chat not found',
+                }),
+            );
+        const logFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const result = sendTelegramMessage('событие', {
+            token: 'T',
+            chatId: 'C',
+            execFn,
+            logFn,
+            sleepFn,
+            attempts: 3,
+        });
+
+        expect(result).toBe(false);
+        // Ретрая нет: одна попытка, ни одной паузы, несмотря на attempts=3.
+        expect(execFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+        expect(logFn).toHaveBeenCalledWith(expect.stringContaining('постоянный отказ API'));
+    });
+
+    it('#TFO9Q: 429 ретраится и уважает parameters.retry_after (сек → мс), а не фиксированную паузу', () => {
+        const execFn = vi
+            .fn()
+            .mockReturnValueOnce(
+                JSON.stringify({
+                    ok: false,
+                    error_code: 429,
+                    description: 'Too Many Requests',
+                    parameters: { retry_after: 7 },
+                }),
+            )
+            .mockReturnValueOnce(JSON.stringify({ ok: true }));
+        const logFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const result = sendTelegramMessage('событие', {
+            token: 'T',
+            chatId: 'C',
+            execFn,
+            logFn,
+            sleepFn,
+            retryBaseMs: 5000,
+        });
+
+        expect(result).toBe(true);
+        expect(execFn).toHaveBeenCalledTimes(2);
+        // Пауза — из retry_after (7с), а не нарастающая base×1 (5с).
+        expect(sleepFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).toHaveBeenCalledWith(7000);
+    });
+
+    it('#TFO9U: мусорный retryBaseMs не вешает раннер (NaN-таймаут = +∞), откат на дефолт', () => {
+        const execFn = vi
+            .fn()
+            .mockImplementationOnce(() => {
+                throw new Error('curl: (28) Connection timed out');
+            })
+            .mockReturnValueOnce(JSON.stringify({ ok: true }));
+        const logFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const result = sendTelegramMessage('событие', {
+            token: 'T',
+            chatId: 'C',
+            execFn,
+            logFn,
+            sleepFn,
+            retryBaseMs: 'мусор',
+        });
+
+        expect(result).toBe(true);
+        // waitMs конечен: откат на TELEGRAM_RETRY_BASE_MS (5000×1), не NaN.
+        expect(sleepFn).toHaveBeenCalledWith(5000);
+    });
 });
