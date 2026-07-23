@@ -1561,6 +1561,8 @@ describe('runLoop — основной while-цикл: итерации коде
             dry: false,
             logFn: (m) => logs.push(m),
             shFn: () => '',
+            // #193: обновление дерева раннера после мерджа идёт через argv-коллаборатор.
+            runArgvFn: () => '',
             saveStateFn: () => {},
             openIssuesFn: () => [],
             allOpenIssuesFn: () => [],
@@ -1789,8 +1791,9 @@ describe('runLoop — основной while-цикл: итерации коде
                 openIssuesFn: () => [],
                 allOpenIssuesFn: () => [],
                 phaseMergedFn: () => true,
-                shFn: (c) => {
-                    shCmds.push(c);
+                // #193: обновление дерева раннера — argv, нормализуем в строку.
+                runArgvFn: (file, args) => {
+                    shCmds.push(`${file} ${args.join(' ')}`);
                     return '';
                 },
                 advancePhaseFn,
@@ -1858,6 +1861,11 @@ describe('runLoop — основной while-цикл: итерации коде
                 phaseMergedFn: () => true,
                 shFn: (c) => {
                     shCmds.push(c);
+                    return '';
+                },
+                // #193: dry не должен звать argv-мутации обновления дерева — фиксируем и их.
+                runArgvFn: (file, args) => {
+                    shCmds.push(`${file} ${args.join(' ')}`);
                     return '';
                 },
                 advancePhaseFn,
@@ -2948,17 +2956,20 @@ describe('ветковая хореография в worktree раннера (#7
     const SHA_B = 'b'.repeat(40);
 
     describe('parkOnOriginMain — парковка дерева раннера', () => {
-        it('паркует detached на origin/main, НЕ занимая ветку main', () => {
-            const shCmds = [];
-            parkOnOriginMain({ shFn: (c) => shCmds.push(c), logFn: () => {} });
-            expect(shCmds).toEqual(['git checkout --detach origin/main']);
+        it('паркует detached на origin/main через argv (#193), НЕ занимая ветку main', () => {
+            const calls = [];
+            parkOnOriginMain({
+                runArgvFn: (file, args) => calls.push([file, args]),
+                logFn: () => {},
+            });
+            expect(calls).toEqual([['git', ['checkout', '--detach', 'origin/main']]]);
         });
 
         it('best-effort: сбой checkout не бросает, только лог', () => {
             const logs = [];
             expect(() =>
                 parkOnOriginMain({
-                    shFn: () => {
+                    runArgvFn: () => {
                         throw new Error('нет origin/main');
                     },
                     logFn: (m) => logs.push(m),
@@ -2982,6 +2993,14 @@ describe('ветковая хореография в worktree раннера (#7
                     if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
                     return '';
                 },
+                // #193: git fetch/checkout идут через argv-коллаборатор (execFile без
+                // шелла). Нормализуем в строку и пишем в тот же shCmds/shImpl, чтобы
+                // сценарии (throw на 'git fetch') и ассерты остались прежними по смыслу.
+                runArgvFn: (file, args) => {
+                    const cmd = `${file} ${args.join(' ')}`;
+                    shCmds.push(cmd);
+                    return shImpl ? shImpl(cmd) : '';
+                },
                 ghJsonFn: () => ({ headRefOid: SHA_A }),
                 logFn: () => {},
                 parkFn,
@@ -2996,7 +3015,8 @@ describe('ветковая хореография в worktree раннера (#7
         it('зелёный путь: fetch → сверка → detach на sha PR → все чеки → true', () => {
             const { shCmds, parkFn, deps } = mkDeps();
             expect(checksGreen('feature/m1', 42, deps)).toBe(true);
-            expect(shCmds).toContain("git fetch origin 'feature/m1'");
+            // #193: argv → в шелл-строку значение не квотируется (shq больше не нужен).
+            expect(shCmds).toContain('git fetch origin feature/m1');
             expect(shCmds).toContain(`git checkout --detach ${SHA_A}`);
             expect(shCmds).toEqual(
                 expect.arrayContaining([
@@ -3184,6 +3204,12 @@ describe('ветковая хореография в worktree раннера (#7
                         if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
                         return '';
                     },
+                    // #193: git fetch/checkout — argv, наследуют полный env (opts undefined).
+                    // Нормализуем в строку и пишем в тот же calls, чтобы optsOf их находил.
+                    runArgvFn: (file, args, opts) => {
+                        calls.push([`${file} ${args.join(' ')}`, opts]);
+                        return '';
+                    },
                     ghJsonFn: () => ({ headRefOid: SHA_A }),
                     logFn: () => {},
                     parkFn,
@@ -3334,6 +3360,14 @@ describe('ветковая хореография в worktree раннера (#7
                     shCmds.push(cmd);
                     return shImpl ? shImpl(cmd) : '';
                 },
+                // #193: gh pr merge и пост-мердж git fetch/checkout — argv (execFile без
+                // шелла). Нормализуем в строку в тот же shCmds/shImpl: сценарии (throw на
+                // 'git fetch origin main') и ассерты остаются прежними по смыслу.
+                runArgvFn: (file, args) => {
+                    const cmd = `${file} ${args.join(' ')}`;
+                    shCmds.push(cmd);
+                    return shImpl ? shImpl(cmd) : '';
+                },
                 logFn: () => {},
                 ensureCleanFn: () => true,
                 findOpenPrFn: () => ({ number: 5, labels: [] }),
@@ -3355,7 +3389,7 @@ describe('ветковая хореография в worktree раннера (#7
             const { shCmds, deps } = mkDeps();
             expect(tryMergePhase(phase, deps)).toBe('merged');
             const mergeIdx = shCmds.findIndex(
-                (c) => c === "gh pr merge '5' --squash --delete-branch",
+                (c) => c === 'gh pr merge 5 --squash --delete-branch',
             );
             expect(mergeIdx).toBeGreaterThanOrEqual(0);
             // Обновление раннера — строго через origin/main и ПОСЛЕ мерджа.
@@ -3389,14 +3423,14 @@ describe('ветковая хореография в worktree раннера (#7
             const { shCmds, deps } = mkDeps({ getVerifiedHeadFn: () => sha });
             expect(tryMergePhase(phase, deps)).toBe('merged');
             expect(shCmds).toContain(
-                `gh pr merge '5' --squash --delete-branch --match-head-commit ${sha}`,
+                `gh pr merge 5 --squash --delete-branch --match-head-commit ${sha}`,
             );
         });
 
         it('#SiaTz: sha головы не 40-hex → мерджим без --match-head-commit (не подставляем мусор)', () => {
             const { shCmds, deps } = mkDeps({ getVerifiedHeadFn: () => 'not-a-sha' });
             expect(tryMergePhase(phase, deps)).toBe('merged');
-            expect(shCmds).toContain("gh pr merge '5' --squash --delete-branch");
+            expect(shCmds).toContain('gh pr merge 5 --squash --delete-branch');
             expect(shCmds.some((c) => c.includes('--match-head-commit'))).toBe(false);
         });
 
@@ -5523,7 +5557,10 @@ describe('Изоляция раннера в worktree — сценарии и м
         // хореографии гейта, а не по частям. shImpl задаёт поведение конкретных команд.
         const mkWiring = ({ shImpl } = {}) => {
             const shCmds = [];
-            const shFn = (cmd) => {
+            // Общий рекордер для sh (строки) и argv-мутаций (#193): нормализуем argv в
+            // ту же строковую форму, чтобы инвариант проверялся на ПОЛНОЙ хореографии
+            // одним списком shCmds, а shImpl задавал поведение по строке команды.
+            const record = (cmd) => {
                 shCmds.push(cmd);
                 if (shImpl) {
                     const r = shImpl(cmd);
@@ -5532,9 +5569,15 @@ describe('Изоляция раннера в worktree — сценарии и м
                 if (cmd.startsWith('git rev-parse --verify')) return SHA_HEAD; // локалка == PR
                 return '';
             };
+            const shFn = (cmd) => record(cmd);
+            // git fetch/checkout и gh pr merge теперь идут argv-каналом (#193).
+            const runArgvFn = (file, args) => record(`${file} ${args.join(' ')}`);
+            const detachOriginMain = () =>
+                runArgvFn('git', ['checkout', '--detach', 'origin/main']);
             const deps = {
                 dry: false,
                 shFn,
+                runArgvFn,
                 logFn: () => {},
                 ensureCleanFn: () => true,
                 findOpenPrFn: () => ({ number: 5, labels: [] }),
@@ -5542,14 +5585,15 @@ describe('Изоляция раннера в worktree — сценарии и м
                 checksGreenFn: (branch, prNumber) =>
                     checksGreen(branch, prNumber, {
                         shFn,
+                        runArgvFn,
                         ghJsonFn: () => ({ headRefOid: SHA_HEAD }),
                         logFn: () => {},
-                        parkFn: () => shFn('git checkout --detach origin/main'),
+                        parkFn: detachOriginMain,
                         syncDepsFn: () => {}, // не гоняем реальный npm ci в инвариант-тесте
                     }),
                 phaseMergedFn: () => false,
                 sleepFn: () => {},
-                parkFn: () => shFn('git checkout --detach origin/main'),
+                parkFn: detachOriginMain,
                 getLastRedCheckFn: () => null,
             };
             return { shCmds, deps };
@@ -5560,14 +5604,15 @@ describe('Изоляция раннера в worktree — сценарии и м
             expect(tryMergePhase(phase, deps)).toBe('merged');
 
             // Позитив: раннер ходил строго детачем — на PR-голову и на origin/main.
-            expect(shCmds).toContain("git fetch origin 'feature/m1'");
+            // #193: argv → значения не квотируются в шелл-строку.
+            expect(shCmds).toContain('git fetch origin feature/m1');
             expect(shCmds).toContain(`git checkout --detach ${SHA_HEAD}`);
             expect(shCmds).toContain('git fetch origin main');
             expect(shCmds).toContain('git checkout --detach origin/main');
             // #SiaTz: мердж привязан к ТОЙ ЖЕ голове, что прогнал реальный checksGreen —
             // --match-head-commit закрывает TOCTOU-окно между чеками и мерджем.
             expect(shCmds).toContain(
-                `gh pr merge '5' --squash --delete-branch --match-head-commit ${SHA_HEAD}`,
+                `gh pr merge 5 --squash --delete-branch --match-head-commit ${SHA_HEAD}`,
             );
 
             // Инвариант: ни одного занятия именованной ветки / правки дерева человека.
@@ -5620,7 +5665,7 @@ describe('Изоляция раннера в worktree — сценарии и м
             expect(getLastRedCheck()).toMatchObject({ name: 'test' });
             // Парковка после красного — тоже строго детачем, инвариант держится.
             expect(shCmds).toContain('git checkout --detach origin/main');
-            expect(shCmds).not.toContain("gh pr merge '5' --squash --delete-branch");
+            expect(shCmds).not.toContain('gh pr merge 5 --squash --delete-branch');
             assertNoForbiddenGit(shCmds);
         });
     });
