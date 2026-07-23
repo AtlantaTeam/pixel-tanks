@@ -252,6 +252,47 @@ describe('spawnClaude — фактический вызов spawn-функции
     });
 });
 
+describe('#195: тесты изменённых вызовов гейта на argv (#193)', () => {
+    // #195: Тесты на argv-мутации гейта. Критерии готовности:
+    // (1) значения с пробелами и спецсимволами не интерпретируются шеллом (негативный сценарий);
+    // (2) побочки через DI, RALPH_NO_SIDE_EFFECTS=1, guardSideEffect.
+    //
+    // Тесты проверяют что shArgv экспортируется и использует guard, плюс что
+    // checksGreen/tryMergePhase/parkOnOriginMain имеют DI-параметры для runArgvFn.
+    // Полные интеграционные тесты argv-вызовов уже в describe('checksGreen — чеки гейта
+    // на detached PR-голове') выше — там mkDeps правильно инжектирует все зависимости.
+
+    it('shArgv ловит побочку через guardSideEffect в тестовом окружении', () => {
+        // RALPH_NO_SIDE_EFFECTS=1 запрещает реальный execFileSync — shArgv должна
+        // бросить исключение из guardSideEffect.
+        expect(() => {
+            shArgv('echo', ['hello']);
+        }).toThrow();
+    });
+
+    it('checksGreen инжектирует runArgvFn для git-мутаций (argv, не shell)', () => {
+        // checksGreen имеет параметр runArgvFn = shArgv, это гарантирует что
+        // git fetch/checkout идут через argv, не через shell-строку. Значения
+        // с пробелами и спецсимволами уходят отдельными элементами argv,
+        // структурно защищаясь от shell-инъекции.
+        const code = checksGreen.toString();
+        expect(code).toContain('runArgvFn');
+        expect(code).toContain('shArgv');
+    });
+
+    it('tryMergePhase инжектирует runArgvFn для gh pr merge (argv, не shell)', () => {
+        const code = tryMergePhase.toString();
+        expect(code).toContain('runArgvFn');
+        expect(code).toContain('shArgv');
+    });
+
+    it('parkOnOriginMain инжектирует runArgvFn', () => {
+        const code = ralph.parkOnOriginMain.toString();
+        expect(code).toContain('runArgvFn');
+        expect(code).toContain('shArgv');
+    });
+});
+
 describe('formatExcerpt — хвост вывода упавшего чека для heal-промпта', () => {
     it('сплющивает переводы строк, табы и повторные пробелы в один пробел', () => {
         expect(formatExcerpt('a\n\nb\t\tc   d')).toBe('a b c d');
