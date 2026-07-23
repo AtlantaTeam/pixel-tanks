@@ -1461,6 +1461,9 @@ describe('runLoop — основной while-цикл: итерации коде
             runClaudeFn: () => 0,
             ensureCleanFn: () => true,
             phaseMergedFn: () => false,
+            // #237: тот же безопасный дефолт — настоящий mergedPhasePr зовёт ghJson → sh,
+            // и тест на пути «фаза уже смерджена» ловил бы предохранитель #138.
+            mergedPhasePrFn: () => null,
             advancePhaseFn: () => {},
             tryMergePhaseFn: () => 'not-merged',
             closeMilestoneByTitleFn: () => {},
@@ -1468,6 +1471,11 @@ describe('runLoop — основной while-цикл: итерации коде
             // syncProjectBoard зовёт sh('node scripts/project-sync.mjs'), и каждый
             // тест, доходящий до gate === 'merged', ловил бы предохранитель #138.
             syncProjectBoardFn: () => {},
+            // #169: тот же безопасный дефолт — настоящий recordReviewFindings зовёт
+            // sh('node scripts/review-findings-journal.mjs ...'), и каждый тест, доходящий
+            // до gate === 'merged', ловил бы предохранитель #138 (даже через try/catch —
+            // guardSideEffect пишет попытку в журнал ДО throw).
+            recordReviewFindingsFn: () => {},
             getLastRedCheck: () => null,
             // #86: безопасный дефолт-заглушка — без него тест, не переопределивший
             // pushEventFn явно, звал бы НАСТОЯЩИЙ pushEvent (реальный log() + попытка
@@ -1679,6 +1687,44 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(logs.join('\n')).toMatch(/уже смерджена/);
     });
 
+    it('#237 фаза уже смерджена → recordReviewFindings зовётся с номером PR из mergedPhasePr', () => {
+        const logs = [];
+        const recordReviewFindingsFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => true,
+                mergedPhasePrFn: () => 315,
+                recordReviewFindingsFn,
+                shFn: () => '',
+            }),
+        );
+        expect(recordReviewFindingsFn).toHaveBeenCalledTimes(1);
+        expect(recordReviewFindingsFn.mock.calls[0][1]).toBe(315);
+    });
+
+    it('#237 фаза уже смерджена, номер PR не определён → предупреждение, запись не зовётся', () => {
+        const logs = [];
+        const recordReviewFindingsFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => true,
+                mergedPhasePrFn: () => null,
+                recordReviewFindingsFn,
+                shFn: () => '',
+            }),
+        );
+        expect(recordReviewFindingsFn).not.toHaveBeenCalled();
+        expect(logs.join('\n')).toMatch(/запись отсутствует/);
+    });
+
     it('фаза смерджена при dry=true → advancePhase есть, но БЕЗ мутаций git (checkout/pull не зовутся)', () => {
         const logs = [];
         const shCmds = [];
@@ -1783,6 +1829,29 @@ describe('runLoop — основной while-цикл: итерации коде
         // #86: событие «релиз-готовность» уходит пушем при успешном мердже фазы.
         expect(pushEventFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn.mock.calls[0][0]).toMatch(/готова к релизу/);
+    });
+
+    // #169: журнал находок ревью — запись пишется сразу при мердже фазы, тем же приёмом,
+    // что closeMilestoneByTitle/syncProjectBoard (единая точка gate === 'merged').
+    it('#169 гейт merged → recordReviewFindingsFn зовётся с фазой и номером PR из гейта', () => {
+        const recordReviewFindingsFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps([], {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                getLastGatePr: () => 42,
+                recordReviewFindingsFn,
+            }),
+        );
+        expect(recordReviewFindingsFn).toHaveBeenCalledTimes(1);
+        expect(recordReviewFindingsFn.mock.calls[0][0]).toMatchObject({ milestone: 'M1' });
+        expect(recordReviewFindingsFn.mock.calls[0][1]).toBe(42);
     });
 
     it('#87 prod: гейт merged → деплой-плейсхолдер вызван, loop останавливается (не берёт следующую фазу)', () => {
@@ -5710,5 +5779,93 @@ describe('syncProjectBoard', () => {
         ).not.toThrow();
         expect(logs[0]).toContain('HTTP 401');
         expect(logs[0]).not.toContain('вторая строка');
+    });
+});
+
+describe('recordReviewFindings', () => {
+    const phase = { milestone: 'Наблюдаемость ralph · Фаза 6', branch: 'feature/x' };
+
+    it('зовёт журнал-скрипт с номером PR и milestone, логирует вывод', () => {
+        const cmds = [];
+        const logs = [];
+        ralph.recordReviewFindings(
+            phase,
+            235,
+            [],
+            (c) => {
+                cmds.push(c);
+                return '{"pr":235}\n';
+            },
+            (m) => logs.push(m),
+        );
+        expect(cmds).toEqual([
+            `node scripts/review-findings-journal.mjs '235' 'Наблюдаемость ralph · Фаза 6'`,
+        ]);
+        expect(logs[0]).toContain('{"pr":235}');
+    });
+
+    it('#237 прокидывает authorAllowlist позиционными аргументами (через shq)', () => {
+        const cmds = [];
+        ralph.recordReviewFindings(
+            phase,
+            235,
+            ['Pelmenya', 'other-user'],
+            (c) => {
+                cmds.push(c);
+                return '';
+            },
+            () => {},
+        );
+        expect(cmds[0]).toBe(
+            `node scripts/review-findings-journal.mjs '235' 'Наблюдаемость ralph · Фаза 6' 'Pelmenya' 'other-user'`,
+        );
+    });
+
+    it('#237 пустые/нестроковые авторы в allowlist отфильтрованы', () => {
+        const cmds = [];
+        ralph.recordReviewFindings(
+            phase,
+            235,
+            ['Pelmenya', '', '  ', null, 7],
+            (c) => {
+                cmds.push(c);
+                return '';
+            },
+            () => {},
+        );
+        expect(cmds[0]).toBe(
+            `node scripts/review-findings-journal.mjs '235' 'Наблюдаемость ralph · Фаза 6' 'Pelmenya'`,
+        );
+    });
+
+    it('не бросает, когда запись в журнал упала — фаза уже смерджена, ронять её нельзя', () => {
+        const logs = [];
+        expect(() =>
+            ralph.recordReviewFindings(
+                phase,
+                235,
+                [],
+                () => {
+                    throw new Error('gh api упал\nвторая строка');
+                },
+                (m) => logs.push(m),
+            ),
+        ).not.toThrow();
+        expect(logs[0]).toContain('gh api упал');
+        expect(logs[0]).not.toContain('вторая строка');
+    });
+
+    it('номер PR неизвестен (не положительное целое) — лог и выход, скрипт не зовётся', () => {
+        const cmds = [];
+        const logs = [];
+        ralph.recordReviewFindings(
+            phase,
+            null,
+            [],
+            (c) => cmds.push(c),
+            (m) => logs.push(m),
+        );
+        expect(cmds).toEqual([]);
+        expect(logs[0]).toContain('PR неизвестен');
     });
 });
