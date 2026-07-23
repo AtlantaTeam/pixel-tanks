@@ -71,6 +71,10 @@
             {
                 "milestone": "Изоляция ralph · Фаза 6: Открытые вопросы в бэклог",
                 "branch": "feature/ralph-isolation-backlog"
+            },
+            {
+                "milestone": "ralph: Непрерывный prod",
+                "branch": "feature/ralph-continuous-prod"
             }
         ]
     },
