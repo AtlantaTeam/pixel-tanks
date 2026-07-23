@@ -263,8 +263,9 @@ export function loadPushedKeys(readFn = readFileSync, file = PUSH_DEDUP_PATH) {
 }
 
 export function savePushedKeys(keys, writeFn = writeFileSync, file = PUSH_DEDUP_PATH) {
-    // Как spawnClaude в ralph.js (#914): guard срабатывает только на боевом дефолте —
-    // тест, явно инжектирующий свой writeFn, проверяет сериализацию, не реальную запись.
+    // Приём spawnClaude в ralph.js (предохранитель #138): guard срабатывает только на
+    // боевом дефолте — тест, явно инжектирующий свой writeFn, проверяет сериализацию, не
+    // реальную запись.
     if (writeFn === writeFileSync) guardSideEffect(`savePushedKeys(${file})`);
     writeFn(file, JSON.stringify(keys, null, 2));
 }
@@ -280,12 +281,34 @@ export function pushAcceptedBaselineChanges(
         savePushedKeysFn = savePushedKeys,
         sendFn = sendTelegramMessage,
         logFn = console.warn,
+        baseline = null,
     } = {},
 ) {
     if (!accepted.length) return;
-    const pushed = loadPushedKeysFn();
+    // Дедуп-стор — косметика (инв. 1 CLAUDE.md): доставка пуша fail-open, его поломка не
+    // должна краснить гейт, когда verdict.ok уже true. Битый/обрезанный файл (диск, kill
+    // в момент записи) при загрузке → warn и деградируем в «пушим всё»: дубликат пуша
+    // безопаснее молчания и ложно-красного гейта на проблеме, которой в PR нет.
+    let pushed;
+    try {
+        pushed = loadPushedKeysFn();
+    } catch (e) {
+        logFn(
+            `⚠️  дедуп-стор пуша нечитаем (${String(e?.message ?? e).split('\n')[0]}) — ` +
+                `пушу без дедупа, возможен повторный пуш`,
+        );
+        pushed = [];
+    }
     const fresh = dedupeAcceptedForPush(accepted, pushed);
-    if (!fresh.length) return;
+    if (!fresh.length) {
+        // #239-ревью (⚪): молчаливый return скрывал бы, что пуш подавлен НАМЕРЕННО —
+        // тот же принцип «не молчать», на котором стоит весь механизм. Одна строка
+        // избавляет от ночного «а почему пуша не было».
+        logFn(
+            `ℹ️  пуш о расширении baseline подавлен дедупом (${accepted.length} записей уже отправлены ранее)`,
+        );
+        return;
+    }
     const text = acceptedPushText(fresh);
     logFn(text); // текст уже начинается с ⚠️ — второй эмодзи не нужен
     // sendTelegramMessage спроектирован fail-open и НИКОГДА не бросает (#85), поэтому
@@ -299,7 +322,17 @@ export function pushAcceptedBaselineChanges(
         );
         return; // ключ не запоминаем — следующий прогон гейта попробует снова
     }
-    savePushedKeysFn(mergePushedKeys(pushed, fresh));
+    // Сохранение стора — тоже косметика: обрезанный write назавтра не должен красить
+    // гейт (fail-open с логом, инв. 1). В худшем случае следующий прогон повторит пуш —
+    // безопаснее ложно-красного гейта.
+    try {
+        savePushedKeysFn(mergePushedKeys(pushed, fresh, baseline));
+    } catch (e) {
+        logFn(
+            `⚠️  дедуп-стор пуша не сохранён (${String(e?.message ?? e).split('\n')[0]}) — ` +
+                `следующий прогон гейта может повторить пуш`,
+        );
+    }
 }
 
 // #207: политика изменения baseline — до собственно сверки advisory. Порядок важен:
@@ -331,7 +364,9 @@ function enforceBaselinePolicy(baseline, foundAdvisories) {
     // Автономность сохранена, молчаливость — нет: петля идёт дальше, но человек узнаёт
     // об ослаблении гейта сразу. Дедуп по (id+severity) гасит только идентичные повторы
     // (#239) — новое событие (новая advisory, выросшая severity) пушится как обычно.
-    pushAcceptedBaselineChanges(verdict.accepted);
+    // baseline (headBaseline) — для прореживания стора: ключи удалённых из baseline
+    // записей не живут вечно (#239-ревью 🟡).
+    pushAcceptedBaselineChanges(verdict.accepted, { baseline });
 }
 
 function main() {

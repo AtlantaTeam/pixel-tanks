@@ -1263,12 +1263,18 @@ function pickReviewModel(
 // сконфигурированного фолбэка не деградирует НИЖЕ своей обычной планки, а не
 // остаётся вовсе без фолбэка. Явное 'none' — осознанный отказ от фолбэка
 // (тогда падение при overload останется прежним fail-closed стопом).
+// #221: явное review.fallback: 'none' — ОСОЗНАННЫЙ отказ от фолбэка (honest-стоп при
+// недоступности модели, как было при M8). Возвращаем 'none' как есть, а не null: иначе
+// сигнал отказа терялся бы, и strongerReviewModel(null, floor) в повторном ревью поднял
+// бы фолбэк до планки — то есть 'none' всё равно ушёл бы с --fallback-model <floor>,
+// прямо противореча контракту (CLAUDE.md инв. 6). buildClaudeArgs строку 'none' гасит
+// (фолбэк не передаётся). Отсутствие ключа — другой случай: дефолт на review.default.
 function pickReviewFallbackModel(cfg = config) {
     const review = cfg.review;
     if (!isPlainObject(review)) return null;
     const fb = review.fallback;
     if (fb === undefined || fb === null) return review.default ?? null;
-    if (fb === 'none') return null;
+    if (fb === 'none') return 'none';
     return fb;
 }
 
@@ -2823,11 +2829,21 @@ function runLoop(
                     // cfg.fallbackModel (тот сюда вообще не передаётся, см. buildClaudeArgs).
                     // Дефолт pickReviewFallbackModel — review.default, поэтому overload не
                     // роняет сессию, если фолбэк явно не отключён ('none').
+                    //
+                    // ТРЕЙДОФФ #221 (осознанный, ревью PR #241): планка фолбэка
+                    // (assertKnownReviewModels) держится относительно review.DEFAULT, не
+                    // относительно эскалированной модели. Для ЭСКАЛИРОВАННОГО ревью зоны
+                    // риска (escalated: fable, fallback: opus) это значит: при overload
+                    // fable ревью тихо уйдёт на opus — НИЖЕ уровня эскалации, ровно
+                    // сценарий M8. Приняли сознательно («простой дороже», api-limit стоил
+                    // 2.5 ч): фолбэк не слабее базовой планки — уже барьер, а honest-стоп
+                    // эскалированного ревью на недоступности fable дороже, чем суд opus.
+                    // Кто хочет honest-стоп — ставит review.fallback: 'none'.
                     const reviewFallback = pickReviewFallbackModel(cfg);
                     // Честно: CLI не показывает, СРАБОТАЛ ли фолбэк на самом деле — только
                     // то, что он сконфигурирован и будет предложен claude при overload.
                     logFn(
-                        `🔍 Ревью фазы моделью: ${reviewModel} (фолбэк при overload: ${reviewFallback ?? 'нет'})`,
+                        `🔍 Ревью фазы моделью: ${reviewModel} (фолбэк при overload: ${reviewFallback && reviewFallback !== 'none' ? reviewFallback : 'нет'})`,
                     );
                     // #133: дифф подаём сразу — с урезанным бюджетом ходов искать
                     // его самому дорого. Смотреть окружающий код это не отменяет:
@@ -3209,14 +3225,19 @@ function runLoop(
                 // подменил бы модель на review.fallback (обычно review.default), и барьер
                 // #217 обошёлся бы тем же классом обхода, от которого он защищает —
                 // просто на уровне CLI-фолбэка, а не выбора модели раннером.
-                const reReviewFallback = strongerReviewModel(
-                    pickReviewFallbackModel(cfg),
-                    state.reviewModelFloor,
-                );
+                // #221: явное 'none' — honest-стоп, планка floor его НЕ повышает (иначе
+                // осознанный отказ ушёл бы с --fallback-model <floor>, см.
+                // pickReviewFallbackModel). Для остальных значений/дефолта планка
+                // reviewModelFloor держит фолбэк не слабее поставившей блок (#217).
+                const pickedReReviewFallback = pickReviewFallbackModel(cfg);
+                const reReviewFallback =
+                    pickedReReviewFallback === 'none'
+                        ? 'none'
+                        : strongerReviewModel(pickedReReviewFallback, state.reviewModelFloor);
                 // Маркер «🔍 Ревью» — намеренно: deadman.CODER_RE классифицирует окно
                 // ревью-сессии как активность кодера (инв. 10), а не как тишину гейта.
                 logFn(
-                    `🔍 Ревью (повторное) после разбора blocked моделью: ${reReviewModel} (фолбэк при overload: ${reReviewFallback ?? 'нет'})`,
+                    `🔍 Ревью (повторное) после разбора blocked моделью: ${reReviewModel} (фолбэк при overload: ${reReviewFallback && reReviewFallback !== 'none' ? reReviewFallback : 'нет'})`,
                 );
                 const bDiffContext = reviewDiffContextFn(phase.branch, {
                     files: bPhaseFiles,
@@ -3350,6 +3371,23 @@ function isMonitorProcess(pid, readFn = fs.readFileSync) {
     if (!pid) return false;
     try {
         return readFn(`/proc/${pid}/cmdline`, 'utf-8').includes('monitor.js');
+    } catch {
+        return false;
+    }
+}
+
+// Строгая сверка «за pid именно НАШ ralph-монитор» — по полному пути MONITOR_PATH в
+// cmdline, а не по родовому имени 'monitor.js' (isMonitorProcess). Нужна ИМЕННО скану
+// /proc (sweepOrphanMonitors, #235-ревью): там фильтр применяется ко ВСЕМ процессам
+// системы, и подстрока 'monitor.js' зацепила бы чужой процесс — pm2-обвязку, любой
+// чужой проект со своим monitor.js (имя родовое) — а stopMonitor снёс бы его группу
+// SIGTERM'ом. Для проверок ПО pid-файлу (adoptMonitor/stopMonitor/ensureMonitorAlive)
+// нестрогая isMonitorProcess остаётся: там pid взят из файла, который пишет только сам
+// раннер, чужого там взяться неоткуда.
+function isRalphMonitorProcess(pid, readFn = fs.readFileSync) {
+    if (!pid) return false;
+    try {
+        return readFn(`/proc/${pid}/cmdline`, 'utf-8').includes(MONITOR_PATH);
     } catch {
         return false;
     }
@@ -3509,13 +3547,16 @@ function stopMonitor(child, deps = {}) {
     return true;
 }
 
-// Список pid ВСЕХ живых monitor.js сканом /proc (#235) — не по одному pid-файлу.
+// Список pid ВСЕХ живых ralph-мониторов сканом /proc (#235) — не по одному pid-файлу.
 // adoptMonitor видит только тот pid, что туда записал startMonitor: сирота мимо файла
 // (ручной `node monitor.js`, гонка, перезапись файла новым до остановки старого)
 // накапливается вечно. readdirFn возвращает список каталогов /proc (числовые — pid'ы
 // процессов, остальное — служебные /proc/self и т.п., отсекаем регэкспом).
+// Матчер — СТРОГИЙ isRalphMonitorProcess (полный путь MONITOR_PATH), не нестрогая
+// isMonitorProcess (#235-ревью): скан идёт по всем процессам системы, и подстрока
+// 'monitor.js' зацепила бы чужой monitor.js — sweep снёс бы его группу.
 function listMonitorPids(deps = {}) {
-    const { readdirFn = fs.readdirSync, isMonitorFn = isMonitorProcess } = deps;
+    const { readdirFn = fs.readdirSync, isMonitorFn = isRalphMonitorProcess } = deps;
     let entries;
     try {
         entries = readdirFn('/proc');
@@ -3528,11 +3569,13 @@ function listMonitorPids(deps = {}) {
         .filter((pid) => isMonitorFn(pid));
 }
 
-// PPID процесса из /proc/<pid>/stat. Формат ядра: `pid (comm) state ppid …` — comm
-// (имя команды) в скобках может содержать пробелы, поэтому режем СРЕЗОМ после
-// ПОСЛЕДНЕЙ закрывающей скобки, а не split(' ')[3]: чужой comm со скобкой внутри
-// сдвинул бы индексы. state — однобуквенный, ppid — второе поле после среза.
-function monitorPpid(pid, readFn = fs.readFileSync) {
+// PPID ЛЮБОГО процесса из /proc/<pid>/stat (не монитор-специфично — отсюда имя без
+// «monitor», в отличие от monitorProfileOf/listMonitorPids). Формат ядра:
+// `pid (comm) state ppid …` — comm (имя команды) в скобках может содержать пробелы,
+// поэтому режем СРЕЗОМ после ПОСЛЕДНЕЙ закрывающей скобки, а не split(' ')[3]: чужой
+// comm со скобкой внутри сдвинул бы индексы. state — однобуквенный, ppid — второе поле
+// после среза.
+function processPpid(pid, readFn = fs.readFileSync) {
     try {
         const stat = readFn(`/proc/${pid}/stat`, 'utf-8');
         const afterComm = stat.slice(stat.lastIndexOf(')') + 2);
@@ -3552,14 +3595,28 @@ function monitorPpid(pid, readFn = fs.readFileSync) {
 // старте (main(), до preflight) — не встроена в ensureMonitorAlive: там своя узкая
 // задача («жив ли МОЙ отслеживаемый монитор»), а не сканирование системы каждую
 // итерацию цикла.
+//
+// ВОЗВРАТ — всегда null (#235-ревью): записав выбранного сироту в pid-файл, отдаём
+// подхват adoptMonitor'у штатным путём (его лог «подхватываю», повторные сверки
+// alive/профиля) — иначе типовой случай (ровно одна сирота) уходил бы без единого лога
+// подхвата, а `sweep() || adopt()` в main() проскакивал бы adoptMonitor мимо. Побочки
+// (writePidFn, stopFn) — за предохранителем #138 (инв. 2): дефолт пишет реальный
+// MONITOR_PID (его перечитывает живой prod-раннер) и шлёт SIGTERM реальным процессам,
+// поэтому тест без инъекции обязан упасть громко, а не сходить в боевую систему.
 function sweepOrphanMonitors(deps = {}) {
     const {
         logFn = log,
         listPidsFn = listMonitorPids,
-        ppidFn = monitorPpid,
+        ppidFn = processPpid,
         readCmdlineFn = (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
-        stopFn = stopMonitor,
-        writePidFn = (pid) => fs.writeFileSync(MONITOR_PID, String(pid)),
+        stopFn = (child, d) => {
+            guardSideEffect('sweepOrphanMonitors:stopMonitor');
+            return stopMonitor(child, d);
+        },
+        writePidFn = (pid) => {
+            guardSideEffect(`sweepOrphanMonitors:writePid(${MONITOR_PID})`);
+            fs.writeFileSync(MONITOR_PID, String(pid));
+        },
         profile,
     } = deps;
 
@@ -3577,13 +3634,15 @@ function sweepOrphanMonitors(deps = {}) {
     if (toStop.length > 0) {
         toStop.forEach((pid) => stopFn({ pid }, deps));
         logFn(
-            `👁  Прибрано сирот-мониторов мимо pid-файла: ${toStop.length} (оставлен ${keep ?? 'ни один'}).`,
+            `👁  Прибрано сирот-мониторов мимо pid-файла: ${toStop.length} ` +
+                `(${keep != null ? `оставлен ${keep}` : 'не оставлено ни одного'}).`,
         );
     }
     if (keep == null) return null;
 
+    // Записали выбранного сироту в pid-файл — дальше его штатно подхватит adoptMonitor.
     writePidFn(keep);
-    return { pid: keep };
+    return null;
 }
 
 // Взаимный контроль раннер↔монитор (#151, наблюдаемость фаза 2): раньше монитор
@@ -3694,9 +3753,11 @@ function main() {
     // profile — для сверки: сироту чужого профиля глушим, а не подхватываем.
     // sweepOrphanMonitors ПЕРЕД adoptMonitor (#235): сканит /proc целиком и глушит
     // ВСЕХ сирот мимо monitor.pid (ручной запуск, гонка, перезапись файла), оставляя
-    // ровно одну (в нужном профиле) и записывая её в pid-файл — adoptMonitor следом
-    // подхватывает уже её штатным путём (профильная сверка не дублируется вручную).
-    // Ничего не нашла (нет сирот вне pid-файла) → null, adoptMonitor работает как раньше.
+    // ровно одну (в нужном профиле) и записывая её в pid-файл. Возвращает ВСЕГДА null:
+    // сам подхват — за adoptMonitor штатным путём (его лог «подхватываю», повторные
+    // сверки alive/профиля). sweep всегда null, поэтому `||` тут не короткое замыкание,
+    // а «прибери сирот (побочка в pid-файл), затем ВСЕГДА подхвати adoptMonitor'ом». Нет
+    // сирот вне pid-файла — sweep не трогает файл, adoptMonitor работает как раньше.
     let monitor = DRY
         ? null
         : sweepOrphanMonitors({ profile: config.profileName }) ||
@@ -3797,8 +3858,9 @@ module.exports = {
     adoptMonitor,
     monitorAlive,
     isMonitorProcess,
+    isRalphMonitorProcess,
     listMonitorPids,
-    monitorPpid,
+    processPpid,
     sweepOrphanMonitors,
     ensureMonitorAlive,
     buildClaudeArgs,

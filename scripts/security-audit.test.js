@@ -457,4 +457,93 @@ describe('pushAcceptedBaselineChanges — дедуп пуша (#239)', () => {
         expect(savePushedKeysFn).not.toHaveBeenCalled();
         expect(logFn.mock.calls.some(([msg]) => /НЕ доставлен/.test(msg))).toBe(true);
     });
+
+    // #239-ревью (🟠): дедуп-стор — косметика (инв. 1), его поломка не должна краснить
+    // гейт, когда verdict.ok уже true. Битый/нечитаемый стор → warn + деградация в
+    // «пушим всё», а не необработанный throw и ложно-красный гейт.
+    it('битый стор при загрузке — warn и пушим без дедупа, не роняем гейт', () => {
+        const loadPushedKeysFn = vi.fn(() => {
+            throw new Error('Unexpected end of JSON input');
+        });
+        const savePushedKeysFn = vi.fn();
+        const sendFn = vi.fn(() => true);
+        const logFn = vi.fn();
+        const accepted = [
+            { id: 1, severity: 'high', package: 'immutable', expiresAt: '2026-08-05' },
+        ];
+        expect(() =>
+            pushAcceptedBaselineChanges(accepted, {
+                loadPushedKeysFn,
+                savePushedKeysFn,
+                sendFn,
+                logFn,
+            }),
+        ).not.toThrow();
+        expect(sendFn).toHaveBeenCalledTimes(1); // пуш ушёл (деградация в «пушим всё»)
+        expect(logFn.mock.calls.some(([msg]) => /нечитаем/.test(msg))).toBe(true);
+    });
+
+    it('обрезанный write стора — warn, гейт не краснеет (fail-open)', () => {
+        const loadPushedKeysFn = vi.fn(() => []);
+        const savePushedKeysFn = vi.fn(() => {
+            throw new Error('ENOSPC');
+        });
+        const sendFn = vi.fn(() => true);
+        const logFn = vi.fn();
+        const accepted = [
+            { id: 1, severity: 'high', package: 'immutable', expiresAt: '2026-08-05' },
+        ];
+        expect(() =>
+            pushAcceptedBaselineChanges(accepted, {
+                loadPushedKeysFn,
+                savePushedKeysFn,
+                sendFn,
+                logFn,
+            }),
+        ).not.toThrow();
+        expect(logFn.mock.calls.some(([msg]) => /не сохранён/.test(msg))).toBe(true);
+    });
+
+    // #239-ревью (⚪): полностью задедупленный accepted не должен молчать — иначе ночью
+    // «а почему пуша не было». Одна строка «подавлен дедупом».
+    it('всё задедуплено — логируем, что пуш подавлен намеренно', () => {
+        const loadPushedKeysFn = vi.fn(() => ['1:high']);
+        const savePushedKeysFn = vi.fn();
+        const sendFn = vi.fn(() => true);
+        const logFn = vi.fn();
+        const accepted = [
+            { id: 1, severity: 'high', package: 'immutable', expiresAt: '2026-08-05' },
+        ];
+        pushAcceptedBaselineChanges(accepted, {
+            loadPushedKeysFn,
+            savePushedKeysFn,
+            sendFn,
+            logFn,
+        });
+        expect(sendFn).not.toHaveBeenCalled();
+        expect(logFn.mock.calls.some(([msg]) => /подавлен дедупом/.test(msg))).toBe(true);
+    });
+
+    // #239-ревью (🟡): baseline пробрасывается в mergePushedKeys для прореживания —
+    // ключ удалённой из baseline записи не остаётся в сторе навечно.
+    it('baseline прорежает стор при сохранении (ключ отсутствующей записи выкинут)', () => {
+        const loadPushedKeysFn = vi.fn(() => ['1:high', '99:high']); // 99 больше нет в baseline
+        const savePushedKeysFn = vi.fn();
+        const sendFn = vi.fn(() => true);
+        const accepted = [
+            { id: 2, severity: 'high', package: 'fast-uri', expiresAt: '2026-08-05' },
+        ];
+        pushAcceptedBaselineChanges(accepted, {
+            loadPushedKeysFn,
+            savePushedKeysFn,
+            sendFn,
+            logFn: vi.fn(),
+            baseline: [
+                { id: 1, severity: 'high' },
+                { id: 2, severity: 'high' },
+            ],
+        });
+        // 99:high выкинут (нет в baseline), 1:high сохранён, 2:high добавлен.
+        expect(savePushedKeysFn).toHaveBeenCalledWith(['1:high', '2:high']);
+    });
 });

@@ -232,6 +232,24 @@ describe('acceptedPushText', () => {
         expect(t).toMatch(/immutable/);
         expect(t).toMatch(/петля продолжается/i);
     });
+
+    // #239-ревью (🟡): продление срока записи, которую апстрим уже умеет чинить, — тоже
+    // решение человека. Текст пуша обязан это показать (fixHint), а не выдавать запись
+    // за по-прежнему неустранимую.
+    it('продление устранимой записи (fixHint) — текст называет устранимость', () => {
+        const t = acceptedPushText([
+            {
+                id: 7,
+                package: 'x',
+                severity: 'high',
+                previousExpiresAt: '2026-07-20',
+                expiresAt: '2026-08-01',
+                fixHint: 'обновлением зависимостей (npm audit fix)',
+            },
+        ]);
+        expect(t).toMatch(/срок продлён 2026-07-20 → 2026-08-01/);
+        expect(t).toMatch(/уже чинится апгрейдом/);
+    });
 });
 
 // Обходы, найденные ревью fable на PR #208. Каждый — сценарий нарушителя целиком,
@@ -387,6 +405,27 @@ describe('evaluateBaselineChange — fixAvailable (#239)', () => {
         expect(r.accepted.map((a) => a.package)).toEqual(['immutable', 'fast-uri', 'sharp']);
     });
 
+    // #239-ревью (🟡): fixAvailable у НОВЫХ записей краснит гейт (added выше), но
+    // продлить срок можно и записи, которую апстрим тем временем научился чинить. Само
+    // продление проходит (иначе просроченная встала бы ночью), однако accepted-запись
+    // несёт fixHint — чтобы пуш это показал.
+    it('продление TTL устранимой записи проходит, но accepted несёт fixHint', () => {
+        const base = [
+            { id: 7, package: 'x', severity: 'high', reason: 'r', expiresAt: '2026-07-20' },
+        ];
+        const head = [{ ...base[0], expiresAt: '2026-08-01' }];
+        const r = evaluateBaselineChange({
+            headBaseline: head,
+            baseBaseline: base,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisories: [{ id: 7, severity: 'high', fixAvailable: true }],
+            now: NOW,
+        });
+        expect(r.ok).toBe(true);
+        expect(r.accepted).toHaveLength(1);
+        expect(r.accepted[0].fixHint).toMatch(/npm audit fix/);
+    });
+
     it('без переданного foundAdvisories fixAvailable не проверяется (обратная совместимость)', () => {
         const r = evaluateBaselineChange({
             headBaseline: [...OLD, ...UPSTREAM_DRIFT],
@@ -402,6 +441,35 @@ describe('evaluateBaselineChange — fixAvailable (#239)', () => {
 describe('pushDedupKey / dedupeAcceptedForPush / mergePushedKeys (#239)', () => {
     it('ключ — пара id:severity', () => {
         expect(pushDedupKey({ id: 5, severity: 'high' })).toBe('5:high');
+    });
+
+    // #239-ревью (🔴): продление TTL — самостоятельное событие, ключ включает целевой
+    // срок. Иначе одно продление, дедупнувшись по id:severity против ранее запушенной
+    // НОВОЙ записи, молча выпало бы из пуша (нарушение гарантии PR #208 находка 🔴 2).
+    it('продление TTL (previousExpiresAt задан) — ключ включает целевой срок', () => {
+        expect(
+            pushDedupKey({
+                id: 5,
+                severity: 'high',
+                previousExpiresAt: null,
+                expiresAt: '2026-08-01',
+            }),
+        ).toBe('5:high:ttl:2026-08-01');
+    });
+
+    it('продление записи, чей id:severity уже запушен как новая, — НЕ дедупится', () => {
+        const extension = [
+            { id: 5, severity: 'high', previousExpiresAt: '2026-07-20', expiresAt: '2026-08-01' },
+        ];
+        // '5:high' в сторе (запись ранее ушла как новая) — продление всё равно проходит.
+        expect(dedupeAcceptedForPush(extension, ['5:high'])).toEqual(extension);
+    });
+
+    it('идентичный повтор ОДНОГО продления дедупится (тот же целевой срок)', () => {
+        const extension = [
+            { id: 5, severity: 'high', previousExpiresAt: '2026-07-20', expiresAt: '2026-08-01' },
+        ];
+        expect(dedupeAcceptedForPush(extension, ['5:high:ttl:2026-08-01'])).toEqual([]);
     });
 
     it('отфильтровывает уже запушенные записи по ключу', () => {
@@ -430,6 +498,28 @@ describe('pushDedupKey / dedupeAcceptedForPush / mergePushedKeys (#239)', () => 
                 { id: 2, severity: 'high' },
             ],
         );
+        expect(merged.sort()).toEqual(['1:high', '2:high']);
+    });
+
+    // #239-ревью (🟡): без прореживания ключ жил бы вечно — после удаления записи из
+    // baseline повторный дрейф той же advisory спустя месяцы дедупнулся бы молча.
+    it('mergePushedKeys с baseline прореживает ключи удалённых из baseline записей', () => {
+        // В сторе ключи двух записей; в baseline осталась только advisory 1.
+        const merged = mergePushedKeys(['1:high', '2:high'], [], [{ id: 1, severity: 'high' }]);
+        expect(merged).toEqual(['1:high']);
+    });
+
+    it('mergePushedKeys с baseline держит ttl-ключ живой записи (id — префикс до первого ":")', () => {
+        const merged = mergePushedKeys(
+            ['1:high:ttl:2026-08-01'],
+            [],
+            [{ id: 1, severity: 'high' }],
+        );
+        expect(merged).toEqual(['1:high:ttl:2026-08-01']);
+    });
+
+    it('mergePushedKeys без baseline — прежнее поведение (union, без прореживания)', () => {
+        const merged = mergePushedKeys(['1:high', '2:high'], []);
         expect(merged.sort()).toEqual(['1:high', '2:high']);
     });
 });
