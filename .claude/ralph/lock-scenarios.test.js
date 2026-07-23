@@ -1,0 +1,301 @@
+// Приёмочные (сценарные) тесты файл-лока от двойного запуска (#176/#177/#178, фаза 1
+// изоляции ralph, критерии #179) — доказательство критериев готовности через ВЕСЬ путь
+// решения «стартовать или отказать», а не по отдельным примитивам. Юнит-тесты примитивов
+// (isRalphProcess/lockAlive/readLockPid/writeLock/removeLock/acquireLock/acquireRunnerLock)
+// живут в ralph.test.js; здесь — модель «лок-файл на диске» и проход через acquireLock как
+// единое целое, ровно по пяти критериям Issue #179:
+//
+//   1. Второй запуск при живом первом → отказ ДО любых побочек.
+//   2. Запуск после kill -9 предыдущего раннера → без ручных действий (автоснятие сироты).
+//   3. Чужой процесс с переиспользованным pid → не живой раннер (по образцу isMonitorProcess).
+//   4. Битый/нечитаемый лок-файл → стоп с внятным сообщением.
+//   5. Побочки запрещены (RALPH_NO_SIDE_EFFECTS=1, guardSideEffect, всё через DI).
+//
+// «ДО любых побочек» (крит. 1 и 4) проверяем СИЛЬНЕЕ мок-ассертов: на отказных путях
+// НЕ подменяем writeFn/removeFn — оставляем боевые дефолты под предохранителем #138. Любая
+// запись/удаление тогда бросила бы и попала в журнал sideEffectAttempts, который общий
+// afterEach (test-setup.js) сверяет с пустотой. Пустой журнал = отказ физически ничего не
+// тронул, а не «мок не позвался». Порядок «лок — первый шаг main(), впереди конфига/лога/
+// worktree» (крит. 1 на уровне точки входа) закреплён структурным барьером в конце файла:
+// main() не экспортируется (process.exit'ит, трогает реальный git/fs), поэтому ordering
+// проверяется по исходнику — барьер поймает рефактор, который протащит побочку перед локом.
+import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import ralph from './ralph.js';
+
+const { acquireLock } = ralph;
+
+const LOCK_PATH = '.claude/ralph/ralph.lock';
+// cmdline живого раннера: тот же формат, что в юнит-тестах isRalphProcess (полный путь
+// ralph.js в /proc/<pid>/cmdline). Чужой процесс — без этого пути.
+const RALPH_CMDLINE = 'node\0.claude/ralph/ralph.js\0--profile\0prod\0';
+const FOREIGN_CMDLINE = 'nginx\0-g\0daemon off;\0';
+
+const enoent = (msg) => {
+    const e = new Error(msg);
+    e.code = 'ENOENT';
+    return e;
+};
+
+// Модель «диска»: содержимое лок-файла + карта pid→cmdline (/proc) + множество живых pid.
+// readFn различает чтение лок-файла и чтение /proc по подстроке '/proc/'; killFn(pid, 0)
+// имитирует kill: живой pid → ok, мёртвый → ESRCH.
+function makeLockWorld({ lockContent = null, cmdlines = {}, livePids = [] } = {}) {
+    const live = new Set(livePids.map(String));
+    const readFn = (p) => {
+        const s = String(p);
+        const proc = s.match(/\/proc\/(\d+)\/cmdline/);
+        if (proc) {
+            const cmd = cmdlines[proc[1]];
+            if (cmd == null) throw enoent(`ENOENT ${s}`);
+            return cmd;
+        }
+        if (lockContent == null) throw enoent(`ENOENT ${s}`);
+        return lockContent;
+    };
+    const killFn = (pid) => {
+        if (!live.has(String(pid))) {
+            const e = new Error('ESRCH');
+            e.code = 'ESRCH';
+            throw e;
+        }
+    };
+    return { readFn, killFn };
+}
+
+describe('крит. 1 — второй запуск при ЖИВОМ первом: отказ ДО любых побочек', () => {
+    it('живой раннер держит лок (kill 0 + наш cmdline) → отказ, сообщение с pid и путём', () => {
+        const { readFn, killFn } = makeLockWorld({
+            lockContent: '4242',
+            cmdlines: { 4242: RALPH_CMDLINE },
+            livePids: [4242],
+        });
+        const failFn = vi.fn();
+        // writeFn/removeFn НЕ передаём — боевые дефолты под guardSideEffect (#138). Отказной
+        // путь не должен их звать; если позовёт — журнал побочек не будет пуст и afterEach
+        // уронит тест.
+        const ok = acquireLock({
+            lockPath: LOCK_PATH,
+            pid: 777,
+            readFn,
+            killFn,
+            logFn: vi.fn(),
+            failFn,
+        });
+        expect(ok).toBe(false);
+        expect(failFn).toHaveBeenCalledTimes(1);
+        const msg = failFn.mock.calls[0][0];
+        expect(msg).toContain('4242'); // pid держателя
+        expect(msg).toContain(LOCK_PATH); // путь лок-файла
+        // Побочек не было — журнал #138 пуст (сильнее «мок не позвался»: боевой дефолт бы
+        // бросил И записал попытку).
+        expect(ralph.sideEffectAttempts).toEqual([]);
+    });
+});
+
+describe('крит. 2 — запуск после kill -9 первого: без ручных действий (автоснятие сироты)', () => {
+    it('лок мёртвого pid (kill → ESRCH) → снимаем, логируем событие, берём себе', () => {
+        const { readFn, killFn } = makeLockWorld({
+            lockContent: '4242',
+            cmdlines: { 4242: RALPH_CMDLINE }, // /proc есть, но kill упадёт раньше сверки cmdline
+            livePids: [], // процесса нет — kill -9 его убил
+        });
+        // Путь взятия ПИШЕТ (reclaim) — здесь боевые дефолты бросили бы; мокаем write/remove.
+        const writeFn = vi.fn();
+        const removeFn = vi.fn();
+        const logFn = vi.fn();
+        const failFn = vi.fn();
+        const ok = acquireLock({
+            lockPath: LOCK_PATH,
+            pid: 777,
+            readFn,
+            killFn,
+            writeFn,
+            removeFn,
+            logFn,
+            failFn,
+        });
+        expect(ok).toBe(true); // старт без ручной чистки
+        expect(removeFn).toHaveBeenCalledWith(LOCK_PATH); // сирота снята автоматически
+        expect(writeFn).toHaveBeenCalledWith(LOCK_PATH, '777'); // свой pid записан
+        expect(logFn).toHaveBeenCalledTimes(1); // событие снятия — в лог
+        expect(logFn.mock.calls[0][0]).toContain('4242');
+        expect(failFn).not.toHaveBeenCalled();
+    });
+});
+
+describe('крит. 3 — чужой процесс с переиспользованным pid: НЕ живой раннер', () => {
+    it('pid занят (kill ok), но cmdline чужой → сирота: снимаем и берём себе', () => {
+        const { readFn, killFn } = makeLockWorld({
+            lockContent: '4242',
+            cmdlines: { 4242: FOREIGN_CMDLINE }, // номер отдан чужому процессу
+            livePids: [4242], // он ЖИВ — kill(0) проходит
+        });
+        const writeFn = vi.fn();
+        const removeFn = vi.fn();
+        const failFn = vi.fn();
+        const ok = acquireLock({
+            lockPath: LOCK_PATH,
+            pid: 777,
+            readFn,
+            killFn,
+            writeFn,
+            removeFn,
+            logFn: vi.fn(),
+            failFn,
+        });
+        expect(ok).toBe(true);
+        expect(removeFn).toHaveBeenCalledWith(LOCK_PATH);
+        expect(writeFn).toHaveBeenCalledWith(LOCK_PATH, '777');
+        expect(failFn).not.toHaveBeenCalled();
+    });
+
+    // Негативная пара к криту 1: тот же ЖИВОЙ pid, но за ним НАШ ralph.js → отказ. Разница
+    // между «занять лок» и «отказать» — ровно cmdline-сверка, а не только kill(0).
+    it('контраст: тот же живой pid с НАШИМ cmdline → отказ (cmdline решает, не kill 0)', () => {
+        const { readFn, killFn } = makeLockWorld({
+            lockContent: '4242',
+            cmdlines: { 4242: RALPH_CMDLINE },
+            livePids: [4242],
+        });
+        const failFn = vi.fn();
+        const ok = acquireLock({
+            lockPath: LOCK_PATH,
+            pid: 777,
+            readFn,
+            killFn,
+            logFn: vi.fn(),
+            failFn,
+        });
+        expect(ok).toBe(false);
+        expect(failFn).toHaveBeenCalledTimes(1);
+        expect(ralph.sideEffectAttempts).toEqual([]);
+    });
+});
+
+describe('крит. 4 — битый/нечитаемый лок-файл: стоп с внятным сообщением, ДО побочек', () => {
+    // На всех стоп-путях write/remove не подменяем — боевые дефолты под #138 докажут, что
+    // стоп ничего не тронул (журнал побочек пуст).
+    const stopCase = (lockContent) => {
+        const { readFn, killFn } = makeLockWorld({ lockContent });
+        const failFn = vi.fn();
+        const ok = acquireLock({
+            lockPath: LOCK_PATH,
+            pid: 777,
+            readFn,
+            killFn,
+            logFn: vi.fn(),
+            failFn,
+        });
+        return { ok, failFn };
+    };
+
+    it.each([
+        ['мусор (не число)', 'мусор', /битый/],
+        ['пусто/пробелы', '   \n', /битый/],
+        ['нулевой pid', '0', /битый/],
+        ['отрицательный pid', '-5', /битый/],
+    ])('%s → стоп fail-closed, сообщение %s, без побочек', (_name, content, re) => {
+        const { ok, failFn } = stopCase(content);
+        expect(ok).toBe(false);
+        expect(failFn).toHaveBeenCalledTimes(1);
+        expect(failFn.mock.calls[0][0]).toMatch(re);
+        expect(failFn.mock.calls[0][0]).toContain(LOCK_PATH);
+        expect(ralph.sideEffectAttempts).toEqual([]);
+    });
+
+    it('нечитаемый файл (EACCES, не ENOENT) → стоп, не «лока нет», без побочек', () => {
+        const readFn = (p) => {
+            if (String(p).includes('/proc/')) throw enoent('ENOENT');
+            const e = new Error('EACCES: permission denied');
+            e.code = 'EACCES';
+            throw e;
+        };
+        const failFn = vi.fn();
+        const ok = acquireLock({
+            lockPath: LOCK_PATH,
+            pid: 777,
+            readFn,
+            killFn: () => undefined,
+            logFn: vi.fn(),
+            failFn,
+        });
+        expect(ok).toBe(false);
+        expect(failFn).toHaveBeenCalledTimes(1);
+        expect(failFn.mock.calls[0][0]).toMatch(/нечитаем/);
+        expect(failFn.mock.calls[0][0]).toContain(LOCK_PATH);
+        expect(ralph.sideEffectAttempts).toEqual([]);
+    });
+
+    it('лока нет (ENOENT) — норм-путь, НЕ стоп: берём себе без снятия', () => {
+        const { readFn, killFn } = makeLockWorld({ lockContent: null });
+        const writeFn = vi.fn();
+        const removeFn = vi.fn();
+        const failFn = vi.fn();
+        const ok = acquireLock({
+            lockPath: LOCK_PATH,
+            pid: 777,
+            readFn,
+            killFn,
+            writeFn,
+            removeFn,
+            logFn: vi.fn(),
+            failFn,
+        });
+        expect(ok).toBe(true);
+        expect(writeFn).toHaveBeenCalledWith(LOCK_PATH, '777');
+        expect(removeFn).not.toHaveBeenCalled(); // снимать нечего
+        expect(failFn).not.toHaveBeenCalled();
+    });
+});
+
+describe('крит. 5 — побочки в тестах запрещены (RALPH_NO_SIDE_EFFECTS / guardSideEffect / DI)', () => {
+    it('окружение ralph держит предохранитель включённым', () => {
+        expect(process.env.RALPH_NO_SIDE_EFFECTS).toBe('1');
+    });
+
+    it('весь набор отказных сценариев не сделал ни одной боевой побочки', () => {
+        // Прогоняем все стоп/отказ-пути подряд с боевыми дефолтами write/remove: журнал
+        // побочек обязан остаться пустым (afterEach в test-setup.js сверит его же).
+        const live = makeLockWorld({
+            lockContent: '4242',
+            cmdlines: { 4242: RALPH_CMDLINE },
+            livePids: [4242],
+        });
+        acquireLock({ lockPath: LOCK_PATH, pid: 777, ...live, logFn: vi.fn(), failFn: vi.fn() });
+        const broken = makeLockWorld({ lockContent: 'мусор' });
+        acquireLock({ lockPath: LOCK_PATH, pid: 777, ...broken, logFn: vi.fn(), failFn: vi.fn() });
+        expect(ralph.sideEffectAttempts).toEqual([]);
+    });
+});
+
+describe('крит. 1 (точка входа) — лок берётся ПЕРВЫМ шагом main(), впереди побочек (#178)', () => {
+    // main() не экспортируется (под require.main === module: process.exit'ит, трогает
+    // реальный git/fs), поэтому порядок вызовов внутри неё нельзя проверить прогоном. Барьер
+    // по исходнику: acquireRunnerLock() обязан стоять РАНЬШЕ первой побочки — загрузки
+    // конфига, создания worktree, chdir. Рефактор, протащивший побочку перед локом, покраснит
+    // этот тест (структурный барьер сильнее комментария «лок первым» — бриф надёжности).
+    it('в исходнике main() acquireRunnerLock() предшествует loadJson/ensureRunnerWorktree/chdir', () => {
+        const src = fs.readFileSync(fileURLToPath(new URL('./ralph.js', import.meta.url)), 'utf-8');
+        const mainStart = src.indexOf('function main()');
+        expect(mainStart).toBeGreaterThan(-1);
+        const body = src.slice(mainStart);
+
+        const lockIdx = body.indexOf('acquireRunnerLock()');
+        const configIdx = body.indexOf('loadJson(CONFIG_PATH');
+        const worktreeIdx = body.indexOf('ensureRunnerWorktree(worktreePath)');
+        const chdirIdx = body.indexOf('process.chdir(worktreePath)');
+
+        expect(lockIdx).toBeGreaterThan(-1);
+        for (const [name, idx] of [
+            ['loadJson(CONFIG_PATH)', configIdx],
+            ['ensureRunnerWorktree', worktreeIdx],
+            ['process.chdir', chdirIdx],
+        ]) {
+            expect(idx, `${name} должен идти ПОСЛЕ acquireRunnerLock() в main()`).toBeGreaterThan(
+                lockIdx,
+            );
+        }
+    });
+});
