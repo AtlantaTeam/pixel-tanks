@@ -78,6 +78,24 @@ export function changedEntries(headBaseline = [], baseBaseline = []) {
     return { severityRaised, ttlExtended };
 }
 
+// #239: 23.07 четыре next-advisory ушли в baseline авто+пуш, хотя чинились патчем
+// next@16.2.11 (#238) — политика различала «сам притащил» от «апстрим-дрейф», но не
+// смотрела, есть ли у дрейфа готовый фикс. Апстрим-дрейф остаётся автономным ТОЛЬКО
+// пока апстрим ещё не починил; если npm audit уже видит fixAvailable — это не «живём
+// с этим», а «обнови зависимость», и решение снова за человеком, как с critical.
+//
+// npm audit кладёт fixAvailable как true (фикс без semver-major, апгрейд внутри
+// текущего диапазона), объект {name, version, isSemVerMajor} (конкретная целевая
+// версия, возможно мажорная) либо false (апстрим фикс ещё не выпустил).
+function describeFix(fixAvailable) {
+    if (!fixAvailable) return null;
+    if (fixAvailable === true) return 'обновлением зависимостей (npm audit fix)';
+    const target = `${fixAvailable.name}@${fixAvailable.version}`;
+    return fixAvailable.isSemVerMajor
+        ? `обновлением до ${target} (мажорная версия)`
+        : `обновлением до ${target}`;
+}
+
 // Fail-closed по образцу security-audit.mjs: непонятная запись — стоп, не «пропустим».
 export function validateNewEntry(entry, { now = 0, ttlDays = DEFAULT_TTL_DAYS } = {}) {
     const problems = [];
@@ -127,6 +145,9 @@ export function evaluateBaselineChange({
     baseBaseline = [],
     changedFiles = [],
     foundAdvisoryIds = null,
+    // #239: полные записи текущего скана (id + fixAvailable), не только id — нужны,
+    // чтобы отличить «апстрим ещё не починил» от «фикс уже есть, просто не применили».
+    foundAdvisories = null,
     now = 0,
     ttlDays = DEFAULT_TTL_DAYS,
 } = {}) {
@@ -134,6 +155,9 @@ export function evaluateBaselineChange({
     const { touchesBaseline, touchesDeps, depFiles } = classifyDiff(changedFiles);
     const added = addedEntries(headBaseline, baseBaseline);
     const { severityRaised, ttlExtended } = changedEntries(headBaseline, baseBaseline);
+    const scanById = foundAdvisories ? new Map(foundAdvisories.map((a) => [a.id, a])) : null;
+    const effectiveFoundIds =
+        foundAdvisoryIds ?? (foundAdvisories && foundAdvisories.map((a) => a.id));
 
     // Ревью PR #208, находка 🔴 1 — обход в два PR: PR №1 вписывает запись под advisory,
     // которой ещё нет (для политики это «апстрим-дрейф», для скана — безобидный stale,
@@ -141,13 +165,29 @@ export function evaluateBaselineChange({
     // проходит по уже готовой записи. Каждый шаг по отдельности легитимен.
     // Закрывается требованием: вписывать можно только advisory, которую скан ВИДИТ
     // сейчас. Легитимного повода занести ненайденную advisory не существует.
-    if (foundAdvisoryIds) {
-        const found = new Set(foundAdvisoryIds);
+    if (effectiveFoundIds) {
+        const found = new Set(effectiveFoundIds);
         for (const a of added.filter((x) => !found.has(x.id))) {
             errors.push(
                 `запись ${a.id} (${a.package ?? '?'}) не соответствует ни одной advisory ` +
                     `текущего скана — запись «на вырост» под будущую уязвимость не принимается`,
             );
+        }
+    }
+
+    // #239: устранимый апстрим-дрейф — не «апстрим ещё не починил», а «почини сам».
+    // Автопринятие в baseline здесь означает «признаём неустранимым» то, что таковым
+    // не является — ложная формулировка эффекта, ради которой заводился issue.
+    if (scanById) {
+        for (const a of added) {
+            const fixDescription = describeFix(scanById.get(a.id)?.fixAvailable);
+            if (fixDescription) {
+                errors.push(
+                    `advisory ${a.id} (${a.package ?? '?'}) устранима ${fixDescription} — ` +
+                        `автопринятие в baseline недопустимо, нужно решение человека: обновить ` +
+                        `зависимость или осознанно отклонить.`,
+                );
+            }
         }
     }
 
@@ -207,7 +247,19 @@ export function evaluateBaselineChange({
     // Сдвиг срока не запрещаем — иначе просроченная запись останавливала бы петлю ночью,
     // а это ровно то, чего просили избежать. Но он обязан быть слышным: попадает в пуш
     // наравне с новыми записями (ревью PR #208, находка 🔴 2).
-    const accepted = errors.length ? [] : [...added, ...ttlExtended];
+    //
+    // #239-ревью: fixAvailable проверяется только у новых записей (added выше), но
+    // продлить срок можно и записи, которую апстрим тем временем научился чинить. Само
+    // продление не запрещаем (просроченная запись иначе встала бы ночью), однако помечаем
+    // устранимость в тексте пуша (fixHint) — чтобы человек увидел «продлили то, что уже
+    // чинится апгрейдом», а не счёл запись по-прежнему неустранимой.
+    const ttlExtendedForPush = scanById
+        ? ttlExtended.map((a) => {
+              const fixHint = describeFix(scanById.get(a.id)?.fixAvailable);
+              return fixHint ? { ...a, fixHint } : a;
+          })
+        : ttlExtended;
+    const accepted = errors.length ? [] : [...added, ...ttlExtendedForPush];
     return { ok: errors.length === 0, errors, accepted, expired, ttlExtended };
 }
 
@@ -216,7 +268,8 @@ export function evaluateBaselineChange({
 export function acceptedPushText(accepted = []) {
     const lines = accepted.map((a) =>
         a.previousExpiresAt !== undefined
-            ? `• ${a.id} ${a.package} — срок продлён ${a.previousExpiresAt ?? 'без срока'} → ${a.expiresAt}`
+            ? `• ${a.id} ${a.package} — срок продлён ${a.previousExpiresAt ?? 'без срока'} → ${a.expiresAt}` +
+              (a.fixHint ? ` — устранима ${a.fixHint}, продлили то, что уже чинится апгрейдом` : '')
             : `• ${a.id} ${a.package} (${a.severity}) — новая запись до ${a.expiresAt}`,
     );
     return (
@@ -224,4 +277,46 @@ export function acceptedPushText(accepted = []) {
         `зависимости в PR не менялись, это апстрим-дрейф:\n${lines.join('\n')}\n` +
         `Гейт пропущен, петля продолжается. Проверь, что записи правда неустранимы.`
     );
+}
+
+// #239: до мерджа фазы автозапись живёт в рабочем дереве гейта, а не в коммите PR —
+// каждый следующий прогон гейта видит тот же дрейф как «новый» и пересчитывает
+// идентичный accepted. Без дедупа человек получал бы один и тот же пуш на каждый
+// прогон (за ночь 22→23.07 пришло дважды с идентичным телом). Ключ — (id+severity):
+// рост severity у той же advisory — новое событие, дедуп его пропускает намеренно.
+//
+// #239-ревью (🔴): продление TTL (previousExpiresAt задан changedEntries — как и в
+// acceptedPushText) — самостоятельное событие, а не повтор новой записи. Если бы ключ
+// продления совпадал с ключом added (`id:severity`), то запись, однажды авто-принятая и
+// запушенная как новая, при позднейшем продлении срока дедупнулась бы молча — а
+// гарантия «сдвиг срока разрешён, но обязан попасть в пуш» (ревью PR #208, находка 🔴 2)
+// требует обратного. Поэтому ключ продления включает целевой срок: идентичный повтор
+// ОДНОГО продления (#239) дедупится по совпадению expiresAt, а КАЖДОЕ новое продление —
+// новый ключ → пуш.
+export function pushDedupKey(entry) {
+    if (entry.previousExpiresAt !== undefined) {
+        return `${entry.id}:${entry.severity}:ttl:${entry.expiresAt}`;
+    }
+    return `${entry.id}:${entry.severity}`;
+}
+
+export function dedupeAcceptedForPush(accepted = [], alreadyPushed = []) {
+    const seen = new Set(alreadyPushed);
+    return accepted.filter((a) => !seen.has(pushDedupKey(a)));
+}
+
+// currentBaseline (опц.) — прореживание стора (#239-ревью 🟡): без него ключ жил бы
+// вечно, и повторный дрейф advisory, которую апстрим починил и человек удалил из
+// baseline, спустя месяцы дедупнулся бы молча (id стабилен). Оставляем только ключи
+// записей, что ещё в baseline (id — префикс ключа до первого ':'; id advisory —
+// число или GHSA-…, двоеточий не содержит), плюс свежепринятые. Так память стора
+// живёт ровно столько, сколько сама запись. Без baseline — прежнее поведение (union).
+export function mergePushedKeys(alreadyPushed = [], accepted = [], currentBaseline = null) {
+    const fresh = accepted.map(pushDedupKey);
+    if (currentBaseline == null) {
+        return [...new Set([...alreadyPushed, ...fresh])];
+    }
+    const liveIds = new Set(currentBaseline.map((b) => String(b.id)));
+    const retained = alreadyPushed.filter((k) => liveIds.has(String(k).split(':')[0]));
+    return [...new Set([...retained, ...fresh])];
 }
