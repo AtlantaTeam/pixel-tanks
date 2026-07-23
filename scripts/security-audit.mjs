@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { acceptedPushText, evaluateBaselineChange } from './baseline-policy.mjs';
+import {
+    acceptedPushText,
+    dedupeAcceptedForPush,
+    evaluateBaselineChange,
+    mergePushedKeys,
+} from './baseline-policy.mjs';
 
 // telegram-notifier.js — CommonJS-модуль раннера (#85), самостоятельный: он не тянет
 // ralph.js и уже носит собственный guardSideEffect, поэтому в тестах побочка не улетит.
@@ -159,6 +164,12 @@ export function collectAdvisories(auditJson, severities = GATED_SEVERITIES) {
                     severity: via.severity,
                     title: via.title ?? '',
                     url: via.url ?? '',
+                    // #239: fixAvailable — свойство ТОП-уровневой записи пакета (entry), не
+                    // отдельного via; npm кладёт его как true/false либо
+                    // {name, version, isSemVerMajor}. Дефолт false — «фикса нет» явно, не
+                    // молчаливый undefined (baseline-policy решает по нему, притворяться
+                    // неустранимой не должна и находка без этого поля).
+                    fixAvailable: entry?.fixAvailable ?? false,
                 });
             }
         }
@@ -215,9 +226,85 @@ export function looksBlind(advisories, baseline) {
     return baseline.length > 0 && advisories.length === 0;
 }
 
+// #239: до мерджа фазы автозапись baseline живёт только в рабочем дереве прогона
+// гейта, не коммитится — следующий прогон видит тот же апстрим-дрейф заново и без
+// дедупа слал бы идентичный пуш на каждый прогон (было: дважды за ночь 22→23.07).
+// Ключи (id+severity) хранятся вне git — гитигнорено, как ralph.state.json.
+const PUSH_DEDUP_PATH = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '.claude/ralph/security-baseline-push.json',
+);
+
+const NO_SIDE_EFFECTS = process.env.RALPH_NO_SIDE_EFFECTS === '1';
+export const sideEffectAttempts = [];
+function guardSideEffect(what) {
+    if (!NO_SIDE_EFFECTS) return;
+    sideEffectAttempts.push(what);
+    throw new Error(
+        `${what} — побочка в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1).\n` +
+            `Тест дошёл до боевого дефолта — подмени writeFn у savePushedKeys.`,
+    );
+}
+
+export function loadPushedKeys(readFn = readFileSync, file = PUSH_DEDUP_PATH) {
+    let raw;
+    try {
+        raw = readFn(file, 'utf8');
+    } catch (e) {
+        if (e && e.code === 'ENOENT') return []; // первый прогон — дедуп-стора ещё нет
+        throw e;
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+        throw new Error(`${file}: без массива ключей — неожиданный формат`);
+    }
+    return parsed;
+}
+
+export function savePushedKeys(keys, writeFn = writeFileSync, file = PUSH_DEDUP_PATH) {
+    // Как spawnClaude в ralph.js (#914): guard срабатывает только на боевом дефолте —
+    // тест, явно инжектирующий свой writeFn, проверяет сериализацию, не реальную запись.
+    if (writeFn === writeFileSync) guardSideEffect(`savePushedKeys(${file})`);
+    writeFn(file, JSON.stringify(keys, null, 2));
+}
+
+// Толкает пуш только про записи, которых нет в уже отправленных (по id+severity).
+// Ключ запоминается ТОЛЬКО после подтверждённой доставки — недоставленное событие не
+// должно молча выпадать из следующей попытки (тот же принцип «не молчать», что и у
+// самого пуша).
+export function pushAcceptedBaselineChanges(
+    accepted,
+    {
+        loadPushedKeysFn = loadPushedKeys,
+        savePushedKeysFn = savePushedKeys,
+        sendFn = sendTelegramMessage,
+        logFn = console.warn,
+    } = {},
+) {
+    if (!accepted.length) return;
+    const pushed = loadPushedKeysFn();
+    const fresh = dedupeAcceptedForPush(accepted, pushed);
+    if (!fresh.length) return;
+    const text = acceptedPushText(fresh);
+    logFn(text); // текст уже начинается с ⚠️ — второй эмодзи не нужен
+    // sendTelegramMessage спроектирован fail-open и НИКОГДА не бросает (#85), поэтому
+    // try/catch здесь был бы мёртвым кодом, а недоставка — беззвучной: ровно та
+    // молчаливость, против которой весь механизм (ревью PR #208, находка 🟠 6).
+    const delivered = sendFn(text, { logFn });
+    if (!delivered) {
+        logFn(
+            `⚠️  пуш о расширении baseline НЕ доставлен — событие осталось только ` +
+                `в выводе гейта и логе раннера, проверь RALPH_TG_* и сеть`,
+        );
+        return; // ключ не запоминаем — следующий прогон гейта попробует снова
+    }
+    savePushedKeysFn(mergePushedKeys(pushed, fresh));
+}
+
 // #207: политика изменения baseline — до собственно сверки advisory. Порядок важен:
 // если правки baseline не имели права случиться, разбирать по ним находки бессмысленно.
-function enforceBaselinePolicy(baseline, foundAdvisoryIds) {
+function enforceBaselinePolicy(baseline, foundAdvisories) {
     let verdict;
     try {
         fetchOriginMain();
@@ -225,7 +312,7 @@ function enforceBaselinePolicy(baseline, foundAdvisoryIds) {
             headBaseline: baseline,
             baseBaseline: gitBaseBaseline(),
             changedFiles: gitChangedFiles(),
-            foundAdvisoryIds,
+            foundAdvisories,
             now: Date.now(),
         });
     } catch (e) {
@@ -242,25 +329,9 @@ function enforceBaselinePolicy(baseline, foundAdvisoryIds) {
     }
 
     // Автономность сохранена, молчаливость — нет: петля идёт дальше, но человек узнаёт
-    // об ослаблении гейта сразу. Пуш при каждом прогоне гейта с теми же новыми записями
-    // осознан: повторов мало (гейт на фазу гоняется 1–3 раза), а пропустить событие
-    // дороже, чем получить его дважды.
-    if (verdict.accepted.length) {
-        const text = acceptedPushText(verdict.accepted);
-        console.warn(text); // текст уже начинается с ⚠️ — второй эмодзи не нужен
-        // sendTelegramMessage спроектирован fail-open и НИКОГДА не бросает (#85), поэтому
-        // try/catch здесь был мёртвым кодом, а недоставка — беззвучной: ровно та
-        // молчаливость, против которой весь механизм (ревью PR #208, находка 🟠 6).
-        // Гейт от недоставки не краснеет — запись уже признана легитимной, — но факт
-        // «громко не получилось» обязан быть виден в выводе чека.
-        const delivered = sendTelegramMessage(text, { logFn: console.warn });
-        if (!delivered) {
-            console.warn(
-                `⚠️  пуш о расширении baseline НЕ доставлен — событие осталось только ` +
-                    `в выводе гейта и логе раннера, проверь RALPH_TG_* и сеть`,
-            );
-        }
-    }
+    // об ослаблении гейта сразу. Дедуп по (id+severity) гасит только идентичные повторы
+    // (#239) — новое событие (новая advisory, выросшая severity) пушится как обычно.
+    pushAcceptedBaselineChanges(verdict.accepted);
 }
 
 function main() {
@@ -290,10 +361,7 @@ function main() {
     // Политика — после сбора находок (нужен список реально найденных id, ревью PR #208,
     // находка 🔴 1), но ДО решения по гейту: если правки baseline не имели права
     // случиться, разбирать по ним находки бессмысленно.
-    enforceBaselinePolicy(
-        baseline,
-        advisories.map((a) => a.id),
-    );
+    enforceBaselinePolicy(baseline, advisories);
 
     // Две разные величины, которые легко перепутать: counts из metadata — это ПАКЕТЫ
     // в свёрнутой оценке (одна дыра undici считается и за payload, и за @payloadcms/next,

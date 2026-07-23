@@ -7,8 +7,12 @@ import {
     countBySeverity,
     diffBaseline,
     loadBaseline,
+    loadPushedKeys,
     looksBlind,
+    pushAcceptedBaselineChanges,
     runAudit,
+    savePushedKeys,
+    sideEffectAttempts,
 } from './security-audit.mjs';
 
 // #83/#140: детерминированный security-скан прод-гейта. Числовой порог (#83) заменён
@@ -58,6 +62,39 @@ describe('collectAdvisories', () => {
         expect(collectAdvisories(json)[0].id).toBe(42);
     });
 
+    it('#239: захватывает fixAvailable из отчёта npm (объектная форма — фикс с версией)', () => {
+        const json = auditWith({
+            immutable: {
+                severity: 'high',
+                fixAvailable: { name: 'immutable', version: '5.1.3', isSemVerMajor: false },
+                via: [{ source: 1124008, severity: 'high', name: 'immutable', title: 'дыра' }],
+            },
+        });
+        expect(collectAdvisories(json)[0].fixAvailable).toEqual({
+            name: 'immutable',
+            version: '5.1.3',
+            isSemVerMajor: false,
+        });
+    });
+
+    it('#239: fixAvailable:false (апстрим ещё не починил) — сохраняется как есть', () => {
+        const json = auditWith({
+            sharp: {
+                severity: 'high',
+                fixAvailable: false,
+                via: [{ source: 1124066, severity: 'high', name: 'sharp', title: 'дыра' }],
+            },
+        });
+        expect(collectAdvisories(json)[0].fixAvailable).toBe(false);
+    });
+
+    it('#239: fixAvailable отсутствует в отчёте — дефолт false, не молчаливый undefined', () => {
+        const json = auditWith({
+            pkg: { severity: 'high', via: [{ source: 1, severity: 'high', title: 'x' }] },
+        });
+        expect(collectAdvisories(json)[0].fixAvailable).toBe(false);
+    });
+
     it('строки в via (пакеты-переносчики) не считаются находками', () => {
         const json = auditWith({ payload: { severity: 'high', via: ['undici', 'uuid'] } });
         expect(collectAdvisories(json)).toEqual([]);
@@ -76,7 +113,10 @@ describe('collectAdvisories', () => {
         // Молча отбросить такую запись = выронить находку и остаться зелёным
         // (ревью PR #141): это fail-open в скрипте, от которого зависит автомердж.
         const json = auditWith({
-            pkg: { severity: 'high', via: [{ source: 1, severity: 'severe', title: 'новый уровень' }] },
+            pkg: {
+                severity: 'high',
+                via: [{ source: 1, severity: 'severe', title: 'новый уровень' }],
+            },
         });
         expect(() => collectAdvisories(json)).toThrow(/неизвестной severity/);
     });
@@ -119,8 +159,9 @@ describe('diffBaseline', () => {
     });
 
     it('severity та же — не changed', () => {
-        expect(diffBaseline([{ id: 1, severity: 'high' }], [{ id: 1, severity: 'high' }]).changed)
-            .toEqual([]);
+        expect(
+            diffBaseline([{ id: 1, severity: 'high' }], [{ id: 1, severity: 'high' }]).changed,
+        ).toEqual([]);
     });
 
     it('severity УПАЛА — не changed: апстрим переоценил в меньшую сторону, это не регресс', () => {
@@ -284,5 +325,136 @@ describe('gitChangedFiles / gitBaseBaseline', () => {
     it('битый baseline в origin/main — стоп, а не «сверим как есть»', () => {
         const spawnFn = vi.fn().mockReturnValue({ status: 0, stdout: '{"advisories":"нет"}' });
         expect(() => gitBaseBaseline(spawnFn)).toThrow(/без массива advisories/);
+    });
+});
+
+// #239: хранилище ключей уже отправленных пушей — вне git (как ralph.state.json),
+// живёт между прогонами гейта, для которых сама автозапись baseline не коммитится.
+describe('loadPushedKeys / savePushedKeys', () => {
+    it('файла ещё нет (ENOENT) — пустой список, не ошибка', () => {
+        const readFn = () => {
+            const e = new Error('no such file');
+            e.code = 'ENOENT';
+            throw e;
+        };
+        expect(loadPushedKeys(readFn)).toEqual([]);
+    });
+
+    it('читает существующий список ключей', () => {
+        const readFn = () => JSON.stringify(['1:high', '2:critical']);
+        expect(loadPushedKeys(readFn)).toEqual(['1:high', '2:critical']);
+    });
+
+    it('битый формат (не массив) — исключение, fail-closed', () => {
+        const readFn = () => JSON.stringify({ oops: true });
+        expect(() => loadPushedKeys(readFn)).toThrow(/без массива/);
+    });
+
+    it('прочая ошибка чтения — пробрасывается, не глотается как ENOENT', () => {
+        const readFn = () => {
+            throw new Error('EACCES');
+        };
+        expect(() => loadPushedKeys(readFn)).toThrow(/EACCES/);
+    });
+
+    it('боевой дефолт записи — предохранитель #138, а не тихая запись на диск в тестах', () => {
+        expect(() => savePushedKeys(['1:high'])).toThrow(/побочка в тестовом окружении/);
+        // Вызван НАМЕРЕННО — журнал забираем сами (как sh() в ralph.test.js #138),
+        // иначе общий afterEach уронил бы этот же тест.
+        expect(sideEffectAttempts.splice(0)).toEqual([expect.stringContaining('savePushedKeys(')]);
+    });
+
+    it('запись с инжектированным writeFn — без побочки, сериализует ключи', () => {
+        const writeFn = vi.fn();
+        savePushedKeys(['1:high'], writeFn);
+        expect(writeFn).toHaveBeenCalledWith(
+            expect.any(String),
+            JSON.stringify(['1:high'], null, 2),
+        );
+    });
+});
+
+// #239: живой инцидент 22→23.07 — один и тот же апстрим-дрейф пушился на каждый
+// прогон гейта, потому что автозапись baseline не коммитится до мерджа фазы, и
+// каждый следующий прогон видел «те же новые записи» как будто впервые.
+describe('pushAcceptedBaselineChanges — дедуп пуша (#239)', () => {
+    it('пустой accepted — ничего не грузит и не шлёт', () => {
+        const loadPushedKeysFn = vi.fn();
+        const sendFn = vi.fn();
+        pushAcceptedBaselineChanges([], { loadPushedKeysFn, sendFn });
+        expect(loadPushedKeysFn).not.toHaveBeenCalled();
+        expect(sendFn).not.toHaveBeenCalled();
+    });
+
+    it('новая advisory — шлёт пуш и запоминает ключ ПОСЛЕ успешной доставки', () => {
+        const loadPushedKeysFn = vi.fn(() => []);
+        const savePushedKeysFn = vi.fn();
+        const sendFn = vi.fn(() => true);
+        const accepted = [
+            { id: 1, severity: 'high', package: 'immutable', expiresAt: '2026-08-05' },
+        ];
+        pushAcceptedBaselineChanges(accepted, {
+            loadPushedKeysFn,
+            savePushedKeysFn,
+            sendFn,
+            logFn: vi.fn(),
+        });
+        expect(sendFn).toHaveBeenCalledTimes(1);
+        expect(savePushedKeysFn).toHaveBeenCalledWith(['1:high']);
+    });
+
+    it('та же advisory уже была запушена — повторный пуш не шлётся', () => {
+        const loadPushedKeysFn = vi.fn(() => ['1:high']);
+        const savePushedKeysFn = vi.fn();
+        const sendFn = vi.fn(() => true);
+        const accepted = [
+            { id: 1, severity: 'high', package: 'immutable', expiresAt: '2026-08-05' },
+        ];
+        pushAcceptedBaselineChanges(accepted, {
+            loadPushedKeysFn,
+            savePushedKeysFn,
+            sendFn,
+            logFn: vi.fn(),
+        });
+        expect(sendFn).not.toHaveBeenCalled();
+        expect(savePushedKeysFn).not.toHaveBeenCalled();
+    });
+
+    it('смешанный набор — шлёт только новые записи, но запоминает все принятые ключи', () => {
+        const loadPushedKeysFn = vi.fn(() => ['1:high']);
+        const savePushedKeysFn = vi.fn();
+        const sendFn = vi.fn(() => true);
+        const accepted = [
+            { id: 1, severity: 'high', package: 'immutable', expiresAt: '2026-08-05' },
+            { id: 2, severity: 'high', package: 'fast-uri', expiresAt: '2026-08-05' },
+        ];
+        pushAcceptedBaselineChanges(accepted, {
+            loadPushedKeysFn,
+            savePushedKeysFn,
+            sendFn,
+            logFn: vi.fn(),
+        });
+        expect(sendFn).toHaveBeenCalledTimes(1);
+        expect(sendFn.mock.calls[0][0]).toMatch(/fast-uri/);
+        expect(sendFn.mock.calls[0][0]).not.toMatch(/immutable/);
+        expect(savePushedKeysFn).toHaveBeenCalledWith(['1:high', '2:high']);
+    });
+
+    it('доставка не удалась — ключ НЕ запоминается, следующий прогон вправе повторить попытку', () => {
+        const loadPushedKeysFn = vi.fn(() => []);
+        const savePushedKeysFn = vi.fn();
+        const sendFn = vi.fn(() => false);
+        const logFn = vi.fn();
+        const accepted = [
+            { id: 1, severity: 'high', package: 'immutable', expiresAt: '2026-08-05' },
+        ];
+        pushAcceptedBaselineChanges(accepted, {
+            loadPushedKeysFn,
+            savePushedKeysFn,
+            sendFn,
+            logFn,
+        });
+        expect(savePushedKeysFn).not.toHaveBeenCalled();
+        expect(logFn.mock.calls.some(([msg]) => /НЕ доставлен/.test(msg))).toBe(true);
     });
 });

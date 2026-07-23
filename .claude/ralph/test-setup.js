@@ -12,14 +12,19 @@
 // иначе циклическая зависимость с #86), поэтому у него свой журнал попыток. Сверяем
 // оба в одном afterEach, а не заводим второй setupFiles — предохранитель один на
 // весь проект "ralph".
+//
+// security-audit.mjs (#239) — третий журнал: savePushedKeys пишет дедуп-стор пуша
+// вне git, забытый мок в тесте молча создал бы/перезаписал реальный файл на диске.
 import { afterEach, expect } from 'vitest';
 import ralph from './ralph.js';
 import telegramNotifier from './telegram-notifier.js';
+import { sideEffectAttempts as securityAuditSideEffectAttempts } from '../../scripts/security-audit.mjs';
 
 afterEach(() => {
     const attempts = [
         ...ralph.sideEffectAttempts.splice(0),
         ...telegramNotifier.sideEffectAttempts.splice(0),
+        ...securityAuditSideEffectAttempts.splice(0),
     ];
     expect(
         attempts,

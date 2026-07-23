@@ -4,8 +4,11 @@ import {
     addedEntries,
     changedEntries,
     classifyDiff,
+    dedupeAcceptedForPush,
     evaluateBaselineChange,
     expiredEntries,
+    mergePushedKeys,
+    pushDedupKey,
     validateNewEntry,
 } from './baseline-policy.mjs';
 
@@ -237,7 +240,13 @@ describe('обходы политики (ревью PR #208)', () => {
     const FOUND = [1124008, 1124015, 1124066];
 
     it('🔴 1: запись «на вырост» под ещё не найденную advisory не принимается', () => {
-        const future = { id: 4242, package: 'future', severity: 'high', reason: 'заранее', expiresAt: '2026-08-05' };
+        const future = {
+            id: 4242,
+            package: 'future',
+            severity: 'high',
+            reason: 'заранее',
+            expiresAt: '2026-08-05',
+        };
         const r = evaluateBaselineChange({
             headBaseline: [...OLD, future],
             baseBaseline: OLD,
@@ -275,7 +284,9 @@ describe('обходы политики (ревью PR #208)', () => {
     });
 
     it('🔴 2: продление срока разрешено, но обязано попасть в пуш', () => {
-        const base = [{ id: 7, package: 'x', severity: 'high', reason: 'r', expiresAt: '2026-07-20' }];
+        const base = [
+            { id: 7, package: 'x', severity: 'high', reason: 'r', expiresAt: '2026-07-20' },
+        ];
         const head = [{ ...base[0], expiresAt: '2026-08-01' }];
         const r = evaluateBaselineChange({
             headBaseline: head,
@@ -318,5 +329,107 @@ describe('обходы политики (ревью PR #208)', () => {
         const base = [{ id: 7, package: 'x', severity: 'critical', reason: 'r' }];
         const head = [{ ...base[0], severity: 'high' }];
         expect(changedEntries(head, base).severityRaised).toEqual([]);
+    });
+});
+
+// #239: находка с fixAvailable из npm audit не должна молча уходить в тихий baseline —
+// апстрим-дрейф без фикса остаётся автономным (случай 22.07), а устранимое обновлением
+// требует решения человека наравне с critical.
+describe('evaluateBaselineChange — fixAvailable (#239)', () => {
+    const FOUND = [1124008, 1124015, 1124066];
+
+    it('дрейф с fixAvailable:true не принимается автоматически', () => {
+        const fixable = { ...UPSTREAM_DRIFT[0], id: 5001 };
+        const r = evaluateBaselineChange({
+            headBaseline: [...OLD, fixable],
+            baseBaseline: OLD,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisories: [{ id: 5001, severity: 'high', fixAvailable: true }],
+            now: NOW,
+        });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join()).toMatch(/устранима.*npm audit fix/);
+        expect(r.accepted).toEqual([]);
+    });
+
+    it('дрейф с fixAvailable-объектом называет целевую версию пакета', () => {
+        const fixable = { ...UPSTREAM_DRIFT[0], id: 5002 };
+        const r = evaluateBaselineChange({
+            headBaseline: [...OLD, fixable],
+            baseBaseline: OLD,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisories: [
+                {
+                    id: 5002,
+                    severity: 'high',
+                    fixAvailable: { name: 'immutable', version: '5.1.3', isSemVerMajor: false },
+                },
+            ],
+            now: NOW,
+        });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join()).toMatch(/immutable@5\.1\.3/);
+    });
+
+    it('дрейф без фикса (fixAvailable:false) проходит как раньше — авто+TTL', () => {
+        const r = evaluateBaselineChange({
+            headBaseline: [...OLD, ...UPSTREAM_DRIFT],
+            baseBaseline: OLD,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisories: UPSTREAM_DRIFT.map((a) => ({
+                id: a.id,
+                severity: a.severity,
+                fixAvailable: false,
+            })),
+            now: NOW,
+        });
+        expect(r.ok).toBe(true);
+        expect(r.accepted.map((a) => a.package)).toEqual(['immutable', 'fast-uri', 'sharp']);
+    });
+
+    it('без переданного foundAdvisories fixAvailable не проверяется (обратная совместимость)', () => {
+        const r = evaluateBaselineChange({
+            headBaseline: [...OLD, ...UPSTREAM_DRIFT],
+            baseBaseline: OLD,
+            changedFiles: ['scripts/security-audit.baseline.json'],
+            foundAdvisoryIds: FOUND,
+            now: NOW,
+        });
+        expect(r.ok).toBe(true);
+    });
+});
+
+describe('pushDedupKey / dedupeAcceptedForPush / mergePushedKeys (#239)', () => {
+    it('ключ — пара id:severity', () => {
+        expect(pushDedupKey({ id: 5, severity: 'high' })).toBe('5:high');
+    });
+
+    it('отфильтровывает уже запушенные записи по ключу', () => {
+        const accepted = [
+            { id: 1, severity: 'high', package: 'a' },
+            { id: 2, severity: 'high', package: 'b' },
+        ];
+        expect(dedupeAcceptedForPush(accepted, ['1:high']).map((a) => a.id)).toEqual([2]);
+    });
+
+    it('ничего не запущено раньше — проходят все записи', () => {
+        const accepted = [{ id: 1, severity: 'high', package: 'a' }];
+        expect(dedupeAcceptedForPush(accepted, [])).toEqual(accepted);
+    });
+
+    it('та же advisory с ВЫРОСШЕЙ severity — это новое событие, не дедупится', () => {
+        const accepted = [{ id: 1, severity: 'critical', package: 'a' }];
+        expect(dedupeAcceptedForPush(accepted, ['1:high'])).toEqual(accepted);
+    });
+
+    it('mergePushedKeys добавляет новые ключи без дублей', () => {
+        const merged = mergePushedKeys(
+            ['1:high'],
+            [
+                { id: 1, severity: 'high' },
+                { id: 2, severity: 'high' },
+            ],
+        );
+        expect(merged.sort()).toEqual(['1:high', '2:high']);
     });
 });

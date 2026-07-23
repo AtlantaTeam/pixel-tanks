@@ -78,6 +78,24 @@ export function changedEntries(headBaseline = [], baseBaseline = []) {
     return { severityRaised, ttlExtended };
 }
 
+// #239: 23.07 четыре next-advisory ушли в baseline авто+пуш, хотя чинились патчем
+// next@16.2.11 (#238) — политика различала «сам притащил» от «апстрим-дрейф», но не
+// смотрела, есть ли у дрейфа готовый фикс. Апстрим-дрейф остаётся автономным ТОЛЬКО
+// пока апстрим ещё не починил; если npm audit уже видит fixAvailable — это не «живём
+// с этим», а «обнови зависимость», и решение снова за человеком, как с critical.
+//
+// npm audit кладёт fixAvailable как true (фикс без semver-major, апгрейд внутри
+// текущего диапазона), объект {name, version, isSemVerMajor} (конкретная целевая
+// версия, возможно мажорная) либо false (апстрим фикс ещё не выпустил).
+function describeFix(fixAvailable) {
+    if (!fixAvailable) return null;
+    if (fixAvailable === true) return 'обновлением зависимостей (npm audit fix)';
+    const target = `${fixAvailable.name}@${fixAvailable.version}`;
+    return fixAvailable.isSemVerMajor
+        ? `обновлением до ${target} (мажорная версия)`
+        : `обновлением до ${target}`;
+}
+
 // Fail-closed по образцу security-audit.mjs: непонятная запись — стоп, не «пропустим».
 export function validateNewEntry(entry, { now = 0, ttlDays = DEFAULT_TTL_DAYS } = {}) {
     const problems = [];
@@ -127,6 +145,9 @@ export function evaluateBaselineChange({
     baseBaseline = [],
     changedFiles = [],
     foundAdvisoryIds = null,
+    // #239: полные записи текущего скана (id + fixAvailable), не только id — нужны,
+    // чтобы отличить «апстрим ещё не починил» от «фикс уже есть, просто не применили».
+    foundAdvisories = null,
     now = 0,
     ttlDays = DEFAULT_TTL_DAYS,
 } = {}) {
@@ -134,6 +155,8 @@ export function evaluateBaselineChange({
     const { touchesBaseline, touchesDeps, depFiles } = classifyDiff(changedFiles);
     const added = addedEntries(headBaseline, baseBaseline);
     const { severityRaised, ttlExtended } = changedEntries(headBaseline, baseBaseline);
+    const effectiveFoundIds =
+        foundAdvisoryIds ?? (foundAdvisories && foundAdvisories.map((a) => a.id));
 
     // Ревью PR #208, находка 🔴 1 — обход в два PR: PR №1 вписывает запись под advisory,
     // которой ещё нет (для политики это «апстрим-дрейф», для скана — безобидный stale,
@@ -141,13 +164,30 @@ export function evaluateBaselineChange({
     // проходит по уже готовой записи. Каждый шаг по отдельности легитимен.
     // Закрывается требованием: вписывать можно только advisory, которую скан ВИДИТ
     // сейчас. Легитимного повода занести ненайденную advisory не существует.
-    if (foundAdvisoryIds) {
-        const found = new Set(foundAdvisoryIds);
+    if (effectiveFoundIds) {
+        const found = new Set(effectiveFoundIds);
         for (const a of added.filter((x) => !found.has(x.id))) {
             errors.push(
                 `запись ${a.id} (${a.package ?? '?'}) не соответствует ни одной advisory ` +
                     `текущего скана — запись «на вырост» под будущую уязвимость не принимается`,
             );
+        }
+    }
+
+    // #239: устранимый апстрим-дрейф — не «апстрим ещё не почини», а «почини сам».
+    // Автопринятие в baseline здесь означает «признаём неустранимым» то, что таковым
+    // не является — ложная формулировка эффекта, ради которой заводился issue.
+    if (foundAdvisories) {
+        const scanById = new Map(foundAdvisories.map((a) => [a.id, a]));
+        for (const a of added) {
+            const fixDescription = describeFix(scanById.get(a.id)?.fixAvailable);
+            if (fixDescription) {
+                errors.push(
+                    `advisory ${a.id} (${a.package}) устранима ${fixDescription} — ` +
+                        `автопринятие в baseline недопустимо, нужно решение человека: обновить ` +
+                        `зависимость или осознанно отклонить.`,
+                );
+            }
         }
     }
 
@@ -224,4 +264,22 @@ export function acceptedPushText(accepted = []) {
         `зависимости в PR не менялись, это апстрим-дрейф:\n${lines.join('\n')}\n` +
         `Гейт пропущен, петля продолжается. Проверь, что записи правда неустранимы.`
     );
+}
+
+// #239: до мерджа фазы автозапись живёт в рабочем дереве гейта, а не в коммите PR —
+// каждый следующий прогон гейта видит тот же дрейф как «новый» и пересчитывает
+// идентичный accepted. Без дедупа человек получал бы один и тот же пуш на каждый
+// прогон (за ночь 22→23.07 пришло дважды с идентичным телом). Ключ — (id+severity):
+// рост severity у той же advisory — новое событие, дедуп его пропускает намеренно.
+export function pushDedupKey(entry) {
+    return `${entry.id}:${entry.severity}`;
+}
+
+export function dedupeAcceptedForPush(accepted = [], alreadyPushed = []) {
+    const seen = new Set(alreadyPushed);
+    return accepted.filter((a) => !seen.has(pushDedupKey(a)));
+}
+
+export function mergePushedKeys(alreadyPushed = [], accepted = []) {
+    return [...new Set([...alreadyPushed, ...accepted.map(pushDedupKey)])];
 }
