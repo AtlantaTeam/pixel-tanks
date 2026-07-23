@@ -4620,9 +4620,10 @@ describe('боевой ralph.config.json — профили playground/prod (#73
         expect(prod.phases).toEqual(pg.phases);
         expect(prod.authorAllowlist).toEqual(pg.authorAllowlist);
         expect(prod.blockedHealAttempts).toEqual(pg.blockedHealAttempts);
-        // #216: дельта prod пуста — разбор blocked теперь идёт по общим правилам, отличие
-        // прода от playground держит код по profileName (толстый гейт, TG, стоп на деплой).
-        expect(Object.keys(raw.profiles.prod)).toEqual([]);
+        // #256: единственная дельта prod теперь — haltBeforeDeploy: false (непрерывный
+        // prod, #249). Остальное отличие прода от playground по-прежнему держит код по
+        // profileName (толстый гейт, TG, стоп на деплой), а не конфиг.
+        expect(Object.keys(raw.profiles.prod)).toEqual(['haltBeforeDeploy']);
     });
 });
 
