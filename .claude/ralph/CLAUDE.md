@@ -128,7 +128,22 @@ RUNBOOK). Раннер сам поднимает detached-`monitor.js` (пане
 - breaker'ы: `maxIterations`, `maxTurns`, `maxNoProgress`, `gateHealAttempts`,
   `blockedHealAttempts`; API-лимит: `apiLimitMaxWaits/GraceMin/FallbackWaitMin`;
 - `deadman.*` — пороги тишины; `tunnelCheck.*`; `authorAllowlist`; `permissionMode`;
-- `runnerWorktreePath` (конфиг важнее env `RALPH_WORKTREE_PATH`).
+- `runnerWorktreePath` (конфиг важнее env `RALPH_WORKTREE_PATH`);
+- `haltBeforeDeploy` (bool, #249) — только `profileName: 'prod'`. Дефолт (не задан
+  либо `true`) = поведение #87: стоп после каждой смердженной фазы, следующая
+  начинается новым запуском loop. `false` — непрерывный prod: на ЗЕЛЁНОМ пост-мердж
+  деплое (фаза 5, `#163`) `continue` вместо `break`, следующая фаза уже поднята
+  `advancePhase`. Красный/недосмотренный деплой стопорит трек ВСЕГДА — флаг не
+  читается, пока `block` не `null` (fail-closed: непрерывный режим не катит фазу
+  N+1 поверх непроверенного релиза N). Валидируется на старте
+  (`assertValidHaltBeforeDeploy`): не-boolean или флаг вне профиля `prod` = fail,
+  а не тихий halt (инвариант №1). **Следствие непрерывного режима:** конфиг (включая
+  массив `phases`) и код раннера читаются один раз при старте процесса. Смердженные
+  во время прогона правки `ralph.config.json`/`ralph.js` процесс НЕ увидит — воркфлоу
+  «дозаказать фазы мерджем конфига в main» (d5c8962, 8649a05) в непрерывном прогоне не
+  работает: раннер честно скажет «Все фазы завершены» по устаревшему списку, а фаза,
+  правившая сам `ralph.js`, доедет до исполнения только после рестарта. Не баг
+  (halt-дефолт и рестарт всё чинят), но при первом включении `false` держи в голове.
 
 Пока прибито к pixel-tanks (полный замер — в issue **#204**, там же задача вынести):
 `DEFAULT_WORKTREE_DIRNAME = 'pixel-tanks-ralph'`; списки `BASE_GATE_CHECKS` /

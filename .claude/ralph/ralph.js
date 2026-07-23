@@ -391,6 +391,10 @@ function resolveProfile(raw, name, failFn = fail) {
     // Ловим на старте (fail-closed дешевле тихой инверсии), а не в момент разбора.
     const known = assertKnownReviewModels(merged, wanted, failFn);
     if (known !== true) return known; // мягкий failFn — наверх как есть
+    // #249: haltBeforeDeploy обязан быть boolean и только в профиле prod (fail-closed,
+    // иначе опечатка в типе тихо даёт halt-режим — см. assertValidHaltBeforeDeploy).
+    const haltOk = assertValidHaltBeforeDeploy(merged, wanted, failFn);
+    if (haltOk !== true) return haltOk; // мягкий failFn — наверх как есть
     return { ...merged, profileName: wanted };
 }
 
@@ -1416,6 +1420,33 @@ function assertKnownReviewModels(cfg, profileName, failFn = fail) {
             `ralph.config.json (профиль "${profileName}"): review.fallback = "${fallback}" слабее review.default = "${review.default}". ` +
                 `Фолбэк ревью (#221) не может ослаблять ревью ниже базовой планки — иначе overload тихо подменяет ревьюера на более слабого. ` +
                 `Известные модели по рангу: ${REVIEW_MODEL_STRENGTH.join(', ')}.`,
+        );
+    }
+    return true;
+}
+
+// #249: haltBeforeDeploy валидируется на старте — тип и место (инвариант №1: кривой
+// конфиг = fail-closed стоп, а не тихий дефолт). Решение о непрерывном prod принимает
+// строгое `cfg.haltBeforeDeploy !== false`, поэтому `"false"` (строка), `0` или `null`
+// в конфиге молча дали бы halt-режим — опечатка в типе должна валить старт, а не
+// всплывать утром остановленным треком, который человек считал непрерывным. Флаг
+// осмыслен только в профиле `prod` (пост-мердж деплой фазы 5): заданный вне prod он
+// молча ничего не значит — тоже fail, чтобы не создавать ложного ощущения непрерывности.
+// Возврат: true — валиден; иначе результат failFn (мягкий failFn пробрасываем наверх).
+function assertValidHaltBeforeDeploy(cfg, profileName, failFn = fail) {
+    const v = cfg.haltBeforeDeploy;
+    if (v === undefined) return true; // не задан — дефолт (halt), проверять нечего
+    if (typeof v !== 'boolean') {
+        return failFn(
+            `ralph.config.json (профиль "${profileName}"): haltBeforeDeploy = ${JSON.stringify(v)} — ожидался boolean. ` +
+                `Непрерывный prod решает строгое "!== false", поэтому строка/число/null молча дали бы halt-режим (#249). ` +
+                `Убери ключ (дефолт = стоп перед деплоем) либо задай true/false.`,
+        );
+    }
+    if (profileName !== 'prod') {
+        return failFn(
+            `ralph.config.json (профиль "${profileName}"): haltBeforeDeploy осмыслен только в профиле "prod" ` +
+                `(пост-мердж деплой фазы 5, #249). Вне prod флаг молча ничего не значит — убери его из этого профиля/common.`,
         );
     }
     return true;
@@ -3099,7 +3130,9 @@ function runLoop(
                 advancePhaseFn(state, idx);
                 // #87: prod — стоп перед деплоем. Деплой уже в руках CI (мердж его и
                 // запустил), но loop не должен тут же хвататься за следующую фазу без
-                // паузы на релиз человеком. playground: мердж остаётся финалом —
+                // паузы на релиз человеком. Пауза теперь под флагом haltBeforeDeploy
+                // (#249, см. ниже): дефолт сохраняет этот стоп, `false` включает
+                // непрерывный prod на зелёном деплое. playground: мердж остаётся финалом —
                 // continue как раньше, следующая фаза стартует с обновлённого main.
                 if (cfg.profileName === 'prod') {
                     deployPhaseFn(phase, { logFn });
@@ -3192,10 +3225,32 @@ function runLoop(
                         state.deployBlock = null;
                         saveStateFn(state);
                     }
+                    // #249: непрерывный prod — красный пост-мердж деплой стопорит трек ВСЕГДА,
+                    // независимо от haltBeforeDeploy (fail-closed: следующая фаза не должна
+                    // катиться поверх непроверенного релиза). Флаг решает судьбу только
+                    // зелёного исхода. Дефолт (не задан либо true) сохраняет #87 — стоп после
+                    // каждой фазы, деплой и следующий шаг остаются за человеком.
+                    if (block) {
+                        // Красный/недосмотренный деплой: деплой УЖЕ случился и он красный,
+                        // а не «пауза перед деплоем». Следующий запуск упрётся в барьер
+                        // state.deployBlock в preflight — продолжение только после разбора
+                        // и явного --deploy-resolved. Маркер ⏸ сохранён — на нём режим
+                        // stopped deadman'а (#10).
+                        logFn(
+                            `⏸ Ralph: фаза "${phase.milestone}" — стоп: деплой красный, продолжение только после разбора и запуска loop с --deploy-resolved.`,
+                        );
+                        break;
+                    }
+                    if (cfg.haltBeforeDeploy !== false) {
+                        logFn(
+                            `⏸ Ralph: фаза "${phase.milestone}" — loop остановлен перед деплоем (prod). Следующая фаза начнётся со следующего запуска.`,
+                        );
+                        break;
+                    }
                     logFn(
-                        `⏸ Ralph: фаза "${phase.milestone}" — loop остановлен перед деплоем (prod). Следующая фаза начнётся со следующего запуска.`,
+                        `▶ Ralph: фаза "${phase.milestone}" — деплой зелёный, haltBeforeDeploy=false — продолжаю без остановки, следующая фаза уже поднята.`,
                     );
-                    break;
+                    continue;
                 }
                 continue;
             }
