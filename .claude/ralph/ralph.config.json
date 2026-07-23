@@ -72,6 +72,8 @@
     },
     "profiles": {
         "playground": {},
-        "prod": {}
+        "prod": {
+            "haltBeforeDeploy": false
+        }
     }
 }
