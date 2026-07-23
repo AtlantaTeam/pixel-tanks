@@ -64,8 +64,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Наблюдаемость ralph · Фаза 6: Метрика находок ревью",
-                "branch": "feature/ralph-review-findings-metric"
+                "milestone": "Надёжность ralph · Фаза 4: Мониторы, фолбэк ревью, дрейф baseline",
+                "branch": "feature/ralph-reliability-p4"
             }
         ]
     },
