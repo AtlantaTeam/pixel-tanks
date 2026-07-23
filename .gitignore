@@ -30,6 +30,7 @@ test-results/
 .claude/ralph/ralph.log
 .claude/ralph/monitor.out
 .claude/ralph/monitor.pid
+.claude/ralph/ralph.lock
 .claude/ralph/.deps-lock.sha
 .claude/ralph/review-findings.jsonl
 .claude/ralph/security-baseline-push.json

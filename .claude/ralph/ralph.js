@@ -80,6 +80,15 @@ const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
 const STATE_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.state.json');
 const LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.log');
 const MONITOR_PATH = path.join(CLAUDE_DIR, 'ralph', 'monitor.js');
+// Путь к самому раннеру — для строгой cmdline-сверки лока (isRalphProcess): за pid из
+// лок-файла должен стоять именно наш ralph.js, а не чужой процесс, которому ОС отдала
+// переиспользованный номер. По образцу MONITOR_PATH: полный CLAUDE_DIR-относительный
+// путь надёжнее родового 'ralph.js'.
+const RALPH_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.js');
+// Файл-лок от двойного запуска (#176). Один на репозиторий-машину: playground и prod на
+// одной машине держат ОДИН лок, поэтому путь без профиля и берётся ДО chdir в worktree
+// (в дереве человека). Гитигнорен, как ralph.log/state — раннер нигде не коммитит его.
+const LOCK_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.lock');
 const MONITOR_OUT = path.join(CLAUDE_DIR, 'ralph', 'monitor.out');
 const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
 // Маркер хэша package-lock.json последнего успешного `npm ci` в дереве раннера.
@@ -3393,6 +3402,58 @@ function isRalphMonitorProcess(pid, readFn = fs.readFileSync) {
     }
 }
 
+// --- Файл-лок от двойного запуска (#176) ----------------------------------
+// Второй раннер на том же состоянии стартовать не должен. Механику живости берём один
+// в один у монитора (adoptMonitor/isMonitorProcess): kill(pid, 0) отвечает лишь «номер
+// занят», а ОС переиспользует номера — после смерти раннера его pid мог достаться чужому
+// процессу. Поэтому «жив» = номер занят И за ним стоит именно наш ralph.js по cmdline.
+// Linux-only (/proc), как весь раннер.
+
+// Строгая сверка «за этим pid именно наш ralph.js» — по полному пути RALPH_PATH в
+// cmdline. Тот же приём, что isRalphMonitorProcess: родовое 'ralph.js' зацепило бы
+// раннер чужого проекта, полный CLAUDE_DIR-относительный путь — нет. Переиспользованный
+// pid (чужой процесс под тем же номером) → подстроки нет → false, лок считается сиротой.
+function isRalphProcess(pid, readFn = fs.readFileSync) {
+    if (!pid) return false;
+    try {
+        return readFn(`/proc/${pid}/cmdline`, 'utf-8').includes(RALPH_PATH);
+    } catch {
+        return false;
+    }
+}
+
+// Держит ли лок ЖИВОЙ раннер: номер занят (kill 0) И cmdline подтверждает ralph.js.
+// Обе проверки обязательны и в этом порядке — kill(pid, 0) на мёртвом pid бросит
+// (ESRCH → false) и до чтения /proc не дойдём; на переиспользованном номере kill
+// пройдёт, но cmdline-сверка отсечёт чужой процесс. Так pid-reuse не сойдёт за живой
+// раннер и не заблокирует легитимный запуск.
+function lockAlive(pid, { killFn = process.kill, readFn = fs.readFileSync } = {}) {
+    return monitorAlive(pid, killFn) && isRalphProcess(pid, readFn);
+}
+
+// Читает pid из лок-файла. Формат — один pid числом (как monitor.pid). Number('') /
+// Number(мусор) → NaN, дальше lockAlive(NaN) честно вернёт false (номер не занят).
+// Нет файла / нечитаем → null: «лока нет», отличимо от «лок с битым pid» (NaN).
+function readLockPid(readFn = fs.readFileSync, lockPath = LOCK_PATH) {
+    try {
+        return Number(readFn(lockPath, 'utf-8'));
+    } catch {
+        return null;
+    }
+}
+
+// Пишет pid текущего процесса в лок-файл. Побочка — под предохранителем #138: забытый
+// writeFn в тесте иначе насорил бы настоящим ralph.lock в дереве, где идут тесты.
+function writeLock(pid = process.pid, { writeFn, lockPath = LOCK_PATH } = {}) {
+    const doWrite =
+        writeFn ||
+        ((p, data) => {
+            guardSideEffect(`writeLock (${p})`);
+            return fs.writeFileSync(p, data);
+        });
+    doWrite(lockPath, String(pid));
+}
+
 // PID-файл монитора один на все профили. Читаем его в одном месте: и adoptMonitor
 // (подхват сироты на старте), и ensureMonitorAlive (переподнятие между итерациями)
 // брали одинаковый дефолт readPidFn — при смене формата файла пришлось бы править два
@@ -3859,6 +3920,10 @@ module.exports = {
     monitorAlive,
     isMonitorProcess,
     isRalphMonitorProcess,
+    isRalphProcess,
+    lockAlive,
+    readLockPid,
+    writeLock,
     listMonitorPids,
     processPpid,
     sweepOrphanMonitors,

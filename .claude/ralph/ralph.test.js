@@ -28,6 +28,10 @@ const {
     monitorAlive,
     isMonitorProcess,
     isRalphMonitorProcess,
+    isRalphProcess,
+    lockAlive,
+    readLockPid,
+    writeLock,
     listMonitorPids,
     processPpid,
     sweepOrphanMonitors,
@@ -4220,6 +4224,128 @@ describe('isMonitorProcess — за pid действительно monitor.js (#
         expect(isMonitorProcess(0, readFn)).toBe(false);
         expect(isMonitorProcess(undefined, readFn)).toBe(false);
         expect(readFn).not.toHaveBeenCalled();
+    });
+});
+
+describe('isRalphProcess — за pid действительно наш ralph.js (#176)', () => {
+    it('в /proc/<pid>/cmdline есть путь ralph.js → это наш раннер', () => {
+        const readFn = vi.fn(() => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0');
+        expect(isRalphProcess(4242, readFn)).toBe(true);
+        expect(readFn).toHaveBeenCalledWith('/proc/4242/cmdline', 'utf-8');
+    });
+
+    // Строгая сверка по полному пути: раннер чужого проекта со своим ralph.js (имя
+    // родовое) не должен сойти за наш — как isRalphMonitorProcess vs isMonitorProcess.
+    it('чужой ralph.js по другому пути → false', () => {
+        expect(isRalphProcess(4242, () => 'node\0/opt/other/ralph.js\0')).toBe(false);
+    });
+
+    // ОС переиспользовала pid: живой процесс есть, но это не раннер.
+    it('чужой процесс под тем же pid (pid-reuse) → false', () => {
+        expect(isRalphProcess(4242, () => 'nginx\0-g\0daemon off;\0')).toBe(false);
+    });
+
+    it('процесса нет (чтение /proc упало) → false', () => {
+        expect(
+            isRalphProcess(4242, () => {
+                throw new Error('ENOENT');
+            }),
+        ).toBe(false);
+    });
+
+    it('пустой/нулевой pid → false без чтения /proc', () => {
+        const readFn = vi.fn();
+        expect(isRalphProcess(0, readFn)).toBe(false);
+        expect(isRalphProcess(undefined, readFn)).toBe(false);
+        expect(readFn).not.toHaveBeenCalled();
+    });
+});
+
+describe('lockAlive — держит ли лок живой раннер (#176)', () => {
+    const ralphCmdline = () => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0';
+
+    it('номер занят И cmdline — наш ralph.js → лок жив', () => {
+        expect(lockAlive(4242, { killFn: () => undefined, readFn: ralphCmdline })).toBe(true);
+    });
+
+    it('номер свободен (kill бросил ESRCH) → лок сирота, /proc не читаем', () => {
+        const readFn = vi.fn();
+        expect(
+            lockAlive(4242, {
+                killFn: () => {
+                    throw new Error('ESRCH');
+                },
+                readFn,
+            }),
+        ).toBe(false);
+        // kill(pid,0) отсёк первым — до cmdline-сверки не дошли.
+        expect(readFn).not.toHaveBeenCalled();
+    });
+
+    // Ключевой сценарий pid-reuse: номер занят, но за ним чужой процесс — не живой раннер,
+    // легитимный запуск не блокируется.
+    it('номер занят, но за ним чужой процесс → лок сирота (не живой раннер)', () => {
+        expect(
+            lockAlive(4242, {
+                killFn: () => undefined,
+                readFn: () => 'nginx\0-g\0daemon off;\0',
+            }),
+        ).toBe(false);
+    });
+
+    it('пустой/нулевой pid → мёртв', () => {
+        expect(lockAlive(0, { killFn: () => undefined, readFn: ralphCmdline })).toBe(false);
+        expect(lockAlive(NaN, { killFn: () => undefined, readFn: ralphCmdline })).toBe(false);
+    });
+});
+
+describe('readLockPid — pid из лок-файла (#176)', () => {
+    it('файл с pid → число', () => {
+        const readFn = vi.fn(() => '4242\n');
+        expect(readLockPid(readFn, '.claude/ralph/ralph.lock')).toBe(4242);
+        expect(readFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', 'utf-8');
+    });
+
+    it('нет файла (чтение упало) → null, отличимо от битого', () => {
+        expect(
+            readLockPid(() => {
+                throw new Error('ENOENT');
+            }),
+        ).toBe(null);
+    });
+
+    it('битый лок-файл → NaN, пустой → 0; оба falsy, lockAlive их отсеет', () => {
+        expect(Number.isNaN(readLockPid(() => 'мусор'))).toBe(true);
+        expect(readLockPid(() => '')).toBe(0);
+        // lockAlive на NaN/0 не зовёт kill и честно возвращает false (номер не занят).
+        expect(lockAlive(NaN, { killFn: () => undefined, readFn: () => 'ralph.js' })).toBe(false);
+        expect(lockAlive(0, { killFn: () => undefined, readFn: () => 'ralph.js' })).toBe(false);
+    });
+});
+
+describe('writeLock — запись pid в лок-файл (#176)', () => {
+    it('пишет pid строкой по указанному пути', () => {
+        const writeFn = vi.fn();
+        writeLock(4242, { writeFn, lockPath: '.claude/ralph/ralph.lock' });
+        expect(writeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', '4242');
+    });
+
+    it('по умолчанию — pid текущего процесса', () => {
+        const writeFn = vi.fn();
+        writeLock(undefined, { writeFn });
+        expect(writeFn).toHaveBeenCalledWith(expect.any(String), String(process.pid));
+    });
+
+    // Предохранитель #138: боевой дефолт writeFn зовёт guardSideEffect — в тестах
+    // (RALPH_NO_SIDE_EFFECTS=1) забытый мок бросит, а не насорит настоящим ralph.lock.
+    it('боевой дефолт writeFn под guardSideEffect (#138)', () => {
+        expect(() => writeLock(4242, { lockPath: '.claude/ralph/ralph.lock' })).toThrow(
+            /RALPH_NO_SIDE_EFFECTS/,
+        );
+        // Вызов намеренный — журнал забираем сами, иначе общий afterEach уронит тест.
+        expect(ralph.sideEffectAttempts.splice(0)).toEqual([
+            'writeLock (.claude/ralph/ralph.lock)',
+        ]);
     });
 });
 
