@@ -200,18 +200,23 @@ function shq(value) {
 // git-команды хореографии гейта, которым нужны секреты (GH_TOKEN для fetch). Но команды
 // ЧЕКОВ (build/lint/test) и `npm ci` — это код из проверяемого PR, ему секреты петли
 // видеть нельзя; checksGreen/installFn передают сюда санированный env (см. gate-env.js).
+// Общие опции exec для sh()/shArgv(): один объект, чтобы урок maxBuffer 16 МБ (L4:
+// многословный вывод npm/vitest переполнял дефолтный 1 МБ и ронял даже ЗЕЛЁНЫЕ чеки)
+// не пришлось помнить в двух местах — при правке значения расхождение между строковым
+// и argv-вариантом станет структурно невозможным. env спредим по месту вызова (передан
+// → используем, undefined → наследуем process.env как раньше).
+const EXEC_OPTS = {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 16 * 1024 * 1024,
+};
+
 function sh(cmd, { env } = {}) {
     // #138: см. guardSideEffect выше — в тестах реальный шелл запрещён. Команду
     // печатаем целиком: по ней сразу видно, какой именно дефолт не подменили.
     guardSideEffect(`sh(${cmd})`);
-    // maxBuffer 16 МБ (дефолт 1 МБ) — L4: многословный вывод npm/vitest переполнял
-    // буфер и ронял sh() даже на ЗЕЛЁНЫХ чеках. Fail-closed безопасно, но ложные
-    // красные стопы съедают смысл AFK-прогона.
     return execSync(cmd, {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        maxBuffer: 16 * 1024 * 1024,
-        // env только когда передан: undefined → execSync наследует process.env как раньше.
+        ...EXEC_OPTS,
         ...(env ? { env } : {}),
     }).trim();
 }
@@ -229,9 +234,7 @@ function shArgv(file, args, { env } = {}) {
     // Печатаем file+argv: по строке видно, какой дефолт-коллаборатор не подменили.
     guardSideEffect(`shArgv(${file} ${args.join(' ')})`);
     return execFileSync(file, args, {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        maxBuffer: 16 * 1024 * 1024,
+        ...EXEC_OPTS,
         ...(env ? { env } : {}),
     }).trim();
 }
@@ -1757,24 +1760,40 @@ function parkOnOriginMain({ runArgvFn = shArgv, logFn = log } = {}) {
     }
 }
 
-function findOpenPr(branch) {
+// Номер PR из внешнего API (gh pr list) валидируем ДО того, как он уйдёт в argv
+// (`gh pr merge <n>`) или в шелл-чтение (`gh pr view ${shq(n)}`): фильтр на входе
+// findOpenPr закрывает оба места разом. `/^\d+$/` отсекает argument-injection —
+// `--flag`-образное значение gh распарсил бы как флаг (инвариант 7 CLAUDE.md ralph,
+// тот самый класс, ради которого фаза переходит на argv). На практике number всегда
+// integer, но фильтр стоит одну строку и закрывает канал структурно.
+const PR_NUMBER_RE = /^\d+$/;
+
+function findOpenPr(branch, { ghJsonFn = ghJson, logFn = log } = {}) {
     try {
         // --base main (M5): PR из этой же ветки в ДРУГУЮ базу мерджить нельзя —
         // фаза «сдалась» бы мимо main, а следующая строилась бы без неё.
-        const prs = ghJson(
+        const prs = ghJsonFn(
             `gh pr list --head ${shq(branch)} --base main --state open --json number,labels`,
         );
         if (prs.length > 1) {
             // M5: несколько открытых PR на одну ветку — prs[0] был бы произвольным
             // выбором с непредсказуемым результатом. Fail-closed: разберёт человек.
-            log(
+            logFn(
                 `⛔ Несколько открытых PR из ветки ${branch} в main: ${prs.map((p) => `#${p.number}`).join(', ')} — неоднозначно, авто-мердж отменён.`,
             );
             return null;
         }
-        return prs[0] || null;
+        const pr = prs[0] || null;
+        if (pr && !PR_NUMBER_RE.test(String(pr.number))) {
+            // Fail-closed: номер не похож на целое → в argv/шелл его не пускаем.
+            logFn(
+                `⛔ Номер PR ветки ${branch} не похож на целое ('${pr.number}') — авто-мердж отменён.`,
+            );
+            return null;
+        }
+        return pr;
     } catch (e) {
-        log(`⚠ Не смог получить PR ветки ${branch}: ${e.message}`);
+        logFn(`⚠ Не смог получить PR ветки ${branch}: ${e.message}`);
         return null;
     }
 }
@@ -4262,6 +4281,7 @@ module.exports = {
     parkOnOriginMain,
     gateChecksFor,
     checksGreen,
+    findOpenPr,
     tryMergePhase,
     deployPhasePlaceholder,
     mergedShaOf,

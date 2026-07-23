@@ -64,6 +64,7 @@ const {
     parkOnOriginMain,
     gateChecksFor,
     checksGreen,
+    shArgv,
     tryMergePhase,
     waitForDeployRun,
     mergedShaOf,
@@ -253,43 +254,26 @@ describe('spawnClaude — фактический вызов spawn-функции
 });
 
 describe('#195: тесты изменённых вызовов гейта на argv (#193)', () => {
-    // #195: Тесты на argv-мутации гейта. Критерии готовности:
-    // (1) значения с пробелами и спецсимволами не интерпретируются шеллом (негативный сценарий);
-    // (2) побочки через DI, RALPH_NO_SIDE_EFFECTS=1, guardSideEffect.
+    // #195: Критерий готовности (2) — побочки через DI, RALPH_NO_SIDE_EFFECTS=1,
+    // guardSideEffect: настоящая shArgv в тестовом окружении бросает И пишет в журнал.
     //
-    // Тесты проверяют что shArgv экспортируется и использует guard, плюс что
-    // checksGreen/tryMergePhase/parkOnOriginMain имеют DI-параметры для runArgvFn.
-    // Полные интеграционные тесты argv-вызовов уже в describe('checksGreen — чеки гейта
-    // на detached PR-голове') выше — там mkDeps правильно инжектирует все зависимости.
+    // Критерий (1) — «значения с пробелами/спецсимволами не интерпретируются шеллом» —
+    // это ПОВЕДЕНИЕ argv-границ, а не текст реализации: проверяется ассертами на
+    // реальные argv-массивы в describe-блоках ниже (checksGreen — «git fetch/checkout
+    // раздельными элементами argv»; tryMergePhase — «номер PR и sha отдельными
+    // элементами»; parkOnOriginMain — `['git', ['checkout', '--detach', 'origin/main']]`).
+    // Прежние toString()-ассерты (`toContain('runArgvFn')`/`toContain('shArgv')`) убраны:
+    // они проверяли текст функции, а не поведение (rules/tests.md), и остались бы
+    // зелёными даже при откате мутации на строковый shFn — ровно ту регрессию, ради
+    // которой блок написан, они не ловили.
 
-    it('shArgv ловит побочку через guardSideEffect в тестовом окружении', () => {
-        // RALPH_NO_SIDE_EFFECTS=1 запрещает реальный execFileSync — shArgv должна
-        // бросить исключение из guardSideEffect.
-        expect(() => {
-            shArgv('echo', ['hello']);
-        }).toThrow();
-    });
-
-    it('checksGreen инжектирует runArgvFn для git-мутаций (argv, не shell)', () => {
-        // checksGreen имеет параметр runArgvFn = shArgv, это гарантирует что
-        // git fetch/checkout идут через argv, не через shell-строку. Значения
-        // с пробелами и спецсимволами уходят отдельными элементами argv,
-        // структурно защищаясь от shell-инъекции.
-        const code = checksGreen.toString();
-        expect(code).toContain('runArgvFn');
-        expect(code).toContain('shArgv');
-    });
-
-    it('tryMergePhase инжектирует runArgvFn для gh pr merge (argv, не shell)', () => {
-        const code = tryMergePhase.toString();
-        expect(code).toContain('runArgvFn');
-        expect(code).toContain('shArgv');
-    });
-
-    it('parkOnOriginMain инжектирует runArgvFn', () => {
-        const code = ralph.parkOnOriginMain.toString();
-        expect(code).toContain('runArgvFn');
-        expect(code).toContain('shArgv');
+    it('shArgv в тестовом окружении бросает через guardSideEffect и пишет попытку в журнал', () => {
+        // RALPH_NO_SIDE_EFFECTS=1 запрещает реальный execFileSync. Зовём НАСТОЯЩУЮ
+        // ralph.shArgv (не голый идентификатор — иначе ReferenceError замаскировал бы
+        // отсутствие вызова), сверяем и throw, и формат записи журнала #138 — иначе
+        // общий afterEach из test-setup.js уронил бы прогон на непустом sideEffectAttempts.
+        expect(() => ralph.shArgv('echo', ['hello'])).toThrow();
+        expect(ralph.sideEffectAttempts.splice(0)).toEqual(['shArgv(echo hello)']);
     });
 });
 
@@ -3076,6 +3060,24 @@ describe('ветковая хореография в worktree раннера (#7
             expect(parkFn).not.toHaveBeenCalled();
         });
 
+        it('#195 критерий (1): git fetch/checkout уходят раздельными элементами argv (границы сохранены)', () => {
+            // Рекордер mkDeps выше нормализует argv в строку `args.join(' ')` — границы
+            // аргументов стёрты, `['fetch','origin','a b']` и `['fetch','origin','a','b']`
+            // дают одну строку. Здесь отдельный рекордер сохраняет argv МАССИВОМ: значение
+            // с пробелом осталось бы ОДНИМ элементом, и шелл его не разложил бы. Это и есть
+            // структурная защита от shell-инъекции, ради которой фаза перешла на argv.
+            const argvCalls = [];
+            const { deps } = mkDeps({
+                runArgvFn: (file, args) => {
+                    argvCalls.push([file, args]);
+                    return '';
+                },
+            });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(true);
+            expect(argvCalls).toContainEqual(['git', ['fetch', 'origin', 'feature/m1']]);
+            expect(argvCalls).toContainEqual(['git', ['checkout', '--detach', SHA_A]]);
+        });
+
         it('#SiaTz/#SiaUX: на зелёном фиксирует голову PR и синкает зависимости после detach', () => {
             const syncDepsFn = vi.fn();
             const { shCmds, deps } = mkDeps({ syncDepsFn });
@@ -3387,6 +3389,47 @@ describe('ветковая хореография в worktree раннера (#7
         });
     });
 
+    describe('findOpenPr — валидация номера PR из внешнего API', () => {
+        const { findOpenPr } = ralph;
+
+        it('целый номер PR → возвращает PR как есть', () => {
+            const pr = findOpenPr('feature/m1', {
+                ghJsonFn: () => [{ number: 5, labels: [] }],
+                logFn: () => {},
+            });
+            expect(pr).toEqual({ number: 5, labels: [] });
+        });
+
+        it('номер не похож на целое (argument-injection) → null ДО подстановки в argv/шелл', () => {
+            // gh number практически всегда integer, но `--flag`-образное значение gh
+            // распарсил бы как флаг: фильтр `/^\d+$/` на входе закрывает канал структурно
+            // (тот самый класс, ради которого фаза перешла на argv). Fail-closed.
+            const logs = [];
+            const pr = findOpenPr('feature/m1', {
+                ghJsonFn: () => [{ number: '--delete-branch', labels: [] }],
+                logFn: (m) => logs.push(m),
+            });
+            expect(pr).toBeNull();
+            expect(logs.join('\n')).toMatch(/не похож на целое/);
+        });
+
+        it('несколько открытых PR → null (fail-closed, разберёт человек)', () => {
+            const pr = findOpenPr('feature/m1', {
+                ghJsonFn: () => [
+                    { number: 5, labels: [] },
+                    { number: 6, labels: [] },
+                ],
+                logFn: () => {},
+            });
+            expect(pr).toBeNull();
+        });
+
+        it('открытого PR нет → null', () => {
+            const pr = findOpenPr('feature/m1', { ghJsonFn: () => [], logFn: () => {} });
+            expect(pr).toBeNull();
+        });
+    });
+
     describe('tryMergePhase — гейт мерджа в worktree-модели', () => {
         const phase = { milestone: 'M1', branch: 'feature/m1' };
         // Зелёное окружение по умолчанию: открытый PR без blocked, зелёные чеки,
@@ -3466,6 +3509,29 @@ describe('ветковая хореография в worktree раннера (#7
             expect(shCmds).toContain(
                 `gh pr merge 5 --squash --delete-branch --match-head-commit ${sha}`,
             );
+        });
+
+        it('#195 критерий (1): номер PR и sha уходят отдельными элементами argv (границы сохранены)', () => {
+            // Как в checksGreen: рекордер mkDeps выше join-ит argv в строку и стирает
+            // границы. Здесь argv сохраняется массивом — номер PR и sha отдельными
+            // элементами, шелл к ним не прикасается (структурная защита #193), а не
+            // квотированием. Пост-мердж git тоже раздельными элементами.
+            const sha = 'd'.repeat(40);
+            const argvCalls = [];
+            const { deps } = mkDeps({
+                getVerifiedHeadFn: () => sha,
+                runArgvFn: (file, args) => {
+                    argvCalls.push([file, args]);
+                    return '';
+                },
+            });
+            expect(tryMergePhase(phase, deps)).toBe('merged');
+            expect(argvCalls).toContainEqual([
+                'gh',
+                ['pr', 'merge', '5', '--squash', '--delete-branch', '--match-head-commit', sha],
+            ]);
+            expect(argvCalls).toContainEqual(['git', ['fetch', 'origin', 'main']]);
+            expect(argvCalls).toContainEqual(['git', ['checkout', '--detach', 'origin/main']]);
         });
 
         it('#SiaTz: sha головы не 40-hex → мерджим без --match-head-commit (не подставляем мусор)', () => {
