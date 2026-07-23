@@ -84,42 +84,6 @@
             "title": "fast-uri vulnerable to host confusion via failed IDN canonicalization",
             "reason": "Переиздание advisory 1124015 под новым id (апстрим-дрейф 22.07). Транзитивная зависимость payload 3 (бета) → fast-uri@3.1.2; не чинится без --force на фреймворк. Ждём, пока Payload поднимет диапазон",
             "expiresAt": "2026-08-05"
-        },
-        {
-            "id": 1124170,
-            "package": "next",
-            "severity": "high",
-            "url": "https://github.com/advisories/GHSA-6gpp-xcg3-4w24",
-            "title": "Next.js: Middleware / Proxy bypass in App Router applications using Turbopack and single locale",
-            "reason": "Апстрим-дрейф next@16 (23.07): чинится патчем next@16.2.11 (latest). Бамп — отдельным deps-PR: этот PR трогает только раннер (.claude/ralph/**), зависимости не меняет, npm install в гейт-окружении недоступен. Прод не использует Turbopack single-locale middleware-конфиг из advisory. Снять запись при бампе next→16.2.11",
-            "expiresAt": "2026-08-06"
-        },
-        {
-            "id": 1124171,
-            "package": "next",
-            "severity": "high",
-            "url": "https://github.com/advisories/GHSA-m99w-x7hq-7vfj",
-            "title": "Next.js: Denial of Service in App Router using Server Actions",
-            "reason": "Апстрим-дрейф next@16 (23.07): чинится патчем next@16.2.11 (latest). Бамп — отдельным deps-PR (этот PR деп не трогает). Server Actions на прод-поверхности игры сейчас не используются. Снять запись при бампе next→16.2.11",
-            "expiresAt": "2026-08-06"
-        },
-        {
-            "id": 1124184,
-            "package": "next",
-            "severity": "high",
-            "url": "https://github.com/advisories/GHSA-89xv-2m56-2m9x",
-            "title": "Next.js: Server-Side Request Forgery in Server Actions on custom servers",
-            "reason": "Апстрим-дрейф next@16 (23.07): чинится патчем next@16.2.11 (latest). Бамп — отдельным deps-PR (этот PR деп не трогает). Прод работает на стандартном next-сервере, custom server из advisory не используется. Снять запись при бампе next→16.2.11",
-            "expiresAt": "2026-08-06"
-        },
-        {
-            "id": 1124192,
-            "package": "next",
-            "severity": "high",
-            "url": "https://github.com/advisories/GHSA-p9j2-gv94-2wf4",
-            "title": "Next.js: Server-Side Request Forgery in rewrites via attacker-controlled destination hostname",
-            "reason": "Апстрим-дрейф next@16 (23.07): чинится патчем next@16.2.11 (latest). Бамп — отдельным deps-PR (этот PR деп не трогает). rewrites с внешне-управляемым destination hostname в конфиге не заведены. Снять запись при бампе next→16.2.11",
-            "expiresAt": "2026-08-06"
         }
     ]
 }
