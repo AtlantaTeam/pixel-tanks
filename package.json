@@ -20,6 +20,7 @@
         "test:skip-detect": "node scripts/test-skip-detect.mjs",
         "project:sync": "node scripts/project-sync.mjs",
         "canary:secrets": "node scripts/secret-canary.mjs",
+        "canary:postinstall": "node scripts/canary-postinstall.mjs",
         "prepare": "husky"
     },
     "dependencies": {
