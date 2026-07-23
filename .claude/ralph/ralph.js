@@ -80,14 +80,22 @@ const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
 const STATE_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.state.json');
 const LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.log');
 const MONITOR_PATH = path.join(CLAUDE_DIR, 'ralph', 'monitor.js');
-// Путь к самому раннеру — для строгой cmdline-сверки лока (isRalphProcess): за pid из
-// лок-файла должен стоять именно наш ralph.js, а не чужой процесс, которому ОС отдала
-// переиспользованный номер. По образцу MONITOR_PATH: полный CLAUDE_DIR-относительный
-// путь надёжнее родового 'ralph.js'.
+// Путь к самому раннеру — для cmdline-сверки лока (isRalphProcess): за pid из лок-файла
+// должен стоять именно наш ralph.js, а не чужой процесс, которому ОС отдала переиспользо-
+// ванный номер. Путь ОТНОСИТЕЛЬНЫЙ (CLAUDE_DIR-относительный) — уникальности проекта он НЕ
+// гарантирует: любой другой клон с той же раскладкой, запущенный из своего корня как
+// `node .claude/ralph/ralph.js`, даёт в cmdline ровно ту же подстроку. Для лока это
+// приемлемо — цена промаха при pid-reuse лишь ложный ОТКАЗ старта (fail-closed), а не
+// SIGTERM чужой группе, как было бы у sweepOrphanMonitors. Хочешь настоящую уникальность —
+// резолвь argv держателя через /proc/<pid>/cwd и сравнивай realpath (пока не нужно).
 const RALPH_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.js');
-// Файл-лок от двойного запуска (#176). Один на репозиторий-машину: playground и prod на
-// одной машине держат ОДИН лок, поэтому путь без профиля и берётся ДО chdir в worktree
-// (в дереве человека). Гитигнорен, как ralph.log/state — раннер нигде не коммитит его.
+// Файл-лок от двойного запуска (#176). Путь относительный и берётся ДО chdir в worktree,
+// поэтому лок живёт в `.claude/ralph/` ДЕРЕВА ЗАПУСКА (клона), из которого подняли раннер —
+// это «один на клон», а не «один на машину-репозиторий»: два раннера из ОДНОГО клона
+// (playground и prod) делят этот лок и блокируют друг друга, но раннер из ДРУГОГО клона того
+// же origin им не блокируется, хотя гонка за PR/мердж/ветки у них общая через GitHub. Нужен
+// машинно-глобальный лок (по хэшу origin, вне дерева, напр. /tmp) — отдельная задача.
+// Гитигнорен, как ralph.log/state — раннер нигде не коммитит его.
 const LOCK_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.lock');
 const MONITOR_OUT = path.join(CLAUDE_DIR, 'ralph', 'monitor.out');
 const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
@@ -3361,8 +3369,9 @@ function runLoop(
 // глушит при выходе. Панель уходит в monitor.out — у детачнутого процесса нет
 // терминала, а файл переживает обрыв SSH и читается `tail -f` из любого окна.
 
-// Сигнал 0 — только проверка существования процесса, ничего ему не шлёт.
-function monitorAlive(pid, killFn = process.kill) {
+// Сигнал 0 — только проверка существования процесса, ничего ему не шлёт. Имя generic
+// (не monitorAlive): функция давно обслуживает и монитор, и лок раннера — «номер занят».
+function processAlive(pid, killFn = process.kill) {
     if (!pid) return false;
     try {
         killFn(pid, 0);
@@ -3372,17 +3381,24 @@ function monitorAlive(pid, killFn = process.kill) {
     }
 }
 
-// Сверка «за этим pid действительно monitor.js». ОС переиспользует pid: после смерти
-// монитора его номер может достаться чужому процессу — kill(pid, 0) тогда врёт «жив»,
-// а kill(-pid) при остановке снёс бы чужую группу. /proc/<pid>/cmdline — Linux-only,
-// как и весь раннер; аргументы в нём разделены \0, includes ищет по подстроке.
-function isMonitorProcess(pid, readFn = fs.readFileSync) {
+// Общее тело трёх cmdline-сверок ниже (isMonitorProcess / isRalphMonitorProcess /
+// isRalphProcess): различаются лишь искомой подстрокой needle, а «пустой pid → false,
+// чтение /proc/<pid>/cmdline, includes, catch → false» одинаково. /proc/<pid>/cmdline —
+// Linux-only, как и весь раннер; аргументы в нём разделены \0, includes ищет по подстроке.
+function cmdlineIncludes(pid, needle, readFn = fs.readFileSync) {
     if (!pid) return false;
     try {
-        return readFn(`/proc/${pid}/cmdline`, 'utf-8').includes('monitor.js');
+        return readFn(`/proc/${pid}/cmdline`, 'utf-8').includes(needle);
     } catch {
         return false;
     }
+}
+
+// Сверка «за этим pid действительно monitor.js». ОС переиспользует pid: после смерти
+// монитора его номер может достаться чужому процессу — kill(pid, 0) тогда врёт «жив»,
+// а kill(-pid) при остановке снёс бы чужую группу.
+function isMonitorProcess(pid, readFn = fs.readFileSync) {
+    return cmdlineIncludes(pid, 'monitor.js', readFn);
 }
 
 // Строгая сверка «за pid именно НАШ ralph-монитор» — по полному пути MONITOR_PATH в
@@ -3394,12 +3410,7 @@ function isMonitorProcess(pid, readFn = fs.readFileSync) {
 // нестрогая isMonitorProcess остаётся: там pid взят из файла, который пишет только сам
 // раннер, чужого там взяться неоткуда.
 function isRalphMonitorProcess(pid, readFn = fs.readFileSync) {
-    if (!pid) return false;
-    try {
-        return readFn(`/proc/${pid}/cmdline`, 'utf-8').includes(MONITOR_PATH);
-    } catch {
-        return false;
-    }
+    return cmdlineIncludes(pid, MONITOR_PATH, readFn);
 }
 
 // --- Файл-лок от двойного запуска (#176) ----------------------------------
@@ -3409,47 +3420,36 @@ function isRalphMonitorProcess(pid, readFn = fs.readFileSync) {
 // процессу. Поэтому «жив» = номер занят И за ним стоит именно наш ralph.js по cmdline.
 // Linux-only (/proc), как весь раннер.
 
-// Строгая сверка «за этим pid именно наш ralph.js» — по полному пути RALPH_PATH в
-// cmdline. Тот же приём, что isRalphMonitorProcess: родовое 'ralph.js' зацепило бы
-// раннер чужого проекта, полный CLAUDE_DIR-относительный путь — нет. Переиспользованный
-// pid (чужой процесс под тем же номером) → подстроки нет → false, лок считается сиротой.
+// Сверка «за этим pid именно наш ralph.js» — по пути RALPH_PATH в cmdline. Тот же приём,
+// что isRalphMonitorProcess. ВНИМАНИЕ: RALPH_PATH относительный и уникальности проекта не
+// гарантирует (см. коммент у объявления RALPH_PATH) — для лока это лишь ложный отказ при
+// pid-reuse (fail-closed), не снос чужого процесса. Переиспользованный pid (чужой процесс
+// под тем же номером) → подстроки нет → false, лок считается сиротой.
 function isRalphProcess(pid, readFn = fs.readFileSync) {
-    if (!pid) return false;
-    try {
-        return readFn(`/proc/${pid}/cmdline`, 'utf-8').includes(RALPH_PATH);
-    } catch {
-        return false;
-    }
+    return cmdlineIncludes(pid, RALPH_PATH, readFn);
 }
 
 // Держит ли лок ЖИВОЙ раннер: номер занят (kill 0) И cmdline подтверждает ralph.js.
 // Обе проверки обязательны и в этом порядке — kill(pid, 0) на мёртвом pid бросит
 // (ESRCH → false) и до чтения /proc не дойдём; на переиспользованном номере kill
 // пройдёт, но cmdline-сверка отсечёт чужой процесс. Так pid-reuse не сойдёт за живой
-// раннер и не заблокирует легитимный запуск.
-function lockAlive(pid, { killFn = process.kill, readFn = fs.readFileSync } = {}) {
-    return monitorAlive(pid, killFn) && isRalphProcess(pid, readFn);
+// раннер и не заблокирует легитимный запуск. procReadFn читает ТОЛЬКО /proc/<pid>/cmdline
+// (отдельный от чтения лок-файла контракт — в acquireLock это разные dep'ы).
+function lockAlive(pid, { killFn = process.kill, procReadFn = fs.readFileSync } = {}) {
+    return processAlive(pid, killFn) && isRalphProcess(pid, procReadFn);
 }
 
-// Читает pid из лок-файла. Формат — один pid числом (как monitor.pid). Number('') /
-// Number(мусор) → NaN, дальше lockAlive(NaN) честно вернёт false (номер не занят).
-// Нет файла / нечитаем → null: «лока нет», отличимо от «лок с битым pid» (NaN).
-function readLockPid(readFn = fs.readFileSync, lockPath = LOCK_PATH) {
-    try {
-        return Number(readFn(lockPath, 'utf-8'));
-    } catch {
-        return null;
-    }
-}
-
-// Пишет pid текущего процесса в лок-файл. Побочка — под предохранителем #138: забытый
-// writeFn в тесте иначе насорил бы настоящим ralph.lock в дереве, где идут тесты.
+// Пишет pid текущего процесса в лок-файл ЭКСКЛЮЗИВНО (flag 'wx'): создаёт файл, только
+// если его ещё нет, иначе бросает EEXIST. Это закрывает гонку check-then-act в acquireLock
+// (см. там) — второй одновременно стартующий раннер, прошедший ту же проверку «лока нет»,
+// на записи получит EEXIST и не перезапишет победителя. Побочка — под предохранителем
+// #138: забытый writeFn в тесте иначе насорил бы настоящим ralph.lock в дереве тестов.
 function writeLock(pid = process.pid, { writeFn, lockPath = LOCK_PATH } = {}) {
     const doWrite =
         writeFn ||
         ((p, data) => {
             guardSideEffect(`writeLock (${p})`);
-            return fs.writeFileSync(p, data);
+            return fs.writeFileSync(p, data, { flag: 'wx' });
         });
     doWrite(lockPath, String(pid));
 }
@@ -3471,6 +3471,28 @@ function removeLock({ lockPath = LOCK_PATH, removeFn } = {}) {
     doRemove(lockPath);
 }
 
+// Снятие СВОЕГО лока при штатном выходе (exit-хендлер main()). Без него каждый рестарт
+// шёл бы через путь «🔓 осиротевший лок»: шум в логе + событие перестаёт быть сигналом
+// РЕАЛЬНОГО kill -9, а устаревший файл расширяет окно pid-reuse (номер достанется grep/
+// tail/vim по ralph.js → ложный «живой раннер» и отказ старта). Две оговорки: (1) снимаем
+// ТОЛЬКО если файл ещё держит наш pid — если лок в странной гонке украли/переписали,
+// слепой unlink снёс бы чужой; (2) путь передаётся АБСОЛЮТНЫЙ, зафиксированный ДО chdir в
+// worktree, — относительный LOCK_PATH после chdir указал бы внутрь дерева раннера (тот же
+// прецедент, что репойнт logTarget, #SiaUB). Свои побочки — через DI под #138.
+function releaseLockIfOurs(
+    lockPath,
+    { readFn = fs.readFileSync, removeFn, pid = process.pid } = {},
+) {
+    let held;
+    try {
+        held = Number(String(readFn(lockPath, 'utf-8')).trim());
+    } catch {
+        return; // нет файла / нечитаем — снимать нечего
+    }
+    if (held !== pid) return; // лок уже не наш — чужой не трогаем
+    removeLock({ lockPath, removeFn });
+}
+
 // --- Взятие лока: fail-closed решение (#177) -------------------------------
 // Единственная точка решения «стартовать или отказать» по лок-файлу. Четыре исхода:
 //
@@ -3479,26 +3501,52 @@ function removeLock({ lockPath = LOCK_PATH, removeFn } = {}) {
 //   сирота (pid мёртв / чужой cmdline)  → снимаем лок, событие в лог, берём себе.
 //   нечитаем / битый pid                → СТОП fail-closed (не «лока нет»).
 //
-// Читаем файл здесь напрямую, а не через readLockPid: тот по контракту #176 сводит и
-// «нет файла», и «нет прав» к null («лока нет») — для #177 это разные исходы. ENOENT —
-// норм-путь (берём лок), а нечитаемый файл (EACCES, битый inode) или битое содержимое —
-// fail-closed стоп по образцу scripts/security-audit.mjs: не «пропустим проверку» и не
-// тихий старт поверх чужого лока. lockAlive/readLockPid остаются примитивами живости;
-// acquireLock — слой политики над ними.
+// Читаем файл здесь напрямую и парсим со СТРОГОЙ валидацией: «нет файла», «нет прав» и
+// «битый pid» для #177 — три разных исхода (ENOENT — норм-путь, EACCES/битое содержимое —
+// fail-closed стоп по образцу scripts/security-audit.mjs). lockAlive — примитив живости;
+// acquireLock — слой политики над ним.
 //
-// Все побочки — через DI (#138): чтение, удаление, запись, kill, лог, стоп. failFn по
-// умолчанию — fail() (process.exit(1)); в бою после него исполнение не продолжается,
-// return в тестах нужен мок-failFn, который не роняет процесс.
+// Взятие лока АТОМАРНО: и на пути «нет файла», и на пути реклейма сироты запись идёт через
+// writeLock (flag 'wx' — эксклюзивное создание). Между нашим чтением и записью второй
+// одновременно стартующий раннер мог пройти ту же проверку и записать свой pid — тогда наш
+// 'wx' бросит EEXIST, и это ОТКАЗ (лок только что появился), а не молчаливая перезапись
+// победителя гонки. Иначе неатомарный check-then-act пропустил бы оба процесса — ровно та
+// гонка за state/ветки/мердж, ради запрета которой лок существует.
+//
+// Все побочки — через DI (#138): чтение лок-файла (readFn) и /proc (procReadFn) РАЗДЕЛЕНЫ
+// (у каждого свой контракт, тестам не надо мультиплексировать по пути), плюс удаление,
+// запись, kill, лог, стоп. failFn по умолчанию — fail() (process.exit(1)); в бою после
+// него исполнение не продолжается, return в тестах нужен мок-failFn, который не роняет
+// процесс.
 function acquireLock({
     lockPath = LOCK_PATH,
     pid = process.pid,
     readFn = fs.readFileSync,
+    procReadFn = fs.readFileSync,
     killFn = process.kill,
     removeFn,
     writeFn,
     logFn = log,
     failFn = fail,
 } = {}) {
+    // Эксклюзивная запись своего pid: writeLock идёт через flag 'wx', поэтому если лок УСПЕЛ
+    // появиться между проверкой и записью (гонка двух стартов) — EEXIST → fail-closed отказ.
+    const claim = () => {
+        try {
+            writeLock(pid, { writeFn, lockPath });
+            return true;
+        } catch (e) {
+            if (e && e.code === 'EEXIST') {
+                failFn(
+                    `Лок ${lockPath} возник в момент взятия — другой раннер стартовал ` +
+                        `одновременно. Второй запуск на том же состоянии запрещён.`,
+                );
+                return false;
+            }
+            throw e;
+        }
+    };
+
     let raw;
     try {
         raw = readFn(lockPath, 'utf-8');
@@ -3507,8 +3555,7 @@ function acquireLock({
         // чтения (нет прав, битый inode) трактовать как «лока нет» = тихо стартовать
         // поверх возможного живого раннера, ровно то, что fail-closed запрещает.
         if (e && e.code === 'ENOENT') {
-            writeLock(pid, { writeFn, lockPath });
-            return true;
+            return claim();
         }
         failFn(
             `Лок-файл ${lockPath} нечитаем (${String(e?.code ?? e?.message ?? e)}) — ` +
@@ -3531,7 +3578,7 @@ function acquireLock({
         return false;
     }
 
-    if (lockAlive(heldPid, { killFn, readFn })) {
+    if (lockAlive(heldPid, { killFn, procReadFn })) {
         // Живой раннер держит лок — отказ. Сообщение обязано назвать pid и путь (кто
         // держит и где), критерий #177.
         failFn(
@@ -3543,19 +3590,26 @@ function acquireLock({
 
     // Сирота: pid мёртв (kill 0 → ESRCH) или за ним чужой процесс (pid-reuse, cmdline не
     // наш ralph.js). Снимаем лок и берём себе — без ручной чистки после kill -9 / OOM.
+    // ВНИМАНИЕ (#178): это событие уходит через log() ДО репойнта logTarget на worktree (он
+    // в main() ПОСЛЕ загрузки конфига, а лок — самый первый шаг, впереди конфига по
+    // построению). Поэтому строка «🔓» ляжет в ralph.log ДЕРЕВА ЧЕЛОВЕКА, а монитор тейлит
+    // только worktree-лог — на панели этого события НЕ будет. Ищи его в ralph.log клона
+    // запуска, не в monitor.out. Изменить порядок нельзя: лок обязан быть до побочек.
     logFn(
         `🔓 Осиротевший лок pid ${heldPid} (процесс мёртв или не наш ralph.js) — ` +
             `снимаю ${lockPath} и стартую.`,
     );
     removeLock({ lockPath, removeFn });
-    writeLock(pid, { writeFn, lockPath });
-    return true;
+    // Реклейм тоже через эксклюзивную запись: между unlink и созданием второй процесс мог
+    // снять ту же сироту и взять лок — тогда наш claim() получит EEXIST, а не перезапишет
+    // победителя гонки за реклейм.
+    return claim();
 }
 
 // PID-файл монитора один на все профили. Читаем его в одном месте: и adoptMonitor
 // (подхват сироты на старте), и ensureMonitorAlive (переподнятие между итерациями)
 // брали одинаковый дефолт readPidFn — при смене формата файла пришлось бы править два
-// места. Number('') / Number(мусор) → NaN, дальше monitorAlive(NaN) честно вернёт false.
+// места. Number('') / Number(мусор) → NaN, дальше processAlive(NaN) честно вернёт false.
 function readMonitorPid() {
     return Number(fs.readFileSync(MONITOR_PID, 'utf-8'));
 }
@@ -3585,7 +3639,7 @@ function adoptMonitor(deps = {}) {
     const {
         logFn = log,
         readPidFn = readMonitorPid,
-        aliveFn = monitorAlive,
+        aliveFn = processAlive,
         isMonitorFn = isMonitorProcess,
         readCmdlineFn = (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
         stopFn = stopMonitor,
@@ -3807,7 +3861,7 @@ function sweepOrphanMonitors(deps = {}) {
 // Взаимный контроль раннер↔монитор (#151, наблюдаемость фаза 2): раньше монитор
 // поднимался только один раз в main() на старте — смерть между итерациями (OOM,
 // kill -9) оставалась тишиной до следующего ручного перезапуска раннера. Проверка —
-// ПОЛНЫЙ паритет с adoptMonitor: pid-файл + monitorAlive + isMonitorProcess (cmdline
+// ПОЛНЫЙ паритет с adoptMonitor: pid-файл + processAlive + isMonitorProcess (cmdline
 // отсекает чужой процесс с переиспользованным pid) + сверка ПРОФИЛЯ (monitorProfileOf).
 // Без профильной сверки монитор соседнего профиля (playground рядом с prod),
 // перезаписавший общий MONITOR_PID, всю ночь выдавался бы за наш, а свой мёртвый так и
@@ -3821,7 +3875,7 @@ function ensureMonitorAlive(deps = {}) {
     const {
         logFn = log,
         readPidFn = readMonitorPid,
-        aliveFn = monitorAlive,
+        aliveFn = processAlive,
         isMonitorFn = isMonitorProcess,
         readCmdlineFn = (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
         startMonitorFn = startMonitor,
@@ -3863,6 +3917,10 @@ function main() {
     // зовёт fail() → process.exit(1) и обрывает исполнение здесь же; return — для
     // тестового/DI-пути, где failFn мог не завершить процесс.
     if (!acquireRunnerLock()) return;
+    // Абсолютный путь лока фиксируем ДО chdir в worktree: exit-хендлер ниже снимает СВОЙ
+    // лок (releaseLockIfOurs), а относительный LOCK_PATH после chdir указал бы внутрь дерева
+    // раннера. null в DRY: --dry-run лок не берёт (C1) — снимать нечего.
+    const lockPathAbs = DRY ? null : path.resolve(LOCK_PATH);
 
     const raw = loadJson(CONFIG_PATH, null);
     if (!raw) fail(`Не найден/не парсится ${CONFIG_PATH}`);
@@ -3952,6 +4010,10 @@ function main() {
     process.on('exit', () => {
         if (stopped) return;
         stopped = true;
+        // Снимаем СВОЙ лок штатно, чтобы следующий старт не шёл через путь «🔓 осиротевший
+        // лок» (шум + потеря сигнала о реальном kill -9). Только если файл ещё держит наш
+        // pid (releaseLockIfOurs сверяет), по абсолютному пути ДО chdir.
+        if (lockPathAbs) releaseLockIfOurs(lockPathAbs);
         stopMonitor(monitor);
     });
 
@@ -4034,14 +4096,15 @@ module.exports = {
     startMonitor,
     stopMonitor,
     adoptMonitor,
-    monitorAlive,
+    processAlive,
+    cmdlineIncludes,
     isMonitorProcess,
     isRalphMonitorProcess,
     isRalphProcess,
     lockAlive,
-    readLockPid,
     writeLock,
     removeLock,
+    releaseLockIfOurs,
     acquireLock,
     acquireRunnerLock,
     listMonitorPids,

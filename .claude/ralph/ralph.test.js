@@ -25,14 +25,15 @@ const {
     startMonitor,
     stopMonitor,
     adoptMonitor,
-    monitorAlive,
+    processAlive,
+    cmdlineIncludes,
     isMonitorProcess,
     isRalphMonitorProcess,
     isRalphProcess,
     lockAlive,
-    readLockPid,
     writeLock,
     removeLock,
+    releaseLockIfOurs,
     acquireLock,
     acquireRunnerLock,
     listMonitorPids,
@@ -4181,14 +4182,14 @@ describe('боевой ralph.config.json — профили playground/prod (#73
     });
 });
 
-describe('monitorAlive — жив ли процесс монитора (#74)', () => {
+describe('processAlive — занят ли номер процесса (#74, #176)', () => {
     it('сигнал 0 прошёл → процесс жив', () => {
-        expect(monitorAlive(1234, () => undefined)).toBe(true);
+        expect(processAlive(1234, () => undefined)).toBe(true);
     });
 
     it('сигнал 0 бросил (нет такого процесса) → мёртв', () => {
         expect(
-            monitorAlive(1234, () => {
+            processAlive(1234, () => {
                 throw new Error('ESRCH');
             }),
         ).toBe(false);
@@ -4196,9 +4197,36 @@ describe('monitorAlive — жив ли процесс монитора (#74)', (
 
     it('пустой/нулевой pid → мёртв, без вызова kill', () => {
         const kill = vi.fn();
-        expect(monitorAlive(0, kill)).toBe(false);
-        expect(monitorAlive(undefined, kill)).toBe(false);
+        expect(processAlive(0, kill)).toBe(false);
+        expect(processAlive(undefined, kill)).toBe(false);
         expect(kill).not.toHaveBeenCalled();
+    });
+});
+
+describe('cmdlineIncludes — общее тело cmdline-сверок (#176)', () => {
+    it('needle есть в /proc/<pid>/cmdline → true, читает нужный путь', () => {
+        const readFn = vi.fn(() => 'node\0.claude/ralph/ralph.js\0');
+        expect(cmdlineIncludes(77, 'ralph.js', readFn)).toBe(true);
+        expect(readFn).toHaveBeenCalledWith('/proc/77/cmdline', 'utf-8');
+    });
+
+    it('needle нет → false', () => {
+        expect(cmdlineIncludes(77, 'ralph.js', () => 'nginx\0-g\0')).toBe(false);
+    });
+
+    it('чтение /proc упало → false', () => {
+        expect(
+            cmdlineIncludes(77, 'ralph.js', () => {
+                throw new Error('ENOENT');
+            }),
+        ).toBe(false);
+    });
+
+    it('пустой/нулевой pid → false без чтения /proc', () => {
+        const readFn = vi.fn();
+        expect(cmdlineIncludes(0, 'ralph.js', readFn)).toBe(false);
+        expect(cmdlineIncludes(undefined, 'ralph.js', readFn)).toBe(false);
+        expect(readFn).not.toHaveBeenCalled();
     });
 });
 
@@ -4268,21 +4296,21 @@ describe('lockAlive — держит ли лок живой раннер (#176)'
     const ralphCmdline = () => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0';
 
     it('номер занят И cmdline — наш ralph.js → лок жив', () => {
-        expect(lockAlive(4242, { killFn: () => undefined, readFn: ralphCmdline })).toBe(true);
+        expect(lockAlive(4242, { killFn: () => undefined, procReadFn: ralphCmdline })).toBe(true);
     });
 
     it('номер свободен (kill бросил ESRCH) → лок сирота, /proc не читаем', () => {
-        const readFn = vi.fn();
+        const procReadFn = vi.fn();
         expect(
             lockAlive(4242, {
                 killFn: () => {
                     throw new Error('ESRCH');
                 },
-                readFn,
+                procReadFn,
             }),
         ).toBe(false);
         // kill(pid,0) отсёк первым — до cmdline-сверки не дошли.
-        expect(readFn).not.toHaveBeenCalled();
+        expect(procReadFn).not.toHaveBeenCalled();
     });
 
     // Ключевой сценарий pid-reuse: номер занят, но за ним чужой процесс — не живой раннер,
@@ -4291,38 +4319,14 @@ describe('lockAlive — держит ли лок живой раннер (#176)'
         expect(
             lockAlive(4242, {
                 killFn: () => undefined,
-                readFn: () => 'nginx\0-g\0daemon off;\0',
+                procReadFn: () => 'nginx\0-g\0daemon off;\0',
             }),
         ).toBe(false);
     });
 
     it('пустой/нулевой pid → мёртв', () => {
-        expect(lockAlive(0, { killFn: () => undefined, readFn: ralphCmdline })).toBe(false);
-        expect(lockAlive(NaN, { killFn: () => undefined, readFn: ralphCmdline })).toBe(false);
-    });
-});
-
-describe('readLockPid — pid из лок-файла (#176)', () => {
-    it('файл с pid → число', () => {
-        const readFn = vi.fn(() => '4242\n');
-        expect(readLockPid(readFn, '.claude/ralph/ralph.lock')).toBe(4242);
-        expect(readFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', 'utf-8');
-    });
-
-    it('нет файла (чтение упало) → null, отличимо от битого', () => {
-        expect(
-            readLockPid(() => {
-                throw new Error('ENOENT');
-            }),
-        ).toBe(null);
-    });
-
-    it('битый лок-файл → NaN, пустой → 0; оба falsy, lockAlive их отсеет', () => {
-        expect(Number.isNaN(readLockPid(() => 'мусор'))).toBe(true);
-        expect(readLockPid(() => '')).toBe(0);
-        // lockAlive на NaN/0 не зовёт kill и честно возвращает false (номер не занят).
-        expect(lockAlive(NaN, { killFn: () => undefined, readFn: () => 'ralph.js' })).toBe(false);
-        expect(lockAlive(0, { killFn: () => undefined, readFn: () => 'ralph.js' })).toBe(false);
+        expect(lockAlive(0, { killFn: () => undefined, procReadFn: ralphCmdline })).toBe(false);
+        expect(lockAlive(NaN, { killFn: () => undefined, procReadFn: ralphCmdline })).toBe(false);
     });
 });
 
@@ -4371,6 +4375,32 @@ describe('removeLock — снятие лок-файла (#177)', () => {
     });
 });
 
+describe('releaseLockIfOurs — снятие своего лока при выходе (#176)', () => {
+    it('файл держит наш pid → снимаем через removeFn по тому же пути', () => {
+        const removeFn = vi.fn();
+        releaseLockIfOurs('/abs/ralph.lock', { readFn: () => '777\n', removeFn, pid: 777 });
+        expect(removeFn).toHaveBeenCalledWith('/abs/ralph.lock');
+    });
+
+    it('файл держит ЧУЖОЙ pid (лок украли/переписали) → не трогаем', () => {
+        const removeFn = vi.fn();
+        releaseLockIfOurs('/abs/ralph.lock', { readFn: () => '4242', removeFn, pid: 777 });
+        expect(removeFn).not.toHaveBeenCalled();
+    });
+
+    it('файла нет / нечитаем → снимать нечего, removeFn не зовём', () => {
+        const removeFn = vi.fn();
+        releaseLockIfOurs('/abs/ralph.lock', {
+            readFn: () => {
+                throw new Error('ENOENT');
+            },
+            removeFn,
+            pid: 777,
+        });
+        expect(removeFn).not.toHaveBeenCalled();
+    });
+});
+
 describe('acquireLock — fail-closed взятие лока (#177)', () => {
     const ralphCmdline = () => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0';
     const enoent = () => {
@@ -4378,15 +4408,14 @@ describe('acquireLock — fail-closed взятие лока (#177)', () => {
         e.code = 'ENOENT';
         throw e;
     };
-    // Один readFn обслуживает оба чтения: pid из лок-файла (по lockPath) и cmdline из
-    // /proc (внутри lockAlive → isRalphProcess). Различаем по пути.
-    const readLockThen = (pidStr, cmdlineFn) => (p) =>
-        p.includes('/proc/') ? cmdlineFn() : pidStr;
-    // deps со всеми побочками замоканными — тест ничего не пишет и не роняет процесс.
+    // readFn читает ТОЛЬКО лок-файл, procReadFn — ТОЛЬКО /proc/<pid>/cmdline: раздельные
+    // контракты, тесту не надо мультиплексировать по пути. deps со всеми побочками
+    // замоканными — тест ничего не пишет и не роняет процесс.
     const deps = (over = {}) => ({
         lockPath: '.claude/ralph/ralph.lock',
         pid: 777,
         readFn: enoent,
+        procReadFn: ralphCmdline,
         killFn: () => undefined,
         removeFn: vi.fn(),
         writeFn: vi.fn(),
@@ -4404,7 +4433,7 @@ describe('acquireLock — fail-closed взятие лока (#177)', () => {
     });
 
     it('живой раннер держит лок → отказ fail-closed, сообщение с pid и путём, без побочек', () => {
-        const d = deps({ readFn: readLockThen('4242', ralphCmdline), killFn: () => undefined });
+        const d = deps({ readFn: () => '4242', procReadFn: ralphCmdline, killFn: () => undefined });
         expect(acquireLock(d)).toBe(false);
         expect(d.failFn).toHaveBeenCalledTimes(1);
         const msg = d.failFn.mock.calls[0][0];
@@ -4417,7 +4446,8 @@ describe('acquireLock — fail-closed взятие лока (#177)', () => {
 
     it('осиротевший лок (процесс мёртв, kill → ESRCH) → снимаем, логируем, берём себе', () => {
         const d = deps({
-            readFn: readLockThen('4242', ralphCmdline),
+            readFn: () => '4242',
+            procReadFn: ralphCmdline,
             killFn: () => {
                 throw new Error('ESRCH');
             },
@@ -4433,13 +4463,50 @@ describe('acquireLock — fail-closed взятие лока (#177)', () => {
     // Ключевой сценарий pid-reuse: номер занят, но за ним ЧУЖОЙ процесс — не живой раннер.
     it('осиротевший лок (pid-reuse, чужой cmdline) → снимаем и берём себе', () => {
         const d = deps({
-            readFn: readLockThen('4242', () => 'nginx\0-g\0daemon off;\0'),
+            readFn: () => '4242',
+            procReadFn: () => 'nginx\0-g\0daemon off;\0',
             killFn: () => undefined,
         });
         expect(acquireLock(d)).toBe(true);
         expect(d.removeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock');
         expect(d.writeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', '777');
         expect(d.failFn).not.toHaveBeenCalled();
+    });
+
+    // Атомарность взятия (#243-ревью): второй раннер, прошедший ту же проверку «лока нет»,
+    // на записи получает EEXIST от эксклюзивного writeLock — это ОТКАЗ, а не перезапись.
+    it('лок возник в момент взятия (writeFn бросил EEXIST) → отказ fail-closed', () => {
+        const eexist = () => {
+            const e = new Error('EEXIST: file already exists');
+            e.code = 'EEXIST';
+            throw e;
+        };
+        const d = deps({ writeFn: eexist });
+        expect(acquireLock(d)).toBe(false);
+        expect(d.failFn).toHaveBeenCalledTimes(1);
+        expect(d.failFn.mock.calls[0][0]).toContain('в момент взятия');
+        expect(d.failFn.mock.calls[0][0]).toContain('.claude/ralph/ralph.lock');
+    });
+
+    // То же на пути реклейма сироты: unlink прошёл, но лок пересоздал конкурент → EEXIST.
+    it('реклейм сироты: лок пересоздан между unlink и записью (EEXIST) → отказ', () => {
+        const eexist = () => {
+            const e = new Error('EEXIST');
+            e.code = 'EEXIST';
+            throw e;
+        };
+        const d = deps({
+            readFn: () => '4242',
+            killFn: () => {
+                throw new Error('ESRCH');
+            },
+            removeFn: vi.fn(),
+            writeFn: eexist,
+        });
+        expect(acquireLock(d)).toBe(false);
+        expect(d.removeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock');
+        expect(d.failFn).toHaveBeenCalledTimes(1);
+        expect(d.failFn.mock.calls[0][0]).toContain('в момент взятия');
     });
 
     it('нечитаемый лок-файл (не ENOENT) → стоп fail-closed, не «лока нет»', () => {
@@ -4487,7 +4554,7 @@ describe('acquireLock — fail-closed взятие лока (#177)', () => {
     // (взятие до любых побочек детальнее — #178; здесь проверяем, что сам acquireLock их
     // не трогает на отказном пути.)
     it('на любом отказном пути state/git не трогаются (writeFn/removeFn не зовутся)', () => {
-        const live = deps({ readFn: readLockThen('4242', ralphCmdline) });
+        const live = deps({ readFn: () => '4242', procReadFn: ralphCmdline });
         acquireLock(live);
         expect(live.writeFn).not.toHaveBeenCalled();
         expect(live.removeFn).not.toHaveBeenCalled();
