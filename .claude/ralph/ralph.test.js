@@ -32,6 +32,8 @@ const {
     lockAlive,
     readLockPid,
     writeLock,
+    removeLock,
+    acquireLock,
     listMonitorPids,
     processPpid,
     sweepOrphanMonitors,
@@ -4346,6 +4348,148 @@ describe('writeLock — запись pid в лок-файл (#176)', () => {
         expect(ralph.sideEffectAttempts.splice(0)).toEqual([
             'writeLock (.claude/ralph/ralph.lock)',
         ]);
+    });
+});
+
+describe('removeLock — снятие лок-файла (#177)', () => {
+    it('зовёт removeFn по указанному пути', () => {
+        const removeFn = vi.fn();
+        removeLock({ lockPath: '.claude/ralph/ralph.lock', removeFn });
+        expect(removeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock');
+    });
+
+    // Предохранитель #138: боевой дефолт removeFn зовёт guardSideEffect — забытый мок
+    // в тесте бросит, а не снесёт настоящий ralph.lock живого прогона.
+    it('боевой дефолт removeFn под guardSideEffect (#138)', () => {
+        expect(() => removeLock({ lockPath: '.claude/ralph/ralph.lock' })).toThrow(
+            /RALPH_NO_SIDE_EFFECTS/,
+        );
+        expect(ralph.sideEffectAttempts.splice(0)).toEqual([
+            'removeLock (.claude/ralph/ralph.lock)',
+        ]);
+    });
+});
+
+describe('acquireLock — fail-closed взятие лока (#177)', () => {
+    const ralphCmdline = () => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0';
+    const enoent = () => {
+        const e = new Error('ENOENT: no such file');
+        e.code = 'ENOENT';
+        throw e;
+    };
+    // Один readFn обслуживает оба чтения: pid из лок-файла (по lockPath) и cmdline из
+    // /proc (внутри lockAlive → isRalphProcess). Различаем по пути.
+    const readLockThen = (pidStr, cmdlineFn) => (p) =>
+        p.includes('/proc/') ? cmdlineFn() : pidStr;
+    // deps со всеми побочками замоканными — тест ничего не пишет и не роняет процесс.
+    const deps = (over = {}) => ({
+        lockPath: '.claude/ralph/ralph.lock',
+        pid: 777,
+        readFn: enoent,
+        killFn: () => undefined,
+        removeFn: vi.fn(),
+        writeFn: vi.fn(),
+        logFn: vi.fn(),
+        failFn: vi.fn(),
+        ...over,
+    });
+
+    it('лока нет (ENOENT) → берём себе: пишем pid, стоп/удаление не зовём', () => {
+        const d = deps();
+        expect(acquireLock(d)).toBe(true);
+        expect(d.writeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', '777');
+        expect(d.failFn).not.toHaveBeenCalled();
+        expect(d.removeFn).not.toHaveBeenCalled();
+    });
+
+    it('живой раннер держит лок → отказ fail-closed, сообщение с pid и путём, без побочек', () => {
+        const d = deps({ readFn: readLockThen('4242', ralphCmdline), killFn: () => undefined });
+        expect(acquireLock(d)).toBe(false);
+        expect(d.failFn).toHaveBeenCalledTimes(1);
+        const msg = d.failFn.mock.calls[0][0];
+        expect(msg).toContain('4242'); // pid держателя
+        expect(msg).toContain('.claude/ralph/ralph.lock'); // путь лок-файла
+        // Ни строчки в state/лог/git — лок не тронут.
+        expect(d.writeFn).not.toHaveBeenCalled();
+        expect(d.removeFn).not.toHaveBeenCalled();
+    });
+
+    it('осиротевший лок (процесс мёртв, kill → ESRCH) → снимаем, логируем, берём себе', () => {
+        const d = deps({
+            readFn: readLockThen('4242', ralphCmdline),
+            killFn: () => {
+                throw new Error('ESRCH');
+            },
+        });
+        expect(acquireLock(d)).toBe(true);
+        expect(d.logFn).toHaveBeenCalledTimes(1); // событие снятия сироты в лог
+        expect(d.logFn.mock.calls[0][0]).toContain('4242');
+        expect(d.removeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock');
+        expect(d.writeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', '777');
+        expect(d.failFn).not.toHaveBeenCalled();
+    });
+
+    // Ключевой сценарий pid-reuse: номер занят, но за ним ЧУЖОЙ процесс — не живой раннер.
+    it('осиротевший лок (pid-reuse, чужой cmdline) → снимаем и берём себе', () => {
+        const d = deps({
+            readFn: readLockThen('4242', () => 'nginx\0-g\0daemon off;\0'),
+            killFn: () => undefined,
+        });
+        expect(acquireLock(d)).toBe(true);
+        expect(d.removeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock');
+        expect(d.writeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', '777');
+        expect(d.failFn).not.toHaveBeenCalled();
+    });
+
+    it('нечитаемый лок-файл (не ENOENT) → стоп fail-closed, не «лока нет»', () => {
+        const d = deps({
+            readFn: () => {
+                const e = new Error('EACCES: permission denied');
+                e.code = 'EACCES';
+                throw e;
+            },
+        });
+        expect(acquireLock(d)).toBe(false);
+        expect(d.failFn).toHaveBeenCalledTimes(1);
+        expect(d.failFn.mock.calls[0][0]).toContain('нечитаем');
+        // fail-closed: не стартуем поверх — свой pid не пишем.
+        expect(d.writeFn).not.toHaveBeenCalled();
+    });
+
+    it('битое содержимое (мусор) → стоп fail-closed, не крадём как сироту', () => {
+        const d = deps({ readFn: () => 'мусор' });
+        expect(acquireLock(d)).toBe(false);
+        expect(d.failFn).toHaveBeenCalledTimes(1);
+        expect(d.failFn.mock.calls[0][0]).toContain('битый');
+        expect(d.writeFn).not.toHaveBeenCalled();
+        expect(d.removeFn).not.toHaveBeenCalled();
+    });
+
+    it('пустой лок-файл → стоп fail-closed (битый)', () => {
+        const d = deps({ readFn: () => '   \n' });
+        expect(acquireLock(d)).toBe(false);
+        expect(d.failFn).toHaveBeenCalledTimes(1);
+        expect(d.failFn.mock.calls[0][0]).toContain('битый');
+        expect(d.writeFn).not.toHaveBeenCalled();
+    });
+
+    it('отрицательный / нулевой pid в файле → стоп fail-closed (битый)', () => {
+        for (const bad of ['0', '-5']) {
+            const d = deps({ readFn: () => bad });
+            expect(acquireLock(d)).toBe(false);
+            expect(d.failFn).toHaveBeenCalledTimes(1);
+            expect(d.writeFn).not.toHaveBeenCalled();
+        }
+    });
+
+    // Побочки взятия лока запрещены до вердикта: при живом локе НИ writeFn, НИ removeFn.
+    // (взятие до любых побочек детальнее — #178; здесь проверяем, что сам acquireLock их
+    // не трогает на отказном пути.)
+    it('на любом отказном пути state/git не трогаются (writeFn/removeFn не зовутся)', () => {
+        const live = deps({ readFn: readLockThen('4242', ralphCmdline) });
+        acquireLock(live);
+        expect(live.writeFn).not.toHaveBeenCalled();
+        expect(live.removeFn).not.toHaveBeenCalled();
     });
 });
 

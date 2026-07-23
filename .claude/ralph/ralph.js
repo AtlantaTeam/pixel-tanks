@@ -3454,6 +3454,104 @@ function writeLock(pid = process.pid, { writeFn, lockPath = LOCK_PATH } = {}) {
     doWrite(lockPath, String(pid));
 }
 
+// Снимает лок-файл (осиротевший лок при взятии, свой лок при выходе). Побочка — под
+// предохранителем #138. ENOENT при удалении не ошибка: лок уже снят (гонка, ручная
+// чистка) — цель «файла нет» достигнута, а не «удаление провалилось».
+function removeLock({ lockPath = LOCK_PATH, removeFn } = {}) {
+    const doRemove =
+        removeFn ||
+        ((p) => {
+            guardSideEffect(`removeLock (${p})`);
+            try {
+                fs.unlinkSync(p);
+            } catch (e) {
+                if (!e || e.code !== 'ENOENT') throw e;
+            }
+        });
+    doRemove(lockPath);
+}
+
+// --- Взятие лока: fail-closed решение (#177) -------------------------------
+// Единственная точка решения «стартовать или отказать» по лок-файлу. Четыре исхода:
+//
+//   нет файла (ENOENT)                  → лок свободен: пишем свой pid, стартуем.
+//   живой раннер (kill 0 + cmdline)     → ОТКАЗ fail-closed, сообщение с pid и путём.
+//   сирота (pid мёртв / чужой cmdline)  → снимаем лок, событие в лог, берём себе.
+//   нечитаем / битый pid                → СТОП fail-closed (не «лока нет»).
+//
+// Читаем файл здесь напрямую, а не через readLockPid: тот по контракту #176 сводит и
+// «нет файла», и «нет прав» к null («лока нет») — для #177 это разные исходы. ENOENT —
+// норм-путь (берём лок), а нечитаемый файл (EACCES, битый inode) или битое содержимое —
+// fail-closed стоп по образцу scripts/security-audit.mjs: не «пропустим проверку» и не
+// тихий старт поверх чужого лока. lockAlive/readLockPid остаются примитивами живости;
+// acquireLock — слой политики над ними.
+//
+// Все побочки — через DI (#138): чтение, удаление, запись, kill, лог, стоп. failFn по
+// умолчанию — fail() (process.exit(1)); в бою после него исполнение не продолжается,
+// return в тестах нужен мок-failFn, который не роняет процесс.
+function acquireLock({
+    lockPath = LOCK_PATH,
+    pid = process.pid,
+    readFn = fs.readFileSync,
+    killFn = process.kill,
+    removeFn,
+    writeFn,
+    logFn = log,
+    failFn = fail,
+} = {}) {
+    let raw;
+    try {
+        raw = readFn(lockPath, 'utf-8');
+    } catch (e) {
+        // Файла нет — лок свободен, это норм-путь. Только ENOENT: любую другую ошибку
+        // чтения (нет прав, битый inode) трактовать как «лока нет» = тихо стартовать
+        // поверх возможного живого раннера, ровно то, что fail-closed запрещает.
+        if (e && e.code === 'ENOENT') {
+            writeLock(pid, { writeFn, lockPath });
+            return true;
+        }
+        failFn(
+            `Лок-файл ${lockPath} нечитаем (${String(e?.code ?? e?.message ?? e)}) — ` +
+                `не берусь решать, жив ли другой раннер. Разберись руками и перезапусти.`,
+        );
+        return false;
+    }
+
+    const trimmed = String(raw).trim();
+    const heldPid = Number(trimmed);
+    // Битое содержимое: пусто или не положительное целое. Не «пропустим проверку» и не
+    // «считаем сиротой и крадём» — стоп fail-closed. Осознанная цена: усечённый при
+    // падении лок требует ручной чистки, но гонка двух раннеров дороже (deadman заметит
+    // «не стартовал»).
+    if (!trimmed || !Number.isInteger(heldPid) || heldPid <= 0) {
+        failFn(
+            `Лок-файл ${lockPath} битый (содержимое ${JSON.stringify(trimmed)}) — ` +
+                `не берусь решать, жив ли другой раннер. Разберись руками и перезапусти.`,
+        );
+        return false;
+    }
+
+    if (lockAlive(heldPid, { killFn, readFn })) {
+        // Живой раннер держит лок — отказ. Сообщение обязано назвать pid и путь (кто
+        // держит и где), критерий #177.
+        failFn(
+            `Другой раннер уже держит лок: pid ${heldPid}, файл ${lockPath}. ` +
+                `Второй запуск на том же состоянии запрещён — гонка за state/ветки/мердж.`,
+        );
+        return false;
+    }
+
+    // Сирота: pid мёртв (kill 0 → ESRCH) или за ним чужой процесс (pid-reuse, cmdline не
+    // наш ralph.js). Снимаем лок и берём себе — без ручной чистки после kill -9 / OOM.
+    logFn(
+        `🔓 Осиротевший лок pid ${heldPid} (процесс мёртв или не наш ralph.js) — ` +
+            `снимаю ${lockPath} и стартую.`,
+    );
+    removeLock({ lockPath, removeFn });
+    writeLock(pid, { writeFn, lockPath });
+    return true;
+}
+
 // PID-файл монитора один на все профили. Читаем его в одном месте: и adoptMonitor
 // (подхват сироты на старте), и ensureMonitorAlive (переподнятие между итерациями)
 // брали одинаковый дефолт readPidFn — при смене формата файла пришлось бы править два
@@ -3924,6 +4022,8 @@ module.exports = {
     lockAlive,
     readLockPid,
     writeLock,
+    removeLock,
+    acquireLock,
     listMonitorPids,
     processPpid,
     sweepOrphanMonitors,
