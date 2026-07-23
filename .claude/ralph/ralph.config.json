@@ -65,8 +65,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Изоляция ralph · Фаза 1: Лок от двойного запуска",
-                "branch": "feature/ralph-lock"
+                "milestone": "Изоляция ralph · Фаза 3: Канареечная проверка границы",
+                "branch": "feature/ralph-canary"
             }
         ]
     },
