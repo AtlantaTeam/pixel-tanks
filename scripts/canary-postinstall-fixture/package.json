@@ -1,0 +1,10 @@
+{
+    "name": "ralph-secret-canary-postinstall-fixture",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Фикстура #185: npm-зависимость с postinstall-канарейкой границы изоляции. НЕ зависимость приложения — ставится вручную демо-скриптом scripts/canary-postinstall.mjs.",
+    "type": "module",
+    "scripts": {
+        "postinstall": "node postinstall.mjs"
+    }
+}
