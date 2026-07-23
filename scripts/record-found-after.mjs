@@ -5,11 +5,18 @@ import { appendJournalEntry } from './review-findings-journal.mjs';
 
 // #170: дешёвый шаг фиксации находок «найдено после» — ручная половина метрики.
 // CLI: node scripts/record-found-after.mjs <milestone> <blocker> <major> <minor> <nit> [--pr <N>]
-// Пример: node scripts/record-found-after.mjs "Фаза 6" 1 2 0 3
-// С привязкой к PR: node scripts/record-found-after.mjs "Фаза 6" 1 2 0 3 --pr 235
+//
+// ⚠ ВАЖНО (#237): <milestone> обязан ТОЧНО совпадать с `phase.milestone` из
+// ralph.config.json — по нему авто-половина (review-loop) и ручная (found-after) сшиваются.
+// Сокращённое «Фаза 6» даст записи, которые не сопоставятся с авто-половиной. Полное имя:
+//   node scripts/record-found-after.mjs "Наблюдаемость ralph · Фаза 6: Метрика находок ревью" 1 2 0 3
+// С привязкой к PR — добавить `--pr 235`.
 
 export function parseFoundAfterArgs(argv) {
-    if (argv.length < 6) {
+    // Позиционных аргументов пять (milestone + 4 счётчика, argv[2..6]) — минимальная длина
+    // argv равна 7 (#237: раньше было < 6 и вызов без nit падал не на честном usage, а на
+    // «nit … получено: undefined»).
+    if (argv.length < 7) {
         throw new Error('Укажи: <milestone> <blocker> <major> <minor> <nit> [--pr <N>]');
     }
 
@@ -31,15 +38,19 @@ export function parseFoundAfterArgs(argv) {
     const nit = parseNonNegative(argv[6], 'nit');
 
     let pr = null;
-    if (argv.includes('--pr')) {
-        const prIndex = argv.indexOf('--pr');
-        if (prIndex >= 0 && prIndex + 1 < argv.length) {
-            const prValue = argv[prIndex + 1];
-            if (!/^[1-9]\d*$/.test(prValue)) {
-                throw new Error('--pr должен быть положительным целым');
-            }
-            pr = parseInt(prValue, 10);
+    const prIndex = argv.indexOf('--pr');
+    if (prIndex >= 0) {
+        // #237: `--pr` без значения раньше молча давал pr=null — тихая потеря привязки в
+        // ручной половине, где главный риск и так дисциплина. Теперь кидаем, как остальные
+        // проверки парсера.
+        if (prIndex + 1 >= argv.length) {
+            throw new Error('--pr требует значение (номер PR)');
         }
+        const prValue = argv[prIndex + 1];
+        if (!/^[1-9]\d*$/.test(prValue)) {
+            throw new Error('--pr должен быть положительным целым');
+        }
+        pr = parseInt(prValue, 10);
     }
 
     return {

@@ -81,6 +81,17 @@ describe('countFindingsBySeverity', () => {
     it('объект без строкового body — unmarked, не выброс', () => {
         expect(countFindingsBySeverity([{ body: null }, {}]).unmarked).toBe(2);
     });
+
+    it('#237 сводка ревью (isSummary) с меткой severity идёт в unmarked, не в бакет', () => {
+        const comments = [
+            '🔴 [blocker] реальная находка',
+            { body: '🔴 [blocker] сводка прохода, дублирует находку', isSummary: true },
+        ];
+        const result = countFindingsBySeverity(comments);
+        expect(result.blocker).toBe(1); // сводка не завысила блокеры
+        expect(result.unmarked).toBe(1); // сводка ушла в unmarked
+        expect(result.total).toBe(2);
+    });
 });
 
 describe('SEVERITY_LEVELS', () => {
@@ -115,7 +126,12 @@ describe('fetchPrComments', () => {
             throw new Error(`неожиданный endpoint: ${args[1]}`);
         };
         const bodies = fetchPrComments(42, { spawnFn });
-        expect(bodies).toEqual(['🔴 [blocker] раз', '🟡 [minor] два', '⚪ [nit] три']);
+        // #237: тела reviews помечены isSummary (в счёте идут в unmarked, не дублируют находки).
+        expect(bodies).toEqual([
+            '🔴 [blocker] раз',
+            '🟡 [minor] два',
+            { body: '⚪ [nit] три', isSummary: true },
+        ]);
         expect(calls).toHaveLength(3);
     });
 
@@ -125,6 +141,34 @@ describe('fetchPrComments', () => {
             stdout: JSON.stringify([{ body: '' }, { body: '   ' }, { body: null }]),
         });
         expect(fetchPrComments(1, { spawnFn })).toEqual([]);
+    });
+
+    it('#237 фильтрует по authorAllowlist — чужие комментарии не учитываются', () => {
+        const spawnFn = (cmd, args) => {
+            if (args[1].includes('/reviews')) return { status: 0, stdout: '[]' };
+            return {
+                status: 0,
+                stdout: JSON.stringify([
+                    { body: '🔴 [blocker] от доверенного', user: { login: 'Pelmenya' } },
+                    { body: '🔴 [blocker] от прохожего', user: { login: 'random-passerby' } },
+                    { body: '🟡 [minor] без user' },
+                ]),
+            };
+        };
+        // Два одинаковых endpoint'а (issues+pulls) вернут по три — фильтр оставит доверенного.
+        const bodies = fetchPrComments(42, { spawnFn, authorAllowlist: ['Pelmenya'] });
+        expect(bodies).toEqual(['🔴 [blocker] от доверенного', '🔴 [blocker] от доверенного']);
+    });
+
+    it('#237 пустой authorAllowlist — без фильтрации (обратная совместимость)', () => {
+        const spawnFn = (cmd, args) => {
+            if (args[1].includes('/reviews')) return { status: 0, stdout: '[]' };
+            return {
+                status: 0,
+                stdout: JSON.stringify([{ body: '🔴 [blocker] x', user: { login: 'anyone' } }]),
+            };
+        };
+        expect(fetchPrComments(42, { spawnFn }).length).toBe(2);
     });
 
     it('gh api упал (ненулевой код) — throw, не пустой список (fail-closed)', () => {

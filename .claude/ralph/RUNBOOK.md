@@ -150,15 +150,28 @@ gh issue list --milestone "<фаза>" --state open             # остаток
 
 **Дешёвый шаг фиксации «найдено после»:**
 
-```bash
-# Без привязки к конкретному PR (разбор целой фазы):
-node scripts/record-found-after.mjs "Фаза 6" <blocker> <major> <minor> <nit>
+> ⚠️ `<milestone>` обязан **точно** совпадать с `phase.milestone` из `ralph.config.json` —
+> по этому ключу сшиваются авто-половина (`review-loop`) и ручная (`found-after`).
+> Сокращённое «Фаза 6» даст found-after-записи, которые не сопоставятся с авто-половиной
+> (ровно развал из «Контрольной точки» ниже, только заложенный руками). Точное имя фазы 6:
+> `Наблюдаемость ralph · Фаза 6: Метрика находок ревью` — свежее бери из `ralph.config.json`
+> (`jq -r '.common.phases[].milestone' .claude/ralph/ralph.config.json`).
+>
+> ⚠️ Запускать из **дерева раннера** (`/root/pixel-tanks-ralph`) или задать
+> `RALPH_REVIEW_FINDINGS_JOURNAL` на его journal — иначе запись уйдёт в journal твоего
+> checkout'а, а не туда, куда пишет авто-половина (см. `JOURNAL_PATH`, #237).
 
-# Пример: 1 blockers, 2 majors, 0 minors, 3 nits
-node scripts/record-found-after.mjs "Фаза 6" 1 2 0 3
+```bash
+M="Наблюдаемость ralph · Фаза 6: Метрика находок ревью"
+
+# Без привязки к конкретному PR (разбор целой фазы):
+node scripts/record-found-after.mjs "$M" <blocker> <major> <minor> <nit>
+
+# Пример: 1 blocker, 2 majors, 0 minors, 3 nits
+node scripts/record-found-after.mjs "$M" 1 2 0 3
 
 # С привязкой к конкретному PR (если находка привязана к одному):
-node scripts/record-found-after.mjs "Фаза 6" 1 2 0 3 --pr 235
+node scripts/record-found-after.mjs "$M" 1 2 0 3 --pr 235
 ```
 
 Запись попадает в журнал `.claude/ralph/review-findings.jsonl` с источником `found-after`.

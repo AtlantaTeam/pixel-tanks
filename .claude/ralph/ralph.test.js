@@ -1461,6 +1461,9 @@ describe('runLoop — основной while-цикл: итерации коде
             runClaudeFn: () => 0,
             ensureCleanFn: () => true,
             phaseMergedFn: () => false,
+            // #237: тот же безопасный дефолт — настоящий mergedPhasePr зовёт ghJson → sh,
+            // и тест на пути «фаза уже смерджена» ловил бы предохранитель #138.
+            mergedPhasePrFn: () => null,
             advancePhaseFn: () => {},
             tryMergePhaseFn: () => 'not-merged',
             closeMilestoneByTitleFn: () => {},
@@ -1682,6 +1685,44 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(shCmds).not.toContain('git pull --ff-only');
         expect(advancePhaseFn).toHaveBeenCalledTimes(1);
         expect(logs.join('\n')).toMatch(/уже смерджена/);
+    });
+
+    it('#237 фаза уже смерджена → recordReviewFindings зовётся с номером PR из mergedPhasePr', () => {
+        const logs = [];
+        const recordReviewFindingsFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => true,
+                mergedPhasePrFn: () => 315,
+                recordReviewFindingsFn,
+                shFn: () => '',
+            }),
+        );
+        expect(recordReviewFindingsFn).toHaveBeenCalledTimes(1);
+        expect(recordReviewFindingsFn.mock.calls[0][1]).toBe(315);
+    });
+
+    it('#237 фаза уже смерджена, номер PR не определён → предупреждение, запись не зовётся', () => {
+        const logs = [];
+        const recordReviewFindingsFn = vi.fn();
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => true,
+                mergedPhasePrFn: () => null,
+                recordReviewFindingsFn,
+                shFn: () => '',
+            }),
+        );
+        expect(recordReviewFindingsFn).not.toHaveBeenCalled();
+        expect(logs.join('\n')).toMatch(/запись отсутствует/);
     });
 
     it('фаза смерджена при dry=true → advancePhase есть, но БЕЗ мутаций git (checkout/pull не зовутся)', () => {
@@ -5750,6 +5791,7 @@ describe('recordReviewFindings', () => {
         ralph.recordReviewFindings(
             phase,
             235,
+            [],
             (c) => {
                 cmds.push(c);
                 return '{"pr":235}\n';
@@ -5762,12 +5804,47 @@ describe('recordReviewFindings', () => {
         expect(logs[0]).toContain('{"pr":235}');
     });
 
+    it('#237 прокидывает authorAllowlist позиционными аргументами (через shq)', () => {
+        const cmds = [];
+        ralph.recordReviewFindings(
+            phase,
+            235,
+            ['Pelmenya', 'other-user'],
+            (c) => {
+                cmds.push(c);
+                return '';
+            },
+            () => {},
+        );
+        expect(cmds[0]).toBe(
+            `node scripts/review-findings-journal.mjs '235' 'Наблюдаемость ralph · Фаза 6' 'Pelmenya' 'other-user'`,
+        );
+    });
+
+    it('#237 пустые/нестроковые авторы в allowlist отфильтрованы', () => {
+        const cmds = [];
+        ralph.recordReviewFindings(
+            phase,
+            235,
+            ['Pelmenya', '', '  ', null, 7],
+            (c) => {
+                cmds.push(c);
+                return '';
+            },
+            () => {},
+        );
+        expect(cmds[0]).toBe(
+            `node scripts/review-findings-journal.mjs '235' 'Наблюдаемость ralph · Фаза 6' 'Pelmenya'`,
+        );
+    });
+
     it('не бросает, когда запись в журнал упала — фаза уже смерджена, ронять её нельзя', () => {
         const logs = [];
         expect(() =>
             ralph.recordReviewFindings(
                 phase,
                 235,
+                [],
                 () => {
                     throw new Error('gh api упал\nвторая строка');
                 },
@@ -5784,6 +5861,7 @@ describe('recordReviewFindings', () => {
         ralph.recordReviewFindings(
             phase,
             null,
+            [],
             (c) => cmds.push(c),
             (m) => logs.push(m),
         );

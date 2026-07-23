@@ -1442,14 +1442,21 @@ function syncProjectBoard(shFn = sh, logFn = log) {
 // косметика наблюдаемости не имеет права уронить уже смерджённую фазу. Журнал живёт в
 // рантайм-каталоге раннера (JOURNAL_PATH в scripts/review-findings-journal.mjs), не в
 // git — раннер нигде не коммитит в main напрямую, только через ревьюенные PR.
-function recordReviewFindings(phase, prNumber, shFn = sh, logFn = log) {
+function recordReviewFindings(phase, prNumber, authorAllowlist = [], shFn = sh, logFn = log) {
     if (!Number.isInteger(prNumber) || prNumber <= 0) {
         logFn(`⚠ Журнал находок: номер PR неизвестен, запись пропущена.`);
         return;
     }
+    // #237: прокидываем allowlist авторов в счёт — метрика считает только доверенные
+    // комментарии (репо публичный). Логины — в шелл только через shq (инвариант 7).
+    const authorArgs = (Array.isArray(authorAllowlist) ? authorAllowlist : [])
+        .filter((a) => typeof a === 'string' && a.trim())
+        .map((a) => shq(a))
+        .join(' ');
     try {
         const out = shFn(
-            `node scripts/review-findings-journal.mjs ${shq(prNumber)} ${shq(phase.milestone)}`,
+            `node scripts/review-findings-journal.mjs ${shq(prNumber)} ${shq(phase.milestone)}` +
+                (authorArgs ? ` ${authorArgs}` : ''),
         );
         logFn(`📊 Находки ревью зафиксированы в журнале: ${String(out).trim()}`);
     } catch (e) {
@@ -1783,6 +1790,16 @@ function phaseMerged(phase) {
         `gh pr list --head ${shq(phase.branch)} --base main --state merged --json number --limit 1`,
     );
     return merged.length > 0;
+}
+
+// Номер смердженного PR фазы (или null). Нужен пути «фаза уже смерджена» (#237): там
+// recordReviewFindings не имеет lastGatePr (гейт не прогонялся — ручной мердж или рестарт
+// после merged-local-stale), а без номера авто-половина метрики терялась бы молча.
+function mergedPhasePr(phase) {
+    const merged = ghJson(
+        `gh pr list --head ${shq(phase.branch)} --base main --state merged --json number --limit 1`,
+    );
+    return merged.length > 0 ? merged[0].number : null;
 }
 
 /**
@@ -2489,6 +2506,7 @@ function runLoop(
         runClaudeFn = runClaude,
         ensureCleanFn = ensureClean,
         phaseMergedFn = phaseMerged,
+        mergedPhasePrFn = mergedPhasePr,
         advancePhaseFn = advancePhase,
         tryMergePhaseFn = tryMergePhase,
         closeMilestoneByTitleFn = closeMilestoneByTitle,
@@ -2684,6 +2702,28 @@ function runLoop(
                 logFn(
                     `✅ Фаза "${phase.milestone}" уже смерджена — дерево раннера на свежем origin/main, переход к следующей.`,
                 );
+                // #237: авто-половина метрики и на ЭТОМ пути (ручной мердж человеком либо
+                // рестарт после merged-local-stale) — иначе запись за фазу теряется молча.
+                // gate===merged её не писал: сюда приходят пути, где гейта не было. Номер PR
+                // берём отдельным запросом (lastGatePr тут пуст). Fail-open: не нашли/сбой —
+                // предупреждаем, но переход не блокируем (журнал — наблюдаемость, не гейт).
+                if (!dry) {
+                    let mergedPr = null;
+                    try {
+                        mergedPr = mergedPhasePrFn(phase);
+                    } catch (e) {
+                        logFn(
+                            `⚠ Журнал находок: не смог узнать номер смердженного PR фазы "${phase.milestone}" (${e.message}).`,
+                        );
+                    }
+                    if (mergedPr) {
+                        recordReviewFindingsFn(phase, mergedPr, cfg.authorAllowlist);
+                    } else {
+                        logFn(
+                            `⚠ Журнал находок: за уже смердженную фазу "${phase.milestone}" запись отсутствует (номер PR не определён).`,
+                        );
+                    }
+                }
                 advancePhaseFn(state, idx);
                 if (once || dry) break;
                 continue;
@@ -2847,7 +2887,7 @@ function runLoop(
                 pushEventFn(mergedMsg, cfg, { logFn });
                 closeMilestoneByTitleFn(phase.milestone); // закрыть milestone сразу, не ждать свипа
                 syncProjectBoardFn(); // #199: закрытые issues фазы → Done на доске
-                recordReviewFindingsFn(phase, getLastGatePr()); // #169: счёт находок ревью в журнал
+                recordReviewFindingsFn(phase, getLastGatePr(), cfg.authorAllowlist); // #169: счёт находок ревью в журнал
                 advancePhaseFn(state, idx);
                 // #87: prod — стоп перед деплоем. Деплой уже в руках CI (мердж его и
                 // запустил), но loop не должен тут же хвататься за следующую фазу без

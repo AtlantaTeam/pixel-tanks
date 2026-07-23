@@ -150,6 +150,37 @@ describe('appendJournalEntry', () => {
             ),
         ).toThrow(/counts\.blocker/);
     });
+
+    it('#237 total не равен сумме частей — throw, запись не пишется', () => {
+        const calls = [];
+        expect(() =>
+            appendJournalEntry(
+                {
+                    milestone: 'Фаза 6',
+                    source: 'review-loop',
+                    pr: 1,
+                    // 1+2+0+3+1 = 7, но total выставлен в 40 — рассинхрон, метрика соврала бы.
+                    counts: { ...VALID_COUNTS, total: 40 },
+                },
+                { writeFn: (p, d) => calls.push(d) },
+            ),
+        ).toThrow(/total.*40.*сумме/s);
+        expect(calls).toHaveLength(0);
+    });
+
+    it('#237 дефолтный writeFn под RALPH_NO_SIDE_EFFECTS=1 — кидает, не пишет в настоящий журнал', () => {
+        // Vitest-проект ralph выставляет RALPH_NO_SIDE_EFFECTS=1 (test-setup.js) — тест,
+        // забывший инжектировать writeFn, обязан упасть, а не молча дописать строку на диск.
+        expect(process.env.RALPH_NO_SIDE_EFFECTS).toBe('1');
+        expect(() =>
+            appendJournalEntry({
+                milestone: 'Фаза 6',
+                source: 'review-loop',
+                pr: 1,
+                counts: VALID_COUNTS,
+            }),
+        ).toThrow(/RALPH_NO_SIDE_EFFECTS/);
+    });
 });
 
 describe('recordReviewLoopFindings', () => {
@@ -182,6 +213,19 @@ describe('recordReviewLoopFindings', () => {
             appendFn: (entry) => appendCalls.push(entry),
         });
         expect(appendCalls[0].counts).toEqual(zero);
+    });
+
+    it('#237 прокидывает authorAllowlist в countFn', () => {
+        let seen;
+        recordReviewLoopFindings(235, 'Фаза 6', {
+            countFn: (prNumber, opts) => {
+                seen = opts?.authorAllowlist;
+                return VALID_COUNTS;
+            },
+            appendFn: (entry) => entry,
+            authorAllowlist: ['Pelmenya'],
+        });
+        expect(seen).toEqual(['Pelmenya']);
     });
 
     it('countFn упал (сбой gh) — throw наружу, запись не пишется (fail-closed)', () => {

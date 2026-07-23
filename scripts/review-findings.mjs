@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 // #168: счёт находок ревью петли по severity из комментариев PR. Ревью-промпт (ralph.js,
 // сессии code review и правок) уже обязывает КАЖДЫЙ комментарий начинать строго с метки
@@ -32,11 +33,25 @@ export function parseSeverity(body) {
 // Принимает как строки, так и объекты gh api ({ body }) — вызывающему (fetchPrComments,
 // либо тест) не нужно приводить форму заранее. Пустой набор — все счётчики нулевые, это не
 // ошибка (PR без единого комментария — легитимный случай, не «сбой чтения»).
+//
+// Семантика полей (одинакова для обеих половин метрики — review-loop и found-after):
+// `total` — ВСЕ учтённые комментарии, включая unmarked (ответы кодер-сессии «поправил» и
+// сводки ревью), поэтому всегда `total === blocker + major + minor + nit + unmarked`
+// (инвариант проверяет журнал, assertValidCounts). «total: 40» — это 40 комментариев, а
+// НЕ 40 находок; находки — сумма severity-бакетов без unmarked. У found-after unmarked = 0
+// по построению, там total и число находок совпадают.
+//
+// #237 (ревью): сводный обзорный комментарий прохода ревью (pulls/reviews[].body) по
+// контракту промпта тоже начинается с метки severity, но он ДУБЛИРУЕТ находки, уже
+// разложенные по inline-комментариям того же прохода. Чтобы каждый проход не давал
+// систематический +1 в бакет своей метки, такие тела помечены `isSummary` и идут в
+// unmarked (в total попадают, severity не завышают).
 export function countFindingsBySeverity(comments) {
     const counts = { blocker: 0, major: 0, minor: 0, nit: 0, unmarked: 0, total: 0 };
     for (const comment of comments) {
+        const isSummary = typeof comment === 'object' && comment?.isSummary === true;
         const body = typeof comment === 'string' ? comment : comment?.body;
-        const severity = parseSeverity(body);
+        const severity = isSummary ? null : parseSeverity(body);
         if (severity) counts[severity] += 1;
         else counts.unmarked += 1;
         counts.total += 1;
@@ -47,11 +62,13 @@ export function countFindingsBySeverity(comments) {
 // {owner}/{repo} — плейсхолдеры gh api, подставляет сам gh по текущему репозиторию (тот же
 // приём уже используется в ralph.js для milestones). --paginate на ответе-массиве gh
 // автоматически конкатенирует все страницы в один JSON-массив, --slurp не нужен.
+// `isSummary` помечает сводные обзорные тела прохода ревью (pulls/reviews[].body): они
+// дублируют inline-находки того же прохода, поэтому в счёте идут в unmarked (#237).
 function findingEndpoints(prNumber) {
     return [
-        `repos/{owner}/{repo}/issues/${prNumber}/comments`,
-        `repos/{owner}/{repo}/pulls/${prNumber}/comments`,
-        `repos/{owner}/{repo}/pulls/${prNumber}/reviews`,
+        { endpoint: `repos/{owner}/{repo}/issues/${prNumber}/comments`, isSummary: false },
+        { endpoint: `repos/{owner}/{repo}/pulls/${prNumber}/comments`, isSummary: false },
+        { endpoint: `repos/{owner}/{repo}/pulls/${prNumber}/reviews`, isSummary: true },
     ];
 }
 
@@ -87,24 +104,41 @@ function ghApiJsonArray(endpoint, spawnFn) {
 // (issues/comments), inline-комментарии ревью (pulls/comments) и сводный обзорный
 // комментарий каждого прохода ревью (pulls/reviews[].body) — промпт размечает меткой все
 // три вида. Пустые/whitespace body (у review без сводного текста — обычное дело) отфильтрованы.
-export function fetchPrComments(prNumber, { spawnFn = spawnSync } = {}) {
+//
+// #237 (ревью): фильтр по автору. Репозиторий публичный (инвариант 7 в
+// .claude/ralph/CLAUDE.md), и любой прохожий, оставивший «🔴 [blocker] lol», иначе завысил
+// бы счёт блокеров метрики. Если `authorAllowlist` задан непустым — учитываются только
+// комментарии его авторов (`item.user.login` есть во всех трёх endpoint'ах). Пустой/не
+// заданный список = без фильтрации (обратная совместимость для standalone-запуска); раннер
+// всегда прокидывает cfg.authorAllowlist.
+function isAllowedAuthor(item, authorAllowlist) {
+    if (!Array.isArray(authorAllowlist) || authorAllowlist.length === 0) return true;
+    return authorAllowlist.includes(item?.user?.login);
+}
+
+export function fetchPrComments(prNumber, { spawnFn = spawnSync, authorAllowlist = [] } = {}) {
     if (!Number.isInteger(prNumber) || prNumber <= 0) {
         throw new Error(
             `fetchPrComments: некорректный номер PR (получено: ${JSON.stringify(prNumber)})`,
         );
     }
-    const bodies = [];
-    for (const endpoint of findingEndpoints(prNumber)) {
+    const comments = [];
+    for (const { endpoint, isSummary } of findingEndpoints(prNumber)) {
         const items = ghApiJsonArray(endpoint, spawnFn);
         for (const item of items) {
-            if (typeof item?.body === 'string' && item.body.trim()) bodies.push(item.body);
+            if (typeof item?.body !== 'string' || !item.body.trim()) continue;
+            if (!isAllowedAuthor(item, authorAllowlist)) continue;
+            comments.push(isSummary ? { body: item.body, isSummary: true } : item.body);
         }
     }
-    return bodies;
+    return comments;
 }
 
-export function countPrFindings(prNumber, { spawnFn = spawnSync, fetchFn = fetchPrComments } = {}) {
-    const comments = fetchFn(prNumber, { spawnFn });
+export function countPrFindings(
+    prNumber,
+    { spawnFn = spawnSync, fetchFn = fetchPrComments, authorAllowlist = [] } = {},
+) {
+    const comments = fetchFn(prNumber, { spawnFn, authorAllowlist });
     return countFindingsBySeverity(comments);
 }
 
@@ -114,9 +148,11 @@ function main() {
         console.error('⛔ review-findings: укажи номер PR первым аргументом');
         process.exit(1);
     }
+    // Остальные позиционные аргументы — allowlist авторов (логины GitHub), см. #237.
+    const authorAllowlist = process.argv.slice(3);
     let counts;
     try {
-        counts = countPrFindings(prNumber);
+        counts = countPrFindings(prNumber, { authorAllowlist });
     } catch (e) {
         console.error(`⛔ review-findings: ${e.message}`);
         process.exit(1);
@@ -124,4 +160,4 @@ function main() {
     console.log(JSON.stringify(counts));
 }
 
-if (import.meta.filename === process.argv[1]) main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) main();

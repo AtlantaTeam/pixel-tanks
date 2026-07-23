@@ -78,6 +78,20 @@ describe('parseFoundAfterArgs', () => {
             () => parseFoundAfterArgs(['node', 'script.mjs', 'Фаза 6']), // только milestone
         ).toThrow();
     });
+
+    it('#237 без nit (пять позиционных, длина argv 6) — throw на usage, не на «nit undefined»', () => {
+        // milestone + blocker/major/minor = argv[2..5], nit пропущен. Раньше guard был < 6
+        // и вызов доходил до parseNonNegative(undefined) — падал не на честном usage.
+        expect(() => parseFoundAfterArgs(['node', 'script.mjs', 'Фаза 6', '1', '2', '0'])).toThrow(
+            /Укажи/,
+        );
+    });
+
+    it('#237 --pr последним без значения — throw, не тихий pr=null', () => {
+        expect(() =>
+            parseFoundAfterArgs(['node', 'script.mjs', 'Фаза 6', '1', '2', '0', '3', '--pr']),
+        ).toThrow(/--pr требует значение/);
+    });
 });
 
 describe('recordFoundAfter', () => {
