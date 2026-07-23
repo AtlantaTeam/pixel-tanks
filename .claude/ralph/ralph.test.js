@@ -4622,8 +4622,15 @@ describe('боевой ralph.config.json — профили playground/prod (#73
         expect(prod.blockedHealAttempts).toEqual(pg.blockedHealAttempts);
         // #256: единственная дельта prod теперь — haltBeforeDeploy: false (непрерывный
         // prod, #249). Остальное отличие прода от playground по-прежнему держит код по
-        // profileName (толстый гейт, TG, стоп на деплой), а не конфиг.
+        // profileName (толстый гейт, TG, пост-мердж проверка деплоя), а не конфиг.
         expect(Object.keys(raw.profiles.prod)).toEqual(['haltBeforeDeploy']);
+        // Пиннится не только НАЛИЧИЕ ключа, но и ЗНАЧЕНИЕ: тихий флип на true (правкой
+        // руками или будущим мерджем) вернул бы prod в halt-режим — единственный смысл
+        // фазы #256 — и старт-валидация true пропустит как валидный конфиг. Резолв-
+        // ассерты краснеют на таком регрессе.
+        expect(resolveProfile(raw, 'prod', boom).haltBeforeDeploy).toBe(false);
+        // playground остаётся на дефолте (halt) — флаг не протёк через common.
+        expect(resolveProfile(raw, 'playground', boom).haltBeforeDeploy).toBeUndefined();
     });
 });
 
