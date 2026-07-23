@@ -74,6 +74,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { sendTelegramMessage, telegramConfigFromEnv } = require('./telegram-notifier.js');
+const { buildSanitizedGateEnv } = require('./gate-env.js');
 
 const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
@@ -195,7 +196,11 @@ function shq(value) {
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-function sh(cmd) {
+// env (#189): по умолчанию дочерний процесс наследует полный env раннера — так гонятся
+// git-команды хореографии гейта, которым нужны секреты (GH_TOKEN для fetch). Но команды
+// ЧЕКОВ (build/lint/test) и `npm ci` — это код из проверяемого PR, ему секреты петли
+// видеть нельзя; checksGreen/installFn передают сюда санированный env (см. gate-env.js).
+function sh(cmd, { env } = {}) {
     // #138: см. guardSideEffect выше — в тестах реальный шелл запрещён. Команду
     // печатаем целиком: по ней сразу видно, какой именно дефолт не подменили.
     guardSideEffect(`sh(${cmd})`);
@@ -206,6 +211,8 @@ function sh(cmd) {
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'pipe'],
         maxBuffer: 16 * 1024 * 1024,
+        // env только когда передан: undefined → execSync наследует process.env как раньше.
+        ...(env ? { env } : {}),
     }).trim();
 }
 
@@ -659,7 +666,13 @@ function ensureRunnerWorktree(
             execFileSync('git', ['worktree', 'add', '--detach', p, 'origin/main'], {
                 stdio: 'inherit',
             }),
-        installFn = (dir) => execSync('npm ci', { cwd: dir, stdio: 'inherit' }),
+        // env (#189): `npm ci` исполняет lifecycle-скрипты зависимостей — код с чужих
+        // слов. Санируем окружение по allowlist, чтобы скомпрометированная зависимость
+        // не нашла в env секретов петли (GH_TOKEN, CLAUDE_*, RALPH_TG_*). buildGateEnvFn —
+        // DI для тестов; в проде строит env из gate-env-allowlist.json. Санированный env
+        // приходит в installFn аргументом — так подмена видна в тестах через spy.
+        buildGateEnvFn = buildSanitizedGateEnv,
+        installFn = (dir, env) => execSync('npm ci', { cwd: dir, stdio: 'inherit', env }),
         markFn = writeLockMarker,
         repoRoot = process.cwd(),
     } = {},
@@ -720,7 +733,9 @@ function ensureRunnerWorktree(
     }
     logFn('📦 npm ci в новом worktree (git worktree add не копирует node_modules)...');
     try {
-        installFn(worktreePath);
+        // buildGateEnvFn() внутри try: битый allowlist → санировать нельзя → fail-closed
+        // (тот же стоп, что и упавший npm ci), а не npm ci с полным env.
+        installFn(worktreePath, buildGateEnvFn());
     } catch (e) {
         return failFn(`npm ci в ${worktreePath} упал: ${e.message}`);
     }
@@ -762,11 +777,18 @@ function syncDepsIfLockChanged({
     existsFn = fs.existsSync,
     readFn = fs.readFileSync,
     writeFn = fs.writeFileSync,
-    installFn = () => {
+    // env (#189): санированное окружение для `npm ci`. checksGreen прокидывает сюда уже
+    // построенный env (один allowlist-load на прогон гейта); при прямом вызове дефолт
+    // строит его сам через buildGateEnvFn. installFn исполняет lifecycle-скрипты
+    // зависимостей — код с чужих слов, ему секреты петли видеть нельзя. Разрешённый env
+    // приходит в installFn аргументом — так подмена видна в тестах через spy.
+    env,
+    buildGateEnvFn = buildSanitizedGateEnv,
+    installFn = (resolvedEnv) => {
         // Забытый installFn в тесте запустил бы настоящий npm ci в дереве, где идут
         // тесты, — переустановка node_modules посреди прогона (ревью PR #141).
         guardSideEffect('npm ci (syncDepsIfLockChanged)');
-        return execSync('npm ci', { stdio: 'inherit' });
+        return execSync('npm ci', { stdio: 'inherit', env: resolvedEnv });
     },
 } = {}) {
     const current = lockHash('.', readFn);
@@ -777,7 +799,8 @@ function syncDepsIfLockChanged({
     } catch {}
     if (prev === current) return;
     logFn('📦 package-lock.json PR-головы отличается от установленного — npm ci перед чеками...');
-    installFn();
+    // env из checksGreen (уже санирован), иначе строим сам — fail-closed при битом allowlist.
+    installFn(env ?? buildGateEnvFn());
     writeLockMarker('.', { readFn, writeFn });
 }
 
@@ -1742,6 +1765,9 @@ function checksGreen(
         logFn = log,
         parkFn = parkOnOriginMain,
         syncDepsFn = syncDepsIfLockChanged,
+        // env-санация чеков (#189): строит окружение по allowlist один раз на прогон
+        // гейта. DI — для теста fail-closed; в проде — buildSanitizedGateEnv.
+        buildGateEnvFn = buildSanitizedGateEnv,
         // Состав гейта (#80): по умолчанию база (playground). tryMergePhase прокидывает
         // сюда список по активному профилю; для prod он длиннее на толстые чеки.
         checks = BASE_GATE_CHECKS,
@@ -1808,13 +1834,27 @@ function checksGreen(
         parkFn();
         return false;
     }
+    // env-санация (#189): чеки и `npm ci` ниже исполняют код проверяемого PR в дереве
+    // раннера, где в окружении лежат секреты петли. Строим санированный env по allowlist
+    // ОДИН раз на прогон и прокидываем его и в syncDeps (npm ci), и в каждый чек. Fail-closed:
+    // битый/нечитаемый allowlist → стоп, а не запуск чеков с полным env (инвариант 1).
+    let gateEnv;
+    try {
+        gateEnv = buildGateEnvFn();
+    } catch (e) {
+        logFn(
+            `⛔ Санация окружения чеков гейта не удалась (${e.message}) — чеки без allowlist не запускаем, авто-мердж отменён.`,
+        );
+        parkFn();
+        return false;
+    }
     // #SiaUX: PR-голова могла добавить зависимость (её package-lock новее, а node_modules
     // дерева раннера — старые). Переустанавливаем ДО чеков при расхождении lock, иначе
     // build/test упали бы красным на «module not found» из-за инфраструктуры, а не кода.
-    syncDepsFn();
+    syncDepsFn({ env: gateEnv });
     for (const [name, cmd] of checks) {
         try {
-            shFn(cmd);
+            shFn(cmd, { env: gateEnv });
             logFn(`  ✓ ${name}`);
         } catch (e) {
             logFn(`  ✗ ${name} — красный, авто-мердж отменён`);
