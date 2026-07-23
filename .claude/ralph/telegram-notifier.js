@@ -18,6 +18,14 @@
 // Fail-open: sendTelegramMessage никогда не бросает наружу — сбой (нет токена/
 // chat_id, сеть, rate-limit или отказ Telegram API) не должен ронять loop раннера,
 // только не долетает уведомление. Возвращает boolean успеха.
+//
+// Ретраи (#224): один транзиентный сетевой чих не должен терять громкое событие
+// (API-лимит, blocked, breaker, красный деплой). Паттерн — как у `ghJson` в
+// ralph.js: нарастающая пауза `retryBaseMs × номер попытки`, дефолт 3 попытки.
+// sleepFn инжектируется (как sleepFn у checkProdHealth/ensureTunnel) — тесты не
+// ждут реальные секунды. Если все попытки исчерпаны — fail-open сохраняется
+// (возвращаем false, не бросаем), но в лог уходит заметная строка с полным
+// текстом события, чтобы его можно было найти при разборе постфактум.
 
 const { execFileSync } = require('node:child_process');
 
@@ -27,6 +35,22 @@ const TELEGRAM_API_BASE = 'https://api.telegram.org';
 // fail-open молча съест уведомление. Обрезаем заранее — заголовок issue в событии
 // вполне может однажды перевалить лимит.
 const TELEGRAM_MAX_TEXT = 4096;
+
+const TELEGRAM_DEFAULT_ATTEMPTS = 3;
+const TELEGRAM_RETRY_BASE_MS = 5000;
+
+// Синхронный sleep для паузы между попытками — тот же Atomics.wait-приём, что и
+// `sleep()` в ralph.js (event loop свободен, раннер синхронный). Не заведён под
+// guardSideEffect: как и sleepFn в ralph.js, это DI ради скорости тестов, а не
+// граница anti-RCE — забытый мок делает тест медленным, а не боевым.
+function realSleep(ms) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function positiveIntOrDefault(value, fallback) {
+    const n = Number(value);
+    return Number.isInteger(n) && n > 0 ? n : fallback;
+}
 
 // Тот же предохранитель, что #138 в ralph.js (см. комментарий там), но свой
 // журнал: модуль самостоятельный, require('./ralph.js') отсюда создал бы
@@ -58,35 +82,9 @@ function telegramConfigFromEnv() {
     };
 }
 
-// execFn инжектируется (как probeEgress/restartTunnel в ralph.js) — юнит-тесты
-// мокают сам вызов curl, не реальную сеть/токен. logFn — куда пишутся
-// предупреждения о недоставке; по умолчанию no-op, модуль не обязан знать про
-// ralph.log (вызывающий код передаёт свой log()).
-function sendTelegramMessage(text, { token, chatId, execFn = realExecFn, logFn = () => {} } = {}) {
-    const envCfg = telegramConfigFromEnv();
-    const finalToken = token ?? envCfg.token;
-    const finalChatId = chatId ?? envCfg.chatId;
-
-    if (!finalToken || !finalChatId) {
-        logFn(
-            '⚠ Telegram-нотифаер: не заданы RALPH_TG_BOT_TOKEN/RALPH_TG_CHAT_ID — сообщение не отправлено.',
-        );
-        return false;
-    }
-
-    // Токен — секрет, а в argv он виден в `ps`/`/proc/*/cmdline` всё время запроса.
-    // Прячем URL с токеном в curl-конфиг, который curl читает со stdin (--config -):
-    // в argv остаются только флаги. chat_id/text — не секреты, оставляем их там же
-    // через --data-urlencode (шелл не участвует, argv-массив). Токен бота имеет вид
-    // `\d+:[A-Za-z0-9_-]+` — ни кавычек, ни бэкслэшей, поэтому значение в конфиге
-    // безопасно взять в кавычки, а untrusted-текст в конфиг НЕ попадает (иначе `"`
-    // из заголовка issue закрыл бы строку раньше времени).
-    const url = `${TELEGRAM_API_BASE}/bot${finalToken}/sendMessage`;
-    const curlConfig = `url = "${url}"\n`;
-    // Режем по code points, а не по UTF-16-единицам: граница TELEGRAM_MAX_TEXT
-    // может попасть в середину суррогатной пары (эмодзи 🔔/⛔/✅ в текстах пушей —
-    // как раз пары), тогда в argv уехал бы одинокий суррогат → U+FFFD `�` в UTF-8.
-    const safeText = [...String(text)].slice(0, TELEGRAM_MAX_TEXT).join('');
+// Один HTTP-запрос к Bot API. Не бросает — возвращает {ok, reason}, reason
+// заполнен только при ok=false (для лога попытки/финального отказа).
+function attemptSend({ execFn, curlConfig, finalChatId, finalToken, safeText }) {
     try {
         const raw = execFn(
             'curl',
@@ -118,33 +116,134 @@ function sendTelegramMessage(text, { token, chatId, execFn = realExecFn, logFn =
         try {
             parsed = JSON.parse(raw);
         } catch {
-            logFn(
-                `⚠ Telegram-нотифаер: не удалось разобрать ответ API — ${String(raw).slice(0, 200)}`,
-            );
-            return false;
+            return {
+                ok: false,
+                reason: `не удалось разобрать ответ API — ${String(raw).slice(0, 200)}`,
+            };
         }
         if (!parsed.ok) {
-            logFn(
-                `⚠ Telegram-нотифаер: API отклонил сообщение — ${parsed.description || 'без описания'}`,
-            );
-            return false;
+            const code = Number(parsed.error_code);
+            const desc = parsed.description || 'без описания';
+            // 429 (rate-limit) — транзиентно, но Telegram сам подсказывает паузу в
+            // parameters.retry_after (сек). Уважаем её: фиксированные 5с могли бы повторно
+            // упереться в лимит. retryAfterMs !== undefined перекрывает нарастающую паузу.
+            if (code === 429) {
+                const ra = parsed.parameters && Number(parsed.parameters.retry_after);
+                return {
+                    ok: false,
+                    reason: `API rate-limit (429) — ${desc}`,
+                    retryAfterMs: Number.isInteger(ra) && ra > 0 ? ra * 1000 : undefined,
+                };
+            }
+            // Прочие 4xx (chat not found, bad request, unauthorized) — ПОСТОЯННЫЙ отказ:
+            // вторая попытка тем же телом успехом не станет, а раннер синхронно спит
+            // секунды на каждом пуше. retriable:false → цикл прекращает ретраи сразу.
+            if (Number.isInteger(code) && code >= 400 && code < 500) {
+                return {
+                    ok: false,
+                    reason: `API отклонил сообщение (${code}) — ${desc}`,
+                    retriable: false,
+                };
+            }
+            // 5xx / неизвестный код — транзиентно, ретраим (retriable по умолчанию).
+            return { ok: false, reason: `API отклонил сообщение — ${desc}` };
         }
-        return true;
+        return { ok: true, reason: '' };
     } catch (e) {
         // execFileSync при непустом exit-коде кладёт ПЕРВОЙ строкой e.message всю
         // команду (`Command failed: curl …`). URL с токеном теперь уходит в stdin, а
         // не в argv, но редактируем на всякий случай: лог тейлится монитором и
         // копируется в чат — секрету там не место. Пустой токен сюда не доходит
-        // (ранний return выше), поэтому replaceAll не схлопнет всю строку.
+        // (ранний return выше в sendTelegramMessage), поэтому replaceAll не схлопнет
+        // всю строку.
         const firstLine = String(e.message).split('\n')[0].replaceAll(finalToken, '***');
-        logFn(`⚠ Telegram-нотифаер: отправка не удалась — ${firstLine}`);
+        return { ok: false, reason: `отправка не удалась — ${firstLine}` };
+    }
+}
+
+// execFn инжектируется (как probeEgress/restartTunnel в ralph.js) — юнит-тесты
+// мокают сам вызов curl, не реальную сеть/токен. logFn — куда пишутся
+// предупреждения о недоставке; по умолчанию no-op, модуль не обязан знать про
+// ralph.log (вызывающий код передаёт свой log()). sleepFn/attempts/retryBaseMs —
+// ретраи с нарастающей паузой (#224), см. докблок модуля.
+function sendTelegramMessage(
+    text,
+    {
+        token,
+        chatId,
+        execFn = realExecFn,
+        logFn = () => {},
+        sleepFn = realSleep,
+        attempts = TELEGRAM_DEFAULT_ATTEMPTS,
+        retryBaseMs = TELEGRAM_RETRY_BASE_MS,
+    } = {},
+) {
+    const envCfg = telegramConfigFromEnv();
+    const finalToken = token ?? envCfg.token;
+    const finalChatId = chatId ?? envCfg.chatId;
+
+    if (!finalToken || !finalChatId) {
+        logFn(
+            '⚠ Telegram-нотифаер: не заданы RALPH_TG_BOT_TOKEN/RALPH_TG_CHAT_ID — сообщение не отправлено.',
+        );
         return false;
     }
+
+    // Токен — секрет, а в argv он виден в `ps`/`/proc/*/cmdline` всё время запроса.
+    // Прячем URL с токеном в curl-конфиг, который curl читает со stdin (--config -):
+    // в argv остаются только флаги. chat_id/text — не секреты, оставляем их там же
+    // через --data-urlencode (шелл не участвует, argv-массив). Токен бота имеет вид
+    // `\d+:[A-Za-z0-9_-]+` — ни кавычек, ни бэкслэшей, поэтому значение в конфиге
+    // безопасно взять в кавычки, а untrusted-текст в конфиг НЕ попадает (иначе `"`
+    // из заголовка issue закрыл бы строку раньше времени).
+    const url = `${TELEGRAM_API_BASE}/bot${finalToken}/sendMessage`;
+    const curlConfig = `url = "${url}"\n`;
+    // Режем по code points, а не по UTF-16-единицам: граница TELEGRAM_MAX_TEXT
+    // может попасть в середину суррогатной пары (эмодзи 🔔/⛔/✅ в текстах пушей —
+    // как раз пары), тогда в argv уехал бы одинокий суррогат → U+FFFD `�` в UTF-8.
+    const safeText = [...String(text)].slice(0, TELEGRAM_MAX_TEXT).join('');
+
+    const totalAttempts = Math.max(1, positiveIntOrDefault(attempts, TELEGRAM_DEFAULT_ATTEMPTS));
+    // retryBaseMs валидируем так же, как attempts выше: мусор (NaN, строка) дал бы
+    // waitMs=NaN, а Atomics.wait трактует NaN-таймаут как +∞ — realSleep(NaN) повесил бы
+    // раннер НАВСЕГДА посреди пуша. Сегодня параметр передают только тесты, но асимметрия
+    // валидации приглашает однажды прокинуть его из конфига.
+    const base = positiveIntOrDefault(retryBaseMs, TELEGRAM_RETRY_BASE_MS);
+    let lastReason = '';
+    for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+        const result = attemptSend({ execFn, curlConfig, finalChatId, finalToken, safeText });
+        if (result.ok) return true;
+        lastReason = result.reason;
+        // Постоянный отказ (4xx, кроме 429): ретрай тем же телом бесполезен — прекращаем
+        // сразу, не тратя синхронные паузы раннера на каждом пуше.
+        if (result.retriable === false) {
+            logFn(
+                `⚠ Telegram-нотифаер: постоянный отказ API — ${result.reason} — ретрай бесполезен, прекращаю.`,
+            );
+            break;
+        }
+        if (attempt < totalAttempts) {
+            // 429 диктует свою паузу (retry_after); иначе — нарастающая base × номер попытки.
+            const waitMs = result.retryAfterMs != null ? result.retryAfterMs : base * attempt;
+            logFn(
+                `⚠ Telegram-нотифаер: попытка ${attempt}/${totalAttempts} не удалась — ${result.reason} — повтор через ${waitMs / 1000}с`,
+            );
+            sleepFn(waitMs);
+        }
+    }
+    // Последняя попытка исчерпана: fail-open (не бросаем), но громкая строка с
+    // ПОЛНЫМ (необрезанным) текстом события — чтобы его можно было найти при
+    // разборе лога постфактум, а не только усечённый вариант, ушедший в API.
+    logFn(`⚠ Telegram-нотифаер: отправка не удалась — ${lastReason}`);
+    logFn(`⚠ ПУШ НЕ ДОСТАВЛЕН: ${String(text)}`);
+    return false;
 }
 
 module.exports = {
     sendTelegramMessage,
     telegramConfigFromEnv,
     TELEGRAM_API_BASE,
+    TELEGRAM_DEFAULT_ATTEMPTS,
+    TELEGRAM_RETRY_BASE_MS,
     sideEffectAttempts,
 };

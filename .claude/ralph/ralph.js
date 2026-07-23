@@ -60,6 +60,7 @@
  *   node .claude/ralph/ralph.js --dry-run   показать что будет сделано; строго read-only
  *   node .claude/ralph/ralph.js --reset     сбросить state на первую фазу конфига
  *   node .claude/ralph/ralph.js --resubmit  повторить полный цикл сдачи фазы (PR/ревью/правки)
+ *   node .claude/ralph/ralph.js --deploy-resolved  снять барьер красного пост-мердж деплоя (#165) и продолжить
  *   node .claude/ralph/ralph.js --profile <name>   профиль конфига (по умолчанию defaultProfile)
  *
  * Требования: gh CLI авторизован, git-репозиторий, ralph.config.json настроен, active: true.
@@ -97,6 +98,10 @@ const ONCE = args.includes('--once');
 const DRY = args.includes('--dry-run');
 const RESET = args.includes('--reset');
 const RESUBMIT = args.includes('--resubmit');
+// #165: человек разобрался с красным пост-мердж деплоем (откат/передеплой за deploy-workflow)
+// и снимает барьер, не дающий раннеру строить следующую фазу поверх недоехавшего main.
+// Только человек — снятие блока не может решать сам раннер (тот же принцип, что и hold).
+const DEPLOY_RESOLVED = args.includes('--deploy-resolved');
 
 // Конфиг — module-level: заполняется в main() (см. низ файла). Держим здесь, а не
 // const на top-level, чтобы `require`/import ФАЙЛА (юнит-тесты) не запускал preflight
@@ -1912,14 +1917,251 @@ function tryMergePhase(
 
 // Деплой фазы (#87) — явный no-op-плейсхолдер. Боевой прод уже раскатывается
 // САМ CI (.github/workflows/deploy.yml → scripts/deploy-remote.sh) по факту пуша
-// в main — squash-мердж внутри tryMergePhase выше его и запускает. Раннеру
-// незачем дублировать деплой или дожидаться его статуса; эта функция — только
-// маркер точки цикла, где prod-loop логически передаёт фазу релизу и
-// останавливается (см. runLoop, gate === 'merged'), не читая исход CI-раскатки.
+// в main — squash-мердж внутри tryMergePhase выше его и запускает. Раннеру незачем
+// ДУБЛИРОВАТЬ деплой; эта функция — только маркер точки цикла, где prod-loop
+// логически передаёт фазу релизу. Исход CI-раскатки раннер, однако, ДОЖИДАЕТСЯ
+// (#163): сразу после этого маркера runLoop зовёт waitForDeployRun на смердженном
+// sha — иначе откат деплоя остался бы в main незамеченным (см. runLoop, gate === 'merged').
 function deployPhasePlaceholder(phase, { logFn = log } = {}) {
     logFn(
         `🚀 Деплой фазы "${phase.milestone}": плейсхолдер — раскатку уже делает CI по пушу в main, раннер её не дублирует.`,
     );
+}
+
+// #163: sha squash-мерджа PR. Это ровно тот коммит, что уехал в main и запустил
+// deploy-workflow (headSha его run'а), — по нему пост-мердж проверка и следит.
+// Чтение через ghJson (ретраи). Fail-closed: без валидного oid — бросаем, «не смог
+// узнать sha» и «деплой прошёл» — разные ответы, молчаливый пропуск здесь недопустим.
+function mergedShaOf(
+    prNumber,
+    { ghJsonFn = ghJson, sleepFn = sleep, attempts = 3, retryMs = 5000 } = {},
+) {
+    // GitHub иногда отдаёт mergeCommit: null с лагом сразу после squash-мерджа. ghJson
+    // ретраит только exec/parse-ошибки — валидный ответ с пустым oid его не смущает.
+    // Короткая петля именно на пустой oid (attempts×retryMs) убирает самый вероятный
+    // ложный красный этого пути; исчерпав её — fail-closed бросаем (в runLoop это барьер).
+    let oid = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        const view = ghJsonFn(`gh pr view ${shq(prNumber)} --json mergeCommit`);
+        oid = view && view.mergeCommit && view.mergeCommit.oid;
+        if (SHA40_RE.test(String(oid))) return oid;
+        if (attempt < attempts) sleepFn(retryMs);
+    }
+    throw new Error(`mergedShaOf: не удалось получить sha мерджа PR #${prNumber}`);
+}
+
+// #TFO89: единственный источник формата строки ожидания пост-мердж деплоя. Её парсит
+// DEPLOY_WAIT_RE в deadman.js (режим deploywait, порог = таймаут ожидания + запас):
+// цикл опроса ниже за ~20 мин не пишет в лог ни строки, и без своего режима deadman
+// увёл бы классификацию к default (5 мин) → ложный DEADMAN-пуш на каждом prod-мердже
+// (нарушение инварианта 10 и критерия PRD «ноль ложных пушей»). N (таймаут в минутах)
+// захватывается тем же способом, что «Жду N мин» у apiLimitMessage; синхронность
+// формата и regex закреплена тестом (deadman.test.js: deployWaitMessage ↔ DEPLOY_WAIT_RE).
+function deployWaitMessage(workflow, sha, timeoutMs) {
+    return (
+        `⏳ Пост-мердж: жду итог deploy-workflow «${workflow}» на sha ${String(sha).slice(0, 8)} ` +
+        `(таймаут ${Math.round(timeoutMs / 60000)} мин).`
+    );
+}
+
+// #163: После squash-мерджа фазы deploy-workflow раскатывает main на прод. Прежде
+// чем строить следующую фазу поверх этого main, раннер (prod) ДОЖИДАЕТСЯ итога
+// workflow на смердженном sha — иначе откат раскатки остаётся в main и следующий
+// мердж передеплоит битый коммит. Возвращает {status, conclusion, sha, url, runId}:
+//   status='completed' — workflow досмотрен, conclusion — его итог (success/failure/…);
+//   status='timeout'   — run найден, но не завершился за timeoutMs (итог не считаем ни
+//                        зелёным, ни красным — решение стоп+пуш за #165);
+//   status='not-found' — run на sha так и не появился за таймаут.
+// Только ЧТЕНИЕ gh run (ретраи внутри ghJson): прод и main не трогаем (#166). Устойчивый
+// сетевой чих (ghJson исчерпал свои ретраи) не роняет всё ожидание — впереди ещё поллы,
+// один чих не даёт ложного красного. Часы (nowFn) инжектируемы ради детерминизма тестов.
+function waitForDeployRun(
+    sha,
+    cfg = config,
+    { ghJsonFn = ghJson, sleepFn = sleep, logFn = log, nowFn = Date.now } = {},
+) {
+    // fail-closed: без валидного sha следить не за чем — это ошибка вызывающего,
+    // а не повод молча вернуть «всё хорошо».
+    if (!SHA40_RE.test(String(sha))) {
+        throw new Error(`waitForDeployRun: невалидный sha "${sha}"`);
+    }
+    const dc = (cfg && cfg.deployCheck) || {};
+    const workflow = typeof dc.workflow === 'string' && dc.workflow ? dc.workflow : 'deploy.yml';
+    const timeoutMs = positiveIntOrDefault(dc.timeoutMs, 1_200_000);
+    const pollIntervalMs = positiveIntOrDefault(dc.pollIntervalMs, 15_000);
+
+    logFn(deployWaitMessage(workflow, sha, timeoutMs));
+
+    const start = nowFn();
+    let lastSeen = null;
+    while (nowFn() - start < timeoutMs) {
+        let runs = null;
+        try {
+            runs = ghJsonFn(
+                `gh run list --workflow ${shq(workflow)} ` +
+                    `--json databaseId,headSha,status,conclusion,url --limit 30`,
+            );
+        } catch (e) {
+            // ghJson уже отретраил свой набор попыток; устойчивый чих не роняет всё
+            // ожидание — до таймаута ещё поллы, ложного красного он не даёт. runs=null
+            // → падаем в общий sleep-or-break ниже (повтор на следующем опросе).
+            logFn(
+                `⚠ Пост-мердж: чтение gh run не удалось (${String(e.message).split('\n')[0]}) — ` +
+                    `повтор на следующем опросе.`,
+            );
+        }
+        const run = (Array.isArray(runs) ? runs : []).find((r) => r && r.headSha === sha);
+        if (run) {
+            lastSeen = run;
+            if (run.status === 'completed') {
+                logFn(
+                    `✓ Пост-мердж: deploy-workflow на ${sha.slice(0, 8)} завершён — ` +
+                        `итог «${run.conclusion}».`,
+                );
+                return {
+                    status: 'completed',
+                    conclusion: run.conclusion ?? null,
+                    sha,
+                    url: run.url ?? null,
+                    runId: run.databaseId ?? null,
+                };
+            }
+        }
+        // #THS8T: не спим перед гарантированным таймаутом — иначе холостые pollIntervalMs
+        // на каждом timeout/not-found исходе (проснулись бы ровно чтобы while вышел).
+        if (nowFn() - start + pollIntervalMs >= timeoutMs) break;
+        sleepFn(pollIntervalMs);
+    }
+    // Таймаут. Итог не досмотрен — не выдаём его за зелёный (риск ложного красного на
+    // каждом мердже как раз в обратную сторону: молча «сойдёт» опаснее честного «не знаю»).
+    if (lastSeen) {
+        logFn(
+            `⚠ Пост-мердж: deploy-workflow на ${sha.slice(0, 8)} не завершился за таймаут ` +
+                `(последний статус «${lastSeen.status}»).`,
+        );
+        return {
+            status: 'timeout',
+            conclusion: null,
+            sha,
+            url: lastSeen.url ?? null,
+            runId: lastSeen.databaseId ?? null,
+        };
+    }
+    logFn(`⚠ Пост-мердж: deploy-workflow на ${sha.slice(0, 8)} не найден за таймаут ожидания.`);
+    return { status: 'not-found', conclusion: null, sha, url: null, runId: null };
+}
+
+// #164: HTTP-код главной страницы прода. Только ЧТЕНИЕ (GET) — прод не трогаем (#166).
+// Аргументы curl — МАССИВ через execFileSync (тот же anti-RCE паттерн, что и
+// probeEgress/restartTunnel выше), не строка через sh(): url приходит из конфига в
+// гите, но защита ничего не стоит. Пустая/нечисловая строка ответа (таймаут, DNS-сбой)
+// → код 0, не 200 — вызывающий трактует как «не здоров», та же логика, что у probeEgress.
+function probeHttpStatus(url, timeoutSec, execFn = execFileSync) {
+    try {
+        const out = execFn(
+            'curl',
+            [
+                '-4',
+                '-s',
+                // -L: следуем редиректам главной (www, локаль-префикс, смена схемы) —
+                // иначе будущий 301/308 дал бы устойчивый ложнокрасный барьер на каждом
+                // prod-мердже (#THS8Q). %{http_code} после -L — код КОНЕЧНОГО ответа.
+                '-L',
+                '-o',
+                '/dev/null',
+                '-w',
+                '%{http_code}',
+                '--max-time',
+                String(timeoutSec),
+                // `--` завершает опции: даже url с ведущим `-` (argument injection, тот
+                // же класс, что и SAFE_BRANCH_RE) curl прочтёт как адрес, а не как флаг.
+                '--',
+                url,
+            ],
+            { encoding: 'utf-8' },
+        ).trim();
+        const code = Number(out);
+        return Number.isInteger(code) ? code : 0;
+    } catch {
+        return 0;
+    }
+}
+
+// #164: Healthcheck прода после деплоя — MVP-определение «живо» (PRD/plan фаза 5):
+// workflow success (waitForDeployRun выше) + HTTP 200 главной страницы. Игровой смоук
+// (Playwright по проду) — кандидат в бэклог, не MVP.
+// Флаки-запрос (сетевой чих до прода) ретраится с фиксированной паузой между попытками
+// (дефолт 3×5с, как таймауты/паузы остальных пост-мердж проверок) — не должен стопить
+// петлю зря (критерий готовности #164). Итог не используется здесь для решения
+// стоп/пуш — это #165; #164 только сообщает {ok, status, url} и логирует попытки.
+function checkProdHealth(
+    cfg = config,
+    { execFn = execFileSync, sleepFn = sleep, logFn = log } = {},
+) {
+    const dc = (cfg && cfg.deployCheck) || {};
+    const url =
+        typeof dc.healthUrl === 'string' && dc.healthUrl ? dc.healthUrl : 'https://pixeltanks.ru';
+    // #TFO9D: healthUrl из конфига обязан быть http(s)-адресом. Кривое значение (пустая
+    // схема, ведущий `-`) — это не «прод упал», а ошибка конфига; фиксируем её отдельно,
+    // fail-closed (ok:false), не отправляя мусор в curl-argv.
+    if (!/^https?:\/\//.test(url)) {
+        logFn(
+            `⚠ Пост-мердж: healthUrl "${url}" не похож на http(s)-адрес — проверка не выполнена.`,
+        );
+        return { ok: false, status: 0, url };
+    }
+    const timeoutSec = Math.max(
+        1,
+        Math.round(positiveIntOrDefault(dc.healthTimeoutMs, 10_000) / 1000),
+    );
+    const retries = positiveIntOrDefault(dc.healthRetries, 3);
+    const retryDelayMs = positiveIntOrDefault(dc.healthRetryDelayMs, 5_000);
+
+    let status = 0;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        status = probeHttpStatus(url, timeoutSec, execFn);
+        if (status === 200) {
+            logFn(`✓ Пост-мердж: healthcheck ${url} — HTTP 200 (попытка ${attempt}/${retries}).`);
+            return { ok: true, status, url };
+        }
+        logFn(
+            `⚠ Пост-мердж: healthcheck ${url} — HTTP ${status || '—'} (попытка ${attempt}/${retries}).`,
+        );
+        if (attempt < retries) sleepFn(retryDelayMs);
+    }
+    logFn(
+        `⚠ Пост-мердж: healthcheck ${url} не вернул 200 после ${retries} попыток ` +
+            `(последний код ${status || '—'}).`,
+    );
+    return { ok: false, status, url };
+}
+
+// #THS8S: единственный предикат «workflow зелёный» — и для решения «звать ли
+// healthcheck» в runLoop, и для первой ветки classifyDeployOutcome (как отрицание).
+// Иначе условие продублировано в двух местах и при уточнении классификации (например,
+// neutral/skipped станет допустимым) одно из них легко забыть — healthcheck разошёлся
+// бы с вердиктом.
+function isWorkflowGreen(outcome) {
+    return !!outcome && outcome.status === 'completed' && outcome.conclusion === 'success';
+}
+
+// #165: классификация пост-мердж итога → зелёный/красный (alert-first, fail-closed).
+// GREEN только при ПОДТВЕРЖДЁННО успешном workflow И здоровом проде. Всё прочее —
+// упавший/недосмотренный workflow (failure/timeout/not-found), недоступный прод,
+// брошенная ошибка чтения — красный: «не знаю» опаснее ложного «всё хорошо», иначе
+// следующий мердж передеплоит недоехавший main. Чистая функция (тестируема без gh/сети);
+// `reason` — человекочитаемая причина для пуша и лога. health=null трактуем как
+// «не проверяли» (workflow сам уже не зелёный) — до healthcheck дело не дошло.
+function classifyDeployOutcome(outcome, health) {
+    if (!isWorkflowGreen(outcome)) {
+        const status = outcome && outcome.status ? outcome.status : 'unknown';
+        const concl = outcome && outcome.conclusion ? ` (${outcome.conclusion})` : '';
+        return { red: true, reason: `workflow ${status}${concl}` };
+    }
+    if (health && health.ok === false) {
+        return { red: true, reason: `прод не отвечает (HTTP ${health.status || '—'})` };
+    }
+    return { red: false, reason: 'workflow success + прод HTTP 200' };
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -1948,6 +2190,12 @@ function defaultState() {
         // #223: раннер снял label blocked, но повторное ревью ещё не дало вердикта.
         // Флаг переживает рестарт → гейт вернёт метку, если сессия ревью погибла.
         reReviewPending: false,
+        // #165: красный/недосмотренный пост-мердж деплой прошлой фазы. Пока не null —
+        // барьер в preflight не даёт строить следующую фазу поверх недоехавшего до
+        // прода main; снимает только человек флагом --deploy-resolved (см. preflight).
+        // advancePhase его НЕ обнуляет: блок ставится уже ПОСЛЕ advancePhase и обязан
+        // пережить и переход фазы, и рестарт.
+        deployBlock: null,
     };
 }
 
@@ -2025,9 +2273,11 @@ function preflight(
         phaseIndexOfFn = phaseIndexOf,
         phaseMergedFn = phaseMerged,
         saveStateFn = saveState,
+        pushEventFn = pushEvent,
         once = ONCE,
         dry = DRY,
         resubmit = RESUBMIT,
+        deployResolved = DEPLOY_RESOLVED,
     } = {},
 ) {
     if (!cfg.active)
@@ -2097,6 +2347,52 @@ function preflight(
         state.submitted = false;
         saveStateFn(state);
         logFn('🔁 --resubmit: цикл сдачи фазы (PR/ревью/правки) будет выполнен заново.');
+    }
+
+    // #165: барьер красного пост-мердж деплоя. Прошлый прогон смерджил фазу, но
+    // deploy-workflow упал / прод не ответил / итог не досмотрен → в state.deployBlock
+    // лежит блок. Не строим следующую фазу поверх недоехавшего до прода main.
+    // Снять может ТОЛЬКО человек флагом --deploy-resolved (тот же принцип владения, что
+    // и у hold: снятие блока — не решение раннера). Клир идёт ДО проверки барьера, чтобы
+    // флаг гарантированно снимал активный блок.
+    if (deployResolved) {
+        if (state.deployBlock) {
+            logFn(
+                `🔧 --deploy-resolved: снят барьер красного деплоя фазы "${state.deployBlock.milestone}" — продолжаю.`,
+            );
+            state.deployBlock = null;
+            saveStateFn(state);
+        } else {
+            logFn('🔧 --deploy-resolved: активного барьера деплоя нет — флаг проигнорирован.');
+        }
+    }
+    if (state.deployBlock) {
+        const b = state.deployBlock;
+        const shaStr = b.sha ? String(b.sha).slice(0, 8) : '—';
+        // #TFO8_: pending — прошлый прогон умер в окне ожидания деплоя, итог не досмотрен.
+        // Формулировка честнее «красного»: деплой мог и доехать, но раннер это не
+        // подтвердил, поэтому fail-closed (не строим следующую фазу поверх непроверенного
+        // main). Разбор — тот же: человек проверяет итог деплоя и запускает --deploy-resolved.
+        const pending = b.status === 'pending';
+        const head = pending
+            ? `пост-мердж проверка деплоя фазы "${b.milestone}" не завершена (процесс мог умереть в окне ожидания)`
+            : `деплой фазы "${b.milestone}" красный`;
+        // Допушиваем на старте — если прошлый прогон умер между saveState и пушем, это
+        // единственный шанс не оставить красный/недосмотренный деплой немой тишиной
+        // (fail-closed, alert-first). failFn ниже — стоп до разбора человеком; откат за
+        // deploy-workflow.
+        pushEventFn(
+            `⛔ Ralph: старт заблокирован — ${head} (${b.reason}, ` +
+                `sha ${shaStr}${b.url ? `, ${b.url}` : ''}). Следующая фаза НЕ начнётся. Разберись с ` +
+                `деплоем (откат за deploy-workflow, main раннер не трогает) и запусти loop с --deploy-resolved.`,
+            cfg,
+            { logFn },
+        );
+        failFn(
+            `Пост-мердж деплой фазы "${b.milestone}" ${pending ? 'не досмотрен' : 'был красным'} ` +
+                `(${b.reason}) — следующая фаза не начинается (#165). Почини прод/деплой и запусти с ` +
+                `--deploy-resolved, либо очисти state.deployBlock в ${STATE_PATH}.`,
+        );
     }
 
     // C4: инвариант зависимых фаз — ВСЕ фазы до текущей обязаны быть реально смерджены.
@@ -2179,6 +2475,9 @@ function runLoop(
         getLastGatePr = () => lastGatePr,
         pushEventFn = pushEvent,
         deployPhaseFn = deployPhasePlaceholder,
+        mergedShaOfFn = mergedShaOf,
+        waitForDeployRunFn = waitForDeployRun,
+        checkProdHealthFn = checkProdHealth,
         ensureMonitorAliveFn = ensureMonitorAlive,
         monitorConfigPath,
     } = {},
@@ -2532,6 +2831,95 @@ function runLoop(
                 // continue как раньше, следующая фаза стартует с обновлённого main.
                 if (cfg.profileName === 'prod') {
                     deployPhaseFn(phase, { logFn });
+                    // #163/#165: дождаться итога deploy-workflow на смердженном sha прежде
+                    // чем отдать фазу релизу — иначе откат раскатки остаётся в main и
+                    // следующий мердж передеплоит битый коммит. Только ЧТЕНИЕ gh run
+                    // (ретраи внутри, прод/main не трогаем — #166).
+                    // block !== null → красный/недосмотренный итог: alert-first (пуш + барьер
+                    // в state), main раннер НЕ трогает — откат за deploy-workflow.
+                    let block = null;
+                    try {
+                        const mergedSha = mergedShaOfFn(getLastGatePr());
+                        // #TFO8_ (major): персистим pending-маркер ДО ожидания. advancePhase
+                        // выше уже сохранил СЛЕДУЮЩУЮ фазу, а вердикт деплоя приходит через
+                        // ~21 мин (ожидание + healthcheck). Умри процесс в этом окне (kill,
+                        // OOM, ребут VDS) — без маркера рестарт увидел бы следующую фазу без
+                        // deployBlock и построил её поверх непроверенного main без пуша.
+                        // preflight на pending — fail-closed стоп+пуш (снимает --deploy-resolved).
+                        state.deployBlock = {
+                            status: 'pending',
+                            milestone: phase.milestone,
+                            sha: mergedSha,
+                            conclusion: null,
+                            url: null,
+                            reason: 'пост-мердж проверка не завершена (процесс мог умереть в окне ожидания)',
+                        };
+                        saveStateFn(state);
+                        const outcome = waitForDeployRunFn(mergedSha, cfg, { logFn });
+                        logFn(
+                            `🚀 Пост-мердж деплой фазы "${phase.milestone}": итог workflow — ` +
+                                `${outcome.status}${outcome.conclusion ? ` (${outcome.conclusion})` : ''}.`,
+                        );
+                        // #164: MVP-определение «живо» — workflow success + HTTP 200 главной
+                        // страницы. Healthcheck зовём только после зелёного workflow (#THS8S:
+                        // isWorkflowGreen — тот же предикат, что в classifyDeployOutcome):
+                        // красный/недосмотренный итог сам по себе уже сигнал, здоровье прода
+                        // на нём не проверить.
+                        let health = null;
+                        if (isWorkflowGreen(outcome)) {
+                            health = checkProdHealthFn(cfg, { logFn });
+                        }
+                        const verdict = classifyDeployOutcome(outcome, health);
+                        if (verdict.red) {
+                            block = {
+                                milestone: phase.milestone,
+                                sha: outcome.sha ?? null,
+                                status: outcome.status ?? null,
+                                conclusion: outcome.conclusion ?? null,
+                                url: outcome.url ?? null,
+                                reason: verdict.reason,
+                            };
+                        }
+                    } catch (e) {
+                        // fail-closed: не смогли ПОДТВЕРДИТЬ зелёный деплой = красный, а не
+                        // тихий пропуск (иначе рестарт построил бы фазу поверх неизвестного
+                        // исхода). Сама ошибка чтения — это тоже «не знаю» = блок.
+                        const msg = String(e.message).split('\n')[0];
+                        logFn(
+                            `⚠ Пост-мердж: не удалось дождаться итога деплоя фазы ` +
+                                `"${phase.milestone}" (${msg}).`,
+                        );
+                        block = {
+                            milestone: phase.milestone,
+                            sha: null,
+                            status: 'error',
+                            conclusion: null,
+                            url: null,
+                            reason: `ошибка проверки деплоя: ${msg}`,
+                        };
+                    }
+                    if (block) {
+                        // #165: сначала персистим барьер, потом пушим — если процесс умрёт
+                        // между ними, блок в state переживёт рестарт и preflight допушит
+                        // (иначе класс «пуш потерян, деплой красный, тишина» из брифа).
+                        state.deployBlock = block;
+                        saveStateFn(state);
+                        const shaStr = block.sha ? String(block.sha).slice(0, 8) : '—';
+                        pushEventFn(
+                            `⛔ Ralph: фаза "${phase.milestone}" смерджена, но деплой красный — ` +
+                                `${block.reason} (sha ${shaStr}${block.url ? `, ${block.url}` : ''}). ` +
+                                `Следующая фаза НЕ начнётся, пока не разберёшь: почини прод/деплой и ` +
+                                `запусти loop с --deploy-resolved. Откат релиза — за deploy-workflow, main раннер не трогает.`,
+                            cfg,
+                            { logFn },
+                        );
+                    } else {
+                        // #TFO8_: зелёный подтверждён — снимаем pending-маркер, поставленный
+                        // перед ожиданием. Иначе следующий старт увидел бы «висящий» pending
+                        // и ложно упёрся бы в барьер.
+                        state.deployBlock = null;
+                        saveStateFn(state);
+                    }
                     logFn(
                         `⏸ Ralph: фаза "${phase.milestone}" — loop остановлен перед деплоем (prod). Следующая фаза начнётся со следующего запуска.`,
                     );
@@ -3061,6 +3449,27 @@ function main() {
     log(`📂 Рабочее дерево раннера: ${process.cwd()}`);
 
     if (RESET) {
+        // #THS8J: --reset пишет defaultState() (deployBlock: null) — без защиты это молча
+        // стёрло бы активный барьер красного пост-мердж деплоя (#165), и человек,
+        // сбрасывающий state по НЕСВЯЗАННОЙ причине («state разъехался со схемой»), даже не
+        // узнал бы, что снял блок. Снятие барьера — только осознанное решение (тот же принцип
+        // владения, что у --deploy-resolved): при активном deployBlock требуем явный
+        // --deploy-resolved вместе с --reset, иначе fail-closed отказ.
+        const cur = loadState(() => null);
+        if (cur && cur.deployBlock && !DEPLOY_RESOLVED) {
+            fail(
+                `--reset при активном барьере красного деплоя фазы "${cur.deployBlock.milestone}" ` +
+                    `(${cur.deployBlock.reason}). --reset стёр бы барьер молча — снятие барьера деплоя ` +
+                    `должно быть осознанным. Разберись с деплоем и повтори с --deploy-resolved, если ` +
+                    `действительно сбрасываешь state вместе с барьером.`,
+            );
+        }
+        if (cur && cur.deployBlock) {
+            console.log(
+                `⚠ --reset вместе с --deploy-resolved стирает барьер красного деплоя фазы ` +
+                    `"${cur.deployBlock.milestone}" (${cur.deployBlock.reason}).`,
+            );
+        }
         saveState(defaultState());
         console.log('✅ State сброшен на первую фазу конфига.');
         process.exit(0);
@@ -3151,6 +3560,13 @@ if (require.main === module) main();
 // syncDepsIfLockChanged/lockHash (#SiaUX) — авто-npm ci при смене package-lock перед чеками.
 // ensureClean (#78) — проверка чистоты дерева раннера; shFn/logFn инжектируемы, что
 // даёт прямой тест изоляции от правок человека в соседнем worktree.
+// probeHttpStatus/checkProdHealth (#164) — пост-мердж healthcheck прода (только GET,
+// #166): MVP «живо» = зелёный workflow (waitForDeployRun) + HTTP 200 главной страницы.
+// Флаки-запрос ретраится (дефолт 3×5с из deployCheck), execFn/sleepFn инжектируемы, как
+// у probeEgress/restartTunnel.
+// classifyDeployOutcome (#165) — чистая классификация итога деплоя зелёный/красный
+// (alert-first, fail-closed): красный ставит барьер в state.deployBlock + пуш, а preflight
+// на старте не даёт строить следующую фазу поверх недоехавшего main до --deploy-resolved.
 module.exports = {
     resolveProfile,
     deepMerge,
@@ -3212,6 +3628,13 @@ module.exports = {
     checksGreen,
     tryMergePhase,
     deployPhasePlaceholder,
+    mergedShaOf,
+    deployWaitMessage,
+    waitForDeployRun,
+    probeHttpStatus,
+    checkProdHealth,
+    isWorkflowGreen,
+    classifyDeployOutcome,
     getLastRedCheck: () => lastRedCheck,
     getVerifiedHead: () => lastVerifiedHead,
     getLastGatePr: () => lastGatePr,

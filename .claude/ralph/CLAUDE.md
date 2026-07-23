@@ -119,8 +119,9 @@ RUNBOOK). Раннер сам поднимает detached-`monitor.js` (пане
 `DEFAULT_WORKTREE_DIRNAME = 'pixel-tanks-ralph'`; списки `BASE_GATE_CHECKS` /
 `PROD_GATE_CHECKS` (npm-скрипты проекта); `npm ci` в `ensureRunnerWorktree` и
 `syncDepsIfLockChanged`; `DEFAULT_OWNER = 'AtlantaTeam'` и номер доски `1` в
-`project-sync.mjs`; «game-next» в `monitor.js` (`openGamePRs` ищет `head:feature/phase-`);
-проектная половина `ralph.md` (UI-скилл, тема, ссылки на CLAUDE.md).
+`project-sync.mjs`; проектная половина `ralph.md` (UI-скилл, тема, ссылки на CLAUDE.md).
+(Поиск PR фаз в `monitor.js` больше не прибит к проекту — `openPhasePRs` берёт ветку из
+конфига, #214.)
 
 ## Переносимость в другой проект
 
@@ -134,7 +135,7 @@ RUNBOOK). Раннер сам поднимает detached-`monitor.js` (пане
 **Заменить руками (имена — по коду):** `DEFAULT_WORKTREE_DIRNAME` (ralph.js);
 `BASE_GATE_CHECKS`/`PROD_GATE_CHECKS` — команды чеков под стек проекта, сохранив
 fail-fast порядок; `installFn`/`syncDepsIfLockChanged` — если стек не npm;
-`DEFAULT_OWNER`/`DEFAULT_NUMBER` (project-sync.mjs); `openGamePRs` и шапка monitor.js;
+`DEFAULT_OWNER`/`DEFAULT_NUMBER` (project-sync.mjs); шапка monitor.js;
 проектные абзацы `ralph.md`; baseline `security-audit.baseline.json` (начать с пустого);
 `tunnelCheck`/`provision/` — специфика VDS-в-РФ, в другом окружении просто выключить.
 

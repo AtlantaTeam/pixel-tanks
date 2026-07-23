@@ -29,6 +29,13 @@
 //   прямо в строку, формат стабилен. Без отдельного режима строка была бы нейтральной,
 //   скан ушёл бы назад к `▶ claude -p`, взял coder-порог (2ч10м) и дал ложный DEADMAN-пуш
 //   на любой паузе длиннее ~2ч — ровно то, что запрещает критерий PRD «ноль ложных пушей».
+// Пост-мердж ожидание деплоя (⏳ Пост-мердж, #TFO89): после squash-мерджа prod-фазы раннер
+//   опрашивает deploy-workflow вплоть до deployCheck.timeoutMs (боевые 20 мин) и всё это
+//   время НЕ пишет в лог (запись только в catch сетевого чиха). Своя строка ожидания
+//   несёт таймаут N в тексте, поэтому у ожидания СВОЙ режим (deploywait) с порогом = N мин
+//   + запас — ровно как apiwait. Без него строка нейтральна, скан ушёл бы к `🚀 Деплой
+//   фазы`/`✅ смерджена` → default (5 мин) → ложный DEADMAN-пуш на КАЖДОМ prod-мердже
+//   (deploy на VDS регулярно длиннее 5 мин). См. DEPLOY_WAIT_RE ниже.
 // Гейт (🚦 → между строками ✓/✗ чеков): checksGreen логирует каждый чек, поэтому
 //   тишина внутри гейта ограничена САМЫМ ДОЛГИМ одиночным чеком. Замер сейчас на этом
 //   дереве: build ~36с, coverage ~19с, e2e (Playwright, prod-профиль) ~108с — самый
@@ -74,6 +81,15 @@ const DEFAULT_RE = /✅|🏁|🚀|🔀/u;
 // матч, покраснит гейт, а не всплывёт ночью ложным пушем. N (минуты сна до сброса окна)
 // захватываем группой — по нему порог именно этой паузы, а не coder-режима.
 const API_WAIT_RE = /⏳ Ralph: API-лимит[\s\S]*?Жду (\d+) мин/u;
+// Маркер ожидания пост-мердж деплоя (#TFO89). Формат строки — единственный источник
+// правды в ralph.js (функция deployWaitMessage()): `⏳ Пост-мердж: жду итог deploy-workflow
+// «…» на sha … (таймаут N мин).`. Цикл опроса deploy-workflow за N мин (боевой таймаут
+// 20 мин) не пишет в лог ни строки — без своего режима строка нейтральна, скан ушёл бы
+// назад к `🚀 Деплой фазы…`/`✅ … смерджена` → DEFAULT_RE (5 мин) → ложный DEADMAN-пуш на
+// каждом prod-мердже. N (таймаут в минутах) захватываем группой — по нему порог именно
+// этого ожидания. Синхронность текста и regex закреплена тестом (deadman.test.js:
+// deployWaitMessage из ralph.js ↔ DEPLOY_WAIT_RE), как у apiLimitMessage ↔ API_WAIT_RE.
+const DEPLOY_WAIT_RE = /⏳ Пост-мердж: жду итог[\s\S]*?таймаут (\d+) мин/u;
 
 // Дефолты порогов (мс) — если в ralph.config.json нет блока deadman. Совпадают с
 // числами в конфиге; здесь — чтобы модуль работал и на «голом» конфиге (fail-safe).
@@ -102,6 +118,7 @@ function scanTail(lines) {
         if (typeof l !== 'string') continue;
         if (STOPPED_RE.test(l)) return { activity: 'stopped', line: l };
         if (API_WAIT_RE.test(l)) return { activity: 'apiwait', line: l };
+        if (DEPLOY_WAIT_RE.test(l)) return { activity: 'deploywait', line: l };
         if (CODER_RE.test(l)) return { activity: 'coder', line: l };
         if (GATE_RE.test(l)) return { activity: 'gate', line: l };
         if (DEFAULT_RE.test(l)) return { activity: 'default', line: l };
@@ -124,6 +141,19 @@ function parseApiWaitMs(lines, cfg) {
     const { activity, line } = scanTail(lines);
     if (activity !== 'apiwait' || line == null) return null;
     const m = API_WAIT_RE.exec(line);
+    if (!m) return null;
+    const { deadman } = readCfg(cfg);
+    return parseInt(m[1], 10) * 60000 + deadman.iterationGraceMs;
+}
+
+// Порог ожидания пост-мердж деплоя (мс) из строки `⏳ Пост-мердж: жду итог … (таймаут N
+// мин)`. Тот же единый скан, что и у классификатора. N мин × 60000 + запас
+// (iterationGraceMs кроет healthcheck после ожидания + такт монитора). Хвост не в режиме
+// deploywait или N не распарсилось → null (вызывающий возьмёт консервативный coder-порог).
+function parseDeployWaitMs(lines, cfg) {
+    const { activity, line } = scanTail(lines);
+    if (activity !== 'deploywait' || line == null) return null;
+    const m = DEPLOY_WAIT_RE.exec(line);
     if (!m) return null;
     const { deadman } = readCfg(cfg);
     return parseInt(m[1], 10) * 60000 + deadman.iterationGraceMs;
@@ -182,6 +212,12 @@ function silenceThresholdMs(activity, cfg, lines) {
             // Порог самой паузы (N мин + запас). Не распарсилось (не должно — activity
             // ставится ровно по этой строке) → консервативно coder-порог, не занижаем.
             return parseApiWaitMs(lines ?? [], cfg) ?? claudeTimeoutMs + deadman.iterationGraceMs;
+        case 'deploywait':
+            // Порог ожидания деплоя (таймаут N мин + запас). Не распарсилось → консервативно
+            // coder-порог, не занижаем (тот же приём, что и apiwait).
+            return (
+                parseDeployWaitMs(lines ?? [], cfg) ?? claudeTimeoutMs + deadman.iterationGraceMs
+            );
         case 'gate':
             return deadman.gateSilenceMs;
         default:
@@ -202,6 +238,7 @@ module.exports = {
     silenceThresholdMs,
     thresholdForTail,
     parseApiWaitMs,
+    parseDeployWaitMs,
     DEFAULT_DEADMAN,
     DEFAULT_CLAUDE_TIMEOUT_MS,
     CODER_RE,
@@ -209,4 +246,5 @@ module.exports = {
     STOPPED_RE,
     DEFAULT_RE,
     API_WAIT_RE,
+    DEPLOY_WAIT_RE,
 };

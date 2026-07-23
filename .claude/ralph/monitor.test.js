@@ -18,6 +18,7 @@ import {
     shouldPushDeadman,
     deadmanPushMessage,
     maybePushDeadman,
+    openPhasePRs,
 } from './monitor.js';
 import { pushEvent as pushEventReal } from './ralph.js';
 import { DEFAULT_DEADMAN } from './deadman.js';
@@ -359,5 +360,105 @@ describe('maybePushDeadman — доставка через pushEvent() + дед�
         expect(logSpy).toHaveBeenCalledTimes(1);
         expect(logSpy.mock.calls[0][0]).toContain('🔔 PUSH');
         expect(logSpy.mock.calls[0][0]).toContain('DEADMAN');
+    });
+});
+
+describe('openPhasePRs — поиск PR текущей фазы по ветке из конфига (#214)', () => {
+    it('находит PR по ветке фазы из конфига (строгий --head, ветка через shq)', () => {
+        const config = {
+            phases: [
+                { milestone: 'Фаза 1', branch: 'feature/phase-1' },
+                { milestone: 'Фаза 2', branch: 'feature/ralph-post-merge' },
+            ],
+        };
+        const state = { milestone: 'Фаза 2' };
+        const shFn = vi.fn(() =>
+            JSON.stringify([
+                { number: 123, title: 'PR Фаза 2', headRefName: 'feature/ralph-post-merge' },
+            ]),
+        );
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual([
+            { number: 123, title: 'PR Фаза 2', headRefName: 'feature/ralph-post-merge' },
+        ]);
+        // #THS8X: строгий --head, а не --search "head:…" (тот ловил бы соседние ветки по
+        // префиксу); ветка — через shq (одинарные кавычки), а не двойные.
+        expect(shFn).toHaveBeenCalledWith(
+            expect.stringContaining("--head 'feature/ralph-post-merge'"),
+        );
+        expect(shFn).not.toHaveBeenCalledWith(expect.stringContaining('--search'));
+    });
+
+    it('возвращает пустой массив когда PR нет, но ветка определена', () => {
+        const config = {
+            phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }],
+        };
+        const state = { milestone: 'Фаза 1' };
+        const shFn = vi.fn(() => '[]');
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual([]);
+        expect(shFn).toHaveBeenCalledWith(expect.stringContaining("--head 'feature/phase-1'"));
+    });
+
+    it('возвращает { error: "no-branch" } когда фаза не найдена в конфиге', () => {
+        const config = {
+            phases: [{ milestone: 'Другая Фаза', branch: 'feature/other' }],
+        };
+        const state = { milestone: 'Фаза 1' };
+        const shFn = vi.fn();
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual({ error: 'no-branch' });
+        expect(shFn).not.toHaveBeenCalled();
+    });
+
+    it('возвращает { error: "no-branch" } когда phases не массив', () => {
+        const config = { phases: null };
+        const state = { milestone: 'Фаза 1' };
+        const shFn = vi.fn();
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual({ error: 'no-branch' });
+        expect(shFn).not.toHaveBeenCalled();
+    });
+
+    it('возвращает { error: "no-branch" } когда config null', () => {
+        const shFn = vi.fn();
+        const result = openPhasePRs(null, { milestone: 'Фаза 1' }, shFn);
+        expect(result).toEqual({ error: 'no-branch' });
+        expect(shFn).not.toHaveBeenCalled();
+    });
+
+    it('#THS8M: milestone === null (все фазы сданы) → { error: "all-done" }, не no-branch', () => {
+        const config = { phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }] };
+        const state = { milestone: null };
+        const shFn = vi.fn();
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual({ error: 'all-done' });
+        expect(shFn).not.toHaveBeenCalled();
+    });
+
+    it('#THS8Z: gh упал (пустой вывод) → { error: "gh-failed" }, не молчаливое «нет PR»', () => {
+        const config = { phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }] };
+        const state = { milestone: 'Фаза 1' };
+        const shFn = vi.fn(() => '');
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual({ error: 'gh-failed' });
+    });
+
+    it('#THS8Z: gh вернул мусор (невалидный JSON) → { error: "gh-failed" }', () => {
+        const config = { phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }] };
+        const state = { milestone: 'Фаза 1' };
+        const shFn = vi.fn(() => 'не-json');
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual({ error: 'gh-failed' });
+    });
+
+    it('не падает когда state пустой', () => {
+        const config = {
+            phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }],
+        };
+        const state = {};
+        const shFn = vi.fn(() => '[]');
+        const result = openPhasePRs(config, state, shFn);
+        expect(result).toEqual({ error: 'no-branch' });
     });
 });

@@ -53,6 +53,11 @@ const {
     gateChecksFor,
     checksGreen,
     tryMergePhase,
+    waitForDeployRun,
+    mergedShaOf,
+    probeHttpStatus,
+    checkProdHealth,
+    classifyDeployOutcome,
     getLastRedCheck,
     getVerifiedHead,
     getLastGatePr,
@@ -476,6 +481,27 @@ describe('pushEvent — доставка событий в Telegram, prod-only (
         expect(pushEvent('событие', { profileName: 'prod' }, { sendFn, logFn: vi.fn() })).toBe(
             false,
         );
+    });
+
+    it('#224: текст события остаётся в логе даже когда доставка (все ретраи нотифаера) провалилась', () => {
+        // 🔔 PUSH печатается ПЕРВОЙ строкой pushEvent, до вызова sendFn — недоставка
+        // (в т.ч. исчерпание ретраев telegram-notifier) не должна стирать событие
+        // из ralph.log, иначе разбор постфактум не находит, что вообще произошло.
+        const sendFn = vi.fn().mockReturnValue(false);
+        const logFn = vi.fn();
+        pushEvent(
+            'громкое событие, которое нельзя потерять',
+            { profileName: 'prod' },
+            {
+                sendFn,
+                logFn,
+            },
+        );
+        expect(
+            logFn.mock.calls.some(([msg]) =>
+                msg.includes('громкое событие, которое нельзя потерять'),
+            ),
+        ).toBe(true);
     });
 
     it('prod, но dry=true (--dry-run) — лог-маркер есть, но sendFn НЕ зовётся, false (C1: read-only)', () => {
@@ -1280,6 +1306,84 @@ describe('preflight — валидация конфига/среды и подг
         expect(state.submitted).toBe(false);
         expect(saveStateFn).toHaveBeenCalledWith(state);
     });
+
+    it('#165 барьер: state.deployBlock задан → пуш на старте + fail (следующая фаза не начинается)', () => {
+        const state = {
+            count: 0,
+            milestone: 'M2',
+            submitted: false,
+            noProgress: 0,
+            deployBlock: {
+                milestone: 'M1',
+                sha: 'a'.repeat(40),
+                status: 'completed',
+                conclusion: 'failure',
+                url: 'https://gh/run/1',
+                reason: 'workflow completed (failure)',
+            },
+        };
+        const pushEventFn = vi.fn();
+        expect(() =>
+            preflight(validCfg(), okDeps({ loadStateFn: () => state, pushEventFn })),
+        ).toThrow(/деплой.*красн|#165/i);
+        // допушивает на старте — страховка от потерянного пуша прошлого прогона
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/aaaaaaaa/);
+    });
+
+    it('#165 --deploy-resolved → снимает блок через saveStateFn, fail не бросается', () => {
+        const state = {
+            count: 0,
+            milestone: 'M2',
+            submitted: false,
+            noProgress: 0,
+            deployBlock: { milestone: 'M1', reason: 'workflow timeout', sha: null, url: null },
+        };
+        const saveStateFn = vi.fn();
+        const pushEventFn = vi.fn();
+        expect(() =>
+            preflight(
+                validCfg(),
+                okDeps({
+                    loadStateFn: () => state,
+                    saveStateFn,
+                    pushEventFn,
+                    deployResolved: true,
+                    // фаза M2 — идёт проверка C4 предыдущей M1; phaseMergedFn=true (okDeps)
+                    phaseIndexOfFn: () => 0,
+                }),
+            ),
+        ).not.toThrow();
+        expect(state.deployBlock).toBe(null);
+        expect(saveStateFn).toHaveBeenCalledWith(state);
+        // барьер снят → красного пуша на старте нет
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('#165 --deploy-resolved без активного блока → флаг проигнорирован, не падает', () => {
+        const state = { count: 0, milestone: 'M1', submitted: false, noProgress: 0 };
+        const logs = [];
+        expect(() =>
+            preflight(
+                validCfg(),
+                okDeps({
+                    loadStateFn: () => state,
+                    logFn: (m) => logs.push(m),
+                    deployResolved: true,
+                }),
+            ),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/проигнорирован/);
+    });
+
+    it('#165 без deployBlock → барьера нет, зелёный старт проходит', () => {
+        const state = { count: 0, milestone: 'M1', submitted: false, noProgress: 0 };
+        const pushEventFn = vi.fn();
+        expect(() =>
+            preflight(validCfg(), okDeps({ loadStateFn: () => state, pushEventFn })),
+        ).not.toThrow();
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
 });
 
 describe('loadState — резолв state с диска (прямой тест, #99)', () => {
@@ -1374,6 +1478,15 @@ describe('runLoop — основной while-цикл: итерации коде
             // выше — без него тест, не переопределивший ensureMonitorAliveFn явно, звал бы
             // НАСТОЯЩИЙ ensureMonitorAlive (реальные fs.readFileSync/spawn монитора).
             ensureMonitorAliveFn: () => null,
+            // #163: безопасные заглушки пост-мердж проверки — без них prod-сценарий,
+            // доходящий до gate === 'merged', звал бы НАСТОЯЩИЕ mergedShaOf/waitForDeployRun
+            // (реальные gh-чтения через sh → предохранитель #138).
+            mergedShaOfFn: () => 'a'.repeat(40),
+            waitForDeployRunFn: () => ({ status: 'completed', conclusion: 'success' }),
+            // #164: тот же безопасный дефолт-паттерн — без него prod-сценарий с зелёным
+            // workflow (conclusion: 'success' выше) звал бы НАСТОЯЩИЙ checkProdHealth
+            // (реальный curl к https://pixeltanks.ru).
+            checkProdHealthFn: () => ({ ok: true, status: 200, url: 'https://pixeltanks.ru' }),
             ...o,
         };
     };
@@ -1705,6 +1818,268 @@ describe('runLoop — основной while-цикл: итерации коде
         // не должен состояться, phaseIndexOfFn зовётся ровно 1 раз.
         expect(phaseIndexOfFn).toHaveBeenCalledTimes(1);
         expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+    });
+
+    it('#163 prod: после merged раннер дожидается итога deploy-workflow на смердженном sha', () => {
+        const logs = [];
+        const mergedShaOfFn = vi.fn(() => 'a'.repeat(40));
+        const waitForDeployRunFn = vi.fn(() => ({ status: 'completed', conclusion: 'success' }));
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                mergedShaOfFn,
+                waitForDeployRunFn,
+            }),
+        );
+        // sha мерджа получен и передан в ожидание итога workflow.
+        expect(mergedShaOfFn).toHaveBeenCalledTimes(1);
+        expect(waitForDeployRunFn).toHaveBeenCalledTimes(1);
+        expect(waitForDeployRunFn.mock.calls[0][0]).toBe('a'.repeat(40));
+        expect(logs.join('\n')).toMatch(/итог workflow — completed \(success\)/);
+    });
+
+    it('#163 prod: сбой получения sha/итога деплоя не роняет loop — логируется и стоп перед деплоем', () => {
+        const logs = [];
+        const waitForDeployRunFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                mergedShaOfFn: () => {
+                    throw new Error('gh недоступен');
+                },
+                waitForDeployRunFn,
+            }),
+        );
+        // sha получить не удалось → ожидание итога не зовём, но loop не падает.
+        expect(waitForDeployRunFn).not.toHaveBeenCalled();
+        expect(logs.join('\n')).toMatch(/не удалось дождаться итога деплоя/);
+        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+    });
+
+    it('#164 prod: зелёный workflow (conclusion success) → healthcheck прода зовётся', () => {
+        const logs = [];
+        const checkProdHealthFn = vi.fn(() => ({ ok: true, status: 200, url: 'u' }));
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({ status: 'completed', conclusion: 'success' }),
+                checkProdHealthFn,
+            }),
+        );
+        expect(checkProdHealthFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('#164 prod: упавший workflow (conclusion failure) → healthcheck НЕ зовётся, красный итог уже сигнал сам по себе', () => {
+        const logs = [];
+        const checkProdHealthFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({ status: 'completed', conclusion: 'failure' }),
+                checkProdHealthFn,
+            }),
+        );
+        expect(checkProdHealthFn).not.toHaveBeenCalled();
+    });
+
+    it('#164 prod: недосмотренный workflow (status timeout) → healthcheck НЕ зовётся', () => {
+        const logs = [];
+        const checkProdHealthFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({ status: 'timeout', conclusion: null }),
+                checkProdHealthFn,
+            }),
+        );
+        expect(checkProdHealthFn).not.toHaveBeenCalled();
+    });
+
+    it('#165 prod: упавший workflow → барьер в state.deployBlock + пуш с sha и итогом, стоп', () => {
+        const logs = [];
+        const saved = [];
+        const pushEventFn = vi.fn();
+        const state = mkState();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                saveStateFn: (s) => saved.push({ ...s }),
+                waitForDeployRunFn: () => ({
+                    status: 'completed',
+                    conclusion: 'failure',
+                    sha: 'a'.repeat(40),
+                    url: 'https://gh/run/1',
+                }),
+                pushEventFn,
+            }),
+        );
+        // барьер сохранён в state
+        expect(state.deployBlock).toMatchObject({ milestone: 'M1', conclusion: 'failure' });
+        expect(saved.some((s) => s.deployBlock)).toBe(true);
+        // пуш с sha и итогом workflow — критерий #165
+        const redPush = pushEventFn.mock.calls.find((c) => /деплой красный/.test(c[0]));
+        expect(redPush).toBeTruthy();
+        expect(redPush[0]).toMatch(/aaaaaaaa/); // укороченный sha
+        expect(redPush[0]).toMatch(/failure/);
+        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+    });
+
+    it('#165 prod: недосмотренный workflow (timeout) → тоже барьер + пуш', () => {
+        const logs = [];
+        const pushEventFn = vi.fn();
+        const state = mkState();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({
+                    status: 'timeout',
+                    conclusion: null,
+                    sha: 'b'.repeat(40),
+                }),
+                pushEventFn,
+            }),
+        );
+        expect(state.deployBlock).toMatchObject({ milestone: 'M1', status: 'timeout' });
+        expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
+    });
+
+    it('#165 prod: зелёный workflow + здоровый прод → барьера НЕТ, красного пуша нет', () => {
+        const logs = [];
+        const pushEventFn = vi.fn();
+        const state = mkState();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({
+                    status: 'completed',
+                    conclusion: 'success',
+                    sha: 'a'.repeat(40),
+                }),
+                checkProdHealthFn: () => ({ ok: true, status: 200, url: 'u' }),
+                pushEventFn,
+            }),
+        );
+        expect(state.deployBlock == null).toBe(true);
+        expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(false);
+        // при этом обычный пуш «готова к релизу» уходит
+        expect(pushEventFn.mock.calls.some((c) => /готова к релизу/.test(c[0]))).toBe(true);
+    });
+
+    it('#165 prod: зелёный workflow, но прод не отвечает → барьер + пуш', () => {
+        const state = mkState();
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps([], {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({
+                    status: 'completed',
+                    conclusion: 'success',
+                    sha: 'a'.repeat(40),
+                }),
+                checkProdHealthFn: () => ({ ok: false, status: 502, url: 'u' }),
+                pushEventFn,
+            }),
+        );
+        expect(state.deployBlock).toBeTruthy();
+        expect(state.deployBlock.reason).toMatch(/прод не отвечает/);
+        expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
+    });
+
+    it('#165 prod: сбой чтения итога (mergedShaOf бросает) → fail-closed барьер + пуш, не тихий пропуск', () => {
+        const state = mkState();
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({ profileName: 'prod' }),
+            ctx(state),
+            deps([], {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                mergedShaOfFn: () => {
+                    throw new Error('gh недоступен');
+                },
+                pushEventFn,
+            }),
+        );
+        expect(state.deployBlock).toMatchObject({ status: 'error' });
+        expect(state.deployBlock.reason).toMatch(/ошибка проверки деплоя/);
+        expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
     });
 
     it('#87 playground: гейт merged → деплой-плейсхолдер НЕ зовётся, мердж остаётся финалом (continue как раньше)', () => {
@@ -2814,6 +3189,518 @@ describe('ветковая хореография в worktree раннера (#7
             expect(tryMergePhase(phase, deps)).toBe('not-merged');
             expect(findOpenPrFn).not.toHaveBeenCalled();
         });
+    });
+});
+
+// #THS8W: единые хелперы пост-мердж ожидания на уровень файла — обе секции
+// (waitForDeployRun #163 и критерии готовности #167) ими пользуются, дрейф копий
+// исключён. Детерминированные часы: nowFn читает clock, sleepFn (vi.fn — чтобы можно
+// было утверждать «sleep не понадобился») его двигает.
+const mkDeployClock = () => {
+    const c = { t: 0 };
+    return {
+        clock: c,
+        nowFn: () => c.t,
+        sleepFn: vi.fn((ms) => {
+            c.t += ms;
+        }),
+    };
+};
+// Конфиг с коротким таймаутом/поллом, чтобы фейковые часы упирались за пару шагов.
+const deployCfg = (o = {}) => ({
+    deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20, ...o },
+});
+
+describe('waitForDeployRun — ожидание итога deploy-workflow на смердженном sha (#163)', () => {
+    const SHA = 'a'.repeat(40);
+    const OTHER = 'b'.repeat(40);
+    const mkClock = mkDeployClock;
+    const cfg = deployCfg;
+
+    it('завершённый workflow на нужном sha → {status: completed, conclusion}', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 42, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
+        expect(out).toEqual({
+            status: 'completed',
+            conclusion: 'success',
+            sha: SHA,
+            url: 'u',
+            runId: 42,
+        });
+        // Досмотрен на первом же опросе — sleep не понадобился.
+        expect(sleepFn).not.toHaveBeenCalled();
+    });
+
+    it('поллит, пока workflow in_progress, и возвращает итог, когда завершится', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const responses = [
+            [{ databaseId: 7, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' }],
+            [{ databaseId: 7, headSha: SHA, status: 'queued', conclusion: null, url: 'u' }],
+            [{ databaseId: 7, headSha: SHA, status: 'completed', conclusion: 'failure', url: 'u' }],
+        ];
+        let i = 0;
+        const ghJsonFn = vi.fn(() => responses[Math.min(i++, responses.length - 1)]);
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        expect(out.status).toBe('completed');
+        expect(out.conclusion).toBe('failure');
+        expect(ghJsonFn).toHaveBeenCalledTimes(3);
+    });
+
+    it('сетевой чих (ghJson бросает) не роняет ожидание — следующий опрос доводит до итога', () => {
+        const { nowFn, sleepFn } = mkClock();
+        let call = 0;
+        const ghJsonFn = vi.fn(() => {
+            call++;
+            if (call === 1) throw new Error('gh: connection reset');
+            return [
+                {
+                    databaseId: 9,
+                    headSha: SHA,
+                    status: 'completed',
+                    conclusion: 'success',
+                    url: 'u',
+                },
+            ];
+        });
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        // Чих не дал ложного красного — дождались зелёного на следующем опросе.
+        expect(out.status).toBe('completed');
+        expect(out.conclusion).toBe('success');
+        expect(ghJsonFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('run на нужном sha так и не завершился за таймаут → status: timeout (не зелёный и не красный)', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 3, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
+        expect(out.status).toBe('timeout');
+        expect(out.conclusion).toBeNull();
+        expect(out.runId).toBe(3);
+    });
+
+    it('run на смердженном sha не появился за таймаут → status: not-found', () => {
+        const { nowFn, sleepFn } = mkClock();
+        // Есть чужие раны, но не на нашем sha — фильтр по headSha их игнорирует.
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 1, headSha: OTHER, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
+        expect(out.status).toBe('not-found');
+        expect(out.runId).toBeNull();
+    });
+
+    it('fail-closed: невалидный sha → бросает, а не «зелёный по умолчанию»', () => {
+        expect(() => waitForDeployRun('not-a-sha', cfg(), { ghJsonFn: () => [] })).toThrow();
+    });
+
+    it('workflow и параметры ожидания берутся из конфига (deployCheck)', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 5, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        waitForDeployRun(SHA, cfg({ workflow: 'release.yml' }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        expect(ghJsonFn.mock.calls[0][0]).toContain("--workflow 'release.yml'");
+    });
+});
+
+describe('checkProdHealth — HTTP-healthcheck главной страницы прода (#164)', () => {
+    const cfg = (o = {}) => ({
+        deployCheck: { healthUrl: 'https://pixeltanks.ru', healthRetryDelayMs: 1, ...o },
+    });
+
+    it('первая же попытка отдаёт 200 → {ok: true, status: 200}, без ретраев', () => {
+        const execFn = vi.fn(() => '200');
+        const sleepFn = vi.fn();
+        const out = checkProdHealth(cfg(), { execFn, sleepFn, logFn: () => {} });
+        expect(out).toEqual({ ok: true, status: 200, url: 'https://pixeltanks.ru' });
+        expect(execFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+    });
+
+    it('флаки-запрос (первая попытка падает) не роняет проверку — вторая попытка доставляет 200', () => {
+        let call = 0;
+        const execFn = vi.fn(() => {
+            call++;
+            if (call === 1) throw new Error('curl: connection reset');
+            return '200';
+        });
+        const sleepFn = vi.fn();
+        const out = checkProdHealth(cfg({ healthRetries: 3 }), {
+            execFn,
+            sleepFn,
+            logFn: () => {},
+        });
+        expect(out).toEqual({ ok: true, status: 200, url: 'https://pixeltanks.ru' });
+        expect(execFn).toHaveBeenCalledTimes(2);
+        // Пауза выдержана между попытками — петля не забита busy-loop'ом.
+        expect(sleepFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('исчерпание попыток на упорно красном коде → {ok: false, status}, не бросает', () => {
+        const execFn = vi.fn(() => '503');
+        const sleepFn = vi.fn();
+        const logs = [];
+        const out = checkProdHealth(cfg({ healthRetries: 3 }), {
+            execFn,
+            sleepFn,
+            logFn: (m) => logs.push(m),
+        });
+        expect(out).toEqual({ ok: false, status: 503, url: 'https://pixeltanks.ru' });
+        expect(execFn).toHaveBeenCalledTimes(3);
+        expect(logs.join('\n')).toMatch(/не вернул 200 после 3 попыток/);
+    });
+
+    it('исчерпание попыток на упорном сетевом сбое → {ok: false, status: 0}, не бросает', () => {
+        const execFn = vi.fn(() => {
+            throw new Error('curl: timeout');
+        });
+        const out = checkProdHealth(cfg({ healthRetries: 2 }), {
+            execFn,
+            sleepFn: () => {},
+            logFn: () => {},
+        });
+        expect(out).toEqual({ ok: false, status: 0, url: 'https://pixeltanks.ru' });
+    });
+
+    it('url и число попыток берутся из конфига (deployCheck)', () => {
+        const execFn = vi.fn(() => '200');
+        checkProdHealth(cfg({ healthUrl: 'https://staging.example.com', healthRetries: 1 }), {
+            execFn,
+            sleepFn: () => {},
+            logFn: () => {},
+        });
+        expect(execFn.mock.calls[0][1]).toContain('https://staging.example.com');
+    });
+
+    it('без конфига deployCheck использует прод-дефолт https://pixeltanks.ru', () => {
+        const execFn = vi.fn(() => '200');
+        checkProdHealth({}, { execFn, sleepFn: () => {}, logFn: () => {} });
+        expect(execFn.mock.calls[0][1]).toContain('https://pixeltanks.ru');
+    });
+});
+
+describe('probeHttpStatus — HTTP-код через curl (#164)', () => {
+    it('корректный числовой код от curl → возвращает его как число', () => {
+        const execFn = vi.fn(() => '200');
+        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(200);
+    });
+
+    it('curl бросает (таймаут/DNS) → 0, не пробрасывает исключение', () => {
+        const execFn = vi.fn(() => {
+            throw new Error('curl: (28) timeout');
+        });
+        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(0);
+    });
+
+    it('нечисловой вывод curl → 0 (fail-closed, не «сойдёт за живой»)', () => {
+        const execFn = vi.fn(() => '');
+        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(0);
+    });
+
+    it('только ЧТЕНИЕ: аргументы curl не содержат мутирующих флагов, url доходит как отдельный элемент argv', () => {
+        const execFn = vi.fn(() => '200');
+        probeHttpStatus('https://pixeltanks.ru', 10, execFn);
+        const [bin, args] = execFn.mock.calls[0];
+        expect(bin).toBe('curl');
+        expect(args).toContain('https://pixeltanks.ru');
+        expect(args).not.toContain('-X');
+        expect(args).not.toContain('POST');
+    });
+});
+
+describe('mergedShaOf — sha squash-мерджа PR (#163)', () => {
+    const SHA = 'c'.repeat(40);
+
+    it('возвращает oid mergeCommit', () => {
+        const ghJsonFn = vi.fn(() => ({ mergeCommit: { oid: SHA } }));
+        expect(mergedShaOf(12, { ghJsonFn })).toBe(SHA);
+        expect(ghJsonFn.mock.calls[0][0]).toContain("gh pr view '12'");
+    });
+
+    it('fail-closed: mergeCommit отсутствует/невалиден → бросает (после исчерпания ретраев)', () => {
+        expect(() =>
+            mergedShaOf(12, { ghJsonFn: () => ({ mergeCommit: null }), sleepFn: () => {} }),
+        ).toThrow();
+        expect(() =>
+            mergedShaOf(12, {
+                ghJsonFn: () => ({ mergeCommit: { oid: 'x' } }),
+                sleepFn: () => {},
+            }),
+        ).toThrow();
+    });
+
+    it('#TFO9B: транзиентный mergeCommit: null → ретрай, зелёный на следующей попытке', () => {
+        let call = 0;
+        const ghJsonFn = vi.fn(() => {
+            call++;
+            return call === 1 ? { mergeCommit: null } : { mergeCommit: { oid: SHA } };
+        });
+        const sleepFn = vi.fn();
+        expect(mergedShaOf(12, { ghJsonFn, sleepFn })).toBe(SHA);
+        expect(ghJsonFn).toHaveBeenCalledTimes(2);
+        expect(sleepFn).toHaveBeenCalledTimes(1); // пауза только между попытками
+    });
+
+    it('#TFO9B: устойчивый null исчерпывает ровно attempts попыток и бросает', () => {
+        const ghJsonFn = vi.fn(() => ({ mergeCommit: null }));
+        const sleepFn = vi.fn();
+        expect(() => mergedShaOf(12, { ghJsonFn, sleepFn, attempts: 3 })).toThrow();
+        expect(ghJsonFn).toHaveBeenCalledTimes(3);
+        expect(sleepFn).toHaveBeenCalledTimes(2); // паузы только МЕЖДУ попытками
+    });
+});
+
+describe('Пост-мердж проверка — только чтение, без мутаций (#166)', () => {
+    const SHA = 'd'.repeat(40);
+
+    it('waitForDeployRun зовёт ТОЛЬКО "gh run list" — read-глагол, без merge/cancel/rerun/delete/close', () => {
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 1, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        waitForDeployRun(
+            SHA,
+            { deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20 } },
+            { ghJsonFn, sleepFn: () => {}, logFn: () => {}, nowFn: () => 0 },
+        );
+        expect(ghJsonFn).toHaveBeenCalledTimes(1);
+        const cmd = ghJsonFn.mock.calls[0][0];
+        expect(cmd).toMatch(/^gh run list\b/);
+        expect(cmd).not.toMatch(/\b(cancel|rerun|delete|merge|close|revert)\b/);
+    });
+
+    it('mergedShaOf зовёт ТОЛЬКО "gh pr view" — read-глагол, без merge/close/edit', () => {
+        const ghJsonFn = vi.fn(() => ({ mergeCommit: { oid: SHA } }));
+        mergedShaOf(1, { ghJsonFn });
+        expect(ghJsonFn).toHaveBeenCalledTimes(1);
+        const cmd = ghJsonFn.mock.calls[0][0];
+        expect(cmd).toMatch(/^gh pr view\b/);
+        expect(cmd).not.toMatch(/\b(merge|close|edit|delete)\b/);
+    });
+
+    it('checkProdHealth зовёт curl только на чтение (GET) — без -X/-d/--data/--upload-file', () => {
+        const execFn = vi.fn(() => '200');
+        checkProdHealth(
+            { deployCheck: { healthUrl: 'https://pixeltanks.ru', healthRetries: 1 } },
+            { execFn, sleepFn: () => {}, logFn: () => {} },
+        );
+        expect(execFn).toHaveBeenCalledTimes(1);
+        const [bin, args] = execFn.mock.calls[0];
+        expect(bin).toBe('curl');
+        expect(args).not.toContain('-X');
+        expect(args).not.toContain('-d');
+        expect(args).not.toContain('--data');
+        expect(args).not.toContain('--upload-file');
+    });
+});
+
+describe('classifyDeployOutcome — итог деплоя зелёный/красный (#165)', () => {
+    it('workflow success + здоровый прод → зелёный (red=false)', () => {
+        const v = classifyDeployOutcome(
+            { status: 'completed', conclusion: 'success' },
+            { ok: true, status: 200 },
+        );
+        expect(v.red).toBe(false);
+    });
+
+    it('workflow success без healthcheck (health=null) → зелёный: до проверки не дошли, но workflow ок', () => {
+        // В коде health=null означает «workflow сам не зелёный, healthcheck не звали»;
+        // но если outcome ЗЕЛЁНЫЙ, а health не передан — это тоже зелёный (страховка).
+        const v = classifyDeployOutcome({ status: 'completed', conclusion: 'success' }, null);
+        expect(v.red).toBe(false);
+    });
+
+    it('workflow failure → красный, reason содержит conclusion', () => {
+        const v = classifyDeployOutcome({ status: 'completed', conclusion: 'failure' }, null);
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/failure/);
+    });
+
+    it('workflow timeout (не досмотрен) → красный: «не знаю» опаснее ложного «ок»', () => {
+        const v = classifyDeployOutcome({ status: 'timeout', conclusion: null }, null);
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/timeout/);
+    });
+
+    it('workflow not-found → красный', () => {
+        const v = classifyDeployOutcome({ status: 'not-found', conclusion: null }, null);
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/not-found/);
+    });
+
+    it('зелёный workflow, но прод не отвечает (health.ok=false) → красный, reason про прод', () => {
+        const v = classifyDeployOutcome(
+            { status: 'completed', conclusion: 'success' },
+            { ok: false, status: 502 },
+        );
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/прод не отвечает/);
+        expect(v.reason).toMatch(/502/);
+    });
+
+    it('outcome=null (аномалия) → красный, не падает', () => {
+        const v = classifyDeployOutcome(null, null);
+        expect(v.red).toBe(true);
+        expect(v.reason).toMatch(/unknown/);
+    });
+});
+
+describe('#167: пост-мердж проверка — критерии готовности (тайминг, ретраи, стоп+пуш)', () => {
+    const SHA = 'a'.repeat(40);
+    // #THS8W: те же файловые хелперы, что и у describe waitForDeployRun — единый вариант
+    // с полем clock, дубля больше нет.
+    const mkClock = mkDeployClock;
+    const cfg = deployCfg;
+
+    // --- Критерий: «зелёный деплой не задерживает петлю дольше таймаута» ---
+
+    it('зелёный workflow на первом же опросе → возврат сразу, часы не сдвинуты (петля не ждёт впустую)', () => {
+        const { clock, nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 1, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
+        expect(out).toMatchObject({ status: 'completed', conclusion: 'success' });
+        // Зелёный найден на первом опросе — ни одного sleep, часы стоят на нуле.
+        expect(ghJsonFn).toHaveBeenCalledTimes(1);
+        expect(clock.t).toBe(0);
+    });
+
+    it('workflow тянется дольше таймаута → ожидание ограничено по времени (не вечный цикл, не ложный красный)', () => {
+        const { clock, nowFn, sleepFn } = mkClock();
+        // Всегда in_progress: без границы по времени это был бы бесконечный цикл.
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 2, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 100, pollIntervalMs: 20 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        // Досрочно не сдался (timeout, не not-found), но и не завис.
+        expect(out.status).toBe('timeout');
+        expect(out.conclusion).toBeNull();
+        // Часы не ушли дальше таймаута больше чем на один интервал опроса.
+        expect(clock.t).toBeLessThanOrEqual(100 + 20);
+        // Число опросов конечно и соответствует бюджету таймаут/интервал.
+        expect(ghJsonFn.mock.calls.length).toBeLessThanOrEqual(Math.ceil(100 / 20) + 1);
+    });
+
+    // --- Критерий: «сетевой сбой при чтении статуса не стопит петлю без исчерпания ретраев» ---
+
+    it('gh падает на КАЖДОМ опросе → ожидание не роняет петлю, исчерпывает опросы до таймаута, возвращает not-found', () => {
+        const { clock, nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => {
+            throw new Error('gh: connection reset by peer');
+        });
+        // Не бросает наружу — устойчивый сетевой сбой не стопит петлю.
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 100, pollIntervalMs: 20 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        // Итог не выдан за зелёный: run так и не увидели → not-found (стоп+пуш за #165).
+        expect(out.status).toBe('not-found');
+        expect(out.conclusion).toBeNull();
+        // Ретраи исчерпаны по таймауту, а не по первому сбою: опросов больше одного.
+        expect(ghJsonFn.mock.calls.length).toBeGreaterThan(1);
+        expect(clock.t).toBeLessThanOrEqual(100 + 20);
+    });
+
+    it('сетевой сбой сменяется живым ответом до таймаута → красный итог не выдуман, дожидаемся реального', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const responses = [
+            () => {
+                throw new Error('gh: timeout');
+            },
+            () => {
+                throw new Error('gh: timeout');
+            },
+            () => [
+                {
+                    databaseId: 3,
+                    headSha: SHA,
+                    status: 'completed',
+                    conclusion: 'success',
+                    url: 'u',
+                },
+            ],
+        ];
+        let i = 0;
+        const ghJsonFn = vi.fn(() => responses[Math.min(i++, responses.length - 1)]());
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000, pollIntervalMs: 20 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        expect(out).toMatchObject({ status: 'completed', conclusion: 'success' });
+        expect(ghJsonFn).toHaveBeenCalledTimes(3);
+    });
+
+    it('checkProdHealth: устойчивый сетевой сбой прода → исчерпывает ретраи, {ok:false}, не бросает и не зависает', () => {
+        const { clock, nowFn, sleepFn } = mkClock();
+        const execFn = vi.fn(() => {
+            throw new Error('curl: (28) connection timed out');
+        });
+        const out = checkProdHealth(
+            {
+                deployCheck: {
+                    healthUrl: 'https://pixeltanks.ru',
+                    healthRetries: 3,
+                    healthRetryDelayMs: 5,
+                },
+            },
+            { execFn, sleepFn, logFn: () => {}, nowFn },
+        );
+        // Не бросает наружу и честно сообщает «не здоров» (status 0 = сеть недоступна).
+        expect(out).toEqual({ ok: false, status: 0, url: 'https://pixeltanks.ru' });
+        // Ретраи исчерпаны полностью — ровно healthRetries попыток.
+        expect(execFn).toHaveBeenCalledTimes(3);
+        // Паузы между попытками выдержаны (не busy-loop), но конечны.
+        expect(clock.t).toBeGreaterThan(0);
+    });
+
+    // --- Критерий: «побочки — через DI, RALPH_NO_SIDE_EFFECTS=1, guardSideEffect» ---
+
+    it('пост-мердж проверка ничего не мутирует даже при МНОГИХ опросах — только read-глагол gh run list', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 4, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' },
+        ]);
+        waitForDeployRun(SHA, cfg({ timeoutMs: 100, pollIntervalMs: 20 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        // На каждом из нескольких опросов — только чтение, ни одной мутации.
+        expect(ghJsonFn.mock.calls.length).toBeGreaterThan(1);
+        for (const [cmd] of ghJsonFn.mock.calls) {
+            expect(cmd).toMatch(/^gh run list\b/);
+            expect(cmd).not.toMatch(/\b(cancel|rerun|delete|merge|close|revert|edit)\b/);
+        }
     });
 });
 

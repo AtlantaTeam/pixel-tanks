@@ -8,11 +8,13 @@ import {
     silenceThresholdMs,
     thresholdForTail,
     parseApiWaitMs,
+    parseDeployWaitMs,
     DEFAULT_DEADMAN,
     DEFAULT_CLAUDE_TIMEOUT_MS,
     API_WAIT_RE,
+    DEPLOY_WAIT_RE,
 } from './deadman.js';
-import { apiLimitMessage } from './ralph.js';
+import { apiLimitMessage, deployWaitMessage } from './ralph.js';
 import { logLine as t } from './test-helpers.js';
 
 describe('classifyActivity — режим петли по хвосту лога', () => {
@@ -179,6 +181,44 @@ describe('API_WAIT_RE синхронизирован с форматом apiLimi
         const cfg = { claudeTimeoutMs: 7200000, deadman: { iterationGraceMs: 600000 } };
         const lines = [t(`🔔 PUSH: ${apiLimitMessage(45 * 60000, 1, 3)}`)];
         expect(parseApiWaitMs(lines, cfg)).toBe(45 * 60000 + 600000);
+    });
+});
+
+describe('DEPLOY_WAIT_RE синхронизирован с форматом deployWaitMessage() из ralph.js (#TFO89)', () => {
+    // Тот же барьер против рассинхрона, что и у API_WAIT_RE: формат строки ожидания
+    // пост-мердж деплоя живёт в одном месте (ralph.deployWaitMessage). Правка формулировки,
+    // ломающая матч, покраснит гейт здесь, а не всплывёт ночью ложным DEADMAN-пушем (строка
+    // станет нейтральной → скан уйдёт к default 5 мин на каждом prod-мердже).
+    it('фактический deployWaitMessage матчится DEPLOY_WAIT_RE и отдаёт таймаут N', () => {
+        const msg = deployWaitMessage('deploy.yml', 'a'.repeat(40), 20 * 60000);
+        const m = DEPLOY_WAIT_RE.exec(msg);
+        expect(m).not.toBeNull();
+        expect(m[1]).toBe('20');
+    });
+
+    it('строка ожидания деплоя классифицируется как deploywait, не default', () => {
+        const lines = [t(deployWaitMessage('deploy.yml', 'b'.repeat(40), 20 * 60000))];
+        expect(classifyActivity(lines)).toBe('deploywait');
+    });
+
+    it('нейтральный ⚠-чих во время ожидания не сбивает режим deploywait', () => {
+        const lines = [
+            t(deployWaitMessage('deploy.yml', 'b'.repeat(40), 20 * 60000)),
+            t('⚠ Пост-мердж: чтение gh run не удалось (gh: timeout) — повтор на следующем опросе.'),
+        ];
+        expect(classifyActivity(lines)).toBe('deploywait');
+    });
+
+    it('parseDeployWaitMs берёт таймаут N из фактической строки ралфа + запас iterationGraceMs', () => {
+        const cfg = { claudeTimeoutMs: 7200000, deadman: { iterationGraceMs: 600000 } };
+        const lines = [t(deployWaitMessage('deploy.yml', 'a'.repeat(40), 20 * 60000))];
+        expect(parseDeployWaitMs(lines, cfg)).toBe(20 * 60000 + 600000);
+    });
+
+    it('порог режима deploywait = таймаут ожидания + запас (сквозной путь через thresholdForTail)', () => {
+        const cfg = { claudeTimeoutMs: 7200000, deadman: { iterationGraceMs: 600000 } };
+        const lines = [t(deployWaitMessage('deploy.yml', 'a'.repeat(40), 20 * 60000))];
+        expect(thresholdForTail(lines, cfg)).toBe(20 * 60000 + 600000);
     });
 });
 

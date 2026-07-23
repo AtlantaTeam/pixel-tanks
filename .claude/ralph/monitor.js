@@ -6,7 +6,7 @@
  *   - жив ли loop (по свежести ralph.log)
  *   - текущая фаза / submitted (из ralph.state.json)
  *   - прогресс issues текущего milestone (gh)
- *   - открытые PR игры game-next (gh)
+ *   - открытые PR текущей фазы (gh, по ветке из конфига #214)
  *   - последние значимые строки ralph.log (маркеры фаз/итераций/ревью/мерджа)
  *
  * Использование:
@@ -23,7 +23,7 @@ const { execSync } = require('child_process');
 // Резолв профилей (#71) — единый источник правды с раннером, чтобы монитор не завёл
 // вторую копию правил мерджа. require безопасен: main() в ralph.js под guard
 // require.main === module, при импорте выполняются только объявления и консты.
-const { resolveProfile, parseProfileFlag, pushEvent } = require('./ralph.js');
+const { resolveProfile, parseProfileFlag, pushEvent, shq } = require('./ralph.js');
 // Пороги тишины (#147): классификация хвоста лога по режиму + порог по режиму. Здесь
 // (в мониторе) — импёровая половина: чтение файла, «сейчас» и сравнение с порогом.
 const { classifyActivity, silenceThresholdMs } = require('./deadman.js');
@@ -232,12 +232,14 @@ function currentMilestone(state, config) {
 
 function issuesProgress(milestone) {
     if (!milestone) return null;
-    // gh поддерживает поиск по milestone имени.
+    // gh поддерживает поиск по milestone имени. Имя milestone — недоверенный источник
+    // из конфига (тот же класс #133, что и ветка фазы): в shell-строку через shq, не в
+    // двойные кавычки, где $()/бэкктики/\ раскрылись бы шеллом.
     const open = sh(
-        `gh issue list --milestone "${milestone}" --state open --json number --jq "length"`,
+        `gh issue list --milestone ${shq(milestone)} --state open --json number --jq "length"`,
     );
     const closed = sh(
-        `gh issue list --milestone "${milestone}" --state closed --json number --jq "length"`,
+        `gh issue list --milestone ${shq(milestone)} --state closed --json number --jq "length"`,
     );
     if (open === '' && closed === '') return null;
     const o = Number(open) || 0;
@@ -245,15 +247,43 @@ function issuesProgress(milestone) {
     return { open: o, closed: c, total: o + c };
 }
 
-function openGamePRs() {
-    const out = sh(
-        `gh pr list --state open --search "head:feature/phase-" --json number,title,headRefName,mergeStateStatus,reviewDecision --jq "."`,
+// Поиск открытых PR текущей фазы по ветке из конфига (#214).
+// Параметры: config (резолвлен из конфига), state (из ralph.state.json), shFn (для тестов).
+// Различает исходы (fail-closed, каждый — своя строка панели): ветку фазы определить не
+// удалось → { error: 'no-branch' }; все фазы завершены (штатный конец) → { error:
+// 'all-done' }; gh упал / вернул мусор → { error: 'gh-failed' }; иначе найденные PR или [].
+function openPhasePRs(config, state, shFn = sh) {
+    // #THS8M: milestone === null — не «битый state», а штатный конец: advancePhase после
+    // ПОСЛЕДНЕЙ фазы пишет milestone: null. Отдельный маркер, чтобы панель не пугала
+    // «не удалось определить ветку фазы» на успешно сданной очереди.
+    if (state && state.milestone === null) {
+        return { error: 'all-done' };
+    }
+    // Определяем текущую ветку фазы из конфига по milestone в state.
+    if (!config || !Array.isArray(config.phases) || !state?.milestone) {
+        return { error: 'no-branch' };
+    }
+    const phase = config.phases.find((p) => p.milestone === state.milestone);
+    if (!phase || !phase.branch) {
+        return { error: 'no-branch' };
+    }
+    // Ищем PR строго по ветке фазы: --head <branch> (точное совпадение), не
+    // --search "head:…" (#THS8X: search-квалификатор матчит по префиксу — head:feature/x
+    // поймал бы и feature/x-check, показав на панели PR чужой фазы). Ветка из конфига —
+    // недоверенный источник (класс #133): в shell-строку идёт через shq, как в ralph.js
+    // (findOpenPr: gh pr list --head ${shq(branch)}). --jq "." был no-op поверх --json.
+    const out = shFn(
+        `gh pr list --state open --head ${shq(phase.branch)} --json number,title,headRefName,mergeStateStatus,reviewDecision`,
     );
-    if (!out) return [];
+    // #THS8Z: пустой вывод sh() = упавшая gh-команда (успех «нет PR» даёт непустой `[]`),
+    // непарсимый вывод = мусор от gh. Оба → { error: 'gh-failed' }, а не `[]`: иначе сбой
+    // gh на панели неотличим от честного «PR нет» (докблок обещает fail-closed, но эта
+    // ветка молча притворялась бы «нет»).
+    if (out === '') return { error: 'gh-failed' };
     try {
         return JSON.parse(out);
     } catch {
-        return [];
+        return { error: 'gh-failed' };
     }
 }
 
@@ -311,7 +341,7 @@ function snapshot() {
         milestoneName,
     });
     const prog = issuesProgress(milestoneName);
-    const prs = openGamePRs();
+    const prs = openPhasePRs(config, state);
     const head = sh('git rev-parse --short HEAD');
     const branch = sh('git rev-parse --abbrev-ref HEAD');
 
@@ -369,7 +399,13 @@ function snapshot() {
         out.push('Issues: (нет данных gh по milestone)');
     }
 
-    if (prs.length) {
+    if (prs.error === 'all-done') {
+        out.push('Открытые PR фаз: (все фазы завершены)');
+    } else if (prs.error === 'gh-failed') {
+        out.push('Открытые PR фаз: (сбой gh — статус PR фазы неизвестен)');
+    } else if (prs.error === 'no-branch') {
+        out.push('Открытые PR фаз: (не удалось определить ветку фазы из конфига)');
+    } else if (prs.length) {
         out.push('Открытые PR фаз:');
         for (const pr of prs) {
             out.push(
@@ -409,6 +445,7 @@ module.exports = {
     shouldPushDeadman,
     deadmanPushMessage,
     maybePushDeadman,
+    openPhasePRs,
 };
 
 if (require.main === module) main();
