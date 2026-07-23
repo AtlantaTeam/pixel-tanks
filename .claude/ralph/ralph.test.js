@@ -90,21 +90,42 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
         expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('bypassPermissions');
     });
 
-    it('fallbackModel добавляется, когда задан в конфиге и noFallback не выставлен', () => {
+    it('fallbackModel из конфига используется, когда опция fallbackModel не передана (back-compat)', () => {
         const argv = buildClaudeArgs('x', { maxTurns: 200 }, { fallbackModel: 'claude-sonnet-5' });
         expect(argv[argv.indexOf('--fallback-model') + 1]).toBe('claude-sonnet-5');
     });
 
-    it('noFallback=true подавляет --fallback-model даже при заданном fallbackModel (M8: ревью без тихой деградации)', () => {
+    // #221: review.fallback передаётся как явный override и не зависит от общего
+    // cfg.fallbackModel — раньше это было ролью noFallback:true (M8), теперь ревью
+    // явно указывает СВОЮ модель фолбэка (см. pickReviewFallbackModel).
+    it('явный опции.fallbackModel переопределяет cfg.fallbackModel', () => {
         const argv = buildClaudeArgs(
             'x',
-            { maxTurns: 200, noFallback: true },
+            { maxTurns: 200, fallbackModel: 'claude-opus-4-8' },
+            { fallbackModel: 'claude-sonnet-5' },
+        );
+        expect(argv[argv.indexOf('--fallback-model') + 1]).toBe('claude-opus-4-8');
+    });
+
+    it('опции.fallbackModel = null подавляет --fallback-model, даже если в конфиге он задан (fail-closed без фолбэка)', () => {
+        const argv = buildClaudeArgs(
+            'x',
+            { maxTurns: 200, fallbackModel: null },
             { fallbackModel: 'claude-sonnet-5' },
         );
         expect(argv).not.toContain('--fallback-model');
     });
 
-    it('без fallbackModel в конфиге флаг fallback не появляется', () => {
+    it('опции.fallbackModel = "none" тоже подавляет --fallback-model', () => {
+        const argv = buildClaudeArgs(
+            'x',
+            { maxTurns: 200, fallbackModel: 'none' },
+            { fallbackModel: 'claude-sonnet-5' },
+        );
+        expect(argv).not.toContain('--fallback-model');
+    });
+
+    it('без fallbackModel в конфиге и в опциях флаг fallback не появляется', () => {
         const argv = buildClaudeArgs('x', { maxTurns: 200 }, {});
         expect(argv).not.toContain('--fallback-model');
     });
@@ -1831,6 +1852,59 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(pushEventFn.mock.calls[0][0]).toMatch(/готова к релизу/);
     });
 
+    // #221: основное ревью (не разбор blocked) получает СВОЙ фолбэк review.fallback —
+    // явным опции.fallbackModel, а не через общий cfg.fallbackModel/noFallback (M8).
+    // Факт использования фолбэка обязан быть виден в логе (issue #221, критерий 1).
+    it('#221: основное ревью получает fallbackModel из review.fallback, видно в логе', () => {
+        const logs = [];
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({
+                fallbackModel: 'claude-sonnet-5', // общий фолбэк — НЕ должен утечь в ревью
+                review: { default: 'claude-opus-4-8', fallback: 'claude-fable-5' },
+            }),
+            ctx(mkState()),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'claude-opus-4-8',
+                runClaudeFn,
+                tryMergePhaseFn: () => 'merged',
+            }),
+        );
+        // Вызов 0 — создание PR, вызов 1 — ревью.
+        expect(runClaudeFn.mock.calls[1][1].model).toBe('claude-opus-4-8');
+        expect(runClaudeFn.mock.calls[1][1].fallbackModel).toBe('claude-fable-5');
+        expect(logs.join('\n')).toMatch(
+            /Ревью фазы моделью: claude-opus-4-8.*фолбэк при overload: claude-fable-5/,
+        );
+    });
+
+    // #221 критерий 3: общий cfg.fallbackModel не должен влиять на ревью, когда
+    // review.fallback вообще не задан — pickReviewFallbackModel дефолтит на
+    // review.default, а НЕ на cfg.fallbackModel.
+    it('#221: без review.fallback общий cfg.fallbackModel в ревью не попадает — дефолт на review.default', () => {
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({
+                fallbackModel: 'claude-sonnet-5',
+                review: { default: 'claude-opus-4-8' },
+            }),
+            ctx(mkState()),
+            deps([], {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'claude-opus-4-8',
+                runClaudeFn,
+                tryMergePhaseFn: () => 'merged',
+            }),
+        );
+        expect(runClaudeFn.mock.calls[1][1].fallbackModel).toBe('claude-opus-4-8');
+        expect(runClaudeFn.mock.calls[1][1].fallbackModel).not.toBe('claude-sonnet-5');
+    });
+
     // #169: журнал находок ревью — запись пишется сразу при мердже фазы, тем же приёмом,
     // что closeMilestoneByTitle/syncProjectBoard (единая точка gate === 'merged').
     it('#169 гейт merged → recordReviewFindingsFn зовётся с фазой и номером PR из гейта', () => {
@@ -2548,8 +2622,12 @@ describe('runLoop — основной while-цикл: итерации коде
         // Второй вызов runClaude — повторное ревью: модель = планка (fable), не haiku.
         expect(runClaudeFn).toHaveBeenCalledTimes(2);
         expect(runClaudeFn.mock.calls[1][1].model).toBe('claude-fable-5');
-        // Повторное ревью noFallback (M8) — иначе overload молча деградировал бы модель.
-        expect(runClaudeFn.mock.calls[1][1].noFallback).toBe(true);
+        // #221: фолбэк повторного ревью тоже поднят до планки (fable) через
+        // strongerReviewModel — иначе overload молча деградировал бы модель ниже
+        // планки, обходя барьер #217 на уровне CLI-фолбэка. cfg тут без блока review
+        // (validCfg), поэтому pickReviewFallbackModel вернул бы null, но
+        // strongerReviewModel(null, floor) поднимает его до floor.
+        expect(runClaudeFn.mock.calls[1][1].fallbackModel).toBe('claude-fable-5');
     });
 
     // #217: судить блок нечем (review: none и планки нет) — fail-closed, PR человеку.
@@ -5023,6 +5101,97 @@ describe('pickReviewModel — эскалация ревью (#130)', () => {
         expect(pickReviewModel('Фаза X', 'feature/x', deps({ cfg: { reviewModel: 'none' } }))).toBe(
             'none',
         );
+    });
+});
+
+describe('pickReviewFallbackModel — фолбэк ревью, дефолт review.default (#221)', () => {
+    const { pickReviewFallbackModel } = ralph;
+
+    it('review.fallback задан — возвращается как есть', () => {
+        const cfg = { review: { default: 'claude-opus-4-8', fallback: 'claude-fable-5' } };
+        expect(pickReviewFallbackModel(cfg)).toBe('claude-fable-5');
+    });
+
+    it('review.fallback не задан — дефолт на review.default (не остаётся без фолбэка)', () => {
+        const cfg = { review: { default: 'claude-opus-4-8' } };
+        expect(pickReviewFallbackModel(cfg)).toBe('claude-opus-4-8');
+    });
+
+    it('review.fallback = "none" — осознанный отказ от фолбэка, вернёт null', () => {
+        const cfg = { review: { default: 'claude-opus-4-8', fallback: 'none' } };
+        expect(pickReviewFallbackModel(cfg)).toBe(null);
+    });
+
+    it('блока review нет вовсе — null', () => {
+        expect(pickReviewFallbackModel({})).toBe(null);
+    });
+
+    it('review — не объект (легаси reviewModel) — null, а не исключение', () => {
+        expect(pickReviewFallbackModel({ reviewModel: 'claude-opus-4-8' })).toBe(null);
+    });
+});
+
+// #221: конфиг, где review.fallback слабее review.default, отвергается на старте
+// (assertKnownReviewModels вызывается внутри resolveProfile) — это и есть требуемый
+// issue негативный тест «fail-closed, а не тихая деградация в момент overload».
+describe('resolveProfile — review.fallback не может быть слабее review.default (#221)', () => {
+    const boom = (m) => {
+        throw new Error(m);
+    };
+    const rawWithReview = (review) => ({
+        defaultProfile: 'playground',
+        common: {
+            phases: [{ milestone: 'M', branch: 'b' }],
+            review,
+        },
+        profiles: { playground: {} },
+    });
+
+    it('review.fallback слабее review.default → стоп с внятным сообщением', () => {
+        expect(() =>
+            resolveProfile(
+                rawWithReview({
+                    default: 'claude-opus-4-8',
+                    fallback: 'claude-haiku-4-5-20251001',
+                }),
+                null,
+                boom,
+            ),
+        ).toThrow(/review\.fallback.*claude-haiku-4-5-20251001.*слабее.*review\.default/s);
+    });
+
+    it('review.fallback той же силы, что review.default — конфиг принимается', () => {
+        const cfg = resolveProfile(
+            rawWithReview({ default: 'claude-opus-4-8', fallback: 'claude-opus-4-8' }),
+            null,
+            boom,
+        );
+        expect(cfg.review.fallback).toBe('claude-opus-4-8');
+    });
+
+    it('review.fallback сильнее review.default — конфиг принимается', () => {
+        const cfg = resolveProfile(
+            rawWithReview({ default: 'claude-opus-4-8', fallback: 'claude-fable-5' }),
+            null,
+            boom,
+        );
+        expect(cfg.review.fallback).toBe('claude-fable-5');
+    });
+
+    it('незнакомая модель в review.fallback → стоп (тот же барьер #223, что для default/escalated)', () => {
+        expect(() =>
+            resolveProfile(
+                rawWithReview({ default: 'claude-opus-4-8', fallback: 'claude-mystery' }),
+                null,
+                boom,
+            ),
+        ).toThrow(/review\.fallback.*claude-mystery.*REVIEW_MODEL_STRENGTH/s);
+    });
+
+    it('review.fallback не задан — конфиг проходит валидацию как раньше', () => {
+        expect(() =>
+            resolveProfile(rawWithReview({ default: 'claude-opus-4-8' }), null, boom),
+        ).not.toThrow();
     });
 });
 

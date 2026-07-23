@@ -56,9 +56,16 @@ RUNBOOK). Раннер сам поднимает detached-`monitor.js` (пане
    прямо запрещает наращивать инструкции ревью: отдача — в детерминированных проверках,
    срабатывающих независимо от мнения модели (`guardSideEffect`, `looksBlind`,
    `baseline-policy`). Нашёл класс молчаливого отказа — пиши барьер, не абзац в промпт.
-6. **`--fallback-model` отключён для ревью** (`noFallback: true`, M8): иначе при
-   overload эскалированное ревью молча деградирует в дешёвую модель и фаза уезжает в
-   main со слабым ревью. Пусть сессия честно упадёт — H2 остановит сдачу.
+6. **Ревью использует СВОЙ фолбэк — `review.fallback`, не общий `cfg.fallbackModel`**
+   (#221, заменил жёсткий `noFallback: true` из M8). Общий `fallbackModel` в опции
+   ревью-сессий вообще не передаётся — `buildClaudeArgs` получает явный
+   `fallbackModel` (`pickReviewFallbackModel`/для повторного ревью ещё и поднятый
+   до `state.reviewModelFloor` через `strongerReviewModel` — тот же барьер #217,
+   не второй независимый список). `assertKnownReviewModels` на старте отвергает
+   конфиг, где `review.fallback` слабее `review.default` (fail-closed, не тихая
+   деградация в момент overload). Явное `review.fallback: 'none'` — осознанный
+   отказ: тогда падение при недоступности модели по-прежнему honest-стоп, как
+   было при M8.
 7. **Защита от инъекций — repо публичный, permissionMode=bypassPermissions** (C3).
    Тело issue/комментария PR исполняется сессией как инструкции. Слои: `authorAllowlist`
    (чужие issues не исполняются и блокируют сдачу), промпты правок велят игнорировать
