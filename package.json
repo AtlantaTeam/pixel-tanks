@@ -19,7 +19,8 @@
         "test:only-detect": "node scripts/test-only-detect.mjs",
         "test:skip-detect": "node scripts/test-skip-detect.mjs",
         "project:sync": "node scripts/project-sync.mjs",
-        "canary:secrets": "node scripts/secret-canary.mjs",
+        "security:canary": "node scripts/secret-canary-gate.mjs",
+        "security:canary:baseline": "node scripts/secret-canary.mjs",
         "canary:postinstall": "node scripts/canary-postinstall.mjs",
         "prepare": "husky"
     },

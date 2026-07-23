@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 // без неё «мы почистили env» нельзя отличить от «токен пришёл другим путём» (PRD
 // docs/ralph-isolation/prd.md, скоуп п. 2).
 //
-// На ЭТОЙ фазе канарейка — ОТДЕЛЬНЫЙ РУЧНОЙ скрипт (`npm run canary:secrets`), в гейт она
+// На ЭТОЙ фазе канарейка — ОТДЕЛЬНЫЙ РУЧНОЙ скрипт (`npm run security:canary:baseline`), в гейт она
 // НЕ встраивается и НЕ краснит: до env-санации (фаза 4, #190) это был бы вечно-зелёный
 // чек, который находит секреты и молчит, — против fail-closed-духа обоих PRD. Красным
 // обязательным чеком гейта канарейка становится в фазе 4. Поэтому main() всегда exit 0:
@@ -25,10 +25,16 @@ import { fileURLToPath } from 'node:url';
 // так тест зелёный в гейте и ничего не утаскивает. Живой скан — только в main().
 
 // Секреты, которые петля держит в окружении (инвариант 11 CLAUDE.md): реальные имена
-// раннера — GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, RALPH_TG_BOT_TOKEN. Алиасы (GITHUB_TOKEN,
-// ANTHROPIC_API_KEY, TG_BOT_TOKEN) — под ними тот же секрет мог прийти иным путём: PRD
-// требует санацию allowlist-ом, канарейка же ищет ШИРЕ (по семействам GH_*/CLAUDE_*/
-// ANTHROPIC*/TG_*), иначе «почистили GH_TOKEN» нельзя отличить от «утёк GITHUB_TOKEN».
+// раннера — GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, RALPH_TG_BOT_TOKEN. Плюс известные АЛИАСЫ
+// (GITHUB_TOKEN, ANTHROPIC_API_KEY, TG_BOT_TOKEN) — под ними тот же секрет мог прийти иным
+// путём, поэтому проверяем и их: «почистили GH_TOKEN» нельзя путать с «утёк GITHUB_TOKEN».
+//
+// ГРАНИЦА ТОЧНОСТИ (ревью #247). Это ТОЧНЫЙ список имён (scanEnvChannels сверяет env[name]
+// по каждому), а НЕ префикс-скан семейств: переменные вроде GITHUB_PAT / ANTHROPIC_AUTH_TOKEN
+// сюда не попадают и канарейкой не детектируются. Санация-allowlist (#188) их всё равно
+// отсечёт — её fail-closed не опирается на этот список, — но канарейка как проверка ФАКТА
+// (а не веры) на такие имена слепа. Расширение до скана по семействам (GH_*/CLAUDE_*/
+// ANTHROPIC*/TG_*) — отдельная задача, не эта фаза.
 export const SECRET_ENV_VARS = [
     'GH_TOKEN',
     'GITHUB_TOKEN',
@@ -150,7 +156,7 @@ function main() {
     console.log(formatReport(report));
     // Фаза 3: измерение, а не красный гейт — естественное завершение даёт код 0 (см.
     // докблок выше). Явный process.exit(0) НЕ ставим: при пайп-выводе
-    // (`npm run canary:secrets > snapshot.txt`, baseline #187) он не ждёт сброса stdout и
+    // (`npm run security:canary:baseline > snapshot.txt`, baseline #187) он не ждёт сброса stdout и
     // может обрезать отчёт. main() — последняя операция, так что exit 0 и без него.
     // Красным обязательным чеком канарейка становится в фазе 4 (#190).
 }

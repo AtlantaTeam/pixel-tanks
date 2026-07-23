@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 // какие каналы к секретам петли открыты изнутри lifecycle-скрипта npm.
 //
 // Это РУЧНОЙ демо-скрипт (`npm run canary:postinstall`), не часть гейта и не vitest —
-// как и `npm run canary:secrets`: на фазе 3 канарейка измеряет, а не краснит. Логику
+// как и `npm run security:canary:baseline`: на фазе 3 канарейка измеряет, а не краснит. Логику
 // детекта покрывает vitest (scripts/canary-postinstall-fixture.test.js) на фикстурах, тут
 // же — живой прогон реального `npm ci` на боевой машине для baseline (#187).
 //

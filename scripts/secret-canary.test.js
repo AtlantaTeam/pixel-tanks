@@ -9,19 +9,13 @@ import {
     scanEnvChannels,
     scanFileChannels,
 } from './secret-canary.mjs';
+import { fsError } from './test-helpers.mjs';
 
 // #184: канареечная проверка границы изоляции. Тесты гоняют ЛОГИКУ детекта на
 // ИНЖЕКТИРОВАННЫХ фикстурах (фейковый env, фейковый readFileFn) — они никогда не читают
 // настоящие process.env / файлы, поэтому в гейте зелёные и не утаскивают реальный секрет
 // (сам живой скан — ручной скрипт main(), в гейт на этой фазе не встраивается, см.
 // docs/ralph-isolation/plan.md фаза 3 и уточнение по ревью в #184).
-
-// Ошибка чтения с кодом — как её бросает fs.readFileSync (ENOENT/EACCES).
-function fsError(code) {
-    const e = new Error(`${code}: fake`);
-    e.code = code;
-    return e;
-}
 
 describe('redact — значение секрета не утекает в отчёт (#184)', () => {
     it('для пустого/отсутствующего значения возвращает <пусто>', () => {
