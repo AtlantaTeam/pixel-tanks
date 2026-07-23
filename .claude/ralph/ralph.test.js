@@ -2378,6 +2378,106 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(logs.join('\n')).toMatch(/Все фазы завершены/);
     });
 
+    it('#249 prod: haltBeforeDeploy не задан (дефолт) → сохраняет #87, стоп после фазы даже без red', () => {
+        const logs = [];
+        const phaseIndexOfFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({ profileName: 'prod' }), // haltBeforeDeploy не задан
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({ status: 'completed', conclusion: 'success' }),
+                checkProdHealthFn: () => ({ ok: true, status: 200, url: 'u' }),
+            }),
+        );
+        // Дефолт = #87: стоп сразу после фазы, вторая фаза этим же процессом не начинается.
+        expect(phaseIndexOfFn).toHaveBeenCalledTimes(1);
+        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+    });
+
+    it('#249 prod: haltBeforeDeploy=false + зелёный пост-мердж деплой → фазы катятся подряд без рестарта', () => {
+        const logs = [];
+        const phaseIndexOfFn = vi.fn(() =>
+            phaseIndexOfFn.mock.calls.length <= 2 ? phaseIndexOfFn.mock.calls.length - 1 : 99,
+        );
+        const deployPhaseFn = vi.fn();
+        const advancePhaseFn = vi.fn();
+        runLoop(
+            validCfg({
+                profileName: 'prod',
+                haltBeforeDeploy: false,
+                phases: [
+                    { milestone: 'M1', branch: 'feature/m1' },
+                    { milestone: 'M2', branch: 'feature/m2' },
+                ],
+            }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({ status: 'completed', conclusion: 'success' }),
+                checkProdHealthFn: () => ({ ok: true, status: 200, url: 'u' }),
+                deployPhaseFn,
+                advancePhaseFn,
+            }),
+        );
+        // Обе фазы отработаны в одном процессе — без остановки между ними.
+        expect(deployPhaseFn).toHaveBeenCalledTimes(2);
+        expect(advancePhaseFn).toHaveBeenCalledTimes(2);
+        expect(logs.join('\n')).not.toMatch(/loop остановлен перед деплоем/);
+        expect(logs.join('\n')).toMatch(/haltBeforeDeploy=false — продолжаю без остановки/);
+        expect(logs.join('\n')).toMatch(/Все фазы завершены/);
+    });
+
+    it('#249 prod: haltBeforeDeploy=false, но пост-мердж деплой красный → трек всё равно стопорится (fail-closed)', () => {
+        const logs = [];
+        const phaseIndexOfFn = vi.fn(() => 0);
+        const pushEventFn = vi.fn();
+        runLoop(
+            validCfg({
+                profileName: 'prod',
+                haltBeforeDeploy: false,
+                phases: [
+                    { milestone: 'M1', branch: 'feature/m1' },
+                    { milestone: 'M2', branch: 'feature/m2' },
+                ],
+            }),
+            ctx(mkState()),
+            deps(logs, {
+                phaseIndexOfFn,
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                pickReviewModelFn: () => 'none',
+                runClaudeFn: () => 0,
+                tryMergePhaseFn: () => 'merged',
+                waitForDeployRunFn: () => ({
+                    status: 'completed',
+                    conclusion: 'failure',
+                    sha: 'a'.repeat(40),
+                }),
+                pushEventFn,
+            }),
+        );
+        // Красный деплой стопорит трек несмотря на haltBeforeDeploy=false — вторая фаза не
+        // начинается этим же процессом (phaseIndexOfFn зовётся ровно 1 раз).
+        expect(phaseIndexOfFn).toHaveBeenCalledTimes(1);
+        expect(logs.join('\n')).toMatch(/остановлен перед деплоем/);
+        expect(logs.join('\n')).not.toMatch(/haltBeforeDeploy=false — продолжаю без остановки/);
+        expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
+    });
+
     it('шаг создания PR упал (код≠0) → fail-closed стоп, гейт не зовётся', () => {
         const logs = [];
         const tryMergePhaseFn = vi.fn(() => 'merged');
