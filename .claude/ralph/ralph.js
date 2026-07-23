@@ -3842,9 +3842,28 @@ function ensureMonitorAlive(deps = {}) {
     return startMonitorFn(deps);
 }
 
+// #178: взятие лока — САМЫЙ первый шаг main(), впереди конфига/лога/worktree/RESET/
+// монитора. Фактическая гарантия — порядок вызовов ниже (fail() внутри acquireLock по
+// умолчанию зовёт process.exit(1), который в Node останавливает исполнение немедленно:
+// ни одна строка main() после провала лока не выполняется), но ordering вынесен в
+// отдельную функцию, чтобы dry-ветка и сама точка входа были видны и тестируемы отдельно
+// от остального main() (который process.exit'ит и трогает реальный git/fs).
+// dry: C1 требует --dry-run строго read-only — лок пишет файл (writeLock), поэтому
+// dry-прогон лок вообще не проверяет и не берёт: не блокируется живым раннером и не
+// оставляет свой файл, который принял бы за «живой раннер» следующий настоящий запуск.
+function acquireRunnerLock({ dry = DRY, acquireLockFn = acquireLock } = {}) {
+    if (dry) return true;
+    return acquireLockFn();
+}
+
 // main: тонкая оркестровка — загрузка конфига в module-level config (его читают
 // runClaude/openIssues/pickModel и др.), обработка --reset, затем preflight → runLoop.
 function main() {
+    // #178: до ЛЮБЫХ побочек (state/лог/git/монитор ниже) — при отказе acquireLockFn
+    // зовёт fail() → process.exit(1) и обрывает исполнение здесь же; return — для
+    // тестового/DI-пути, где failFn мог не завершить процесс.
+    if (!acquireRunnerLock()) return;
+
     const raw = loadJson(CONFIG_PATH, null);
     if (!raw) fail(`Не найден/не парсится ${CONFIG_PATH}`);
     // Резолв здесь, до preflight/runLoop: весь раннер дальше читает ПЛОСКИЙ конфиг и
@@ -4024,6 +4043,7 @@ module.exports = {
     writeLock,
     removeLock,
     acquireLock,
+    acquireRunnerLock,
     listMonitorPids,
     processPpid,
     sweepOrphanMonitors,

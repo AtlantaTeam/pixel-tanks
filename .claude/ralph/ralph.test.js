@@ -34,6 +34,7 @@ const {
     writeLock,
     removeLock,
     acquireLock,
+    acquireRunnerLock,
     listMonitorPids,
     processPpid,
     sweepOrphanMonitors,
@@ -4490,6 +4491,26 @@ describe('acquireLock — fail-closed взятие лока (#177)', () => {
         acquireLock(live);
         expect(live.writeFn).not.toHaveBeenCalled();
         expect(live.removeFn).not.toHaveBeenCalled();
+    });
+});
+
+describe('acquireRunnerLock — взятие лока первым шагом main() (#178)', () => {
+    it('dry=true → true без вызова acquireLockFn (C1: --dry-run не проверяет и не берёт лок)', () => {
+        const acquireLockFn = vi.fn(() => true);
+        expect(acquireRunnerLock({ dry: true, acquireLockFn })).toBe(true);
+        expect(acquireLockFn).not.toHaveBeenCalled();
+    });
+
+    it('dry=false, лок свободен → true, передаёт вердикт acquireLockFn', () => {
+        const acquireLockFn = vi.fn(() => true);
+        expect(acquireRunnerLock({ dry: false, acquireLockFn })).toBe(true);
+        expect(acquireLockFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('dry=false, лок занят → false, передаёт отказ acquireLockFn (main() должен остановиться)', () => {
+        const acquireLockFn = vi.fn(() => false);
+        expect(acquireRunnerLock({ dry: false, acquireLockFn })).toBe(false);
+        expect(acquireLockFn).toHaveBeenCalledTimes(1);
     });
 });
 
