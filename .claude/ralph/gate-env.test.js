@@ -160,6 +160,19 @@ describe('gate-env-allowlist.json репозитория (#188)', () => {
         expect(a.exact.has('HOME')).toBe(true);
     });
 
+    // #191: толстые prod-чеки не должны молча сломаться от санации. CI переключает
+    // playwright.config.ts в гейт-режим (forbidOnly/reuseExistingServer=false/свой порт);
+    // PLAYWRIGHT_BROWSERS_PATH — явный путь к кэшу браузеров, если он задан на машине
+    // раннера (дефолтный ~/.cache/ms-playwright и так доступен через HOME). Регрессия
+    // барьером, а не только ручной проверкой: пропажа любой из двух вернула бы «e2e не
+    // видит кэш браузеров» или «playwright лезет на чужой уже занятый dev-порт» молча
+    // на следующем прогоне прод-гейта.
+    it('содержит переменные, нужные толстому e2e-чеку (#191)', () => {
+        const a = loadGateEnvAllowlist(DEFAULT_ALLOWLIST_PATH, fs.readFileSync);
+        expect(a.exact.has('CI')).toBe(true);
+        expect(a.exact.has('PLAYWRIGHT_BROWSERS_PATH')).toBe(true);
+    });
+
     // Список — именно allowlist: секретов петли в нём нет, значит санация их отрежет.
     it('НЕ содержит секретов петли', () => {
         const a = loadGateEnvAllowlist(DEFAULT_ALLOWLIST_PATH, fs.readFileSync);
