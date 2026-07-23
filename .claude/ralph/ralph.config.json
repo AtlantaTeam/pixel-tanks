@@ -65,16 +65,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Изоляция ralph · Фаза 5: argv для мутаций гейта",
-                "branch": "feature/ralph-gate-argv"
-            },
-            {
-                "milestone": "Изоляция ralph · Фаза 6: Открытые вопросы в бэклог",
-                "branch": "feature/ralph-isolation-backlog"
-            },
-            {
-                "milestone": "ralph: Непрерывный prod",
-                "branch": "feature/ralph-continuous-prod"
+                "milestone": "Непрерывный prod ralph · Фаза 2: включение флага в prod",
+                "branch": "feature/ralph-continuous-prod-enable"
             }
         ]
     },
