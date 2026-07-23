@@ -121,6 +121,7 @@ export function makeRunLoopScenario(initialState = {}, { lastGatePr = 777 } = {}
                 tryMergePhaseFn: () => gate,
                 closeMilestoneByTitleFn: () => {},
                 syncProjectBoardFn: () => {},
+                recordReviewFindingsFn: () => {},
                 getLastRedCheck: () => redCheck,
                 getLastGatePr: () => lastGatePr,
                 pushEventFn,

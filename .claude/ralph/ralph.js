@@ -1436,6 +1436,28 @@ function syncProjectBoard(shFn = sh, logFn = log) {
     }
 }
 
+// #169: журнал находок ревью петли по severity — «ревью слабеет/крепнет» становится
+// числом (PRD `docs/ralph-reliability/prd.md` п.4). Зовётся сразу после мерджа, тем же
+// приёмом, что closeMilestoneByTitle/syncProjectBoard: best-effort, лог вместо throw —
+// косметика наблюдаемости не имеет права уронить уже смерджённую фазу. Журнал живёт в
+// рантайм-каталоге раннера (JOURNAL_PATH в scripts/review-findings-journal.mjs), не в
+// git — раннер нигде не коммитит в main напрямую, только через ревьюенные PR.
+function recordReviewFindings(phase, prNumber, shFn = sh, logFn = log) {
+    if (!Number.isInteger(prNumber) || prNumber <= 0) {
+        logFn(`⚠ Журнал находок: номер PR неизвестен, запись пропущена.`);
+        return;
+    }
+    try {
+        const out = shFn(
+            `node scripts/review-findings-journal.mjs ${shq(prNumber)} ${shq(phase.milestone)}`,
+        );
+        logFn(`📊 Находки ревью зафиксированы в журнале: ${String(out).trim()}`);
+    } catch (e) {
+        const why = String(e?.message ?? e).split('\n')[0];
+        logFn(`⚠ Не смог записать находки ревью в журнал (не критично): ${why}`);
+    }
+}
+
 // ── AFK-гейт мерджа фазы ─────────────────────────────────────────────────────
 // После PR → ревью → авто-правки раннер САМ проверяет качество (детерминированно,
 // не доверяя агенту на слово): PR не помечен 'blocked' И локальный HEAD совпадает
@@ -2471,6 +2493,7 @@ function runLoop(
         tryMergePhaseFn = tryMergePhase,
         closeMilestoneByTitleFn = closeMilestoneByTitle,
         syncProjectBoardFn = syncProjectBoard,
+        recordReviewFindingsFn = recordReviewFindings,
         getLastRedCheck = () => lastRedCheck,
         getLastGatePr = () => lastGatePr,
         pushEventFn = pushEvent,
@@ -2824,6 +2847,7 @@ function runLoop(
                 pushEventFn(mergedMsg, cfg, { logFn });
                 closeMilestoneByTitleFn(phase.milestone); // закрыть milestone сразу, не ждать свипа
                 syncProjectBoardFn(); // #199: закрытые issues фазы → Done на доске
+                recordReviewFindingsFn(phase, getLastGatePr()); // #169: счёт находок ревью в журнал
                 advancePhaseFn(state, idx);
                 // #87: prod — стоп перед деплоем. Деплой уже в руках CI (мердж его и
                 // запустил), но loop не должен тут же хвататься за следующую фазу без
@@ -3586,6 +3610,7 @@ module.exports = {
     log,
     sideEffectAttempts,
     syncProjectBoard,
+    recordReviewFindings,
     formatExcerpt,
     parseResetWaitMs,
     apiLimitWaitMs,
