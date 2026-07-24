@@ -11,8 +11,9 @@
         "permissionMode": "bypassPermissions",
         "blockedHealAttempts": 3,
         "gateHealAttempts": 2,
-        "apiLimitMaxWaits": 3,
+        "apiLimitMaxWaits": 16,
         "apiLimitGraceMin": 5,
+        "apiLimitFallbackWaitMin": 360,
         "deployCheck": {
             "workflow": "deploy.yml",
             "timeoutMs": 1200000,
@@ -63,7 +64,36 @@
             "restartWaitMs": 3000
         },
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
-        "phases": []
+        "phases": [
+            {
+                "milestone": "Верстка ДС ralph · Фаза 1: Токены + DotGothic16",
+                "branch": "feature/ds-phase-1-tokens"
+            },
+            {
+                "milestone": "Верстка ДС ralph · Фаза 2: Иконки + линт",
+                "branch": "feature/ds-phase-2-icons"
+            },
+            {
+                "milestone": "Верстка ДС ralph · Фаза 3: Атомы форм и контролов",
+                "branch": "feature/ds-phase-3-form-atoms"
+            },
+            {
+                "milestone": "Верстка ДС ralph · Фаза 4: Атомы данных и HUD",
+                "branch": "feature/ds-phase-4-data-hud"
+            },
+            {
+                "milestone": "Верстка ДС ralph · Фаза 5: Обратная связь и состояния",
+                "branch": "feature/ds-phase-5-feedback"
+            },
+            {
+                "milestone": "Верстка ДС ralph · Фаза 6: Попапы и оверлеи",
+                "branch": "feature/ds-phase-6-overlays"
+            },
+            {
+                "milestone": "Верстка ДС ralph · Фаза 7: Витрина 1:1",
+                "branch": "feature/ds-phase-7-showcase"
+            }
+        ]
     },
     "profiles": {
         "playground": {},
