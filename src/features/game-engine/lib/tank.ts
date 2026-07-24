@@ -1,6 +1,7 @@
 import { floor, rotateFigure, rotateFigureByAngle, transformPoint } from '@/shared/lib/canvas';
 import type { TCoords, TWeapon } from '@/shared/model';
 import { Ground } from './ground';
+import { POWER_MAX, POWER_MIN } from './power';
 
 type TGroundUnderTankData = {
     leftSideX: number;
@@ -35,8 +36,8 @@ export class Tank {
     dx = 0;
     dy = 0;
     power = 10;
-    powerMin = 1;
-    powerMax = 20;
+    powerMin = POWER_MIN;
+    powerMax = POWER_MAX;
     gravity = 0;
     isReadyToFire = true;
     closestToHit: { minDiff: number; angle: number; power: number; count: number } | null;

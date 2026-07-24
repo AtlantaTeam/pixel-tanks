@@ -94,6 +94,15 @@ export class Bullet {
                 } else if (this.y > this.innerHeight) {
                     return true;
                 }
+
+                // Верхняя стена отбивает снаряд так же, как боковые (#264): без
+                // этого снаряд с большой силой уходил за верх поля. Проверяется
+                // отдельным `if` (не в else-цепочке по x), чтобы угловое попадание
+                // одновременно в боковую и верхнюю границу отбило обе.
+                if (this.y - this.radius < 0) {
+                    this.y = this.radius;
+                    this.dy *= -1;
+                }
             }
 
             if (this.innerHeight - this.y - this.radius <= this.ground.heights[floor(this.x)]) {

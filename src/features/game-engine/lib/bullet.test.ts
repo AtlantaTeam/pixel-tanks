@@ -142,6 +142,34 @@ describe('Bullet: столкновения', () => {
         expect(bullet.x + bullet.radius).toBeLessThanOrEqual(WIDTH);
     });
 
+    it('отскакивает от верхней стены: снаряд не покидает поле сверху и возвращается вниз', () => {
+        // Выстрел строго вверх на максимальной силе — снаряд неминуемо достигает
+        // верхней границы поля (#264: раньше уходил за верх, ни одна ветка не отбивала).
+        // Проверяем наблюдаемое поведение (позиция y), не внутреннее поле dy: снаряд
+        // на такой скорости проходит ~20px/кадр, поэтому разворот ловим не по мгновенному
+        // знаку, а по факту «достал до верха → пошёл обратно вниз».
+        const { bullet } = makeBullet(-Math.PI / 2, 20, 0);
+
+        let reachedTop = false;
+        let cameBackDown = false;
+        let minY = Infinity;
+        for (let i = 0; i < 300; i++) {
+            bullet.move();
+            bullet.isHit(ctxStub);
+            minY = Math.min(minY, bullet.y);
+            // Верхняя стена зажимает y ровно в radius — это касание верха.
+            if (bullet.y <= bullet.radius) reachedTop = true;
+            // После касания снаряд снова уходит вниз по полю — значит отскочил,
+            // а не застрял у границы и не улетел за неё.
+            if (reachedTop && bullet.y > bullet.radius) cameBackDown = true;
+        }
+
+        // Без фикса #264 снаряд уходил за верх (y < radius) — этот инвариант ловит регресс.
+        expect(minY).toBeGreaterThanOrEqual(bullet.radius);
+        expect(reachedTop).toBe(true);
+        expect(cameBackDown).toBe(true);
+    });
+
     it('приземляется в грунт за конечное число шагов на уровне рельефа', () => {
         const { bullet, ground } = makeBullet(-Math.PI / 3, 12, 0);
 

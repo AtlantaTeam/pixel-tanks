@@ -5,7 +5,10 @@ import { BOT_NAME } from '@/shared/config';
 import { useMuteState } from '@/shared/lib/audio';
 import { useAnimatedValue } from '@/shared/lib/animation';
 import { Button, Select } from '@/shared/ui';
+import { useHoldRepeat } from '../lib/use-hold-repeat';
 import { KeyboardSchemeHint } from './keyboard-scheme-hint';
+
+const noop = () => {};
 
 const formatAngle = (radians: number) => {
     const normalized = radians < 0 ? -radians : 2 * Math.PI - radians;
@@ -107,6 +110,15 @@ type TCounterProps = {
 };
 
 function Counter({ label, value, onDec, onInc }: TCounterProps) {
+    // Удержание кнопки авто-повторяет шаг — набирать значение по одному тыку было
+    // долго (#264). Counter общий: hold работает и для «Мощности», и для «Угла».
+    // Для угла это паритет с авто-репитом стрелок; угол в сторе не заворачивается
+    // по 2π, так что долгим удержанием HUD покажет градусы вне 0..360 — косметика
+    // (физика периодична по cos/sin), нормализацию не трогаем в рамках #264.
+    // `useHoldRepeat` владеет и onClick — тап/клавиатура дают ровно один шаг.
+    const decHold = useHoldRepeat(onDec ?? noop);
+    const incHold = useHoldRepeat(onInc ?? noop);
+
     return (
         <div className="flex flex-col items-center gap-1">
             <span className="text-xs text-muted">{label}</span>
@@ -114,9 +126,9 @@ function Counter({ label, value, onDec, onInc }: TCounterProps) {
                 <Button
                     variant="ghost"
                     size="icon"
-                    onClick={onDec}
                     disabled={!onDec}
                     aria-label={`${label} меньше`}
+                    {...decHold}
                 >
                     −
                 </Button>
@@ -124,9 +136,9 @@ function Counter({ label, value, onDec, onInc }: TCounterProps) {
                 <Button
                     variant="ghost"
                     size="icon"
-                    onClick={onInc}
                     disabled={!onInc}
                     aria-label={`${label} больше`}
+                    {...incHold}
                 >
                     +
                 </Button>

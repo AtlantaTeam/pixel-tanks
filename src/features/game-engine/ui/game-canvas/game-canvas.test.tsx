@@ -56,6 +56,30 @@ describe('GameCanvas', () => {
         expect(bubble.style.top).toBe('120px');
     });
 
+    it('positions bubble relative to canvas container, not outer ancestors', () => {
+        const reply: TBotReply = {
+            text: 'Test bubble',
+            category: EBotReplyCategory.Happy,
+        };
+        const { container, getByText } = render(<GameCanvas seed={42} />);
+
+        act(() => {
+            captured.current?.onBotReply(reply);
+        });
+
+        // Найти relative-контейнер, который содержит canvas
+        const canvas = container.querySelector('canvas') as HTMLCanvasElement;
+        const relativeContainer = canvas?.parentElement;
+
+        // Контейнер должен иметь relative позиционирование
+        expect(relativeContainer).toBeTruthy();
+        expect(relativeContainer).toHaveClass('relative');
+
+        // Bubble должен быть потомком relative-контейнера
+        const bubble = getByText('Test bubble') as HTMLElement;
+        expect(relativeContainer?.contains(bubble)).toBe(true);
+    });
+
     it('запоминает seed и записывает выстрел в реплей боя при клике по canvas', () => {
         useGameStore.getState().resetGame();
         useGameStore.setState({ angle: 0.5, power: 12 });

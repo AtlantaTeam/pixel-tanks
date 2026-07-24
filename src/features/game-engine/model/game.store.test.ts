@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { POWER_MAX, POWER_MIN } from '../lib/power';
 import { useGameStore } from './game.store';
 
 describe('game.store — запись реплея', () => {
@@ -58,6 +59,34 @@ describe('game.store — запись реплея', () => {
             { kind: 'move', delta: -150 },
             { kind: 'fire', angle: 0.5, power: 10 },
         ]);
+    });
+
+    it('не даёт увести мощность выше верхнего предела ни setPower, ни increasePower', () => {
+        useGameStore.getState().setPower(999);
+        expect(useGameStore.getState().power).toBe(POWER_MAX);
+
+        // Экранная кнопка «Мощность» звала increasePower напрямую, минуя кламп
+        // движка — теперь предел держит сам стор (#264).
+        useGameStore.getState().setPower(POWER_MAX);
+        useGameStore.getState().increasePower(5);
+        expect(useGameStore.getState().power).toBe(POWER_MAX);
+    });
+
+    it('не даёт увести мощность ниже нижнего предела ни setPower, ни increasePower', () => {
+        useGameStore.getState().setPower(-10);
+        expect(useGameStore.getState().power).toBe(POWER_MIN);
+
+        useGameStore.getState().setPower(POWER_MIN);
+        useGameStore.getState().increasePower(-5);
+        expect(useGameStore.getState().power).toBe(POWER_MIN);
+    });
+
+    it('оставляет мощность внутри диапазона без изменений', () => {
+        useGameStore.getState().setPower(12);
+        expect(useGameStore.getState().power).toBe(12);
+
+        useGameStore.getState().increasePower(3);
+        expect(useGameStore.getState().power).toBe(15);
     });
 
     it('resetGame очищает seed боя, размер поля и записанные ходы', () => {
