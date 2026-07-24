@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { decodeReplay } from '@/entities/replays';
 import { ReplayCanvas } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
+import { buttonClasses } from '@/shared/ui';
 import { ReplayHud } from './replay-hud';
 
 type TReplayPageProps = {
@@ -20,15 +21,12 @@ export function ReplayPage({ code }: TReplayPageProps) {
     if (!replay) {
         return (
             <main className="safe-area-inset flex h-dvh flex-col items-center justify-center gap-6 overflow-hidden p-4 text-center">
-                <h1 className="font-pixel text-lg text-primary">Реплей не найден</h1>
-                <p className="max-w-md text-sm text-text-muted">
+                <h1 className="font-display text-h2 text-primary uppercase">Реплей не найден</h1>
+                <p className="max-w-md text-body text-text-muted">
                     Ссылка повреждена или записана несовместимой версией игры — воспроизвести этот
                     бой не получилось.
                 </p>
-                <Link
-                    href="/game"
-                    className="pixel-border bg-base-200 px-4 py-3 font-pixel text-xs"
-                >
+                <Link href="/game" className={buttonClasses('primary', 'md')}>
                     Сыграть самому
                 </Link>
             </main>
@@ -41,7 +39,7 @@ export function ReplayPage({ code }: TReplayPageProps) {
             <div className="relative flex-1 overflow-hidden">
                 <ReplayCanvas replay={replay} />
             </div>
-            <div data-testid="replay-hud" className="border-t border-base-300 bg-base-200">
+            <div data-testid="replay-hud" className="border-t border-border bg-panel">
                 <ReplayHud />
             </div>
         </main>

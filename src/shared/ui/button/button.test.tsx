@@ -38,6 +38,33 @@ describe('Button', () => {
         expect(button.className).not.toMatch(/#[0-9a-fA-F]{3,6}/);
     });
 
+    it('renders danger variant with its ink pair for contrast, not light body text', () => {
+        const { getByRole } = render(<Button variant="danger">Сдаться</Button>);
+
+        const button = getByRole('button');
+        expect(button.className).toMatch(/\bbg-danger\b/);
+        expect(button.className).toMatch(/\btext-danger-ink\b/);
+        // Тело кнопки не красится светлым text-text (даёт ~2.98:1 на #ff4242).
+        expect(button.className).not.toMatch(/\btext-text(?![\w-])/);
+    });
+
+    it('feeds edge/glow into the pixel-border shadow slots, not a competing shadow utility', () => {
+        const { getByRole } = render(<Button variant="primary">Играть</Button>);
+
+        const button = getByRole('button');
+        // Единый источник box-shadow — pixel-border; эффекты идут в его слоты.
+        expect(button.className).toMatch(/\[--pixel-border-edge:var\(--edge-pixel\)\]/);
+        expect(button.className).not.toMatch(/\bshadow-\[/);
+    });
+
+    it('renders a keyboard focus ring via the pixel-border ring slot', () => {
+        const { getByRole } = render(<Button>Играть</Button>);
+
+        expect(getByRole('button').className).toMatch(
+            /focus-visible:\[--pixel-border-ring:var\(--ring-focus\)\]/,
+        );
+    });
+
     it('renders disabled state from semantic muted tokens, not opacity', () => {
         const { getByRole } = render(<Button disabled>Недоступно</Button>);
 

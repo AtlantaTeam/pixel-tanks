@@ -1,13 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import type { TFaction } from '@/shared/lib/theme';
 import type { TButtonSize, TButtonVariant } from '@/shared/ui';
 import { Button, Dialog, Panel, Select } from '@/shared/ui';
 
 const VARIANTS: TButtonVariant[] = ['primary', 'accent', 'ghost', 'danger'];
 const SIZES: TButtonSize[] = ['sm', 'md', 'icon'];
-
-type TFaction = 'player' | 'enemy';
 
 function buttonLabel(variant: TButtonVariant, size: TButtonSize) {
     if (size === 'icon') return '▶';
@@ -20,7 +19,11 @@ export function DesignSystemPreview() {
 
     return (
         <div className="flex flex-col gap-6">
-            <div className="flex flex-wrap items-center gap-3">
+            {/* Свой data-faction на переключателе: активный тумблер (variant="accent")
+                читает --accent этой обёртки и красится в цвет выбранной фракции —
+                зелёный игрок / магента враг. Без обёртки он брал бы дефолтный
+                :root --accent (всегда зелёный) и вводил в заблуждение. */}
+            <div className="flex flex-wrap items-center gap-3" data-faction={faction}>
                 <span className="font-ui text-label tracking-[0.12em] text-text-muted uppercase">
                     Фракция
                 </span>
@@ -40,7 +43,7 @@ export function DesignSystemPreview() {
                 >
                     Враг
                 </Button>
-                <span className="font-ui text-caption text-text-dim">
+                <span className="font-ui text-caption text-text-muted">
                     Меняет <code>data-faction</code> — accent-элементы переключаются без правки
                     разметки.
                 </span>
@@ -103,8 +106,17 @@ export function DesignSystemPreview() {
                     <Button variant="primary" onClick={() => setDialogOpen(true)}>
                         Открыть диалог
                     </Button>
-                    <Dialog open={dialogOpen}>
-                        <h4 className="mb-3 font-display text-h1 text-text uppercase">Победа</h4>
+                    <Dialog
+                        open={dialogOpen}
+                        onClose={() => setDialogOpen(false)}
+                        aria-labelledby="ds-dialog-title"
+                    >
+                        <h4
+                            id="ds-dialog-title"
+                            className="mb-3 font-display text-h1 text-text uppercase"
+                        >
+                            Победа
+                        </h4>
                         <p className="mb-6 text-body text-text-muted">
                             Прямое попадание. Враг повержен — можно взять реванш или вернуться в
                             меню.

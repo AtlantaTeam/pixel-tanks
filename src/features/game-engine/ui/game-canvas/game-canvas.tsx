@@ -255,7 +255,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         <div className="relative h-full w-full">
             <canvas
                 ref={canvasRef}
-                className="game-canvas block h-full w-full touch-none bg-base-200"
+                className="game-canvas block h-full w-full touch-none bg-bg"
                 onPointerDown={(e) => {
                     // Мышь оставляем на своей схеме (движение — угол, клик — выстрел);
                     // жест «оттяни и отпусти» — для touch/pen.

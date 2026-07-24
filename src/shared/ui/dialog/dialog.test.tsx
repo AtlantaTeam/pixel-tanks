@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 import { Dialog } from './dialog';
 
 describe('Dialog', () => {
@@ -24,5 +24,47 @@ describe('Dialog', () => {
             'var(--color-border-strong)',
         );
         expect(panel.style.getPropertyValue('--panel-shadow')).toBe('var(--shadow-drop)');
+    });
+
+    it('forwards an accessible name to the dialog role element', () => {
+        const { getByRole } = render(
+            <Dialog open aria-labelledby="title">
+                <h2 id="title">Победа</h2>
+            </Dialog>,
+        );
+
+        expect(getByRole('dialog')).toHaveAttribute('aria-labelledby', 'title');
+    });
+
+    it('closes on Escape when onClose is provided', () => {
+        const onClose = vi.fn();
+        render(
+            <Dialog open onClose={onClose}>
+                <button type="button">OK</button>
+            </Dialog>,
+        );
+
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not throw on Escape when onClose is absent (uncontrolled close)', () => {
+        render(
+            <Dialog open>
+                <button type="button">OK</button>
+            </Dialog>,
+        );
+
+        expect(() => fireEvent.keyDown(document, { key: 'Escape' })).not.toThrow();
+    });
+
+    it('moves focus into the dialog on open', () => {
+        const { getByRole } = render(
+            <Dialog open onClose={() => {}}>
+                <button type="button">OK</button>
+            </Dialog>,
+        );
+
+        expect(document.activeElement).toBe(getByRole('button', { name: 'OK' }));
     });
 });

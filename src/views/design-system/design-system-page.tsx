@@ -126,6 +126,17 @@ const EFFECTS: TEffect[] = [
     { name: '--ring-focus', kind: 'box', hint: 'Клавиатурный фокус (двойной ринг)' },
 ];
 
+type TRadius = {
+    name: string;
+    value: string;
+    hint: string;
+};
+
+const RADII: TRadius[] = [
+    { name: '--radius-none', value: '0px', hint: 'Панели, кнопки — острые углы' },
+    { name: '--radius-sm', value: '2px', hint: 'Лёгкое смягчение (чипы, бейджи)' },
+];
+
 function Swatch({ name, hex, contrast }: TSwatch) {
     const label = name.replace(/^--color-/, '');
     return (
@@ -139,7 +150,7 @@ function Swatch({ name, hex, contrast }: TSwatch) {
                 <span className="font-ui text-caption text-text">{label}</span>
                 <span className="font-ui text-label text-text-muted uppercase">{hex}</span>
                 {contrast && (
-                    <span className="font-ui text-label text-text-dim">Контраст {contrast}</span>
+                    <span className="font-ui text-label text-text-muted">Контраст {contrast}</span>
                 )}
             </div>
         </div>
@@ -214,7 +225,7 @@ export function DesignSystemPage() {
                                     <span className="font-ui text-caption text-text">
                                         {role.name}
                                     </span>
-                                    <span className="font-ui text-label text-text-dim uppercase">
+                                    <span className="font-ui text-label text-text-muted uppercase">
                                         {role.size}
                                     </span>
                                 </div>
@@ -266,6 +277,34 @@ export function DesignSystemPage() {
                 </section>
 
                 <section>
+                    <SectionHeading>Радиусы</SectionHeading>
+                    <p className="mb-6 max-w-prose text-body text-text-muted">
+                        Пиксельная эстетика — почти без скруглений. <code>--radius-none</code>{' '}
+                        держит острые углы панелей и кнопок, <code>--radius-sm</code> (2px) лишь
+                        слегка смягчает мелкие элементы.
+                    </p>
+                    <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+                        {RADII.map((radius) => (
+                            <div key={radius.name} className="flex flex-col gap-3">
+                                <div
+                                    aria-hidden
+                                    className="h-20 w-full border-[length:var(--border-w)] border-border-strong bg-panel-raised"
+                                    style={{ borderRadius: `var(${radius.name})` }}
+                                />
+                                <div className="flex flex-col gap-0.5">
+                                    <span className="font-ui text-caption text-text">
+                                        {radius.name}
+                                    </span>
+                                    <span className="font-ui text-label text-text-muted">
+                                        {radius.value} · {radius.hint}
+                                    </span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </section>
+
+                <section>
                     <SectionHeading>Тема</SectionHeading>
                     <p className="mb-6 max-w-prose text-body text-text-muted">
                         Ось тем — фракция. Переключатель ниже меняет <code>data-faction</code> на
@@ -273,7 +312,7 @@ export function DesignSystemPage() {
                         <code> --accent / --glow</code> и переключаются без условных классов в
                         разметке.
                     </p>
-                    <p className="text-caption text-text-dim">
+                    <p className="text-caption text-text-muted">
                         Интерактивный переключатель — в секции «Компоненты» выше.
                     </p>
                 </section>

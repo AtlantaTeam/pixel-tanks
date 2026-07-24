@@ -75,8 +75,11 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
 
     return (
         <ThemeScope outcome={outcome} className="contents">
-            <Dialog open={isGameOver} className="text-center">
-                <h2 className="font-display text-h1 text-[var(--accent)] uppercase [text-shadow:var(--glow-text)]">
+            <Dialog open={isGameOver} className="text-center" aria-labelledby="game-over-title">
+                <h2
+                    id="game-over-title"
+                    className="font-display text-h1 text-[var(--accent)] uppercase [text-shadow:var(--glow-text)]"
+                >
                     {winnerText}
                 </h2>
                 <p className="font-ui text-body mt-4 text-text-muted">
