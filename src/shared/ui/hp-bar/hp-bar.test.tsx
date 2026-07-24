@@ -78,4 +78,38 @@ describe('HPBar', () => {
 
         expect((container.firstChild as HTMLElement).className).toContain('custom-hp-bar');
     });
+
+    it('scales fill width and caption against a custom max', () => {
+        const { container, getByText } = render(
+            <HPBar label="Босс" value={75} faction="enemy" max={150} />,
+        );
+
+        const fill = container.querySelector('[data-testid="hp-bar-fill"]') as HTMLElement;
+        expect(fill.style.width).toBe('50%');
+        expect(getByText('HP 75 / 150')).toBeInTheDocument();
+    });
+
+    it('computes color thresholds as percentages of a custom max', () => {
+        // 75/150 = 50% → warning (не success, хотя сырое значение 75 > 60)
+        const { container } = render(<HPBar label="Босс" value={75} faction="enemy" max={150} />);
+
+        const fill = container.querySelector('[data-testid="hp-bar-fill"]') as HTMLElement;
+        expect(fill).toHaveClass('bg-warning');
+    });
+
+    it('clamps fill to the custom max for overshooting values', () => {
+        const { container } = render(<HPBar label="Босс" value={999} faction="enemy" max={150} />);
+
+        const fill = container.querySelector('[data-testid="hp-bar-fill"]') as HTMLElement;
+        expect(fill.style.width).toBe('100%');
+    });
+
+    it('exposes progressbar semantics for assistive tech', () => {
+        const { getByRole } = render(<HPBar label="Игрок" value={72} faction="player" />);
+
+        const bar = getByRole('progressbar');
+        expect(bar).toHaveAttribute('aria-valuenow', '72');
+        expect(bar).toHaveAttribute('aria-valuemin', '0');
+        expect(bar).toHaveAttribute('aria-valuemax', '100');
+    });
 });

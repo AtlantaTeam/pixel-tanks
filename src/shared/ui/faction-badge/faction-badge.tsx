@@ -1,7 +1,9 @@
 import { clsx } from 'clsx';
+import type { TFaction } from '@/shared/lib/theme';
+import { badgeShellClasses } from '../badge-shell';
 import { Icon } from '../icon';
 
-export type TFactionBadgeFaction = 'player' | 'enemy' | 'unknown';
+export type TFactionBadgeFaction = TFaction | 'unknown';
 export type TFactionBadgeSize = 'sm' | 'md';
 
 type TFactionBadgeProps = {
@@ -33,21 +35,7 @@ export function FactionBadge({ faction, size = 'md', className }: TFactionBadgeP
     return (
         <div
             {...(isUnknown ? {} : { 'data-faction': faction })}
-            className={clsx(
-                'pixel-border',
-                'flex',
-                'items-center',
-                'justify-center',
-                sizeClasses.badge,
-                isUnknown && 'bg-muted border-border-strong text-text-dim',
-                !isUnknown && [
-                    'bg-surface',
-                    'border-[color:var(--accent)]',
-                    '[--pixel-border-glow:var(--glow)]',
-                    'text-[color:var(--accent)]',
-                ],
-                className,
-            )}
+            className={clsx(badgeShellClasses(faction), sizeClasses.badge, className)}
         >
             {iconName && <Icon name={iconName} />}
             {isUnknown && <span className="text-[20px]">?</span>}

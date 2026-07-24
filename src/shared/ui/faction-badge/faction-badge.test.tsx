@@ -42,15 +42,18 @@ describe('FactionBadge', () => {
         expect(badge).toHaveClass('size-11');
     });
 
-    it('theme-switches without prop when parent sets [data-faction]', () => {
+    it('sets its own data-faction, overriding the parent theme axis', () => {
         const { container } = render(
             <div data-faction="enemy">
                 <FactionBadge faction="player" />
             </div>,
         );
 
-        const badge = container.querySelector('[class*="pixel-border"]') as HTMLElement;
-        expect(badge?.className).toContain('var(--accent)');
+        // Бейдж привязан к своей стороне: ставит собственный data-faction="player"
+        // поверх enemy-предка, а не наследует чужую тему.
+        const badge = container.querySelector('[data-faction="player"]') as HTMLElement;
+        expect(badge).toBeInTheDocument();
+        expect(badge.className).toContain('var(--accent)');
     });
 
     it('accepts custom className prop', () => {

@@ -38,7 +38,7 @@ describe('Avatar', () => {
         const { container } = render(<Avatar faction="player">A</Avatar>);
 
         const avatar = container.firstChild as HTMLElement;
-        expect(avatar.className).toContain('[--pixel-border-glow:var(--glow)]');
+        expect(avatar.className).toContain('shadow-[var(--glow)]');
     });
 
     it('accepts custom className prop', () => {

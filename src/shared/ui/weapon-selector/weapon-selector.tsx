@@ -21,7 +21,11 @@ const ARROW_BUTTON_CLASSES =
 
 /** design-inventory.dc.html §HUD «Weapon Selector»: центральная панель на --accent/--glow
  *  с текущим оружием, стрелки листают список. Управляется снаружи (selectedIndex +
- *  onPrev/onNext) — компонент не решает, кольцевой ли обход списка. */
+ *  onPrev/onNext) — компонент не решает, кольцевой ли обход списка.
+ *
+ *  Контракт: вызывающий код обязан держать `selectedIndex` в границах `weapons`.
+ *  При выходе за границы (или пустом `weapons`) центральная панель рендерится
+ *  пустой — это безопасный, но «тихий» фолбэк без диагностики, а не штатный режим. */
 export function WeaponSelector({
     weapons,
     selectedIndex,

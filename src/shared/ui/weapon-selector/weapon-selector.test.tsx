@@ -1,13 +1,7 @@
 import { render } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { WeaponSelector, type TWeaponSelectorWeapon } from './weapon-selector';
-
-const WEAPONS: TWeaponSelectorWeapon[] = [
-    { name: 'Фугас', icon: 'wpn-фугас', ammo: 12 },
-    { name: 'Мощный заряд', icon: 'wpn-мощный', ammo: 4 },
-    { name: 'Кластер', icon: 'wpn-кластер', ammo: 6 },
-    { name: 'Роющий', icon: 'wpn-роющий', ammo: 3 },
-];
+import { WeaponSelector } from './weapon-selector';
+import { DEMO_WEAPONS as WEAPONS } from './weapon-selector.fixtures';
 
 describe('WeaponSelector', () => {
     it('renders the selected weapon name and ammo count', () => {

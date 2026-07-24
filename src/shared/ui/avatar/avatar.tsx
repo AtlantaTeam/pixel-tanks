@@ -1,11 +1,13 @@
 import { clsx } from 'clsx';
 import type { ReactNode } from 'react';
+import type { TFaction } from '@/shared/lib/theme';
+import { badgeShellClasses } from '../badge-shell';
 
-export type TAvatarFaction = 'player' | 'enemy';
+export type TAvatarFaction = TFaction;
 
 type TAvatarProps = {
     faction: TAvatarFaction;
-    icon?: string | ReactNode;
+    icon?: ReactNode;
     children?: ReactNode;
     className?: string;
 };
@@ -17,17 +19,10 @@ export function Avatar({ faction, icon, children, className }: TAvatarProps) {
         <div
             data-faction={faction}
             className={clsx(
-                'pixel-border',
+                badgeShellClasses(faction),
                 'size-14',
                 'border-[3px]',
-                'bg-surface',
-                'border-[color:var(--accent)]',
-                '[--pixel-border-glow:var(--glow)]',
-                'flex',
-                'items-center',
-                'justify-center',
                 'text-[26px]',
-                'text-[color:var(--accent)]',
                 className,
             )}
         >

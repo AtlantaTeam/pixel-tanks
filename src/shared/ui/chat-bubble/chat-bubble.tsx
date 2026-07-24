@@ -1,8 +1,9 @@
 import { clsx } from 'clsx';
+import type { TFaction } from '@/shared/lib/theme';
 import type { TIconName } from '../icon';
 import { Icon } from '../icon';
 
-export type TChatBubbleFaction = 'player' | 'enemy';
+export type TChatBubbleFaction = TFaction;
 
 type TChatBubbleProps = {
     faction: TChatBubbleFaction;
@@ -19,7 +20,13 @@ const ICON_BY_FACTION: Record<TChatBubbleFaction, TIconName> = {
 /** design-inventory.dc.html §HUD «Chat-bubble бота»: реплика с шапкой (иконка +
  *  имя) на --accent/--glow и хвостиком-указателем снизу слева. `data-faction`
  *  ставит сама (как Avatar/FactionBadge) — бабл всегда привязан к своей стороне,
- *  а не к теме предка. */
+ *  а не к теме предка.
+ *
+ *  NB: в `entities/bot-messages/ui/chat-bubble` живёт одноимённый, но иной компонент —
+ *  рантайм-оверлей над танком (позиция x/y, `animate-bubble-pop`, категорийные цвета).
+ *  Это канонический ДС-атом статичной реплики; на него `entities`-оверлею предстоит
+ *  перейти отдельной задачей игрового трека. Импорты различаются слоем-путём
+ *  (`@/shared/ui` против `@/entities/bot-messages`). */
 export function ChatBubble({ faction, speaker, message, className }: TChatBubbleProps) {
     return (
         <div

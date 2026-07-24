@@ -1,1 +1,2 @@
-export { Avatar, type TAvatarFaction } from './avatar';
+export { Avatar } from './avatar';
+export type { TAvatarFaction } from './avatar';

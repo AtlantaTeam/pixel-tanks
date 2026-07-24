@@ -2,16 +2,12 @@
 
 import { useState } from 'react';
 import type { TFaction } from '@/shared/lib/theme';
-import type {
-    TButtonSize,
-    TButtonVariant,
-    TSegmentedControlOption,
-    TWeaponSelectorWeapon,
-} from '@/shared/ui';
+import type { TButtonSize, TButtonVariant, TSegmentedControlOption } from '@/shared/ui';
 import {
     Avatar,
     Button,
     ChatBubble,
+    DEMO_WEAPONS,
     Dialog,
     FactionBadge,
     HPBar,
@@ -32,12 +28,7 @@ const PERIOD_OPTIONS: TSegmentedControlOption<'day' | 'all'>[] = [
     { value: 'all', label: 'Всё время' },
 ];
 
-const WEAPONS: TWeaponSelectorWeapon[] = [
-    { name: 'Фугас', icon: 'wpn-фугас', ammo: 12 },
-    { name: 'Мощный заряд', icon: 'wpn-мощный', ammo: 4 },
-    { name: 'Кластер', icon: 'wpn-кластер', ammo: 6 },
-    { name: 'Роющий', icon: 'wpn-роющий', ammo: 3 },
-];
+const WEAPONS = DEMO_WEAPONS;
 
 const DIFFICULTY_OPTIONS: TSegmentedControlOption<'rookie' | 'shooter' | 'terminator'>[] = [
     { value: 'rookie', label: 'Новобранец' },
@@ -293,7 +284,9 @@ export function DesignSystemPreview() {
                     <h3 className="font-ui text-hud text-text uppercase">Avatar / FactionBadge</h3>
                     <p className="max-w-prose text-caption text-text-muted">
                         Бейджи фракции (player/enemy) с гло, или серый unknown без темы. Размеры: md
-                        (56×56) и sm (44×44). Тема следует <code>data-faction</code> предка.
+                        (56×56) и sm (44×44). Каждый бейдж сам задаёт свою тему через{' '}
+                        <code>data-faction</code> (привязан к своей стороне, а не наследует тему
+                        предка).
                     </p>
                     <div className="flex flex-wrap items-start gap-8">
                         <div className="flex flex-col items-center gap-2">
@@ -354,15 +347,22 @@ export function DesignSystemPreview() {
                 <section className="flex flex-col gap-3">
                     <h3 className="font-ui text-hud text-text uppercase">HPBar</h3>
                     <p className="max-w-prose text-caption text-text-muted">
-                        Заливка по порогам HP: success (&gt;60) → warning (&gt;30) → danger. Иконка
-                        «свой танк» / «враг» — фиксированный маркер, не следует теме
-                        <code> data-faction</code>.
+                        Заливка по порогам HP: success (&gt;60%) → warning (&gt;30%) → danger.
+                        Пороги и ширина считаются от <code>max</code> (дефолт 100), а не от сырого
+                        значения. Иконка «свой танк» / «враг» — фиксированный маркер, не следует
+                        теме <code>data-faction</code>.
                     </p>
                     <div className="flex max-w-md flex-col gap-4">
                         <HPBar label="Игрок — полный" value={100} faction="player" />
                         <HPBar label="Игрок — норма" value={72} faction="player" />
                         <HPBar label="Враг — риск" value={38} faction="enemy" />
                         <HPBar label="Враг — критично" value={12} faction="enemy" />
+                        <HPBar
+                            label="Босс — max 150 (75/150 = 50%)"
+                            value={75}
+                            faction="enemy"
+                            max={150}
+                        />
                     </div>
                 </section>
 
@@ -377,7 +377,7 @@ export function DesignSystemPreview() {
                             <span className="font-ui text-caption text-text-muted">
                                 Снаряды (3 из 5, цвет accent)
                             </span>
-                            <PipRow pips={[true, true, true, false, false]} />
+                            <PipRow pips={[true, true, true, false, false]} label="снарядов" />
                         </div>
                         <div className="flex flex-col gap-1">
                             <span className="font-ui text-caption text-text-muted">
@@ -386,13 +386,17 @@ export function DesignSystemPreview() {
                             <PipRow
                                 pips={[true, true, false, false]}
                                 color="var(--color-warning)"
+                                label="ходов"
                             />
                         </div>
                         <div className="flex flex-col gap-1">
                             <span className="font-ui text-caption text-text-muted">
                                 Реплей (8 из 12 просмотрено)
                             </span>
-                            <PipRow pips={Array.from({ length: 12 }, (_, i) => i < 8)} />
+                            <PipRow
+                                pips={Array.from({ length: 12 }, (_, i) => i < 8)}
+                                label="кадров"
+                            />
                         </div>
                     </div>
                 </section>
