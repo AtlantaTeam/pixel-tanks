@@ -6,18 +6,22 @@
 
 ### Rewrite Pixel Tanks на современный стек
 
-| Шаг                  | Описание                                                                                                              | Прогресс |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------- | -------- |
-| 1. Каркас            | Next 16 + React 19 + TS + Tailwind 4 + FSD + Steiger                                                                  | ✅ done  |
-| 2. Конвенции         | ESLint flat config, Prettier, vitest, субагенты                                                                       | ✅ done  |
-| 3. Базовая страница  | `app/layout.tsx` + `views/main-page` + QueryProvider                                                                  | ✅ done  |
-| 4. Перенос игры      | Canvas-логика из старого `src/components/Pages/Game/` в `features/game-engine`                                        | ✅ done  |
-| 5. Payload CMS       | Inline-интеграция Payload 3, SQLite-адаптер, коллекции users + scores                                                 | ✅ done  |
-| 6. Game-next         | Мобилка (тач) + клавиатура, juice, оригинальный звук, бот-реплики, daily challenge + реплеи — `docs/game-next/prd.md` | ⬜ 0%    |
-| 7. Auth + профиль    | Регистрация / логин через Payload local auth, страница профиля                                                        | ⬜ 0%    |
-| 8. Лидерборд         | `views/leaderboard` + TanStack Query + Payload REST                                                                   | ⬜ 0%    |
-| 9. OAuth (Яндекс ID) | Payload OAuth-стратегия, авторизация через Яндекс ID                                                                  | ⬜ 0%    |
-| 10. i18n             | `next-intl`, обернуть все строки в `t('...')`                                                                         | ⬜ 0%    |
+> **Источник правды по статусу — доска [AtlantaTeam/projects/1](https://github.com/orgs/AtlantaTeam/projects/1) + milestones/issues, НЕ эта таблица.** Здесь — только _структура_ плана (роадмап-шаги). Прогресс руками тут не ведём: он протухает (на доске фаза уже закрыта, а в доке висит «0%»). Актуальность фазы всегда смотреть на доске.
+
+| Шаг                  | Описание                                                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 1. Каркас            | Next 16 + React 19 + TS + Tailwind 4 + FSD + Steiger                                                                  |
+| 2. Конвенции         | ESLint flat config, Prettier, vitest, субагенты                                                                       |
+| 3. Базовая страница  | Root layout + `views/main-page` + QueryProvider                                                                       |
+| 4. Перенос игры      | Canvas-логика из старого `src/components/Pages/Game/` в `features/game-engine`                                        |
+| 5. Payload CMS       | Inline-интеграция Payload 3, SQLite-адаптер, коллекции users + scores                                                 |
+| 6. Game-next         | Мобилка (тач) + клавиатура, juice, оригинальный звук, бот-реплики, daily challenge + реплеи — `docs/game-next/prd.md` |
+| 7. Auth + профиль    | Регистрация / логин через Payload local auth, страница профиля                                                        |
+| 8. Лидерборд         | `views/leaderboard` + TanStack Query + Payload REST                                                                   |
+| 9. OAuth (Яндекс ID) | Payload OAuth-стратегия, авторизация через Яндекс ID                                                                  |
+| 10. i18n             | `next-intl`, обернуть все строки в `t('...')`                                                                         |
+
+Плюс отдельный **дизайн-трек** (система токенов + темизация из hero-арта, витрина `/design-system`) — вне нумерации шагов, статус тоже на доске.
 
 **Старый код** — в `../pocket-tanks/` (соседняя папка на Desktop). Это референс при портировании, не трогать на запись.
 
@@ -35,13 +39,13 @@
 
 ## Технологический стек
 
-**Основа:** Next.js 16 + React 19 + TypeScript 5 + Tailwind 4 + своя UI-библиотека `shared/ui` (игровая тема: шрифт Press Start 2P, NES-рамки `pixel-border`, палитра Pico-8 — токены в `globals.css`).
+**Основа:** Next.js 16 + React 19 + TypeScript 5 + Tailwind 4 + своя UI-библиотека `shared/ui` (игровая тема: шрифты **Pixelify Sans** (display) + **JetBrains Mono** (UI/HUD), self-hosted из `public/fonts`; NES-рамки `pixel-border`; кастомная dark-палитра + faction-темы через `[data-faction]` — токены в `globals.css`, витрина `/design-system`).
 
 **Данные:** TanStack Query (server state) + Zustand (client state) + React Hook Form + Zod (валидация).
 
-**Backend (фаза 5+):** Payload CMS 3, inline в Next.js. Адаптер БД — `@payloadcms/db-sqlite` (dev) или `@payloadcms/db-postgres` (prod). Оба адаптера **используют Drizzle под капотом** — для кастомных запросов `payload.db.drizzle`.
+**Backend (шаг 5):** Payload CMS 3, inline в Next.js. Адаптер БД — `@payloadcms/db-sqlite` (dev) или `@payloadcms/db-postgres` (prod). Оба адаптера **используют Drizzle под капотом** — для кастомных запросов `payload.db.drizzle`.
 
-**Auth (фаза 6+):** Payload local auth (email/password) + OAuth через **Яндекс ID** (фаза 8). **Google OAuth не используем** — по закону РФ (поправки к 149-ФЗ, с 01.12.2023) авторизация пользователей на российских сайтах допускается только через телефон, Госуслуги (ЕСИА) или российские сервисы (Яндекс ID, VK ID).
+**Auth (шаг 7):** Payload local auth (email/password) + OAuth через **Яндекс ID** (шаг 9). **Google OAuth не используем** — по закону РФ (поправки к 149-ФЗ, с 01.12.2023) авторизация пользователей на российских сайтах допускается только через телефон, Госуслуги (ЕСИА) или российские сервисы (Яндекс ID, VK ID).
 
 **Тесты:** Vitest + Testing Library + happy-dom (unit/component), Playwright (e2e).
 
@@ -52,18 +56,18 @@
 ```
 src/
 ├── app/                 — Next.js App Router: маршрутизация, layout'ы, провайдеры
-│   ├── layout.tsx       — Root layout, QueryProvider, Montserrat
-│   ├── page.tsx         — Главная (тонкая обёртка → views/main-page)
+│   ├── (frontend)/      — Route-группа игры: layout (шрифты + QueryProvider), page.tsx, /design-system и др.
+│   ├── (payload)/       — Route-группа Payload (админка/API)
 │   └── globals.css      — Tailwind 4, игровая тема (@theme токены, pixel-border)
 │
 ├── views/               — FSD-слой pages (переименован — конфликт с Next.js Pages Router)
-│   └── main-page/
+│   └── main-page, game-page, design-system, replay-page/
 │
-├── widgets/             — Составные UI-блоки (header, score-board)
+├── widgets/             — Составные UI-блоки (game-controls, game-over-dialog)
 │
-├── features/            — Бизнес-фичи (game-engine, leaderboard-submit, auth-form)
+├── features/            — Бизнес-фичи (game-engine, daily-challenge, replays)
 │
-├── entities/            — Сущности (game, player, score)
+├── entities/            — Сущности (bot-messages, replays)
 │
 └── shared/              — Общее, не зависит от бизнеса
     ├── api/             — TanStack Query клиент, QueryProvider
@@ -225,6 +229,7 @@ npm run test:coverage
 - **Кодификация / интеграция / энфорсмент — агент** (я + ralph). Спека → код (`@theme`, компоненты), ассеты → интеграция. Консистентность держит **детерминированный барьер** (линт токенов + визуальная регрессия), не уговоры. Ревью вида — **вместе через Playwright-скриншоты** (открывать PNG в VS Code).
 - **Почему так:** ИИ не судит воспринимаемую красоту (нет объективного оракула) → человеческий гейт вкуса. Визрегрессия **вмораживает** его вердикт в baseline: человек судит раз — машина энфорсит вечно.
 - **Оформление задач:** дизайн-фаза = **`[ЧЕЛОВЕК]`-issue** (Claude Design, **без `complexity:*`** — не для ралф-роутинга), блокирует агентские фазы-issues (кодификация/интеграция). Образец: #269 → #270–273. Экраны: milestone «Экраны игры · дизайн», #280–286.
+- **Витрина `/design-system` = наш Storybook:** каждый компонент из `shared/ui` обязан быть на витрине со всеми вариантами/состояниями, в том же PR. Что не показано — то визрегрессия не сторожит. Правило: `.claude/rules/design-system-showcase.md`.
 
 Основа игры и план — GDD `docs/game-design/gdd.md`; дизайн-система — `docs/design-system-theming/`.
 
@@ -240,13 +245,14 @@ npm run test:coverage
 
 В `.claude/agents/`:
 
-| Агент                    | Когда использовать                                             | subagent_type          |
-| ------------------------ | -------------------------------------------------------------- | ---------------------- |
-| **architect-reviewer**   | Архитектурные решения: FSD, паттерны, слои, зависимости        | `architect-reviewer`   |
-| **test-automator**       | Генерация тестов, покрытие, стратегия тестирования             | `test-automator`       |
-| **performance-engineer** | Оптимизация: бандл, рендер, Canvas FPS, SSR/ISR                | `performance-engineer` |
-| **frontend-developer**   | React 19 + Next 16 + Tailwind 4 + FSD — реализация UI и Canvas | `frontend-developer`   |
-| **docs-reviewer**        | Дрейф документации: CLAUDE.md vs package.json/код vs git log   | `docs-reviewer`        |
+| Агент                    | Когда использовать                                                          | subagent_type          |
+| ------------------------ | --------------------------------------------------------------------------- | ---------------------- |
+| **architect-reviewer**   | Архитектурные решения: FSD, паттерны, слои, зависимости                     | `architect-reviewer`   |
+| **test-automator**       | Генерация тестов, покрытие, стратегия тестирования                          | `test-automator`       |
+| **performance-engineer** | Оптимизация: бандл, рендер, Canvas FPS, SSR/ISR                             | `performance-engineer` |
+| **frontend-developer**   | React 19 + Next 16 + Tailwind 4 + FSD — реализация UI и Canvas              | `frontend-developer`   |
+| **docs-reviewer**        | Дрейф документации: CLAUDE.md vs package.json/код vs git log                | `docs-reviewer`        |
+| **security-reviewer**    | Уязвимости перед PR: инъекции, авторизация, утечки секретов (только читает) | `security-reviewer`    |
 
 Все агенты используют модель `opus`.
 
@@ -268,12 +274,10 @@ npm run test:coverage
 
 При портировании — изучать `../pocket-tanks/src/components/Pages/Game/` и переносить логику в `src/features/game-engine/` или `src/entities/game/`. Папка только для чтения, пользователь чистит её сам.
 
-## Этапы реализации
+## План и статус
 
-- **Этап 1:** Каркас ✅, базовая страница ✅
-- **Этап 2:** Перенос Canvas-игры (физика, рендер, управление) — без сервера
-- **Этап 3:** Payload CMS + SQLite + коллекции users/scores
-- **Этап 4:** Auth (регистрация/логин)
-- **Этап 5:** Лидерборд с отправкой результатов
-- **Этап 6:** OAuth Яндекс ID, темы, polish
-- **Этап 7:** i18n через `next-intl` (RU + EN), обернуть все строки в `t('...')`. Добавляем перед мерджем фазы 3 — раньше нет смысла, текстов мало
+Роадмап — таблица «Текущая задача» (шаги 1–10, канон) в начале файла. \*\*Актуальный статус
+и история разработки — доска [AtlantaTeam/projects/1](https://github.com/orgs/AtlantaTeam/projects/1)
+
+- milestones/issues\*\*, а не проза в доке. Прогресс/этапы руками здесь не дублируем: доска —
+  источник правды, всё восстановимо из неё, а дубль в CLAUDE.md неизбежно протухает.
