@@ -26,7 +26,7 @@ export default function FrontendLayout({
                 самостоятельном хостинге шрифтов: без него браузер узнаёт о шрифтах только
                 после загрузки и парса CSS, старт загрузки позже и дольше FOUT при
                 font-display: swap. DotGothic16 — заголовки/лого/крупные счётчики,
-                JetBrains Mono — кнопки/метки/тело/HUD-числа (docs/design-system-theming/tokens.md);
+                JetBrains Mono — кнопки/метки/тело/HUD-числа (docs/design-system-theming/token-spec.md);
                 оба сабсета (latin + cyrillic)
                 нужны над сгибом на русской странице. */}
             <head>

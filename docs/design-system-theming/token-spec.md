@@ -71,7 +71,7 @@
 
 Две гарнитуры (обе с **полным кириллическим сабсетом**; в коде **self-hosted** из `public/fonts/`, не Google Fonts — офлайн-билд гейта #206, см. `tokens.md`):
 
-- **`--font-display` → «Pixelify Sans»** — жирный пиксель-гротеск. Перекликается с блочным лого «PIXEL/TANKS», рисует заголовки, названия экранов, крупные счётчики. Кириллица ✅, веса 400–700.
+- **`--font-display` → «DotGothic16»** — пиксельная битмап-гарнитура. Перекликается с блочным лого «PIXEL/TANKS», рисует заголовки, названия экранов, крупные счётчики. Кириллица ✅ (ровнее забракованного Pixelify Sans), единый вес.
 - **`--font-ui` → «JetBrains Mono»** — моноширинный, читаемый в мелком кегле, **табличные цифры** для HUD (angle/power/wind/score не «прыгают»). Кириллица ✅. Роли: кнопки, метки, тело, HUD-числа.
 
 Почему не «Press Start 2P» / «Silkscreen» — у них нет кириллицы; игра русскоязычная — это дисквалифицирует.
@@ -154,7 +154,7 @@ Tailwind 4: **палитра и шрифты живут в `@theme`** (гене�
     --color-warning-ink: #2a1600;
     --color-success: #48ff00;
     /* type */
-    --font-display: 'Pixelify Sans', system-ui, sans-serif;
+    --font-display: 'DotGothic16', system-ui, sans-serif;
     --font-ui: 'JetBrains Mono', ui-monospace, monospace;
     /* radius */
     --radius-none: 0px;
