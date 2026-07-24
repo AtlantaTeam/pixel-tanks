@@ -3,7 +3,16 @@
 import { useState } from 'react';
 import type { TFaction } from '@/shared/lib/theme';
 import type { TButtonSize, TButtonVariant } from '@/shared/ui';
-import { Button, Dialog, ICON_NAMES, Icon, Panel, Select, ShareButton } from '@/shared/ui';
+import {
+    Button,
+    Dialog,
+    ICON_NAMES,
+    Icon,
+    Panel,
+    Select,
+    ShareButton,
+    TextInput,
+} from '@/shared/ui';
 
 // Тексты подсказок зеркалят STATUS_HINT из share-button.tsx (внутреннее состояние
 // компонента недоступно снаружи) — статичные репро состояний для витрины/визрегрессии.
@@ -105,6 +114,51 @@ export function DesignSystemPreview() {
                                 <option value="hard">Тяжёлая</option>
                             </Select>
                         </Panel>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-4">
+                    <h3 className="font-ui text-hud text-text uppercase">TextInput</h3>
+                    <div className="grid gap-6 md:grid-cols-2">
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                обычное + плейсхолдер
+                            </span>
+                            <TextInput
+                                id="ds-textinput-email"
+                                label="Email"
+                                placeholder="commander@tanks.io"
+                            />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                пароль + eye-toggle
+                            </span>
+                            <TextInput
+                                id="ds-textinput-password"
+                                label="Пароль"
+                                type="password"
+                                defaultValue="tankLord42"
+                            />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">ошибка</span>
+                            <TextInput
+                                id="ds-textinput-error"
+                                label="Email"
+                                defaultValue="commander@"
+                                error="Неверный формат email"
+                            />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">disabled</span>
+                            <TextInput
+                                id="ds-textinput-disabled"
+                                label="Промокод (недоступно)"
+                                defaultValue="—"
+                                disabled
+                            />
+                        </div>
                     </div>
                 </section>
 
