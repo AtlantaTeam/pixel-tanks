@@ -2,8 +2,30 @@
 
 import { useState } from 'react';
 import type { TFaction } from '@/shared/lib/theme';
-import type { TButtonSize, TButtonVariant } from '@/shared/ui';
-import { Button, Dialog, ICON_NAMES, Icon, Panel, Select, ShareButton } from '@/shared/ui';
+import type { TButtonSize, TButtonVariant, TSegmentedControlOption } from '@/shared/ui';
+import {
+    Button,
+    Dialog,
+    ICON_NAMES,
+    Icon,
+    Panel,
+    SegmentedControl,
+    Select,
+    ShareButton,
+    TextInput,
+    Toggle,
+} from '@/shared/ui';
+
+const PERIOD_OPTIONS: TSegmentedControlOption<'day' | 'all'>[] = [
+    { value: 'day', label: 'День' },
+    { value: 'all', label: 'Всё время' },
+];
+
+const DIFFICULTY_OPTIONS: TSegmentedControlOption<'rookie' | 'shooter' | 'terminator'>[] = [
+    { value: 'rookie', label: 'Новобранец' },
+    { value: 'shooter', label: 'Стрелок' },
+    { value: 'terminator', label: 'Терминатор' },
+];
 
 // Тексты подсказок зеркалят STATUS_HINT из share-button.tsx (внутреннее состояние
 // компонента недоступно снаружи) — статичные репро состояний для витрины/визрегрессии.
@@ -23,6 +45,11 @@ function buttonLabel(variant: TButtonVariant, size: TButtonSize) {
 export function DesignSystemPreview() {
     const [faction, setFaction] = useState<TFaction>('player');
     const [dialogOpen, setDialogOpen] = useState(false);
+    const [period, setPeriod] = useState<'day' | 'all'>('day');
+    const [difficulty, setDifficulty] = useState<'rookie' | 'shooter' | 'terminator'>('shooter');
+    const [vibrationOn, setVibrationOn] = useState(false);
+    const [musicOn, setMusicOn] = useState(true);
+    const [calmMode, setCalmMode] = useState(false);
 
     return (
         <div className="flex flex-col gap-6">
@@ -105,6 +132,110 @@ export function DesignSystemPreview() {
                                 <option value="hard">Тяжёлая</option>
                             </Select>
                         </Panel>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-4">
+                    <h3 className="font-ui text-hud text-text uppercase">TextInput</h3>
+                    <div className="grid gap-6 md:grid-cols-2">
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                обычное + плейсхолдер
+                            </span>
+                            <TextInput
+                                id="ds-textinput-email"
+                                label="Email"
+                                placeholder="commander@tanks.io"
+                            />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                пароль + eye-toggle
+                            </span>
+                            <TextInput
+                                id="ds-textinput-password"
+                                label="Пароль"
+                                type="password"
+                                defaultValue="tankLord42"
+                            />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">ошибка</span>
+                            <TextInput
+                                id="ds-textinput-error"
+                                label="Email"
+                                defaultValue="commander@"
+                                error="Неверный формат email"
+                            />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">disabled</span>
+                            <TextInput
+                                id="ds-textinput-disabled"
+                                label="Промокод (недоступно)"
+                                defaultValue="—"
+                                disabled
+                            />
+                        </div>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-4">
+                    <h3 className="font-ui text-hud text-text uppercase">SegmentedControl</h3>
+                    <div className="grid gap-6 md:grid-cols-2">
+                        <div className="flex flex-col gap-2">
+                            <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                                Период
+                            </span>
+                            <SegmentedControl
+                                label="Период"
+                                options={PERIOD_OPTIONS}
+                                value={period}
+                                onChange={setPeriod}
+                            />
+                        </div>
+                        <div className="flex flex-col gap-2">
+                            <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                                Сложность
+                            </span>
+                            <SegmentedControl
+                                label="Сложность"
+                                options={DIFFICULTY_OPTIONS}
+                                value={difficulty}
+                                onChange={setDifficulty}
+                            />
+                        </div>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-4">
+                    <h3 className="font-ui text-hud text-text uppercase">Toggle</h3>
+                    {/* «Спокойный HUD» реально прокинут в data-intensity этой обёртки:
+                        включённый calmMode гасит неон-glow активных тумблеров (--glow → no-op),
+                        чтобы витрина показывала настоящее поведение, а не только подпись. */}
+                    <div
+                        className="flex flex-col gap-4"
+                        data-intensity={calmMode ? 'calm' : undefined}
+                    >
+                        <Toggle label="Вибрация" checked={vibrationOn} onChange={setVibrationOn} />
+                        <Toggle
+                            label="Музыка"
+                            sublabel="фоновая тема"
+                            checked={musicOn}
+                            onChange={setMusicOn}
+                        />
+                        <Toggle
+                            label="Спокойный HUD"
+                            sublabel="гасит неон-glow · data-intensity=calm"
+                            checked={calmMode}
+                            onChange={setCalmMode}
+                        />
+                        <Toggle
+                            label="Отключённый тумблер"
+                            checked={false}
+                            onChange={() => {}}
+                            disabled
+                        />
                     </div>
                 </section>
 
