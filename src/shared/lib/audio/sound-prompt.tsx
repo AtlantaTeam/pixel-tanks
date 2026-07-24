@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { Icon } from '@/shared/ui';
 
 const UNLOCK_EVENTS = ['pointerdown', 'keydown', 'touchstart'] as const;
 
@@ -30,9 +31,10 @@ export function SoundPrompt() {
     return (
         <p
             aria-hidden
-            className="animate-pulse font-ui text-[10px] text-primary/90 sm:text-xs motion-reduce:animate-none"
+            className="animate-pulse font-ui text-[10px] text-primary/90 sm:text-xs motion-reduce:animate-none flex items-center gap-1"
         >
-            ▶ нажми — играет музыка
+            <Icon name="play" size={12} />
+            нажми — играет музыка
         </p>
     );
 }

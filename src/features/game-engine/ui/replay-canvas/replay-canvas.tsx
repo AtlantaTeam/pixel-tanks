@@ -95,7 +95,7 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
             driver.tick(Date.now());
             // Ходы кончились и последний доиграл — останавливаем таймер и явно
             // помечаем конец. Иначе интервал тикал бы до анмаунта, а HUD навсегда
-            // застрял бы на «▶ Реплей», если запись не исчерпала оружие
+            // застрял бы на бейдже «Реплей», если запись не исчерпала оружие
             // (обрезанная или сторонняя ссылка).
             if (driver.isFinished && isEngineSettled()) {
                 window.clearInterval(timerId);

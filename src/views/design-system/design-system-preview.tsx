@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import type { TFaction } from '@/shared/lib/theme';
 import type { TButtonSize, TButtonVariant } from '@/shared/ui';
-import { Button, Dialog, Panel, Select, ShareButton } from '@/shared/ui';
+import { Button, Dialog, ICON_NAMES, Icon, Panel, Select, ShareButton } from '@/shared/ui';
 
 // Тексты подсказок зеркалят STATUS_HINT из share-button.tsx (внутреннее состояние
 // компонента недоступно снаружи) — статичные репро состояний для витрины/визрегрессии.
@@ -14,7 +14,9 @@ const VARIANTS: TButtonVariant[] = ['primary', 'accent', 'ghost', 'danger'];
 const SIZES: TButtonSize[] = ['sm', 'md', 'icon'];
 
 function buttonLabel(variant: TButtonVariant, size: TButtonSize) {
-    if (size === 'icon') return '▶';
+    // Витрина — статичный превью-срез, иконка чисто декоративна (кнопка ничего не делает):
+    // без aria-label, чтобы не озвучивать техническое имя варианта как содержимое.
+    if (size === 'icon') return <Icon name="play" />;
     return variant;
 }
 
@@ -135,6 +137,28 @@ export function DesignSystemPreview() {
                             </Button>
                         </div>
                     </Dialog>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">Icon</h3>
+                    <p className="max-w-prose text-caption text-text-muted">
+                        Сетка 16×16, <code>currentColor</code> — иконка красится любым текстовым
+                        токеном и следует теме/фракции без своего варианта. Полный набор из
+                        design-inventory.dc.html, §07.
+                    </p>
+                    <div className="grid grid-cols-4 gap-2 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10">
+                        {ICON_NAMES.map((name) => (
+                            <div
+                                key={name}
+                                className="flex flex-col items-center gap-2 border-[length:var(--border-w)] border-border bg-panel p-3 text-text"
+                            >
+                                <Icon name={name} className="text-accent" />
+                                <span className="text-center font-ui text-[10px] text-text-muted">
+                                    {name}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
                 </section>
 
                 <section className="flex flex-col gap-3">

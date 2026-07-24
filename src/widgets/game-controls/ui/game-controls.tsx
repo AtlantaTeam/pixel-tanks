@@ -4,7 +4,7 @@ import { useGameStore } from '@/features/game-engine';
 import { BOT_NAME } from '@/shared/config';
 import { useMuteState } from '@/shared/lib/audio';
 import { useAnimatedValue } from '@/shared/lib/animation';
-import { Button, Select } from '@/shared/ui';
+import { Button, Icon, Select } from '@/shared/ui';
 import { useHoldRepeat } from '../lib/use-hold-repeat';
 import { KeyboardSchemeHint } from './keyboard-scheme-hint';
 
@@ -47,7 +47,7 @@ export function GameControls() {
                     aria-label={isMuted ? 'Включить звук' : 'Выключить звук'}
                     title={isMuted ? 'Включить звук' : 'Выключить звук'}
                 >
-                    {isMuted ? '🔇' : '🔊'}
+                    <Icon name={isMuted ? 'mute' : 'sound'} />
                 </Button>
             </div>
 
