@@ -589,8 +589,9 @@ export class GamePlay {
             this.trail.emit(this.bullet.x, this.bullet.y);
         }
         if (this.bullet.isHit(ctx)) {
-            // explosionRadius === 0 только в первый кадр взрыва — эмитим залп один раз,
-            // дальше drawExplosion его инкрементирует и повторного эмита не будет.
+            // explosionRadius === 0 только в первый кадр взрыва — разрешение попадания
+            // (звук, очки, подскок танка, косметика) эмитим один раз, дальше
+            // drawExplosion его инкрементирует и повторного разрешения не будет.
             if (this.bullet.explosionRadius === 0) {
                 if (this.bullet.isTankHit) {
                     this.particles.emitBurst(damageFlashBurst(this.bullet.x, this.bullet.y));
@@ -603,22 +604,23 @@ export class GamePlay {
                     this.camera.addTrauma(MISS_SHAKE_TRAUMA);
                 }
                 this.emitBotReply();
-            }
-            if (this.bullet.isTankHit && this.bullet.hittedTank) {
-                void this.audio.playSfx('hit');
-                this.bullet.hittedTank.jumpOnHit(
-                    this.bullet.power,
-                    this.bullet.gravity,
-                    this.bullet.dx,
-                );
-                this.callbacks.onPointsCalc({
-                    hittedIsLeft: this.bullet.hittedTank === this.leftTank,
-                    leftActive: !!this.leftTank?.isActive,
-                    power: this.bullet.power,
-                });
-                this.damageAmount += this.bullet.power;
-            } else {
-                void this.audio.playSfx('miss');
+
+                if (this.bullet.isTankHit && this.bullet.hittedTank) {
+                    void this.audio.playSfx('hit');
+                    this.bullet.hittedTank.jumpOnHit(
+                        this.bullet.power,
+                        this.bullet.gravity,
+                        this.bullet.dx,
+                    );
+                    this.callbacks.onPointsCalc({
+                        hittedIsLeft: this.bullet.hittedTank === this.leftTank,
+                        leftActive: !!this.leftTank?.isActive,
+                        power: this.bullet.power,
+                    });
+                    this.damageAmount += this.bullet.power;
+                } else {
+                    void this.audio.playSfx('miss');
+                }
             }
             this.bullet.drawExplosion(ctx);
         }
