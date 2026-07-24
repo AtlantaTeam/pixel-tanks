@@ -12,6 +12,7 @@ import {
     ICON_NAMES,
     Icon,
     Panel,
+    PipRow,
     SegmentedControl,
     Select,
     ShareButton,
@@ -347,6 +348,37 @@ export function DesignSystemPreview() {
                         <HPBar label="Игрок — норма" value={72} faction="player" />
                         <HPBar label="Враг — риск" value={38} faction="enemy" />
                         <HPBar label="Враг — критично" value={12} faction="enemy" />
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">PipRow</h3>
+                    <p className="max-w-prose text-caption text-text-muted">
+                        Ряд пипов для отображения снарядов и ходов. Активный пип — заполненный
+                        квадрат 14×14px с цветом и glow, неактивный — полупрозрачный контур.
+                    </p>
+                    <div className="flex flex-col gap-4">
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                Снаряды (3 из 5, цвет accent)
+                            </span>
+                            <PipRow pips={[true, true, true, false, false]} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                Ходы (2 из 4, цвет warning)
+                            </span>
+                            <PipRow
+                                pips={[true, true, false, false]}
+                                color="var(--color-warning)"
+                            />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                Реплей (8 из 12 просмотрено)
+                            </span>
+                            <PipRow pips={Array.from({ length: 12 }, (_, i) => i < 8)} />
+                        </div>
                     </div>
                 </section>
 

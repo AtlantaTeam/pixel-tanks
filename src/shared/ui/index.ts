@@ -16,3 +16,4 @@ export { FactionBadge } from './faction-badge';
 export type { TFactionBadgeFaction, TFactionBadgeSize } from './faction-badge';
 export { HPBar } from './hp-bar';
 export type { THPBarFaction } from './hp-bar';
+export { PipRow } from './pip-row';
