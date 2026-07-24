@@ -87,6 +87,23 @@ describe('дизайн-система: ядро токенов + переклю�
         expect(css).toMatch(/--shadow-drop:\s*0 6px 0/);
     });
 
+    it('содержит все именованные glow-эффекты (accent, primary, enemy, danger)', () => {
+        const css = readGlobalsCss();
+
+        expect(css).toMatch(/--glow-accent:/);
+        expect(css).toMatch(/--glow-primary:/);
+        expect(css).toMatch(/--glow-enemy:/);
+        expect(css).toMatch(/--glow-danger:/);
+    });
+
+    it('[data-outcome="defeat"] переопределяет --glow на гов-danger, обеспечивая синхронизацию токенов', () => {
+        const css = readGlobalsCss();
+        const defeatBlock = css.match(/\[data-outcome=['"]defeat['"]\]\s*{([^}]*)}/)?.[1];
+
+        expect(defeatBlock).toBeDefined();
+        expect(defeatBlock).toMatch(/--glow:\s*var\(--glow-danger\)/);
+    });
+
     it('содержит шрифтовые токены дизайн-системы (DotGothic16 + JetBrains Mono)', () => {
         const css = readGlobalsCss();
 

@@ -76,6 +76,7 @@
     --glow-primary: 0 0 6px rgba(255, 194, 31, 0.55), 0 0 18px rgba(255, 169, 0, 0.3);
     --glow-accent: 0 0 6px rgba(72, 255, 0, 0.55), 0 0 18px rgba(72, 255, 0, 0.35);
     --glow-enemy: 0 0 6px rgba(201, 0, 255, 0.55), 0 0 18px rgba(201, 0, 255, 0.35);
+    --glow-danger: 0 0 6px rgba(255, 66, 66, 0.6), 0 0 18px rgba(255, 66, 66, 0.35);
     --glow-text: 0 0 8px currentColor;
     --edge-pixel: 0 3px 0 #05140a;
     /* Фокус-ринг читает семантический --accent (не --color-accent), чтобы следовать
@@ -111,7 +112,7 @@
 [data-outcome='defeat'] {
     --accent: var(--color-danger);
     --accent-ink: var(--color-danger-ink);
-    --glow: 0 0 6px rgba(255, 66, 66, 0.6), 0 0 18px rgba(255, 66, 66, 0.35);
+    --glow: var(--glow-danger);
 }
 
 /* Режим «спокойный HUD» (token-spec §3) — один атрибут гасит весь неон для долгих
