@@ -65,8 +65,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Баги игры · партия 1",
-                "branch": "feature/game-bugs-batch-1"
+                "milestone": "Дизайн-система и темизация из hero-арта",
+                "branch": "feature/design-system-codify"
             }
         ]
     },
