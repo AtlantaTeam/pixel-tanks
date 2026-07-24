@@ -40,6 +40,29 @@ describe('дизайн-система: ядро токенов + переклю�
         expect(enemyBlock).toMatch(/--glow:\s*var\(--glow-enemy\)/);
     });
 
+    it('[data-outcome] переключает --accent на исход боя (победа/поражение)', () => {
+        const css = readGlobalsCss();
+        const victory = css.match(/\[data-outcome=['"]victory['"]\]\s*{([^}]*)}/)?.[1];
+        const defeat = css.match(/\[data-outcome=['"]defeat['"]\]\s*{([^}]*)}/)?.[1];
+
+        expect(victory).toBeDefined();
+        expect(victory).toMatch(/--accent:\s*var\(--color-success\)/);
+        expect(defeat).toBeDefined();
+        expect(defeat).toMatch(/--accent:\s*var\(--color-danger\)/);
+        expect(defeat).toMatch(/--accent-ink:\s*var\(--color-danger-ink\)/);
+    });
+
+    it('[data-intensity="calm"] глушит все glow до прозрачного no-op', () => {
+        const css = readGlobalsCss();
+        const calm = css.match(/\[data-intensity=['"]calm['"]\]\s*{([^}]*)}/)?.[1];
+
+        expect(calm).toBeDefined();
+        // none в списке box-shadow невалидно — гасим прозрачной тенью, не none.
+        expect(calm).not.toMatch(/--glow[a-z-]*:\s*none/);
+        expect(calm).toMatch(/--glow:\s*0 0 0 transparent/);
+        expect(calm).toMatch(/--glow-text:\s*0 0 0 transparent/);
+    });
+
     it('содержит полную палитру статусов из token-spec (включая danger-ink)', () => {
         const css = readGlobalsCss();
 

@@ -98,6 +98,32 @@
     --glow: var(--glow-enemy);
 }
 
+/* Исход боя (token-spec §3) — накидывается поверх фракции на game-over: победа
+   красит акцент в зелёный (success), поражение — в danger. Переключает те же
+   семантические --accent/--glow, поэтому диалог меняет цвет без правки Dialog. */
+[data-outcome='victory'] {
+    --accent: var(--color-success);
+    --accent-ink: var(--color-accent-ink);
+    --glow: var(--glow-accent);
+}
+[data-outcome='defeat'] {
+    --accent: var(--color-danger);
+    --accent-ink: var(--color-danger-ink);
+    --glow: 0 0 6px rgba(255, 66, 66, 0.6), 0 0 18px rgba(255, 66, 66, 0.35);
+}
+
+/* Режим «спокойный HUD» (token-spec §3) — один атрибут гасит весь неон для долгих
+   сессий, сохраняя цвета. Глушим все glow-переменные, включая --glow-text (HUD-цифры
+   и заголовки читают его через text-shadow). Переопределяем ниже :root — равная
+   специфичность, побеждает порядок в источнике. */
+[data-intensity='calm'] {
+    --glow: 0 0 0 transparent;
+    --glow-accent: 0 0 0 transparent;
+    --glow-primary: 0 0 0 transparent;
+    --glow-enemy: 0 0 0 transparent;
+    --glow-text: 0 0 0 transparent;
+}
+
 /* Самостоятельный хостинг шрифтов вместо next/font/google: сборка гейта билдится
    офлайн, а next/font тянет woff2 с fonts.gstatic.com в build-тайме и падает
    module-not-found без сети. Файлы в public/fonts, сабсеты latin + cyrillic —

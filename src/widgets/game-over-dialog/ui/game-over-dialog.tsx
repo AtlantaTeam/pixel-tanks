@@ -5,6 +5,7 @@ import { isDailySeed, ShareDailyResultButton, submitDailyScore } from '@/feature
 import { useGameStore } from '@/features/game-engine';
 import { ShareReplayButton } from '@/features/replays';
 import { BOT_NAME } from '@/shared/config';
+import { ThemeScope, type TOutcome } from '@/shared/lib/theme';
 import { Button, Dialog } from '@/shared/ui';
 
 type TGameOverDialogProps = {
@@ -65,42 +66,49 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
 
     const winnerText =
         playerPoints > enemyPoints ? 'Победа!' : playerPoints < enemyPoints ? 'Поражение' : 'Ничья';
+    // Исход задаёт тему диалога (token-spec §6): победа красит акцент в зелёный,
+    // поражение — в danger. Заголовок читает --accent, поэтому меняется без правки
+    // Dialog/Panel — переключение темы на предке через ThemeScope. Ничья нейтральна.
+    const outcome: TOutcome | undefined =
+        playerPoints > enemyPoints ? 'victory' : playerPoints < enemyPoints ? 'defeat' : undefined;
     const isDaily = Boolean(seed && isDailySeed(seed));
 
     return (
-        <Dialog open={isGameOver} className="text-center">
-            <h2 className="font-display text-h1 text-primary uppercase [text-shadow:var(--glow-text)]">
-                {winnerText}
-            </h2>
-            <p className="font-ui text-body mt-4 text-text-muted">
-                Счёт: {playerPoints} — {enemyPoints}
-            </p>
-            {isDaily && seed ? (
-                <div className="mt-2">
-                    <p className="font-ui text-label text-text-muted uppercase tracking-[0.12em]">
-                        Бой дня пройден
-                    </p>
-                    <ShareDailyResultButton points={points} seed={seed} />
+        <ThemeScope outcome={outcome} className="contents">
+            <Dialog open={isGameOver} className="text-center">
+                <h2 className="font-display text-h1 text-[var(--accent)] uppercase [text-shadow:var(--glow-text)]">
+                    {winnerText}
+                </h2>
+                <p className="font-ui text-body mt-4 text-text-muted">
+                    Счёт: {playerPoints} — {enemyPoints}
+                </p>
+                {isDaily && seed ? (
+                    <div className="mt-2">
+                        <p className="font-ui text-label text-text-muted uppercase tracking-[0.12em]">
+                            Бой дня пройден
+                        </p>
+                        <ShareDailyResultButton points={points} seed={seed} />
+                    </div>
+                ) : null}
+                {battleSeed !== null && battleField !== null ? (
+                    <ShareReplayButton
+                        seed={battleSeed}
+                        width={battleField.width}
+                        height={battleField.height}
+                        moves={replayMoves}
+                    />
+                ) : null}
+                <div className="mt-6">
+                    <Button
+                        onClick={() => {
+                            resetGame();
+                            window.location.reload();
+                        }}
+                    >
+                        Новая игра
+                    </Button>
                 </div>
-            ) : null}
-            {battleSeed !== null && battleField !== null ? (
-                <ShareReplayButton
-                    seed={battleSeed}
-                    width={battleField.width}
-                    height={battleField.height}
-                    moves={replayMoves}
-                />
-            ) : null}
-            <div className="mt-6">
-                <Button
-                    onClick={() => {
-                        resetGame();
-                        window.location.reload();
-                    }}
-                >
-                    Новая игра
-                </Button>
-            </div>
-        </Dialog>
+            </Dialog>
+        </ThemeScope>
     );
 }
