@@ -118,6 +118,44 @@ describe('SegmentedControl', () => {
         expect(terminator).toHaveFocus();
     });
 
+    it('двигает выбор стрелкой вниз как вправо (вертикальная навигация)', async () => {
+        const user = userEvent.setup();
+        render(<ControlledSegmentedControl options={DIFFICULTY_OPTIONS} initialValue="rookie" />);
+
+        screen.getByRole('radio', { name: 'Новобранец' }).focus();
+        await user.keyboard('{ArrowDown}');
+
+        const shooter = screen.getByRole('radio', { name: 'Стрелок' });
+        expect(shooter).toHaveAttribute('aria-checked', 'true');
+        expect(shooter).toHaveFocus();
+    });
+
+    it('двигает выбор стрелкой вверх как влево (вертикальная навигация)', async () => {
+        const user = userEvent.setup();
+        render(<ControlledSegmentedControl options={DIFFICULTY_OPTIONS} initialValue="shooter" />);
+
+        screen.getByRole('radio', { name: 'Стрелок' }).focus();
+        await user.keyboard('{ArrowUp}');
+
+        const rookie = screen.getByRole('radio', { name: 'Новобранец' });
+        expect(rookie).toHaveAttribute('aria-checked', 'true');
+        expect(rookie).toHaveFocus();
+    });
+
+    it('делает первый сегмент tabbable, когда value не совпал ни с одной опцией', () => {
+        render(
+            <SegmentedControl
+                label="Период"
+                options={PERIOD_OPTIONS}
+                value={'' as 'day' | 'all'}
+                onChange={() => {}}
+            />,
+        );
+
+        expect(screen.getByRole('radio', { name: 'День' })).toHaveAttribute('tabIndex', '0');
+        expect(screen.getByRole('radio', { name: 'Всё время' })).toHaveAttribute('tabIndex', '-1');
+    });
+
     it('держит в табе только активный сегмент (roving tabindex)', () => {
         render(
             <SegmentedControl

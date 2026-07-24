@@ -210,7 +210,13 @@ export function DesignSystemPreview() {
 
                 <section className="flex flex-col gap-4">
                     <h3 className="font-ui text-hud text-text uppercase">Toggle</h3>
-                    <div className="flex flex-col gap-4">
+                    {/* «Спокойный HUD» реально прокинут в data-intensity этой обёртки:
+                        включённый calmMode гасит неон-glow активных тумблеров (--glow → no-op),
+                        чтобы витрина показывала настоящее поведение, а не только подпись. */}
+                    <div
+                        className="flex flex-col gap-4"
+                        data-intensity={calmMode ? 'calm' : undefined}
+                    >
                         <Toggle label="Вибрация" checked={vibrationOn} onChange={setVibrationOn} />
                         <Toggle
                             label="Музыка"

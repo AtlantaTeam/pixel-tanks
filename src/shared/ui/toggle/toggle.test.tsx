@@ -104,13 +104,16 @@ describe('Toggle', () => {
         expect(onChange).not.toHaveBeenCalled();
     });
 
-    it('имеет корректный размер переключателя (52×28px)', () => {
+    it('имеет корректный размер переключателя (52×28px, обе оси)', () => {
         const { container } = render(
             <Toggle label="Вибрация" checked={true} onChange={() => {}} />,
         );
 
-        const switchElement = container.querySelector('[class*="w-13"]');
-        expect(switchElement).toBeInTheDocument();
+        const track = container.querySelector('[aria-hidden="true"]');
+        expect(track).toBeInTheDocument();
+        // Обе оси дорожки: ширина 52px (w-13) и высота 28px (h-7).
+        expect(track?.className).toMatch(/\bw-13\b/);
+        expect(track?.className).toMatch(/\bh-7\b/);
     });
 
     it('переключает по клавише Space', async () => {

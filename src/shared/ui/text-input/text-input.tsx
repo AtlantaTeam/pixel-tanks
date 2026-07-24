@@ -48,18 +48,18 @@ export function TextInput({
                     id={inputId}
                     type={resolvedType}
                     disabled={disabled}
+                    {...props}
                     aria-invalid={error ? true : undefined}
                     aria-describedby={error ? errorId : undefined}
                     className={clsx(
                         'w-full border-[length:var(--border-w)] bg-surface px-3.5 py-3 font-ui text-body text-text outline-none placeholder:text-text-dim',
-                        'disabled:cursor-not-allowed disabled:bg-muted disabled:text-text-dim',
+                        'disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-text-dim',
                         error
                             ? 'border-danger shadow-[var(--glow-danger)]'
                             : 'border-border-strong focus-visible:border-[var(--accent)] focus-visible:shadow-[var(--glow)]',
                         isPassword && 'pr-11',
                         className,
                     )}
-                    {...props}
                 />
                 {isPassword && (
                     <button

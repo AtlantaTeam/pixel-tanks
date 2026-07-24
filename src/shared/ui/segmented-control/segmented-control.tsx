@@ -30,6 +30,10 @@ export function SegmentedControl<TValue extends string>({
     className,
 }: TSegmentedControlProps<TValue>) {
     const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+    // Если value не совпал ни с одной опцией (пустое начальное значение при непустом
+    // списке), по ARIA-паттерну radio tabbable должен остаться первый сегмент — иначе
+    // roving tabindex выкинет всю группу из Tab-обхода.
+    const hasActiveOption = options.some((option) => option.value === value);
 
     const selectByIndex = (index: number) => {
         const option = options[index];
@@ -68,11 +72,11 @@ export function SegmentedControl<TValue extends string>({
                         type="button"
                         role="radio"
                         aria-checked={active}
-                        tabIndex={active ? 0 : -1}
+                        tabIndex={active || (!hasActiveOption && index === 0) ? 0 : -1}
                         onClick={() => onChange(option.value)}
                         onKeyDown={(event) => handleKeyDown(event, index)}
                         className={clsx(
-                            'min-h-10 cursor-pointer px-4 py-2 font-ui text-caption font-bold tracking-[0.06em] uppercase transition-colors',
+                            'min-h-11 cursor-pointer px-4 py-2 font-ui text-caption font-bold tracking-[0.06em] uppercase transition-colors',
                             'outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]',
                             active
                                 ? 'bg-[var(--accent)] text-[var(--accent-ink)] shadow-[var(--glow)]'
