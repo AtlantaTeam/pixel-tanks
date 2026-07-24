@@ -14,7 +14,7 @@ const VARIANTS: TButtonVariant[] = ['primary', 'accent', 'ghost', 'danger'];
 const SIZES: TButtonSize[] = ['sm', 'md', 'icon'];
 
 function buttonLabel(variant: TButtonVariant, size: TButtonSize) {
-    if (size === 'icon') return '▶';
+    if (size === 'icon') return <Icon name="play" aria-label={`${variant} icon`} />;
     return variant;
 }
 

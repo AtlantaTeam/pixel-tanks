@@ -25,6 +25,15 @@ describe('DesignSystemPage', () => {
         expect(scope).toHaveAttribute('data-faction', 'player');
     });
 
+    it('нет ни одного эмодзи-глифа на витрине — только <Icon>', () => {
+        const { container } = render(<DesignSystemPage />);
+
+        expect(container.textContent).not.toMatch(
+            /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{25A0}-\u{25FF}]/u,
+        );
+        expect(container.querySelectorAll('svg').length).toBeGreaterThan(0);
+    });
+
     it('Dialog открывается и закрывается по кнопке', () => {
         const { getByRole, queryByRole } = render(<DesignSystemPage />);
 

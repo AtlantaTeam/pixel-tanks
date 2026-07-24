@@ -2,6 +2,14 @@ import { render } from '@testing-library/react';
 import { GameControls } from './game-controls';
 
 describe('GameControls', () => {
+    it('renders the mute toggle as an <Icon>, not an emoji glyph', () => {
+        const { getByRole, container } = render(<GameControls />);
+
+        const muteButton = getByRole('button', { name: 'Выключить звук' });
+        expect(muteButton.querySelector('svg')).toBeInTheDocument();
+        expect(container.textContent).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
+    });
+
     it('renders every counter button as a 44px touch target', () => {
         const { getAllByRole } = render(<GameControls />);
 

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useGameStore } from '@/features/game-engine';
 import { BOT_NAME } from '@/shared/config';
 import { useAnimatedValue } from '@/shared/lib/animation';
-import { buttonClasses } from '@/shared/ui';
+import { buttonClasses, Icon } from '@/shared/ui';
 
 /**
  * HUD просмотра реплея: счёт из того же store, что и в живом бою, бейдж
@@ -21,8 +21,15 @@ export function ReplayHud() {
 
     return (
         <div className="flex flex-wrap items-center justify-between gap-2 p-2 sm:gap-4 sm:p-4">
-            <div className="font-ui text-xs text-accent" aria-live="polite">
-                {isGameOver ? 'Бой завершён' : '▶ Реплей'}
+            <div className="flex items-center gap-1 font-ui text-xs text-accent" aria-live="polite">
+                {isGameOver ? (
+                    'Бой завершён'
+                ) : (
+                    <>
+                        <Icon name="play" size={12} />
+                        Реплей
+                    </>
+                )}
             </div>
 
             <div className="flex items-center gap-3 sm:gap-6">
