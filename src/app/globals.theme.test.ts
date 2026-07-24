@@ -87,21 +87,21 @@ describe('дизайн-система: ядро токенов + переклю�
         expect(css).toMatch(/--shadow-drop:\s*0 6px 0/);
     });
 
-    it('содержит шрифтовые токены дизайн-системы (Pixelify Sans + JetBrains Mono)', () => {
+    it('содержит шрифтовые токены дизайн-системы (DotGothic16 + JetBrains Mono)', () => {
         const css = readGlobalsCss();
 
-        expect(css).toMatch(/--font-display:\s*'Pixelify Sans'/);
+        expect(css).toMatch(/--font-display:\s*'DotGothic16'/);
         expect(css).toMatch(/--font-ui:\s*'JetBrains Mono'/);
     });
 
-    it('подключает Pixelify Sans и JetBrains Mono self-hosted (latin + cyrillic)', () => {
+    it('подключает DotGothic16 и JetBrains Mono self-hosted (latin + cyrillic)', () => {
         const css = readGlobalsCss();
 
         expect(css).toMatch(
-            /font-family:\s*'Pixelify Sans'[\s\S]*?url\('\/fonts\/pixelify-sans-latin\.woff2'\)/,
+            /font-family:\s*'DotGothic16'[\s\S]*?url\('\/fonts\/dotgothic16-latin\.woff2'\)/,
         );
         expect(css).toMatch(
-            /font-family:\s*'Pixelify Sans'[\s\S]*?url\('\/fonts\/pixelify-sans-cyrillic\.woff2'\)/,
+            /font-family:\s*'DotGothic16'[\s\S]*?url\('\/fonts\/dotgothic16-cyrillic\.woff2'\)/,
         );
         expect(css).toMatch(
             /font-family:\s*'JetBrains Mono'[\s\S]*?url\('\/fonts\/jetbrains-mono-latin\.woff2'\)/,
