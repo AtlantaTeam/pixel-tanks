@@ -1,12 +1,12 @@
+import type { HTMLAttributes } from 'react';
 import { clsx } from 'clsx';
 import { Icon } from '../icon';
 
-type TErrorBannerProps = {
+type TErrorBannerProps = HTMLAttributes<HTMLDivElement> & {
     title: string;
     description: string;
     onRetry?: () => void;
     retryLabel?: string;
-    className?: string;
 };
 
 /** design-inventory.dc.html §09 «Ошибка данных»: ⚠-иконка + заголовок/подпись,
@@ -19,6 +19,7 @@ export function ErrorBanner({
     onRetry,
     retryLabel = 'Повторить',
     className,
+    ...props
 }: TErrorBannerProps) {
     return (
         <div
@@ -27,6 +28,7 @@ export function ErrorBanner({
                 'flex flex-col items-start gap-3 border-[length:var(--border-w)] border-danger bg-danger/[0.08] p-4',
                 className,
             )}
+            {...props}
         >
             <div className="flex items-center gap-2 font-ui text-body font-bold text-danger">
                 <Icon name="warning" size={16} />
@@ -37,7 +39,7 @@ export function ErrorBanner({
                 <button
                     type="button"
                     onClick={onRetry}
-                    className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 border-[length:var(--border-w)] border-danger px-4 font-ui text-caption font-bold tracking-[0.06em] text-danger uppercase"
+                    className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 border-[length:var(--border-w)] border-danger px-4 font-ui text-caption font-bold tracking-[0.06em] text-danger uppercase transition-transform focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-danger)] active:translate-y-0.5"
                 >
                     <Icon name="replay" size={14} />
                     {retryLabel}

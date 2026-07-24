@@ -8,6 +8,10 @@ type TEmptyStateProps = HTMLAttributes<HTMLDivElement> & {
     title: string;
     description: string;
     action?: ReactNode;
+    /** Тег заголовка. По умолчанию `p` (1:1 с инвентарём), но title пустого
+     *  состояния — хороший кандидат в heading: вызывающий код задаёт уровень
+     *  (`h2`/`h3`…) под своё место вставки, чтобы скринридер видел его в навигации. */
+    titleAs?: 'p' | 'h2' | 'h3' | 'h4';
 };
 
 /** design-inventory.dc.html §09 «Пустое состояние»: иконка + заголовок + подпись,
@@ -18,6 +22,7 @@ export function EmptyState({
     title,
     description,
     action,
+    titleAs: TitleTag = 'p',
     className,
     ...props
 }: TEmptyStateProps) {
@@ -27,7 +32,7 @@ export function EmptyState({
             {...props}
         >
             <Icon name={icon} size={34} className="text-text-dim" />
-            <p className="font-ui text-body font-bold text-text">{title}</p>
+            <TitleTag className="font-ui text-body font-bold text-text">{title}</TitleTag>
             <p className="max-w-prose font-ui text-caption text-text-muted">{description}</p>
             {action && <div className="mt-1">{action}</div>}
         </div>

@@ -617,6 +617,20 @@ export function DesignSystemPreview() {
                             </span>
                             <Spinner label="Синхронизация профиля" className="text-text-muted" />
                         </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                в кнопке (loading)
+                            </span>
+                            <Button
+                                variant="accent"
+                                size="md"
+                                aria-busy="true"
+                                className="cursor-progress gap-2"
+                            >
+                                <Spinner size={16} className="text-[var(--accent-ink)]" />
+                                Загрузка
+                            </Button>
+                        </div>
                     </div>
                 </section>
             </div>
