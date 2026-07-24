@@ -39,4 +39,72 @@ describe('дизайн-система: ядро токенов + переклю�
         expect(enemyBlock).toMatch(/--accent-ink:\s*var\(--color-enemy-ink\)/);
         expect(enemyBlock).toMatch(/--glow:\s*var\(--glow-enemy\)/);
     });
+
+    it('содержит полную палитру статусов из token-spec (включая danger-ink)', () => {
+        const css = readGlobalsCss();
+
+        expect(css).toMatch(/--color-danger:\s*#ff4242/);
+        expect(css).toMatch(/--color-danger-ink:\s*#2b0000/);
+        expect(css).toMatch(/--color-warning:\s*#ffa900/);
+        expect(css).toMatch(/--color-warning-ink:\s*#2a1600/);
+        expect(css).toMatch(/--color-success:\s*#48ff00/);
+    });
+
+    it('содержит радиусы дизайн-системы', () => {
+        const css = readGlobalsCss();
+
+        expect(css).toMatch(/--radius-none:\s*0px/);
+        expect(css).toMatch(/--radius-sm:\s*2px/);
+    });
+
+    it('содержит тени панелей/диалогов', () => {
+        const css = readGlobalsCss();
+
+        expect(css).toMatch(/--shadow-panel:\s*0 4px 0/);
+        expect(css).toMatch(/--shadow-drop:\s*0 6px 0/);
+    });
+
+    it('содержит шрифтовые токены дизайн-системы (Pixelify Sans + JetBrains Mono)', () => {
+        const css = readGlobalsCss();
+
+        expect(css).toMatch(/--font-display:\s*'Pixelify Sans'/);
+        expect(css).toMatch(/--font-ui:\s*'JetBrains Mono'/);
+    });
+
+    it('подключает Pixelify Sans и JetBrains Mono self-hosted (latin + cyrillic)', () => {
+        const css = readGlobalsCss();
+
+        expect(css).toMatch(
+            /font-family:\s*'Pixelify Sans'[\s\S]*?url\('\/fonts\/pixelify-sans-latin\.woff2'\)/,
+        );
+        expect(css).toMatch(
+            /font-family:\s*'Pixelify Sans'[\s\S]*?url\('\/fonts\/pixelify-sans-cyrillic\.woff2'\)/,
+        );
+        expect(css).toMatch(
+            /font-family:\s*'JetBrains Mono'[\s\S]*?url\('\/fonts\/jetbrains-mono-latin\.woff2'\)/,
+        );
+        expect(css).toMatch(
+            /font-family:\s*'JetBrains Mono'[\s\S]*?url\('\/fonts\/jetbrains-mono-cyrillic\.woff2'\)/,
+        );
+    });
+
+    it('содержит полный набор ролей типографической шкалы из token-spec', () => {
+        const css = readGlobalsCss();
+        const roles = [
+            'display',
+            'h1',
+            'h2',
+            'hud-xl',
+            'hud',
+            'button',
+            'body',
+            'caption',
+            'label',
+        ];
+
+        for (const role of roles) {
+            expect(css).toMatch(new RegExp(`--text-${role}:\\s*`));
+            expect(css).toMatch(new RegExp(`--text-${role}--line-height:\\s*`));
+        }
+    });
 });

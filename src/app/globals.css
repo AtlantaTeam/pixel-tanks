@@ -11,8 +11,8 @@
        Panel/Select/Dialog/экраны разом, чтобы не разъезжаться семантикой
        (старый --color-muted держит текст, новый token-spec --color-muted —
        фон disabled; совместить оба под одним именем нельзя без миграции
-       потребителей). primary/accent/danger используются только в Button —
-       безопасно завести значениями из token-spec.md уже сейчас. */
+       потребителей). Это же держит в силе фаза 3 (#271, кодификация токенов) —
+       коллизия имён с token-spec.md остаётся до миграции потребителей. */
     --color-surface: #1a1c2c;
     --color-panel: #29366f;
     --color-panel-deep: #262b44;
@@ -20,8 +20,8 @@
     --color-muted: #94b0c2;
 
     /* Дизайн-система из hero-арта — docs/design-system-theming/token-spec.md.
-       Ядро токенов для сквозного среза (Button + переключение темы фракции).
-       Полный перенос палитры/типографики — фаза 3 (#271). */
+       Полная кодификация палитры/типографики (#271). Миграция потребителей
+       (shared/ui, экраны) на эти токены — фаза 4 (#272). */
     --color-primary: #ffc21f;
     --color-primary-ink: #241900;
     --color-accent: #48ff00;
@@ -29,6 +29,7 @@
     --color-enemy: #c900ff;
     --color-enemy-ink: #1e0030;
     --color-danger: #ff4242;
+    --color-danger-ink: #2b0000;
     --color-warning: #ffa900;
     --color-warning-ink: #2a1600;
     --color-success: #48ff00;
@@ -39,6 +40,35 @@
     --color-text: #e9f5e6;
     --color-text-muted: #a2bb9d;
     --color-text-dim: #728a70;
+
+    /* Радиусы дизайн-системы — пиксельная эстетика, почти без скруглений. */
+    --radius-none: 0px;
+    --radius-sm: 2px;
+
+    /* Типографика дизайн-системы — Pixelify Sans (display) + JetBrains Mono (UI/HUD),
+       обе с кириллицей (в отличие от Press Start 2P/Montserrat выше, которые фаза 4
+       заменит по экранам, см. #272). Роли и обоснование — docs/design-system-theming/tokens.md. */
+    --font-display: 'Pixelify Sans', system-ui, sans-serif;
+    --font-ui: 'JetBrains Mono', ui-monospace, monospace;
+
+    --text-display: clamp(48px, 7vw, 96px);
+    --text-display--line-height: 0.95;
+    --text-h1: 40px;
+    --text-h1--line-height: 1.05;
+    --text-h2: 28px;
+    --text-h2--line-height: 1.1;
+    --text-hud-xl: 40px;
+    --text-hud-xl--line-height: 1;
+    --text-hud: 20px;
+    --text-hud--line-height: 1.1;
+    --text-button: 16px;
+    --text-button--line-height: 1;
+    --text-body: 16px;
+    --text-body--line-height: 1.5;
+    --text-caption: 13px;
+    --text-caption--line-height: 1.4;
+    --text-label: 11px;
+    --text-label--line-height: 1.3;
 }
 
 /* Эффекты дизайн-системы (glow/edge/ring) — вне @theme, чтобы участвовать в
@@ -53,6 +83,8 @@
     --ring-focus: 0 0 0 3px var(--color-bg), 0 0 0 5px var(--color-accent);
     --border-w: 2px;
     --border-w-thick: 4px;
+    --shadow-panel: 0 4px 0 rgba(0, 0, 0, 0.5), inset 0 0 0 2px var(--color-border);
+    --shadow-drop: 0 6px 0 rgba(0, 0, 0, 0.55);
 
     /* Тема по умолчанию — фракция игрока */
     --accent: var(--color-accent);
@@ -106,6 +138,47 @@
     font-weight: 400;
     font-display: swap;
     src: url('/fonts/press-start-2p-cyrillic.woff2') format('woff2');
+    unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
+/* Дизайн-система из hero-арта: Pixelify Sans (display) + JetBrains Mono (UI/HUD),
+   обе — переменные шрифты (variable font), Google отдаёт один файл на весь диапазон
+   начертаний — отсюда font-weight-диапазон в одном @font-face на сабсет, как у
+   Montserrat выше, а не отдельный файл на каждый вес. */
+@font-face {
+    font-family: 'Pixelify Sans';
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url('/fonts/pixelify-sans-latin.woff2') format('woff2');
+    unicode-range:
+        U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+        U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+    font-family: 'Pixelify Sans';
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url('/fonts/pixelify-sans-cyrillic.woff2') format('woff2');
+    unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+    font-family: 'JetBrains Mono';
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url('/fonts/jetbrains-mono-latin.woff2') format('woff2');
+    unicode-range:
+        U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+        U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+    font-family: 'JetBrains Mono';
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url('/fonts/jetbrains-mono-cyrillic.woff2') format('woff2');
     unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
 }
 
