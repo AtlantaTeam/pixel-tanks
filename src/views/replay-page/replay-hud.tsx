@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useGameStore } from '@/features/game-engine';
 import { BOT_NAME } from '@/shared/config';
 import { useAnimatedValue } from '@/shared/lib/animation';
+import { buttonClasses } from '@/shared/ui';
 
 /**
  * HUD просмотра реплея: счёт из того же store, что и в живом бою, бейдж
@@ -20,23 +21,27 @@ export function ReplayHud() {
 
     return (
         <div className="flex flex-wrap items-center justify-between gap-2 p-2 sm:gap-4 sm:p-4">
-            <div className="font-pixel text-xs text-accent" aria-live="polite">
+            <div className="font-ui text-xs text-accent" aria-live="polite">
                 {isGameOver ? 'Бой завершён' : '▶ Реплей'}
             </div>
 
             <div className="flex items-center gap-3 sm:gap-6">
                 <div className="flex items-baseline gap-2">
-                    <span className="font-pixel text-xs text-muted">Игрок</span>
-                    <span className="font-pixel text-xl text-primary">{displayedPlayerPoints}</span>
+                    <span className="font-ui text-xs text-text-muted">Игрок</span>
+                    <span className="font-ui text-hud text-primary tabular-nums">
+                        {displayedPlayerPoints}
+                    </span>
                 </div>
-                <span className="font-pixel text-xs text-muted">:</span>
+                <span className="font-ui text-xs text-text-muted">:</span>
                 <div className="flex items-baseline gap-2">
-                    <span className="font-pixel text-xl text-danger">{displayedEnemyPoints}</span>
-                    <span className="font-pixel text-xs text-muted">{BOT_NAME}</span>
+                    <span className="font-ui text-hud text-danger tabular-nums">
+                        {displayedEnemyPoints}
+                    </span>
+                    <span className="font-ui text-xs text-text-muted">{BOT_NAME}</span>
                 </div>
             </div>
 
-            <Link href="/game" className="pixel-border bg-base-100 px-3 py-2 font-pixel text-xs">
+            <Link href="/game" className={buttonClasses('ghost', 'sm')}>
                 Сыграть самому
             </Link>
         </div>

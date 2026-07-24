@@ -120,7 +120,7 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
                 вписывает его в экран, сохраняя пропорции поля (см. fixedLogicalSize). */}
             <canvas
                 ref={canvasRef}
-                className="game-canvas mx-auto block h-full w-full object-contain bg-base-200"
+                className="game-canvas mx-auto block h-full w-full object-contain bg-bg"
             />
             {botBubble && (
                 <ChatBubble

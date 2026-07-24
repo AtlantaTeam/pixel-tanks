@@ -38,6 +38,27 @@ describe('GameOverDialog', () => {
         expect(screen.getByText(/10.*5/)).toBeInTheDocument();
     });
 
+    it('switches the theme to victory when the player wins', () => {
+        setGameOver(30, 10);
+        const { container } = render(<GameOverDialog seed="42" />);
+
+        expect(container.querySelector('[data-outcome="victory"]')).not.toBeNull();
+    });
+
+    it('switches the theme to defeat when the player loses', () => {
+        setGameOver(5, 20);
+        const { container } = render(<GameOverDialog seed="42" />);
+
+        expect(container.querySelector('[data-outcome="defeat"]')).not.toBeNull();
+    });
+
+    it('keeps the theme neutral on a draw (no outcome attribute)', () => {
+        setGameOver(10, 10);
+        const { container } = render(<GameOverDialog seed="42" />);
+
+        expect(container.querySelector('[data-outcome]')).toBeNull();
+    });
+
     it('does not show a share button for a regular (non-daily) seed', () => {
         setGameOver(10, 5);
         render(<GameOverDialog seed="42" />);

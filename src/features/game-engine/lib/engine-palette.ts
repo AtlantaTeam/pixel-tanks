@@ -5,5 +5,5 @@
  * константы — единственное место в canvas-коде, где меняется hex.
  */
 export const ENGINE_COLORS = {
-    primary: '#ffcd75',
+    primary: '#ffc21f',
 } as const;
