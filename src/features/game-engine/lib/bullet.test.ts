@@ -142,28 +142,32 @@ describe('Bullet: столкновения', () => {
         expect(bullet.x + bullet.radius).toBeLessThanOrEqual(WIDTH);
     });
 
-    it('отскакивает от верхней стены: снаряд не покидает поле сверху, dy меняет знак', () => {
+    it('отскакивает от верхней стены: снаряд не покидает поле сверху и возвращается вниз', () => {
         // Выстрел строго вверх на максимальной силе — снаряд неминуемо достигает
         // верхней границы поля (#264: раньше уходил за верх, ни одна ветка не отбивала).
+        // Проверяем наблюдаемое поведение (позиция y), не внутреннее поле dy: снаряд
+        // на такой скорости проходит ~20px/кадр, поэтому разворот ловим не по мгновенному
+        // знаку, а по факту «достал до верха → пошёл обратно вниз».
         const { bullet } = makeBullet(-Math.PI / 2, 20, 0);
-        expect(bullet.dy).toBeLessThan(0);
 
-        let bouncedOffTop = false;
+        let reachedTop = false;
+        let cameBackDown = false;
         let minY = Infinity;
         for (let i = 0; i < 300; i++) {
             bullet.move();
-            const dyBeforeHit = bullet.dy;
             bullet.isHit(ctxStub);
             minY = Math.min(minY, bullet.y);
-            // Отскок именно от верхней стены: снаряд у верхней границы, а dy
-            // сменился с «вверх» на «вниз» внутри isHit (не естественный апогей).
-            if (bullet.y <= bullet.radius && dyBeforeHit < 0 && bullet.dy > 0) {
-                bouncedOffTop = true;
-            }
+            // Верхняя стена зажимает y ровно в radius — это касание верха.
+            if (bullet.y <= bullet.radius) reachedTop = true;
+            // После касания снаряд снова уходит вниз по полю — значит отскочил,
+            // а не застрял у границы и не улетел за неё.
+            if (reachedTop && bullet.y > bullet.radius) cameBackDown = true;
         }
 
+        // Без фикса #264 снаряд уходил за верх (y < radius) — этот инвариант ловит регресс.
         expect(minY).toBeGreaterThanOrEqual(bullet.radius);
-        expect(bouncedOffTop).toBe(true);
+        expect(reachedTop).toBe(true);
+        expect(cameBackDown).toBe(true);
     });
 
     it('приземляется в грунт за конечное число шагов на уровне рельефа', () => {

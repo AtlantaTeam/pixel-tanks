@@ -12,9 +12,12 @@ type THoldRepeatOptions = {
  * Авто-повтор действия при удержании кнопки (hold-to-repeat). Набирать мощность
  * шагом ±1, тыкая кнопку, было слишком долго на диапазоне 1..20 (#264).
  *
- * Прогрессивное улучшение поверх обычного `onClick`: первый шаг делает сам клик
- * (клавиатура и одиночный тап работают как прежде), а повтор включается только
- * после `initialDelayMs` удержания — быстрый тап лишних шагов не даёт.
+ * Хук владеет и `onClick` кнопки: одиночный тап и клавиатура (Enter/Space шлют
+ * click без pointer-событий) делают ровно один шаг, а при удержании шаги набирают
+ * тики интервала. `onClick` приходит на отпускании уже после `stop`, поэтому
+ * «хвостовой» клик после состоявшегося авто-повтора глотается — иначе удержание
+ * давало бы «тики + 1». Повтор включается только после `initialDelayMs` — быстрый
+ * тап лишних шагов не даёт.
  */
 export function useHoldRepeat(action: () => void, options: THoldRepeatOptions = {}) {
     const { initialDelayMs = 350, intervalMs = 80 } = options;
@@ -28,6 +31,9 @@ export function useHoldRepeat(action: () => void, options: THoldRepeatOptions = 
 
     const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
     const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
+    // Успел ли за текущее удержание сработать хотя бы один тик авто-повтора —
+    // тогда следующий `onClick` (приходит на отпускании) считается «хвостовым».
+    const repeatFiredRef = useRef(false);
 
     const stop = () => {
         clearTimeout(timeoutRef.current);
@@ -40,15 +46,31 @@ export function useHoldRepeat(action: () => void, options: THoldRepeatOptions = 
         // Только основная кнопка мыши / касание — правый клик и т.п. не держим.
         if (e.button !== 0) return;
         stop();
+        repeatFiredRef.current = false;
         timeoutRef.current = setTimeout(() => {
-            intervalRef.current = setInterval(() => actionRef.current(), intervalMs);
+            intervalRef.current = setInterval(() => {
+                repeatFiredRef.current = true;
+                actionRef.current();
+            }, intervalMs);
         }, initialDelayMs);
+    };
+
+    const handleClick = () => {
+        // После авто-повтора клик-«хвост» глотаем (один раз), чтобы не добавить
+        // лишний шаг поверх тиков. Тап и клавиатура повтора не запускают — клик
+        // проходит и делает ровно один шаг.
+        if (repeatFiredRef.current) {
+            repeatFiredRef.current = false;
+            return;
+        }
+        actionRef.current();
     };
 
     // Снять таймеры при размонтировании — иначе интервал переживёт компонент.
     useEffect(() => stop, []);
 
     return {
+        onClick: handleClick,
         onPointerDown: start,
         onPointerUp: stop,
         onPointerLeave: stop,

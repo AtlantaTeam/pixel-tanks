@@ -90,7 +90,6 @@ export class GamePlay {
     allWeapons: TTanksWeapons;
     callbacks: TGamePlayCallbacks;
     private readonly audio = getAudioEngine();
-    damageAmount = 0;
     rafTimerId: number | undefined;
     private random: TSeededRandom;
     /** Режим воспроизведения: физика идёт в этом фиксированном размере. */
@@ -617,7 +616,6 @@ export class GamePlay {
                         leftActive: !!this.leftTank?.isActive,
                         power: this.bullet.power,
                     });
-                    this.damageAmount += this.bullet.power;
                 } else {
                     void this.audio.playSfx('miss');
                 }
@@ -629,7 +627,6 @@ export class GamePlay {
             this.bullet?.draw(ctx);
             return;
         }
-        this.damageAmount = 0;
         this.bullet = undefined;
         this.changeActiveTank();
     };

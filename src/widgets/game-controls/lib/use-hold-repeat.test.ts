@@ -79,6 +79,45 @@ describe('useHoldRepeat', () => {
         expect(action).not.toHaveBeenCalled();
     });
 
+    it('onClick клавиатуры/тапа без удержания делает ровно один шаг', () => {
+        const action = vi.fn();
+        const { result } = renderHook(() =>
+            useHoldRepeat(action, { initialDelayMs: 300, intervalMs: 100 }),
+        );
+
+        // Клавиатура шлёт click без pointer-событий — шаг проходит.
+        result.current.onClick();
+        expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('быстрый тап: pointerdown → pointerup → click даёт один шаг', () => {
+        const action = vi.fn();
+        const { result } = renderHook(() =>
+            useHoldRepeat(action, { initialDelayMs: 300, intervalMs: 100 }),
+        );
+
+        result.current.onPointerDown(pointerDown());
+        vi.advanceTimersByTime(50); // меньше initialDelay — повтор не стартовал
+        result.current.onPointerUp();
+        result.current.onClick();
+
+        expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('после авто-повтора хвостовой onClick глотается (нет лишнего шага)', () => {
+        const action = vi.fn();
+        const { result } = renderHook(() =>
+            useHoldRepeat(action, { initialDelayMs: 300, intervalMs: 100 }),
+        );
+
+        result.current.onPointerDown(pointerDown());
+        vi.advanceTimersByTime(300 + 100 * 3); // 3 тика повтора
+        result.current.onPointerUp();
+        result.current.onClick(); // хвостовой клик на отпускании
+
+        expect(action).toHaveBeenCalledTimes(3);
+    });
+
     it('снимает таймеры при размонтировании', () => {
         const action = vi.fn();
         const { result, unmount } = renderHook(() =>

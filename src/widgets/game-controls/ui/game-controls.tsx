@@ -110,8 +110,12 @@ type TCounterProps = {
 };
 
 function Counter({ label, value, onDec, onInc }: TCounterProps) {
-    // Удержание кнопки авто-повторяет шаг — набирать мощность по одному тыку было
-    // долго (#264). Первый шаг делает onClick, повтор подхватывает useHoldRepeat.
+    // Удержание кнопки авто-повторяет шаг — набирать значение по одному тыку было
+    // долго (#264). Counter общий: hold работает и для «Мощности», и для «Угла».
+    // Для угла это паритет с авто-репитом стрелок; угол в сторе не заворачивается
+    // по 2π, так что долгим удержанием HUD покажет градусы вне 0..360 — косметика
+    // (физика периодична по cos/sin), нормализацию не трогаем в рамках #264.
+    // `useHoldRepeat` владеет и onClick — тап/клавиатура дают ровно один шаг.
     const decHold = useHoldRepeat(onDec ?? noop);
     const incHold = useHoldRepeat(onInc ?? noop);
 
@@ -122,7 +126,6 @@ function Counter({ label, value, onDec, onInc }: TCounterProps) {
                 <Button
                     variant="ghost"
                     size="icon"
-                    onClick={onDec}
                     disabled={!onDec}
                     aria-label={`${label} меньше`}
                     {...decHold}
@@ -133,7 +136,6 @@ function Counter({ label, value, onDec, onInc }: TCounterProps) {
                 <Button
                     variant="ghost"
                     size="icon"
-                    onClick={onInc}
                     disabled={!onInc}
                     aria-label={`${label} больше`}
                     {...incHold}

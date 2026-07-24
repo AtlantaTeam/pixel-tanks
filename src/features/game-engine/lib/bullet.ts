@@ -13,7 +13,7 @@ export class Bullet {
     lastY = 0;
     power: number;
     dx: number;
-    dy: number;
+    private dy: number;
     gravity: number;
     elasticity: number;
     private wind: number;

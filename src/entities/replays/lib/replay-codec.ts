@@ -1,3 +1,4 @@
+import { POWER_MAX, POWER_MIN } from '@/shared/config';
 import type { TReplay, TReplayMove } from '../t-replay';
 
 /**
@@ -44,9 +45,8 @@ const UINT16_MAX = 65535;
  * «правдоподобно как ход реального боя»: иначе crafted-код с `angle = NaN`,
  * `power = 255` или бесконечным перемещением проходил бы как «валидный» реплей.
  */
-/** Диапазон силы выстрела (Tank.powerMin/powerMax). */
-const POWER_MIN = 1;
-const POWER_MAX = 20;
+// Диапазон силы выстрела — единый источник в `shared/config` (POWER_MIN/POWER_MAX),
+// общий с Tank.powerMin/powerMax и клампом ввода в game-engine.
 /** Предел |delta| перемещения: игра двигает танк на ±150, берём щедрый запас. */
 const MAX_MOVE_DELTA = 4096;
 /** Верхняя граница числа ходов — защита от кода, раздувающего воспроизведение. */

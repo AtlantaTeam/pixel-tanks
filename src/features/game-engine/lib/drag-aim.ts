@@ -1,3 +1,4 @@
+import { POWER_MAX, POWER_MIN } from '@/shared/config';
 import type { TCoords } from '@/shared/model';
 
 export type TDragAim = {
@@ -17,8 +18,8 @@ export type TDragAimOptions = {
 export const DRAG_AIM_DEFAULTS: TDragAimOptions = {
     minDragDistance: 10,
     pixelsPerPowerUnit: 8,
-    powerMin: 1,
-    powerMax: 20,
+    powerMin: POWER_MIN,
+    powerMax: POWER_MAX,
 };
 
 /**
