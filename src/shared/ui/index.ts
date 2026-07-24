@@ -3,6 +3,8 @@ export type { TButtonVariant, TButtonSize } from './button';
 export { ShareButton } from './share-button/share-button';
 export { Panel } from './panel';
 export { Select } from './select';
+export { SegmentedControl } from './segmented-control';
+export type { TSegmentedControlOption } from './segmented-control';
 export { TextInput } from './text-input';
 export { Dialog } from './dialog';
 export { ICON_NAMES, Icon } from './icon';

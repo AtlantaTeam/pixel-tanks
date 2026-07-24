@@ -2,17 +2,29 @@
 
 import { useState } from 'react';
 import type { TFaction } from '@/shared/lib/theme';
-import type { TButtonSize, TButtonVariant } from '@/shared/ui';
+import type { TButtonSize, TButtonVariant, TSegmentedControlOption } from '@/shared/ui';
 import {
     Button,
     Dialog,
     ICON_NAMES,
     Icon,
     Panel,
+    SegmentedControl,
     Select,
     ShareButton,
     TextInput,
 } from '@/shared/ui';
+
+const PERIOD_OPTIONS: TSegmentedControlOption<'day' | 'all'>[] = [
+    { value: 'day', label: 'День' },
+    { value: 'all', label: 'Всё время' },
+];
+
+const DIFFICULTY_OPTIONS: TSegmentedControlOption<'rookie' | 'shooter' | 'terminator'>[] = [
+    { value: 'rookie', label: 'Новобранец' },
+    { value: 'shooter', label: 'Стрелок' },
+    { value: 'terminator', label: 'Терминатор' },
+];
 
 // Тексты подсказок зеркалят STATUS_HINT из share-button.tsx (внутреннее состояние
 // компонента недоступно снаружи) — статичные репро состояний для витрины/визрегрессии.
@@ -32,6 +44,8 @@ function buttonLabel(variant: TButtonVariant, size: TButtonSize) {
 export function DesignSystemPreview() {
     const [faction, setFaction] = useState<TFaction>('player');
     const [dialogOpen, setDialogOpen] = useState(false);
+    const [period, setPeriod] = useState<'day' | 'all'>('day');
+    const [difficulty, setDifficulty] = useState<'rookie' | 'shooter' | 'terminator'>('shooter');
 
     return (
         <div className="flex flex-col gap-6">
@@ -157,6 +171,34 @@ export function DesignSystemPreview() {
                                 label="Промокод (недоступно)"
                                 defaultValue="—"
                                 disabled
+                            />
+                        </div>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-4">
+                    <h3 className="font-ui text-hud text-text uppercase">SegmentedControl</h3>
+                    <div className="grid gap-6 md:grid-cols-2">
+                        <div className="flex flex-col gap-2">
+                            <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                                Период
+                            </span>
+                            <SegmentedControl
+                                label="Период"
+                                options={PERIOD_OPTIONS}
+                                value={period}
+                                onChange={setPeriod}
+                            />
+                        </div>
+                        <div className="flex flex-col gap-2">
+                            <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                                Сложность
+                            </span>
+                            <SegmentedControl
+                                label="Сложность"
+                                options={DIFFICULTY_OPTIONS}
+                                value={difficulty}
+                                onChange={setDifficulty}
                             />
                         </div>
                     </div>
