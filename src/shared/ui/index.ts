@@ -14,3 +14,5 @@ export { Avatar } from './avatar';
 export type { TAvatarFaction } from './avatar';
 export { FactionBadge } from './faction-badge';
 export type { TFactionBadgeFaction, TFactionBadgeSize } from './faction-badge';
+export { HPBar } from './hp-bar';
+export type { THPBarFaction } from './hp-bar';

@@ -8,6 +8,7 @@ import {
     Button,
     Dialog,
     FactionBadge,
+    HPBar,
     ICON_NAMES,
     Icon,
     Panel,
@@ -331,6 +332,21 @@ export function DesignSystemPreview() {
                             </span>
                             <FactionBadge faction="unknown" size="sm" />
                         </div>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">HPBar</h3>
+                    <p className="max-w-prose text-caption text-text-muted">
+                        Заливка по порогам HP: success (&gt;60) → warning (&gt;30) → danger. Иконка
+                        «свой танк» / «враг» — фиксированный маркер, не следует теме
+                        <code> data-faction</code>.
+                    </p>
+                    <div className="flex max-w-md flex-col gap-4">
+                        <HPBar label="Игрок — полный" value={100} faction="player" />
+                        <HPBar label="Игрок — норма" value={72} faction="player" />
+                        <HPBar label="Враг — риск" value={38} faction="enemy" />
+                        <HPBar label="Враг — критично" value={12} faction="enemy" />
                     </div>
                 </section>
 
