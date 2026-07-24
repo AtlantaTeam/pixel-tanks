@@ -2,10 +2,16 @@
 
 import { useState } from 'react';
 import type { TFaction } from '@/shared/lib/theme';
-import type { TButtonSize, TButtonVariant, TSegmentedControlOption } from '@/shared/ui';
+import type {
+    TButtonSize,
+    TButtonVariant,
+    TSegmentedControlOption,
+    TWeaponSelectorWeapon,
+} from '@/shared/ui';
 import {
     Avatar,
     Button,
+    ChatBubble,
     Dialog,
     FactionBadge,
     HPBar,
@@ -18,11 +24,19 @@ import {
     ShareButton,
     TextInput,
     Toggle,
+    WeaponSelector,
 } from '@/shared/ui';
 
 const PERIOD_OPTIONS: TSegmentedControlOption<'day' | 'all'>[] = [
     { value: 'day', label: 'День' },
     { value: 'all', label: 'Всё время' },
+];
+
+const WEAPONS: TWeaponSelectorWeapon[] = [
+    { name: 'Фугас', icon: 'wpn-фугас', ammo: 12 },
+    { name: 'Мощный заряд', icon: 'wpn-мощный', ammo: 4 },
+    { name: 'Кластер', icon: 'wpn-кластер', ammo: 6 },
+    { name: 'Роющий', icon: 'wpn-роющий', ammo: 3 },
 ];
 
 const DIFFICULTY_OPTIONS: TSegmentedControlOption<'rookie' | 'shooter' | 'terminator'>[] = [
@@ -54,6 +68,7 @@ export function DesignSystemPreview() {
     const [vibrationOn, setVibrationOn] = useState(false);
     const [musicOn, setMusicOn] = useState(true);
     const [calmMode, setCalmMode] = useState(false);
+    const [weaponIndex, setWeaponIndex] = useState(0);
 
     return (
         <div className="flex flex-col gap-6">
@@ -378,6 +393,52 @@ export function DesignSystemPreview() {
                                 Реплей (8 из 12 просмотрено)
                             </span>
                             <PipRow pips={Array.from({ length: 12 }, (_, i) => i < 8)} />
+                        </div>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">WeaponSelector</h3>
+                    <p className="max-w-prose text-caption text-text-muted">
+                        Селектор оружия: стрелки листают список, центральная панель на{' '}
+                        <code>--accent</code>/<code>--glow</code> показывает иконку{' '}
+                        <code>wpn-*</code>, название и остаток боезапаса.
+                    </p>
+                    <div className="max-w-md">
+                        <WeaponSelector
+                            weapons={WEAPONS}
+                            selectedIndex={weaponIndex}
+                            onPrev={() =>
+                                setWeaponIndex((i) => (i - 1 + WEAPONS.length) % WEAPONS.length)
+                            }
+                            onNext={() => setWeaponIndex((i) => (i + 1) % WEAPONS.length)}
+                        />
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">ChatBubble</h3>
+                    <p className="max-w-prose text-caption text-text-muted">
+                        Реплика бота с шапкой (иконка + имя) и хвостиком-указателем.{' '}
+                        <code>data-faction</code> ставит сама — привязана к своей стороне, не к теме
+                        предка.
+                    </p>
+                    <div className="flex flex-wrap items-start gap-8 pb-3">
+                        <div className="flex flex-col items-start gap-2">
+                            <span className="font-ui text-caption text-text-muted">enemy</span>
+                            <ChatBubble
+                                faction="enemy"
+                                speaker="Терминатор"
+                                message="Твой угол смешон, человек. Считай ветер — или считай обломки."
+                            />
+                        </div>
+                        <div className="flex flex-col items-start gap-2">
+                            <span className="font-ui text-caption text-text-muted">player</span>
+                            <ChatBubble
+                                faction="player"
+                                speaker="Командир"
+                                message="Ветер учтён. Пристреливаюсь."
+                            />
                         </div>
                     </div>
                 </section>
