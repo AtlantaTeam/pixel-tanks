@@ -3,7 +3,12 @@
 import { useState } from 'react';
 import type { TFaction } from '@/shared/lib/theme';
 import type { TButtonSize, TButtonVariant } from '@/shared/ui';
-import { Button, Dialog, Panel, Select } from '@/shared/ui';
+import { Button, Dialog, Panel, Select, ShareButton } from '@/shared/ui';
+
+// Тексты подсказок зеркалят STATUS_HINT из share-button.tsx (внутреннее состояние
+// компонента недоступно снаружи) — статичные репро состояний для витрины/визрегрессии.
+const SHARE_HINT_COPIED = 'Ссылка скопирована в буфер обмена';
+const SHARE_HINT_UNAVAILABLE = 'Не удалось поделиться — скопируйте ссылку из адресной строки';
 
 const VARIANTS: TButtonVariant[] = ['primary', 'accent', 'ghost', 'danger'];
 const SIZES: TButtonSize[] = ['sm', 'md', 'icon'];
@@ -130,6 +135,54 @@ export function DesignSystemPreview() {
                             </Button>
                         </div>
                     </Dialog>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">ShareButton</h3>
+                    <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
+                        {/* Живая кнопка (idle): Web Share API на мобилках, иначе копирование в буфер */}
+                        <div className="flex flex-col items-center gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                idle (живая)
+                            </span>
+                            <ShareButton
+                                label="Поделиться боем"
+                                buildPayload={() => ({
+                                    title: 'Pixel Tanks',
+                                    text: 'Смотри мой бой в Pixel Tanks!',
+                                    url: typeof window === 'undefined' ? '' : window.location.href,
+                                })}
+                            />
+                        </div>
+
+                        {/* Статичные репро состояний подсказки — состояние внутреннее, наружу не
+                            управляется; показываем оба исхода для визрегрессии */}
+                        <div className="flex flex-col items-center gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                состояние: copied
+                            </span>
+                            <div className="mt-4 flex flex-col items-center gap-2">
+                                <Button variant="ghost" size="md">
+                                    Поделиться боем
+                                </Button>
+                                <p className="text-[10px] text-text-muted">{SHARE_HINT_COPIED}</p>
+                            </div>
+                        </div>
+
+                        <div className="flex flex-col items-center gap-1">
+                            <span className="font-ui text-caption text-text-muted">
+                                состояние: unavailable
+                            </span>
+                            <div className="mt-4 flex flex-col items-center gap-2">
+                                <Button variant="ghost" size="md">
+                                    Поделиться боем
+                                </Button>
+                                <p className="text-[10px] text-text-muted">
+                                    {SHARE_HINT_UNAVAILABLE}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
                 </section>
             </div>
         </div>
