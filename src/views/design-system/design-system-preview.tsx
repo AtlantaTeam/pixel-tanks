@@ -19,6 +19,7 @@ import {
     Select,
     ShareButton,
     TextInput,
+    Toast,
     Toggle,
     WeaponSelector,
 } from '@/shared/ui';
@@ -514,6 +515,15 @@ export function DesignSystemPreview() {
                                 </p>
                             </div>
                         </div>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">Toast</h3>
+                    <div className="flex flex-col items-start gap-2.5">
+                        <Toast variant="success" message="Ссылка на реплей скопирована" />
+                        <Toast variant="neutral" message="Синхронизация профиля…" />
+                        <Toast variant="error" message="Не удалось поделиться" />
                     </div>
                 </section>
             </div>

@@ -21,3 +21,5 @@ export { WeaponSelector, DEMO_WEAPONS } from './weapon-selector';
 export type { TWeaponSelectorWeapon } from './weapon-selector';
 export { ChatBubble } from './chat-bubble';
 export type { TChatBubbleFaction } from './chat-bubble';
+export { Toast } from './toast';
+export type { TToastVariant } from './toast';
