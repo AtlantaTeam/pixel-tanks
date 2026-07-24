@@ -63,12 +63,7 @@
             "restartWaitMs": 3000
         },
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
-        "phases": [
-            {
-                "milestone": "Дизайн-система и темизация из hero-арта",
-                "branch": "feature/design-system-codify"
-            }
-        ]
+        "phases": []
     },
     "profiles": {
         "playground": {},
