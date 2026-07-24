@@ -1,7 +1,7 @@
 # PRD: game-next — некст-ген апгрейд игры
 
 **Дата**: 2026-07-18
-**Статус**: Draft
+**Статус**: ✅ реализовано — все 9 фаз смёржены и на проде (daily-challenge, replays, bot-messages, тач-рогатка, juice). Актуальность — [доска](https://github.com/orgs/AtlantaTeam/projects/1) + milestones, не эта шапка. Ниже — исходный PRD как исторический документ.
 
 ## Цель
 

@@ -1,7 +1,7 @@
 # PRD: Дизайн-система и темизация из hero-визуала (design-system-theming)
 
 **Дата**: 2026-07-24
-**Статус**: Draft
+**Статус**: ✅ реализовано — PR #296, milestone закрыт: токены `@theme`, темы `[data-faction]`, витрина `/design-system`. Статус — [доска](https://github.com/orgs/AtlantaTeam/projects/1) + milestones. Ниже — исходный PRD как исторический документ.
 
 ## Цель
 

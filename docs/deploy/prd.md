@@ -1,7 +1,7 @@
 # PRD: deploy — прод-деплой на VDS с авто-TLS и авто-деплоем из GitHub
 
 **Дата**: 2026-07-20
-**Статус**: Ready — ключевые решения приняты (Caddy, systemd, GitHub Actions по SSH, билд на VDS, healthcheck+автооткат, cron-бэкап). Готов к разбивке на фазы.
+**Статус**: ✅ реализовано — прод живой на `https://pixeltanks.ru` (авто-деплой из `main`, TLS, healthcheck+автооткат, cron-бэкап). Актуальность — [доска](https://github.com/orgs/AtlantaTeam/projects/1) + milestones. Ниже — исходный PRD как исторический документ. (Прим.: способ старта прод-сервера — см. #236, `standalone` вместо `next start`.)
 
 ## Цель
 
