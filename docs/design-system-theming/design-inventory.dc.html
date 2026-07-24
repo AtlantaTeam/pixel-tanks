@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&family=Handjet:wght@400..700&family=Pixelify+Sans:wght@400..700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --color-bg:#080c08; --color-surface:#101711; --color-panel:#18221a;
+    --color-panel-raised:#212f24; --color-border:#2c3f30; --color-border-strong:#3f5a41;
+    --color-muted:#33452f; --color-text:#e9f5e6; --color-text-muted:#a2bb9d; --color-text-dim:#728a70;
+    --color-primary:#ffc21f; --color-primary-ink:#241900;
+    --color-accent-base:#48ff00; --color-accent-ink-base:#052400;
+    --color-enemy:#c900ff; --color-enemy-ink:#1e0030;
+    --color-danger:#ff4242; --color-danger-ink:#2b0000;
+    --color-warning:#ffa900; --color-warning-ink:#2a1600;
+    --color-success:#48ff00;
+    --glow-accent:0 0 6px rgba(72,255,0,.55),0 0 18px rgba(72,255,0,.35);
+    --glow-primary:0 0 6px rgba(255,194,31,.55),0 0 18px rgba(255,169,0,.3);
+    --glow-enemy:0 0 6px rgba(201,0,255,.6),0 0 18px rgba(201,0,255,.4);
+    --glow-danger:0 0 6px rgba(255,66,66,.6),0 0 18px rgba(255,66,66,.35);
+    --edge-pixel:0 3px 0 #05140a;
+    --ring-focus:0 0 0 3px var(--color-bg),0 0 0 5px var(--accent);
+    --radius-none:0px;
+    --accent:var(--color-accent-base); --accent-ink:var(--color-accent-ink-base); --glow:var(--glow-accent);
+  }
+  [data-faction="enemy"]{--accent:var(--color-enemy);--accent-ink:var(--color-enemy-ink);--glow:var(--glow-enemy);}
+  [data-outcome="victory"]{--accent:var(--color-accent-base);--accent-ink:var(--color-accent-ink-base);--glow:var(--glow-accent);}
+  [data-outcome="defeat"]{--accent:var(--color-danger);--accent-ink:var(--color-danger-ink);--glow:var(--glow-danger);}
+  /* «Спокойный HUD» — гасит весь неон-glow, цвета сохраняются */
+  [data-intensity="calm"]{--glow-accent:none;--glow-primary:none;--glow-enemy:none;--glow-danger:none;--glow:none;--ring-focus:0 0 0 3px var(--color-bg),0 0 0 5px var(--accent);}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--color-bg);}
+  a{color:var(--color-accent-base);text-decoration:none;} a:hover{color:#8dff5c;}
+  input,button{font-family:inherit;}
+  input::placeholder{color:var(--color-text-dim);}
+  @keyframes pulse{0%,100%{opacity:.85}50%{opacity:1}}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes shimmer{0%{background-position:-200px 0}100%{background-position:200px 0}}
+  .om-skel{background:linear-gradient(90deg,var(--color-surface) 0,var(--color-panel-raised) 40px,var(--color-surface) 80px);background-size:400px 100%;animation:shimmer 1.2s infinite linear;}
+  .om-canvas{image-rendering:pixelated;display:block;}
+  ::selection{background:#48ff0044;}
+</style>
+</helmet>
+<div data-faction="{{ faction }}" data-intensity="{{ intensity }}" style="min-height:100vh;font-family:'JetBrains Mono',monospace;color:var(--color-text);background:radial-gradient(120% 90% at 50% -10%, #0e2a12 0%, #0a140b 40%, #050805 100%);padding:56px clamp(16px,4vw,40px) 120px;">
+<div style="max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:88px;">
+
+  <!-- ============ HEADER ============ -->
+  <header style="display:flex;flex-direction:column;gap:22px;">
+    <div style="font-size:11px;letter-spacing:.32em;text-transform:uppercase;color:var(--color-accent-base);text-shadow:var(--glow-accent);">Design System · Extended Inventory</div>
+    <h1 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:700;font-size:clamp(38px,7vw,72px);line-height:.95;text-transform:uppercase;">Полный инвентарь<br>компонентов и экранов</h1>
+    <p style="max-width:680px;margin:0;font-size:14px;line-height:1.6;color:var(--color-text-muted);">Расширение базовой системы Pixel Tanks — те же токены, гарнитуры и темы. Секции продолжают нумерацию базы (после 04 — Экраны). Живые примеры реагируют на переключатели ниже. Упаковка — Telegram Mini App, поэтому всё адаптивно от 390px и без десктоп-онли хрома.</p>
+    <!-- global controls -->
+    <div style="display:flex;flex-wrap:wrap;gap:22px;align-items:center;margin-top:4px;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Тема акцента</span>
+        <div style="display:flex;gap:2px;background:var(--color-surface);border:2px solid var(--color-border);padding:3px;">
+          <button onClick="{{ setPlayer }}" style="{{ playerBtnStyle }}">Игрок ★</button>
+          <button onClick="{{ setEnemy }}" style="{{ enemyBtnStyle }}">Враг ☠</button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Интенсивность (data-intensity)</span>
+        <div style="display:flex;gap:2px;background:var(--color-surface);border:2px solid var(--color-border);padding:3px;">
+          <button onClick="{{ setNeon }}" style="{{ neonBtnStyle }}">Неон</button>
+          <button onClick="{{ setCalm }}" style="{{ calmBtnStyle }}">Спокойный HUD</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ 05 — РЕШЕНИЯ / НЕСТЫКОВКИ ============ -->
+  <section style="display:flex;flex-direction:column;gap:24px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">05 — Решения</div>
+      <h2 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Нестыковки решены явно</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:2px;">
+      <sc-for list="{{ decisions }}" as="d" hint-placeholder-count="6">
+        <div style="background:var(--color-panel);border:2px solid var(--color-border);border-left:3px solid var(--color-accent-base);padding:18px;display:flex;flex-direction:column;gap:8px;">
+          <div style="display:flex;align-items:center;gap:8px;"><span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;color:var(--color-accent-base);">{{ d.tag }}</span><span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-warning);">{{ d.verdict }}</span></div>
+          <div style="font-weight:700;font-size:14px;">{{ d.title }}</div>
+          <div style="font-size:12px;line-height:1.55;color:var(--color-text-muted);">{{ d.body }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <!-- ============ 06 — GLOW / ЭФФЕКТ / РАДИУС ТОКЕНЫ ============ -->
+  <section style="display:flex;flex-direction:column;gap:24px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">06 — Эффект-токены</div>
+      <h2 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Glow · edge · focus · radius</h2>
+    </div>
+    <!-- glow swatches -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;">
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:22px;display:flex;flex-direction:column;gap:14px;align-items:center;"><div style="width:56px;height:56px;background:var(--color-accent-base);box-shadow:var(--glow-accent);"></div><div style="text-align:center;"><div style="font-weight:700;font-size:12px;">--glow-accent</div><div style="font-size:11px;color:var(--color-text-muted);">фокус · выбор · свой</div></div></div>
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:22px;display:flex;flex-direction:column;gap:14px;align-items:center;"><div style="width:56px;height:56px;background:var(--color-primary);box-shadow:var(--glow-primary);"></div><div style="text-align:center;"><div style="font-weight:700;font-size:12px;">--glow-primary</div><div style="font-size:11px;color:var(--color-text-muted);">действие · золото</div></div></div>
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:22px;display:flex;flex-direction:column;gap:14px;align-items:center;"><div style="width:56px;height:56px;background:var(--color-enemy);box-shadow:var(--glow-enemy);"></div><div style="text-align:center;"><div style="font-weight:700;font-size:12px;">--glow-enemy</div><div style="font-size:11px;color:var(--color-text-muted);">враг · маджента</div></div></div>
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:22px;display:flex;flex-direction:column;gap:14px;align-items:center;"><div style="width:56px;height:56px;background:var(--color-danger);box-shadow:var(--glow-danger);"></div><div style="text-align:center;"><div style="font-weight:700;font-size:12px;">--glow-danger ✦нов.</div><div style="font-size:11px;color:var(--color-text-muted);">поражение · удаление</div></div></div>
+    </div>
+    <!-- edge + focus + radius -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:22px;display:flex;flex-direction:column;gap:14px;align-items:flex-start;"><div style="background:var(--color-primary);color:var(--color-primary-ink);font-weight:700;font-size:13px;padding:12px 18px;box-shadow:var(--edge-pixel);">ПИКСЕЛЬ-ФАСКА</div><div><div style="font-weight:700;font-size:12px;">--edge-pixel</div><div style="font-size:11px;color:var(--color-text-muted);">0 3px 0 #05140a — «объём» без blur</div></div></div>
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:22px;display:flex;flex-direction:column;gap:14px;align-items:flex-start;"><div style="background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-weight:700;font-size:13px;padding:12px 18px;box-shadow:var(--ring-focus);">:focus-visible</div><div><div style="font-weight:700;font-size:12px;">--ring-focus ✦нов.</div><div style="font-size:11px;color:var(--color-text-muted);">двойной ринг, следует --accent</div></div></div>
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:22px;display:flex;flex-direction:column;gap:14px;align-items:flex-start;"><div style="display:flex;gap:8px;"><div style="width:44px;height:44px;background:var(--color-panel-raised);border:2px solid var(--color-border-strong);border-radius:0;"></div></div><div><div style="font-weight:700;font-size:12px;">--radius-none (0px)</div><div style="font-size:11px;color:var(--color-text-muted);line-height:1.5;">Система «острые углы». <span style="color:var(--color-danger);">--radius-sm удалён</span> (D5).</div></div></div>
+    </div>
+  </section>
+
+  <!-- ============ 07 — ИКОНКИ ============ -->
+  <section style="display:flex;flex-direction:column;gap:24px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">07 — Иконки</div>
+      <h2 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Пиксельный набор · сетка 16×16</h2>
+    </div>
+    <p style="margin:0;max-width:640px;font-size:13px;color:var(--color-text-muted);line-height:1.6;">SVG на сетке 16×16, shape-rendering: crispEdges, штрих 2px, currentColor — красятся любым токеном. Ниже стандартный размер 24px.</p>
+    <div style="max-width:640px;background:rgba(72,255,0,.06);border:2px solid var(--color-border);border-left:3px solid var(--color-accent-base);padding:12px 14px;font-size:12px;color:var(--color-text);line-height:1.55;"><b style="color:var(--color-accent-base);">Правило:</b> в продукте нет эмодзи и юникод-символов в роли иконок — только SVG из этого набора (currentColor, тема-aware через --accent). Это линтуемо при кодификации.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:2px;">
+      <sc-for list="{{ icons }}" as="ic" hint-placeholder-count="10">
+        <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:16px 8px;display:flex;flex-direction:column;gap:10px;align-items:center;color:var(--color-text);">
+          <div style="color:var(--accent);">{{ ic.svg }}</div>
+          <span style="font-size:10px;color:var(--color-text-muted);text-align:center;">{{ ic.name }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <!-- ============ 08 — АТОМАРНЫЕ КОМПОНЕНТЫ ============ -->
+  <section style="display:flex;flex-direction:column;gap:28px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">08 — Новые компоненты</div>
+      <h2 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Инвентарь · все состояния</h2>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:2px;">
+
+      <!-- TEXT INPUT -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:16px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Text Input</div>
+        <!-- default + placeholder -->
+        <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-weight:700;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-text-muted);">Email</span>
+          <input type="text" placeholder="commander@tanks.io" style="width:100%;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:15px;padding:13px 14px;outline:none;" style-focus="border-color:var(--accent);box-shadow:var(--glow);" /></label>
+        <!-- password with toggle (live) -->
+        <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-weight:700;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-text-muted);">Пароль</span>
+          <div style="position:relative;display:flex;align-items:center;">
+            <input type="{{ pwType }}" value="tankLord42" style="width:100%;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:15px;padding:13px 46px 13px 14px;outline:none;" style-focus="border-color:var(--accent);box-shadow:var(--glow);" />
+            <button onClick="{{ togglePw }}" style="position:absolute;right:4px;width:38px;height:38px;background:transparent;border:none;color:var(--color-text-muted);cursor:pointer;font-size:15px;" title="Показать/скрыть">{{ pwIcon }}</button>
+          </div></label>
+        <!-- error -->
+        <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-weight:700;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-danger);">Email</span>
+          <input type="text" value="commander@" style="width:100%;background:var(--color-surface);border:2px solid var(--color-danger);color:var(--color-text);font-size:15px;padding:13px 14px;outline:none;box-shadow:var(--glow-danger);" />
+          <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--color-danger);"><span>✕</span>Неверный формат email</span></label>
+        <!-- disabled -->
+        <label style="display:flex;flex-direction:column;gap:6px;opacity:.55;"><span style="font-weight:700;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-text-muted);">Промокод (недоступно)</span>
+          <input type="text" value="—" disabled="true" style="width:100%;background:var(--color-muted);border:2px solid var(--color-border);color:var(--color-text-dim);font-size:15px;padding:13px 14px;cursor:not-allowed;" /></label>
+      </div>
+
+      <!-- SEGMENTED + AVATAR + PIPS -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:20px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Segmented Control</div>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div style="display:inline-flex;gap:2px;background:var(--color-surface);border:2px solid var(--color-border);padding:3px;align-self:flex-start;">
+            <sc-for list="{{ seg2 }}" as="s" hint-placeholder-count="2"><button onClick="{{ s.pick }}" style="{{ s.style }}">{{ s.label }}</button></sc-for>
+          </div>
+          <div style="display:inline-flex;gap:2px;background:var(--color-surface);border:2px solid var(--color-border);padding:3px;align-self:flex-start;">
+            <sc-for list="{{ seg3 }}" as="s" hint-placeholder-count="3"><button onClick="{{ s.pick }}" style="{{ s.style }}">{{ s.label }}</button></sc-for>
+          </div>
+        </div>
+        <div style="height:2px;background:var(--color-border);"></div>
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Avatar / бейдж фракции</div>
+        <div style="display:flex;gap:16px;align-items:center;">
+          <div data-faction="player" style="width:56px;height:56px;background:var(--color-surface);border:3px solid var(--accent);box-shadow:var(--glow);display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:26px;">★</div>
+          <div data-faction="enemy" style="width:56px;height:56px;background:var(--color-surface);border:3px solid var(--accent);box-shadow:var(--glow);display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:26px;">☠</div>
+          <div style="width:44px;height:44px;background:var(--color-muted);border:2px solid var(--color-border-strong);display:flex;align-items:center;justify-content:center;color:var(--color-text-dim);font-size:20px;">?</div>
+          <span style="font-size:11px;color:var(--color-text-muted);line-height:1.5;">тема через<br>data-faction</span>
+        </div>
+        <div style="height:2px;background:var(--color-border);"></div>
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Pip-ряд</div>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <div style="display:flex;align-items:center;gap:10px;"><span style="font-size:11px;color:var(--color-text-muted);width:64px;">Снаряды</span><div style="display:flex;gap:5px;">{{ shellPips }}</div></div>
+          <div style="display:flex;align-items:center;gap:10px;"><span style="font-size:11px;color:var(--color-text-muted);width:64px;">Ходы</span><div style="display:flex;gap:5px;">{{ turnPips }}</div></div>
+        </div>
+      </div>
+
+      <!-- HP BARS -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:16px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">HP-bar · порог цвета success→warning→danger</div>
+        <div style="display:flex;flex-direction:column;gap:14px;">{{ hpBars }}</div>
+      </div>
+
+      <!-- WEAPON SELECTOR + CHAT BUBBLE -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:20px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Weapon Selector</div>
+        <div style="display:flex;align-items:stretch;gap:2px;">
+          <button onClick="{{ weaponPrev }}" style="width:48px;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:18px;cursor:pointer;">◄</button>
+          <div style="flex:1;background:var(--color-surface);border:2px solid var(--accent);box-shadow:var(--glow);display:flex;align-items:center;gap:12px;padding:12px 16px;justify-content:center;">
+            <span style="color:var(--accent);font-size:22px;">{{ weaponIcon }}</span>
+            <div style="display:flex;flex-direction:column;gap:1px;text-align:center;"><span style="font-weight:700;font-size:15px;">{{ weaponName }}</span><span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-text-muted);">×{{ weaponAmmo }}</span></div>
+          </div>
+          <button onClick="{{ weaponNext }}" style="width:48px;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:18px;cursor:pointer;">►</button>
+        </div>
+        <div style="height:2px;background:var(--color-border);"></div>
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Chat-bubble бота (enemy)</div>
+        <div data-faction="enemy" style="position:relative;align-self:flex-start;max-width:260px;background:var(--color-surface);border:2px solid var(--accent);box-shadow:var(--glow);padding:12px 14px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><span style="color:var(--accent);font-size:14px;">☠</span><span style="font-weight:700;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);">Терминатор</span></div>
+          <div style="font-size:13px;line-height:1.45;color:var(--color-text);">Твой угол смешон, человек. Считай ветер — или считай обломки.</div>
+          <div style="position:absolute;left:22px;bottom:-9px;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-top:9px solid var(--accent);"></div>
+        </div>
+      </div>
+
+      <!-- TOGGLE -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:16px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Toggle · вкл / выкл</div>
+        <div style="display:flex;flex-direction:column;gap:16px;">
+          {{ demoToggleA }}
+          {{ demoToggleB }}
+        </div>
+        <div style="font-size:11px;color:var(--color-text-dim);line-height:1.5;">role="switch", тема через --accent, glow в состоянии «вкл». Тот же компонент в экране Паузы.</div>
+      </div>
+
+      <!-- TOASTS -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:16px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Toast / хинт (aria-live)</div>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <div role="status" style="display:flex;align-items:center;gap:10px;background:var(--color-surface);border:2px solid var(--color-accent-base);border-left:4px solid var(--color-accent-base);padding:12px 14px;"><span style="color:var(--color-accent-base);font-size:16px;">✓</span><span style="font-size:13px;">Ссылка на реплей скопирована</span></div>
+          <div role="status" style="display:flex;align-items:center;gap:10px;background:var(--color-surface);border:2px solid var(--color-border-strong);border-left:4px solid var(--color-text-muted);padding:12px 14px;"><span style="color:var(--color-text-muted);font-size:16px;">◔</span><span style="font-size:13px;">Синхронизация профиля…</span></div>
+          <div role="alert" style="display:flex;align-items:center;gap:10px;background:var(--color-surface);border:2px solid var(--color-danger);border-left:4px solid var(--color-danger);padding:12px 14px;box-shadow:var(--glow-danger);"><span style="color:var(--color-danger);font-size:16px;">✕</span><span style="font-size:13px;">Не удалось поделиться</span></div>
+        </div>
+        <button onClick="{{ fireToast }}" style="align-self:flex-start;font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent-ink);background:var(--accent);border:none;padding:11px 18px;cursor:pointer;box-shadow:var(--glow);">Скопировать ссылку</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 09 — СОСТОЯНИЯ ============ -->
+  <section style="display:flex;flex-direction:column;gap:28px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">09 — Состояния</div>
+      <h2 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Кнопки · данные · формы</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:2px;">
+      <!-- button states -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:16px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Button — доп. состояния</div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+          <button style="font-weight:700;font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-primary-ink);background:var(--color-primary);border:none;padding:13px 22px;cursor:pointer;box-shadow:var(--ring-focus);">:focus-visible</button>
+          <button style="display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-primary-ink);background:var(--color-primary);border:none;padding:13px 22px;cursor:progress;opacity:.85;"><span style="width:15px;height:15px;border:3px solid var(--color-primary-ink);border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;"></span>Загрузка</button>
+          <button style="font-weight:700;font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-text-dim);background:var(--color-muted);border:none;padding:13px 22px;cursor:not-allowed;">Disabled</button>
+        </div>
+        <div style="font-size:11px;color:var(--color-text-dim);line-height:1.5;">hover / active показаны в базе (03). Здесь: focus-ring (--ring-focus), loading-спиннер, disabled.</div>
+      </div>
+      <!-- form submit error -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:14px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Форма — ошибка сабмита (баннер)</div>
+        <div role="alert" style="display:flex;align-items:flex-start;gap:10px;background:rgba(255,66,66,.08);border:2px solid var(--color-danger);padding:14px;"><span style="color:var(--color-danger);font-size:16px;">✕</span><div style="display:flex;flex-direction:column;gap:2px;"><span style="font-weight:700;font-size:13px;color:var(--color-danger);">Неверный email или пароль</span><span style="font-size:12px;color:var(--color-text-muted);">Проверьте данные и попробуйте снова.</span></div></div>
+        <button style="align-self:flex-start;font-weight:700;font-size:14px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-primary-ink);background:var(--color-primary);border:none;padding:13px 22px;cursor:pointer;box-shadow:var(--edge-pixel);">Войти</button>
+      </div>
+    </div>
+    <!-- data states -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:2px;">
+      <!-- skeleton -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:20px;display:flex;flex-direction:column;gap:12px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Loading — скелетон</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div class="om-skel" style="height:38px;"></div><div class="om-skel" style="height:38px;"></div><div class="om-skel" style="height:38px;width:82%;"></div>
+        </div>
+      </div>
+      <!-- empty -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:20px;display:flex;flex-direction:column;gap:12px;align-items:center;text-align:center;justify-content:center;min-height:150px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);align-self:flex-start;">Пустое состояние</div>
+        <div style="font-size:34px;color:var(--color-text-dim);">▱</div>
+        <div style="font-weight:700;font-size:14px;">Боёв пока нет</div>
+        <div style="font-size:12px;color:var(--color-text-muted);">Сыграй первый матч — история появится здесь.</div>
+        <button style="font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent-ink);background:var(--accent);border:none;padding:10px 18px;cursor:pointer;box-shadow:var(--glow);">В бой</button>
+      </div>
+      <!-- error -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:20px;display:flex;flex-direction:column;gap:12px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Ошибка данных</div>
+        <div role="alert" style="display:flex;flex-direction:column;gap:12px;background:rgba(255,66,66,.08);border:2px solid var(--color-danger);padding:16px;align-items:flex-start;">
+          <div style="display:flex;align-items:center;gap:8px;color:var(--color-danger);font-weight:700;font-size:14px;">⚠ Не удалось загрузить</div>
+          <div style="font-size:12px;color:var(--color-text-muted);">Сервер недоступен. Проверьте соединение.</div>
+          <button style="font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-danger);background:transparent;border:2px solid var(--color-danger);padding:9px 16px;cursor:pointer;">↻ Повторить</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 10 — ТАЧ-КОНТРОЛЫ И ПЛЕЕР ============ -->
+  <section style="display:flex;flex-direction:column;gap:28px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">10 — Игровые контролы</div>
+      <h2 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Тач-рогатка · плеер реплея</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:2px;">
+      <!-- touch controls -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:16px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Player-controls (тач)</div>
+        <!-- slingshot viz -->
+        <div style="position:relative;height:150px;background:var(--color-surface);border:2px solid var(--color-border);overflow:hidden;">
+          <canvas class="om-canvas" data-sling="1" width="560" height="290" style="width:100%;height:100%;"></canvas>
+          <div style="position:absolute;top:10px;right:10px;display:flex;gap:8px;">
+            <span style="background:rgba(8,12,8,.8);border:1px solid var(--color-border);padding:4px 8px;font-size:12px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;">∠ {{ angle }}°</span>
+            <span style="background:rgba(8,12,8,.8);border:1px solid var(--color-border);padding:4px 8px;font-size:12px;font-weight:700;color:var(--color-warning);font-variant-numeric:tabular-nums;">⚡ {{ powerStr }}</span>
+          </div>
+          <div style="position:absolute;left:10px;bottom:8px;font-size:10px;color:var(--color-text-muted);">оттяни-отпусти · предпросмотр вектора</div>
+        </div>
+        <!-- maneuver + fire -->
+        <div style="display:flex;gap:10px;align-items:stretch;">
+          <button onClick="{{ moveLeft }}" style="width:52px;min-height:52px;background:var(--color-panel-raised);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:20px;cursor:pointer;">◄</button>
+          <button onClick="{{ moveRight }}" style="width:52px;min-height:52px;background:var(--color-panel-raised);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:20px;cursor:pointer;">►</button>
+          <button style="flex:1;font-weight:700;font-size:20px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-primary-ink);background:var(--color-primary);border:none;min-height:52px;cursor:pointer;box-shadow:var(--edge-pixel);" style-active="transform:translateY(3px);box-shadow:0 0 0 #05140a,var(--glow-primary);">🔥 Огонь</button>
+        </div>
+        <div style="display:flex;gap:12px;">
+          <button onClick="{{ angleUp }}" style="flex:1;min-height:44px;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:13px;font-weight:700;cursor:pointer;">Угол +</button>
+          <button onClick="{{ angleDown }}" style="flex:1;min-height:44px;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:13px;font-weight:700;cursor:pointer;">Угол −</button>
+          <button onClick="{{ powerUp }}" style="flex:1;min-height:44px;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:13px;font-weight:700;cursor:pointer;">Сила +</button>
+          <button onClick="{{ powerDown }}" style="flex:1;min-height:44px;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:13px;font-weight:700;cursor:pointer;">Сила −</button>
+        </div>
+      </div>
+      <!-- replay player -->
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:24px;display:flex;flex-direction:column;gap:16px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Плеер реплея</div>
+        <div style="position:relative;height:150px;background:var(--color-surface);border:2px solid var(--color-border);overflow:hidden;">
+          <canvas class="om-canvas" data-replay="1" width="560" height="290" style="width:100%;height:100%;"></canvas>
+          <div style="position:absolute;top:8px;left:10px;font-size:11px;color:var(--accent);font-weight:700;">РЕПЛЕЙ · ход {{ replayTurn }}/12</div>
+        </div>
+        <!-- progress by turns -->
+        <div style="display:flex;gap:3px;">{{ replayPips }}</div>
+        <!-- transport -->
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button onClick="{{ stepBack }}" style="width:48px;min-height:48px;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:16px;cursor:pointer;" title="Шаг назад">⏮</button>
+          <button onClick="{{ togglePlay }}" style="width:60px;min-height:48px;background:var(--accent);border:none;color:var(--accent-ink);font-size:18px;cursor:pointer;box-shadow:var(--glow);" title="Play/Pause">{{ playIcon }}</button>
+          <button onClick="{{ stepFwd }}" style="width:48px;min-height:48px;background:var(--color-surface);border:2px solid var(--color-border-strong);color:var(--color-text);font-size:16px;cursor:pointer;" title="Шаг вперёд">⏭</button>
+          <div style="flex:1;"></div>
+          <div style="display:flex;gap:2px;background:var(--color-surface);border:2px solid var(--color-border);padding:3px;">
+            <sc-for list="{{ speeds }}" as="sp" hint-placeholder-count="3"><button onClick="{{ sp.pick }}" style="{{ sp.style }}">{{ sp.label }}</button></sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 11 — ЭКРАНЫ (БРЕЙКПОИНТЫ) ============ -->
+  <section style="display:flex;flex-direction:column;gap:12px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">11 — Экраны</div>
+      <h2 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Поток · все брейкпоинты</h2>
+      <p style="margin:6px 0 0;max-width:680px;font-size:13px;color:var(--color-text-muted);line-height:1.6;">Каждый экран — резиновый layout в кадрах <b style="color:var(--color-text);">390 / 768 / 1280 / 1920</b> (десктоп и wide отмасштабированы, чтобы влезть). Планшет — первоклассная цель: одноколоночный мобайл раскрывается в 2 колонки. Wide = десктоп с max-width, контент по центру.</p>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:16px;">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border-bottom:2px solid var(--color-border);padding-bottom:10px;"><span style="font-family:'DotGothic16','Handjet',sans-serif;font-weight:700;font-size:20px;text-transform:uppercase;">{{ scrLogin.title }}</span><span style="font-size:12px;color:var(--color-text-muted);">{{ scrLogin.note }}</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;">
+      <sc-for list="{{ scrLogin.frames }}" as="fr" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">{{ fr.label }}</span><div style="width:{{ fr.dispW }}px;height:{{ fr.dispH }}px;overflow:hidden;border:3px solid #05140a;box-shadow:0 10px 30px rgba(0,0,0,.5);background:#0a0f0a;"><div style="width:{{ fr.w }}px;height:{{ fr.h }}px;transform:scale({{ fr.scale }});transform-origin:top left;"><dc-import name="PT-Login" variant="{{ fr.variant }}" faction="{{ faction }}" intensity="{{ intensity }}" hint-size="{{ fr.w }}px,{{ fr.h }}px"></dc-import></div></div></div></sc-for>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:16px;">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border-bottom:2px solid var(--color-border);padding-bottom:10px;"><span style="font-family:'DotGothic16','Handjet',sans-serif;font-weight:700;font-size:20px;text-transform:uppercase;">{{ scrProfile.title }}</span><span style="font-size:12px;color:var(--color-text-muted);">{{ scrProfile.note }}</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;">
+      <sc-for list="{{ scrProfile.frames }}" as="fr" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">{{ fr.label }}</span><div style="width:{{ fr.dispW }}px;height:{{ fr.dispH }}px;overflow:hidden;border:3px solid #05140a;box-shadow:0 10px 30px rgba(0,0,0,.5);background:#0a0f0a;"><div style="width:{{ fr.w }}px;height:{{ fr.h }}px;transform:scale({{ fr.scale }});transform-origin:top left;"><dc-import name="PT-Profile" variant="{{ fr.variant }}" faction="{{ faction }}" intensity="{{ intensity }}" hint-size="{{ fr.w }}px,{{ fr.h }}px"></dc-import></div></div></div></sc-for>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:16px;">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border-bottom:2px solid var(--color-border);padding-bottom:10px;"><span style="font-family:'DotGothic16','Handjet',sans-serif;font-weight:700;font-size:20px;text-transform:uppercase;">{{ scrDaily.title }}</span><span style="font-size:12px;color:var(--color-text-muted);">{{ scrDaily.note }}</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;">
+      <sc-for list="{{ scrDaily.frames }}" as="fr" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">{{ fr.label }}</span><div style="width:{{ fr.dispW }}px;height:{{ fr.dispH }}px;overflow:hidden;border:3px solid #05140a;box-shadow:0 10px 30px rgba(0,0,0,.5);background:#0a0f0a;"><div style="width:{{ fr.w }}px;height:{{ fr.h }}px;transform:scale({{ fr.scale }});transform-origin:top left;"><dc-import name="PT-Daily" variant="{{ fr.variant }}" faction="{{ faction }}" intensity="{{ intensity }}" hint-size="{{ fr.w }}px,{{ fr.h }}px"></dc-import></div></div></div></sc-for>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:16px;">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border-bottom:2px solid var(--color-border);padding-bottom:10px;"><span style="font-family:'DotGothic16','Handjet',sans-serif;font-weight:700;font-size:20px;text-transform:uppercase;">{{ scrReplay.title }}</span><span style="font-size:12px;color:var(--color-text-muted);">{{ scrReplay.note }}</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;">
+      <sc-for list="{{ scrReplay.frames }}" as="fr" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">{{ fr.label }}</span><div style="width:{{ fr.dispW }}px;height:{{ fr.dispH }}px;overflow:hidden;border:3px solid #05140a;box-shadow:0 10px 30px rgba(0,0,0,.5);background:#0a0f0a;"><div style="width:{{ fr.w }}px;height:{{ fr.h }}px;transform:scale({{ fr.scale }});transform-origin:top left;"><dc-import name="PT-Replay" variant="{{ fr.variant }}" faction="{{ faction }}" intensity="{{ intensity }}" hint-size="{{ fr.w }}px,{{ fr.h }}px"></dc-import></div></div></div></sc-for>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:16px;">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border-bottom:2px solid var(--color-border);padding-bottom:10px;"><span style="font-family:'DotGothic16','Handjet',sans-serif;font-weight:700;font-size:20px;text-transform:uppercase;">{{ scrOnboarding.title }}</span><span style="font-size:12px;color:var(--color-text-muted);">{{ scrOnboarding.note }}</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;">
+      <sc-for list="{{ scrOnboarding.frames }}" as="fr" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">{{ fr.label }}</span><div style="width:{{ fr.dispW }}px;height:{{ fr.dispH }}px;overflow:hidden;border:3px solid #05140a;box-shadow:0 10px 30px rgba(0,0,0,.5);background:#0a0f0a;"><div style="width:{{ fr.w }}px;height:{{ fr.h }}px;transform:scale({{ fr.scale }});transform-origin:top left;"><dc-import name="PT-Onboarding" variant="{{ fr.variant }}" faction="{{ faction }}" intensity="{{ intensity }}" hint-size="{{ fr.w }}px,{{ fr.h }}px"></dc-import></div></div></div></sc-for>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:16px;">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border-bottom:2px solid var(--color-border);padding-bottom:10px;"><span style="font-family:'DotGothic16','Handjet',sans-serif;font-weight:700;font-size:20px;text-transform:uppercase;">{{ scrGame.title }}</span><span style="font-size:12px;color:var(--color-text-muted);">{{ scrGame.note }}</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;">
+      <sc-for list="{{ scrGame.frames }}" as="fr" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">{{ fr.label }}</span><div style="width:{{ fr.dispW }}px;height:{{ fr.dispH }}px;overflow:hidden;border:3px solid #05140a;box-shadow:0 10px 30px rgba(0,0,0,.5);background:#0a0f0a;"><div style="width:{{ fr.w }}px;height:{{ fr.h }}px;transform:scale({{ fr.scale }});transform-origin:top left;"><dc-import name="PT-Game" variant="{{ fr.variant }}" faction="{{ faction }}" intensity="{{ intensity }}" hint-size="{{ fr.w }}px,{{ fr.h }}px"></dc-import></div></div></div></sc-for>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:16px;">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border-bottom:2px solid var(--color-border);padding-bottom:10px;"><span style="font-family:'DotGothic16','Handjet',sans-serif;font-weight:700;font-size:20px;text-transform:uppercase;">{{ scrUtility.title }}</span><span style="font-size:12px;color:var(--color-text-muted);">{{ scrUtility.note }}</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;">
+      <sc-for list="{{ scrUtility.frames }}" as="fr" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">{{ fr.label }}</span><div style="width:{{ fr.dispW }}px;height:{{ fr.dispH }}px;overflow:hidden;border:3px solid #05140a;box-shadow:0 10px 30px rgba(0,0,0,.5);background:#0a0f0a;"><div style="width:{{ fr.w }}px;height:{{ fr.h }}px;transform:scale({{ fr.scale }});transform-origin:top left;"><dc-import name="PT-Utility" variant="{{ fr.variant }}" faction="{{ faction }}" intensity="{{ intensity }}" hint-size="{{ fr.w }}px,{{ fr.h }}px"></dc-import></div></div></div></sc-for>
+    </div>
+  </section>
+
+  <!-- ============ 12 — ЭКРАН ПАУЗЫ / НАСТРОЕК ============ -->
+  <section style="display:flex;flex-direction:column;gap:24px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">12 — Новый экран</div>
+      <h2 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Пауза / Настройки боя</h2>
+      <p style="margin:6px 0 0;max-width:680px;font-size:13px;color:var(--color-text-muted);line-height:1.6;">Оверлей поверх затемнённой арены (компонент Dialog). Тумблеры и Select — на существующих токенах. Резиновый 390/768/1280/1920: одна колонка на мобайле, кнопки в столбец.</p>
+    </div>
+    <div style="position:relative;border:2px solid var(--color-border);background:#0a0f0a;overflow:hidden;padding:clamp(20px,5vw,56px) 16px;display:flex;align-items:center;justify-content:center;min-height:540px;">
+      <canvas class="om-canvas" data-replay="1" width="560" height="290" style="position:absolute;inset:0;width:100%;height:100%;opacity:.28;filter:blur(1px);"></canvas>
+      <div style="position:absolute;inset:0;background:rgba(5,8,5,.72);"></div>
+      <div role="dialog" aria-modal="true" aria-label="Пауза" style="position:relative;width:min(440px,100%);background:var(--color-panel);border:2px solid var(--color-border-strong);box-shadow:0 12px 0 rgba(0,0,0,.5),var(--glow);display:flex;flex-direction:column;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:2px solid var(--color-border);">
+          <span style="font-family:'DotGothic16','Handjet',sans-serif;font-weight:700;font-size:30px;text-transform:uppercase;line-height:1;color:var(--color-text);text-shadow:var(--glow);">Пауза</span>
+          <button aria-label="Закрыть" style="width:36px;height:36px;background:transparent;border:2px solid var(--color-border-strong);color:var(--color-text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;">{{ icClose }}</button>
+        </div>
+        <div style="padding:20px;display:flex;flex-direction:column;gap:18px;">
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Звук</div>
+            {{ soundToggle }}
+            <div style="display:flex;flex-direction:column;gap:14px;padding-left:14px;border-left:2px solid var(--color-border);">
+              {{ musicToggle }}
+              {{ fxToggle }}
+            </div>
+          </div>
+          <div style="height:2px;background:var(--color-border);"></div>
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Отображение</div>
+            {{ calmToggle }}
+          </div>
+          <div style="height:2px;background:var(--color-border);"></div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Язык</div>
+            <div style="display:inline-flex;gap:2px;background:var(--color-surface);border:2px solid var(--color-border);padding:3px;align-self:flex-start;">
+              <sc-for list="{{ pauseLangSeg }}" as="s" hint-placeholder-count="2"><button onClick="{{ s.pick }}" style="{{ s.style }}">{{ s.label }}</button></sc-for>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">Сложность</div>
+            <div style="display:inline-flex;gap:2px;background:var(--color-surface);border:2px solid var(--color-border);padding:3px;align-self:flex-start;flex-wrap:wrap;">
+              <sc-for list="{{ pauseDiffSeg }}" as="s" hint-placeholder-count="3"><button onClick="{{ s.pick }}" style="{{ s.style }}">{{ s.label }}</button></sc-for>
+            </div>
+          </div>
+        </div>
+        <div style="padding:0 20px 20px;display:flex;flex-direction:column;gap:10px;">
+          <button style="width:100%;font-weight:700;font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-primary-ink);background:var(--color-primary);border:none;padding:14px;cursor:pointer;box-shadow:var(--edge-pixel);" style-active="transform:translateY(3px);box-shadow:0 0 0 #05140a,var(--glow-primary);">Продолжить</button>
+          <div style="display:flex;gap:10px;">
+            <button style="flex:1;font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-text);background:transparent;border:2px solid var(--color-border-strong);padding:12px;cursor:pointer;" style-hover="border-color:var(--accent);color:var(--accent);">Начать заново</button>
+            <button style="flex:1;font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-text);background:transparent;border:2px solid var(--color-border-strong);padding:12px;cursor:pointer;" style-hover="border-color:var(--color-danger);color:var(--color-danger);">Выйти в меню</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 13 — ДИСПЛЕЙНЫЙ ШРИФТ ============ -->
+  <section style="display:flex;flex-direction:column;gap:24px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">13 — Дисплейный шрифт</div>
+      <h2 style="margin:0;font-family:'DotGothic16','Handjet',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Кириллица заголовков — решение D7</h2>
+    </div>
+    <div style="max-width:740px;background:rgba(72,255,0,.06);border:2px solid var(--color-border);border-left:3px solid var(--color-accent-base);padding:14px 16px;font-size:13px;color:var(--color-text);line-height:1.6;"><b style="color:var(--color-accent-base);">D7 · переголосован → DotGothic16.</b> Pixelify Sans хорош латиницей, но кириллица собрана неровно: О С Э Ю Ф — скруглены, К Ж Я Д — боксовее и тяжелее, стыки кривые; на русских заголовках буквы «из разных шрифтов». После bake-off выбран DotGothic16 (OFL) — dot-matrix пиксельный с кириллицей в той же точечной сетке, что и латиница: единый вес и ритм, «игровой» аркадный характер. Дисплейный шрифт теперь DotGothic16 на всех заголовках и лого (Handjet — фолбэк); JetBrains Mono (UI/HUD) не тронут — его кириллица ровная.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:2px;">
+      <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:22px;display:flex;flex-direction:column;gap:16px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-danger);">Было · Pixelify Sans</span><span style="font-size:10px;color:var(--color-text-dim);">неровная кириллица</span></div>
+        <div style="font-family:'Pixelify Sans',sans-serif;font-weight:700;text-transform:uppercase;line-height:1;display:flex;flex-direction:column;gap:10px;color:var(--color-text-muted);">
+          <span style="font-size:clamp(34px,7vw,46px);">Победа</span><span style="font-size:clamp(34px,7vw,46px);">Командир</span><span style="font-size:clamp(34px,7vw,46px);">Инвентарь</span><span style="font-size:clamp(34px,7vw,46px);">Целься</span>
+        </div>
+      </div>
+      <div style="background:var(--color-panel);border:2px solid var(--accent);box-shadow:var(--glow);padding:22px;display:flex;flex-direction:column;gap:16px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-base);">Стало · Handjet</span><span style="font-size:10px;color:var(--color-text-dim);">целостная кириллица (Rosetta)</span></div>
+        <div style="font-family:'Handjet',sans-serif;font-weight:700;text-transform:uppercase;line-height:1;display:flex;flex-direction:column;gap:10px;color:var(--color-text);">
+          <span style="font-size:clamp(34px,7vw,46px);">Победа</span><span style="font-size:clamp(34px,7vw,46px);">Командир</span><span style="font-size:clamp(34px,7vw,46px);">Инвентарь</span><span style="font-size:clamp(34px,7vw,46px);">Целься</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer style="border-top:1px solid var(--color-border);padding-top:24px;display:flex;flex-wrap:wrap;gap:8px 24px;justify-content:space-between;font-size:12px;color:var(--color-text-dim);">
+    <span>Pixel Tanks — Extended Component & Screen Inventory</span>
+    <span>База → <a href="Pixel Tanks Design System.dc.html">Design System</a> · Спека → <a href="docs/design-system-theming/token-spec.md">token-spec.md</a></span>
+  </footer>
+
+</div>
+</div>
+
+<!-- toast portal -->
+<sc-if value="{{ toastShown }}" hint-placeholder-val="{{ false }}">
+  <div role="status" style="position:fixed;left:50%;bottom:32px;transform:translateX(-50%);z-index:200;display:flex;align-items:center;gap:10px;background:var(--color-panel);border:2px solid var(--color-accent-base);border-left:4px solid var(--color-accent-base);box-shadow:0 6px 0 rgba(0,0,0,.5),var(--glow-accent);padding:14px 18px;"><span style="color:var(--color-accent-base);font-size:16px;">✓</span><span style="font-size:13px;">Ссылка на реплей скопирована</span></div>
+</sc-if>
+
+<template id="__bundler_thumbnail"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#080c08"/><text x="50" y="44" font-family="monospace" font-size="30" font-weight="700" fill="#48ff00" text-anchor="middle">★</text><text x="50" y="74" font-family="monospace" font-size="14" font-weight="700" fill="#c900ff" text-anchor="middle">TANKS</text></svg></template></x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1240,&quot;height&quot;:1400}}">
+class Component extends DCLogic {
+  state = {
+    faction:'player', intensity:'neon',
+    pwShown:false, seg2:'День', seg3:'Стрелок',
+    weapon:0, angle:47, power:64,
+    replayPlaying:false, replayTurn:5, speed:'1×',
+    toastShown:false, dragT:0.62,
+    soundOn:true, musicOn:true, fxOn:true, pauseLang:'RU', pauseDiff:'Стрелок', demoTgl:true, demoTgl2:false,
+  };
+
+  componentDidMount(){ this.paintAll(); this._t=setInterval(()=>{ if(this.state.replayPlaying) this.setState(s=>({replayTurn:s.replayTurn>=12?1:s.replayTurn+1})); },700); }
+  componentWillUnmount(){ clearInterval(this._t); if(this._toastTimer) clearTimeout(this._toastTimer); }
+  componentDidUpdate(){ this.paintAll(); }
+
+  paintAll(){
+    document.querySelectorAll('canvas[data-sling]').forEach(cv=>this.paintSling(cv));
+    document.querySelectorAll('canvas[data-replay]').forEach(cv=>this.paintReplay(cv));
+  }
+  terrain(ctx,W,H){
+    const sky=ctx.createLinearGradient(0,0,0,H); sky.addColorStop(0,'#0a1e0d'); sky.addColorStop(1,'#08120a');
+    ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+    const step=Math.max(6,Math.round(W/48));
+    const gt=x=>H*0.7+Math.sin(x/W*3)*H*0.08;
+    for(let x=0;x<W;x+=step){const g=Math.round(gt(x)/step)*step;ctx.fillStyle='#217f00';ctx.fillRect(x,g,step,step);ctx.fillStyle='#48ff00';ctx.fillRect(x,g,step,3);ctx.fillStyle='#301507';ctx.fillRect(x,g+step,step,H);}
+    return gt;
+  }
+  paintSling(cv){
+    const ctx=cv.getContext('2d'),W=cv.width,H=cv.height;ctx.imageSmoothingEnabled=false;
+    const gt=this.terrain(ctx,W,H);
+    const tx=W*0.2,ty=gt(tx)-16;
+    // tank
+    ctx.fillStyle='#48ff00';ctx.fillRect(tx-16,ty,32,12);ctx.fillRect(tx-10,ty-8,20,8);
+    // drag vector
+    const a=this.state.angle*Math.PI/180, len=this.state.power*1.4;
+    const ex=tx-Math.cos(a)*len, ey=ty-8-Math.sin(-a)*len - this.state.power*1.4*Math.sin(a)*0;
+    const dx=tx+Math.cos(a)*len*0.1, dy=(ty-8)-Math.sin(a)*len; // aim forward
+    ctx.strokeStyle=(this.state.intensity==='calm')?'#48ff00':'rgba(72,255,0,.9)';ctx.lineWidth=3;ctx.setLineDash([8,7]);
+    ctx.beginPath();ctx.moveTo(tx,ty-6);ctx.lineTo(tx+Math.cos(a)*len, (ty-6)-Math.sin(a)*len);ctx.stroke();ctx.setLineDash([]);
+    // pull-back marker (opposite dir)
+    ctx.fillStyle='#ffa900';ctx.beginPath();ctx.arc(tx-Math.cos(a)*len*0.7,(ty-6)+Math.sin(a)*len*0.7,7,0,7);ctx.fill();
+    // predicted arc
+    ctx.strokeStyle='rgba(255,169,0,.55)';ctx.setLineDash([5,6]);ctx.lineWidth=2;ctx.beginPath();
+    for(let t=0;t<=1;t+=0.05){const x=tx+Math.cos(a)*len*t*3.2;const y=(ty-6)-Math.sin(a)*len*t*3.2+t*t*H*0.9;t===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+    ctx.stroke();ctx.setLineDash([]);
+  }
+  paintReplay(cv){
+    const ctx=cv.getContext('2d'),W=cv.width,H=cv.height;ctx.imageSmoothingEnabled=false;
+    const gt=this.terrain(ctx,W,H);
+    const tx=W*0.16,ex=W*0.82;
+    ctx.fillStyle='#48ff00';ctx.fillRect(tx-16,gt(tx)-14,32,12);
+    ctx.fillStyle='#c900ff';ctx.fillRect(ex-16,gt(ex)-14,32,12);
+    // projectile position along arc by replayTurn
+    const p=this.state.replayTurn/12;
+    ctx.strokeStyle='rgba(255,169,0,.7)';ctx.setLineDash([6,7]);ctx.lineWidth=2;ctx.beginPath();
+    let px,py;
+    for(let t=0;t<=p;t+=0.03){px=tx+(ex-tx)*t;py=gt(tx)-14-Math.sin(t*Math.PI)*H*0.55;t===0?ctx.moveTo(px,py):ctx.lineTo(px,py);}
+    ctx.stroke();ctx.setLineDash([]);
+    if(px!=null){ctx.fillStyle='#ffe000';ctx.fillRect(px-4,py-4,8,8);ctx.fillStyle='rgba(255,169,0,.5)';ctx.fillRect(px-8,py-8,16,16);}
+  }
+
+  seg(active){return `font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;padding:8px 16px;border:none;cursor:pointer;transition:all .12s;min-height:40px;`+(active?`background:var(--accent);color:var(--accent-ink);box-shadow:var(--glow);`:`background:transparent;color:var(--color-text-muted);`);}
+  factionSeg(active,kind){const on=kind==='enemy'?`background:var(--color-enemy);color:var(--color-enemy-ink);box-shadow:var(--glow-enemy);`:`background:var(--color-accent-base);color:var(--color-accent-ink-base);box-shadow:var(--glow-accent);`;return `font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;padding:8px 16px;border:none;cursor:pointer;min-height:40px;`+(active?on:`background:transparent;color:var(--color-text-muted);`);}
+  intSeg(active){return `font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;padding:8px 16px;border:none;cursor:pointer;min-height:40px;`+(active?`background:var(--color-accent-base);color:var(--color-accent-ink-base);box-shadow:var(--glow-accent);`:`background:transparent;color:var(--color-text-muted);`);}
+
+  icon(paths){
+    return React.createElement('svg',{width:24,height:24,viewBox:'0 0 16 16',shapeRendering:'crispEdges',fill:'none',stroke:'currentColor','strokeWidth':2},
+      paths.map((p,i)=>p.t==='r'?React.createElement('rect',{key:i,x:p.x,y:p.y,width:p.w,height:p.h,fill:'currentColor',stroke:'none'}):React.createElement('path',{key:i,d:p.d})));
+  }
+
+  hpBar(label,val,faction){
+    const color = val>60?'var(--color-success)':val>30?'var(--color-warning)':'var(--color-danger)';
+    return React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:'5px'}},
+      React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+        React.createElement('span',{style:{display:'flex',alignItems:'center',gap:'6px',fontWeight:700,fontSize:'12px'}},
+          React.createElement('span',{style:{color:faction==='enemy'?'var(--color-enemy)':'var(--color-accent-base)'}},faction==='enemy'?'☠':'★'), label),
+        React.createElement('span',{style:{fontSize:'11px',color:'var(--color-text-muted)',fontVariantNumeric:'tabular-nums'}},'HP '+val+' / 100')),
+      React.createElement('div',{style:{height:'12px',background:'var(--color-surface)',border:'1px solid var(--color-border)'}},
+        React.createElement('div',{style:{width:val+'%',height:'100%',background:color}})));
+  }
+
+  pip(on,color){return React.createElement('span',{style:{width:'14px',height:'14px',display:'inline-block',background:on?(color||'var(--accent)'):'transparent',border:'2px solid '+(on?(color||'var(--accent)'):'var(--color-border-strong)'),boxShadow:on?'var(--glow)':'none',opacity:on?1:.5}});}
+
+  toggle(label,on,onClick,sub){
+    return React.createElement('button',{onClick,role:'switch','aria-checked':on,style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',width:'100%',background:'transparent',border:'none',cursor:'pointer',padding:0,color:'var(--color-text)',textAlign:'left',font:'inherit'}},
+      React.createElement('span',{style:{display:'flex',flexDirection:'column',gap:'2px'}},
+        React.createElement('span',{style:{fontWeight:700,fontSize:'14px'}},label),
+        sub?React.createElement('span',{style:{fontSize:'11px',color:'var(--color-text-muted)'}},sub):null),
+      React.createElement('span',{style:{position:'relative',flex:'0 0 auto',width:'52px',height:'28px',background:on?'var(--accent)':'var(--color-surface)',border:'2px solid '+(on?'var(--accent)':'var(--color-border-strong)'),boxShadow:on?'var(--glow)':'none',transition:'all .12s'}},
+        React.createElement('span',{style:{position:'absolute',top:'2px',left:on?'26px':'2px',width:'20px',height:'20px',background:on?'var(--accent-ink)':'var(--color-text-dim)',transition:'left .12s'}})));
+  }
+
+  renderVals(){
+    const f=this.state.faction, playerActive=f==='player', calm=this.state.intensity==='calm';
+    const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+    const decisions=[
+      {tag:'D1',verdict:'алиас',title:'success = accent',body:'#48FF00 намеренно тот же неон. success — семантический алиас accent (успех = «свой» зелёный), НЕ отдельный оттенок. Токен --color-success оставлен как ссылка для читаемости кода.'},
+      {tag:'D2',verdict:'введён',title:'--glow-danger именован',body:'Раньше glow поражения инлайнился. Теперь это именованный токен в наборе glow-accent/primary/enemy/danger. Используется для defeat, ошибок и удаления.'},
+      {tag:'D3',verdict:'правило',title:'text-dim не на мелком',body:'text-dim (3.6:1) не проходит AA на мелком. Правило: текст <18px — минимум text-muted (7.5:1). text-dim только ≥18px bold / чистый декор. В этом инвентаре эйбрау-метки набраны text-muted.'},
+      {tag:'D4',verdict:'унифиц.',title:'ink-пары показаны',body:'primary-ink / accent-ink / enemy-ink / danger-ink — это текст поверх заливки. Показаны как контраст-подписи в бренд-палитре; отдельными свотчами не выносим (они не фон).'},
+      {tag:'D5',verdict:'удалён',title:'только --radius-none',body:'Система «острые углы». --radius-sm убран — ни один компонент его не использовал. Остаётся единственный --radius-none: 0.'},
+      {tag:'D6',verdict:'правило',title:'accent: тема vs фикс',body:'Фиксированный accent-base (всегда зелёный): номера секций, заголовки, «свой игрок». Тематический --accent (следует data-faction): все интерактивные компоненты, фокус, выбор, рамки активного.'},
+    ];
+
+    const icons=[
+      {name:'play', svg:this.icon([{d:'M4 3 L12 8 L4 13 Z'}])},
+      {name:'pause', svg:this.icon([{t:'r',x:4,y:3,w:3,h:10},{t:'r',x:9,y:3,w:3,h:10}])},
+      {name:'mute', svg:this.icon([{d:'M3 6 L6 6 L9 3 L9 13 L6 10 L3 10 Z'},{d:'M11 6 L14 10 M14 6 L11 10'}])},
+      {name:'sound', svg:this.icon([{d:'M3 6 L6 6 L9 3 L9 13 L6 10 L3 10 Z'},{d:'M11 5 Q13 8 11 11'}])},
+      {name:'share', svg:this.icon([{t:'r',x:11,y:2,w:3,h:3},{t:'r',x:2,y:7,w:3,h:3},{t:'r',x:11,y:11,w:3,h:3},{d:'M11 4 L5 8 M5 9 L11 12'}])},
+      {name:'replay', svg:this.icon([{d:'M13 8 A5 5 0 1 1 8 3'},{d:'M8 1 L8 5 L11 3 Z'}])},
+      {name:'arrow-l', svg:this.icon([{d:'M10 3 L5 8 L10 13'}])},
+      {name:'arrow-r', svg:this.icon([{d:'M6 3 L11 8 L6 13'}])},
+      {name:'arrow-u', svg:this.icon([{d:'M3 10 L8 5 L13 10'}])},
+      {name:'target', svg:this.icon([{t:'r',x:7,y:2,w:2,h:3},{t:'r',x:7,y:11,w:2,h:3},{t:'r',x:2,y:7,w:3,h:2},{t:'r',x:11,y:7,w:3,h:2},{t:'r',x:7,y:7,w:2,h:2}])},
+      {name:'settings', svg:this.icon([{t:'r',x:6,y:1,w:4,h:2},{t:'r',x:6,y:13,w:4,h:2},{t:'r',x:1,y:6,w:2,h:4},{t:'r',x:13,y:6,w:2,h:4},{t:'r',x:5,y:5,w:6,h:6}])},
+      {name:'fire', svg:this.icon([{d:'M8 2 L11 7 L9 7 L11 11 L5 11 L7 7 L5 7 Z'}])},
+      {name:'star', svg:this.icon([{d:'M8 1 L10 6 L15 6 L11 9 L12 14 L8 11 L4 14 L5 9 L1 6 L6 6 Z'}])},
+      {name:'skull', svg:this.icon([{d:'M4 3 H12 V10 H10 V13 H6 V10 H4 Z'},{t:'r',x:5,y:5,w:2,h:2},{t:'r',x:9,y:5,w:2,h:2},{t:'r',x:7,y:8,w:2,h:2}])},
+      {name:'check', svg:this.icon([{d:'M3 8 L7 12 L13 4'}])},
+      {name:'close', svg:this.icon([{d:'M4 4 L12 12 M12 4 L4 12'}])},
+      {name:'clock', svg:this.icon([{d:'M8 2 A6 6 0 1 1 8 14 A6 6 0 1 1 8 2'},{d:'M8 5 L8 8 L10 10'}])},
+      {name:'warning', svg:this.icon([{d:'M8 2 L14 13 L2 13 Z'},{t:'r',x:7,y:6,w:2,h:3},{t:'r',x:7,y:10,w:2,h:2}])},
+      {name:'edit', svg:this.icon([{d:'M3 11 L10 4 L12 6 L5 13 L3 13 Z'}])},
+      {name:'info', svg:this.icon([{d:'M8 2 A6 6 0 1 1 8 14 A6 6 0 1 1 8 2'},{t:'r',x:7,y:5,w:2,h:2},{t:'r',x:7,y:8,w:2,h:4}])},
+      {name:'wind', svg:this.icon([{d:'M2 6 H10 A2 2 0 1 0 8 4'},{d:'M2 10 H12 A2 2 0 1 1 10 12'}])},
+      {name:'wpn-фугас', svg:this.icon([{t:'r',x:6,y:4,w:4,h:8},{d:'M6 4 L8 1 L10 4'}])},
+      {name:'wpn-мощный', svg:this.icon([{d:'M8 1 V15 M1 8 H15 M4 4 L12 12 M12 4 L4 12'}])},
+      {name:'wpn-кластер', svg:this.icon([{t:'r',x:3,y:3,w:3,h:3},{t:'r',x:10,y:3,w:3,h:3},{t:'r',x:6,y:8,w:3,h:3},{t:'r',x:3,y:11,w:2,h:2},{t:'r',x:11,y:11,w:2,h:2}])},
+      {name:'wpn-роющий', svg:this.icon([{d:'M8 1 V9 M5 6 L8 9 L11 6'},{t:'r',x:2,y:12,w:12,h:2}])},
+      {name:'eye', svg:this.icon([{d:'M1 8 Q8 2 15 8 Q8 14 1 8 Z'},{t:'r',x:6,y:6,w:4,h:4}])},
+      {name:'eye-off', svg:this.icon([{d:'M1 8 Q8 2 15 8 Q8 14 1 8 Z'},{t:'r',x:6,y:6,w:4,h:4},{d:'M2 2 L14 14'}])},
+      {name:'arrow-d', svg:this.icon([{d:'M3 6 L8 11 L13 6'}])},
+    ];
+
+    const weapons=[['Фугас','◈','12'],['Мощный заряд','✸','4'],['Кластер','⁘','6'],['Роющий','⇩','3']];
+    const w=weapons[this.state.weapon];
+
+    const seg2=['День','Всё время'].map(l=>({label:l,pick:()=>this.setState({seg2:l}),style:this.seg(this.state.seg2===l)}));
+    const seg3=['Новобранец','Стрелок','Терминатор'].map(l=>({label:l,pick:()=>this.setState({seg3:l}),style:this.seg(this.state.seg3===l)}));
+    const speeds=['0.5×','1×','2×'].map(l=>({label:l,pick:()=>this.setState({speed:l}),style:this.seg(this.state.speed===l)}));
+
+    // shells 5, spent = 2
+    const shellPips=[true,true,true,false,false].map((on,i)=>this.pip(on,'var(--accent)'));
+    const turnPips=[true,true,false,false].map((on,i)=>this.pip(on,'var(--color-warning)'));
+    const replayPips=Array.from({length:12},(_,i)=>this.pip(i < this.state.replayTurn,'var(--accent)'));
+
+    const hpBars=React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:'14px'}},
+      this.hpBar('100 — полный',100,'player'),
+      this.hpBar('72 — норма',72,'player'),
+      this.hpBar('38 — риск',38,'enemy'),
+      this.hpBar('12 — критично',12,'enemy'));
+
+    // screens config: 4 breakpoints scaled
+    const bp=(w,h,scale,label,variant)=>({w,h,scale,label,variant,dispW:Math.round(w*scale),dispH:Math.round(h*scale)});
+    const frameset=(mobV,tabV,deskV)=>[
+      bp(390,720,1,'Mobile · 390',mobV),
+      bp(768,720,0.62,'Планшет · 768',tabV),
+      bp(1280,720,0.42,'Desktop · 1280',deskV),
+      bp(1920,720,0.30,'Wide · 1920',deskV),
+    ];
+    const screens=[
+      {title:'Логин / Регистрация', note:'email+пароль, без Google, выбор фракции · 1 кол → 2 кол (арт+форма) на планшете+', comp:'PT-Login', frames:frameset('m','t','d')},
+      {title:'Профиль', note:'аватар-фракция, статистика, история боёв + реплеи · стек → сайдбар+сетка', comp:'PT-Profile', frames:frameset('m','t','d')},
+      {title:'Бой дня', note:'вызов + результат/сравнение + лидерборд дня, табы День/Всё время', comp:'PT-Daily', frames:frameset('m','t','d')},
+      {title:'Реплей / Поделиться', note:'плеер + карточка шеринга', comp:'PT-Replay', frames:frameset('m','t','d')},
+      {title:'Онбординг «Как играть»', note:'3 шага, пиктограммы, пагинация', comp:'PT-Onboarding', frames:frameset('m','t','d')},
+      {title:'Игровой экран (mobile-first)', note:'Canvas + HUD + тач-рогатка; десктоп — HUD-бар сверху', comp:'PT-Game', frames:frameset('m','t','d')},
+      {title:'Utility · загрузка / 404 / ошибка', note:'переиспользуемые заглушки', comp:'PT-Utility', frames:frameset('m','t','d')},
+    ];
+
+    return {
+      faction:f, intensity:this.state.intensity,
+      setPlayer:()=>this.setState({faction:'player'}), setEnemy:()=>this.setState({faction:'enemy'}),
+      playerBtnStyle:this.factionSeg(playerActive,'player'), enemyBtnStyle:this.factionSeg(!playerActive,'enemy'),
+      setNeon:()=>this.setState({intensity:'neon'}), setCalm:()=>this.setState({intensity:'calm'}),
+      neonBtnStyle:this.intSeg(!calm), calmBtnStyle:this.intSeg(calm),
+
+      decisions, icons,
+      pwType:this.state.pwShown?'text':'password', pwIcon:this.state.pwShown?'🙈':'👁',
+      togglePw:()=>this.setState(s=>({pwShown:!s.pwShown})),
+      seg2, seg3, speeds,
+
+      shellPips, turnPips, replayPips, hpBars,
+
+      weaponName:w[0], weaponIcon:w[1], weaponAmmo:w[2],
+      weaponPrev:()=>this.setState(s=>({weapon:(s.weapon+3)%4})),
+      weaponNext:()=>this.setState(s=>({weapon:(s.weapon+1)%4})),
+
+      angle:this.state.angle, powerStr:String(this.state.power).padStart(3,'0'),
+      angleUp:()=>this.setState(s=>({angle:clamp(s.angle+2,0,90)})), angleDown:()=>this.setState(s=>({angle:clamp(s.angle-2,0,90)})),
+      powerUp:()=>this.setState(s=>({power:clamp(s.power+3,0,100)})), powerDown:()=>this.setState(s=>({power:clamp(s.power-3,0,100)})),
+      moveLeft:()=>{}, moveRight:()=>{},
+
+      replayTurn:this.state.replayTurn, replayPlaying:this.state.replayPlaying,
+      togglePlay:()=>this.setState(s=>({replayPlaying:!s.replayPlaying})),
+      playIcon:this.state.replayPlaying?'❚❚':'▶',
+      stepBack:()=>this.setState(s=>({replayTurn:clamp(s.replayTurn-1,1,12)})),
+      stepFwd:()=>this.setState(s=>({replayTurn:clamp(s.replayTurn+1,1,12)})),
+
+      screens,
+      scrLogin:screens[0], scrProfile:screens[1], scrDaily:screens[2], scrReplay:screens[3],
+      scrOnboarding:screens[4], scrGame:screens[5], scrUtility:screens[6],
+
+      icClose:this.icon([{d:'M4 4 L12 12 M12 4 L4 12'}]),
+      soundToggle:this.toggle('Общий звук',this.state.soundOn,()=>this.setState(s=>({soundOn:!s.soundOn}))),
+      musicToggle:this.toggle('Музыка',this.state.soundOn&&this.state.musicOn,()=>this.setState(s=>({musicOn:!s.musicOn})),'фоновая тема'),
+      fxToggle:this.toggle('Эффекты',this.state.soundOn&&this.state.fxOn,()=>this.setState(s=>({fxOn:!s.fxOn})),'выстрелы, взрывы'),
+      calmToggle:this.toggle('Спокойный HUD',calm,()=>this.setState({intensity:calm?'neon':'calm'}),'гасит неон-glow · data-intensity=calm'),
+      pauseLangSeg:['RU','EN'].map(l=>({label:l,pick:()=>this.setState({pauseLang:l}),style:this.seg(this.state.pauseLang===l)})),
+      pauseDiffSeg:['Новобранец','Стрелок','Терминатор'].map(l=>({label:l,pick:()=>this.setState({pauseDiff:l}),style:this.seg(this.state.pauseDiff===l)})),
+      demoToggleA:this.toggle('Вибрация',this.state.demoTgl,()=>this.setState(s=>({demoTgl:!s.demoTgl}))),
+      demoToggleB:this.toggle('Автоприцел',this.state.demoTgl2,()=>this.setState(s=>({demoTgl2:!s.demoTgl2})),'подсказка траектории'),
+      toastShown:this.state.toastShown,
+      fireToast:()=>{ this.setState({toastShown:true}); if(this._toastTimer)clearTimeout(this._toastTimer); this._toastTimer=setTimeout(()=>this.setState({toastShown:false}),2200); },
+    };
+  }
+}
+</script>
+</body>
+</html>
