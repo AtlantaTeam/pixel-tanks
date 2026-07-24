@@ -1,13 +1,18 @@
 import type { ButtonHTMLAttributes } from 'react';
 import { clsx } from 'clsx';
 
-export type TButtonVariant = 'primary' | 'ghost' | 'danger';
+export type TButtonVariant = 'primary' | 'accent' | 'ghost' | 'danger';
 export type TButtonSize = 'sm' | 'md' | 'icon';
 
+/** `accent` читает --accent/--accent-ink/--glow — переключается атрибутом
+ *  [data-faction] на предке (docs/design-system-theming/token-spec.md, §3), без
+ *  правки самого компонента. */
 const VARIANT_CLASSES: Record<TButtonVariant, string> = {
-    primary: 'bg-primary text-surface hover:brightness-110 [--pixel-border-color:var(--color-ink)]',
-    ghost: 'bg-panel-deep text-ink hover:bg-panel',
-    danger: 'bg-danger text-ink hover:brightness-110',
+    primary:
+        'bg-primary text-primary-ink shadow-[var(--edge-pixel)] hover:shadow-[var(--edge-pixel),var(--glow-primary)] [--pixel-border-color:var(--color-primary-ink)]',
+    accent: 'bg-[var(--accent)] text-[var(--accent-ink)] shadow-[var(--edge-pixel)] hover:shadow-[var(--edge-pixel),var(--glow)] [--pixel-border-color:var(--accent-ink)]',
+    ghost: 'border-[length:var(--border-w)] border-border-strong bg-transparent text-text hover:border-[var(--accent)]',
+    danger: 'bg-danger text-text hover:brightness-110',
 };
 
 const SIZE_CLASSES: Record<TButtonSize, string> = {

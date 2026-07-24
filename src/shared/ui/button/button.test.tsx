@@ -19,4 +19,22 @@ describe('Button', () => {
 
         expect(getByRole('button')).toHaveClass('min-h-11');
     });
+
+    it('renders primary variant from semantic token classes, not hardcoded colors', () => {
+        const { getByRole } = render(<Button variant="primary">Играть</Button>);
+
+        const button = getByRole('button');
+        expect(button.className).toMatch(/\bbg-primary\b/);
+        expect(button.className).toMatch(/\btext-primary-ink\b/);
+        expect(button.className).not.toMatch(/#[0-9a-fA-F]{3,6}/);
+    });
+
+    it('renders accent variant from theme-runtime CSS vars, so faction theme switches it without a prop', () => {
+        const { getByRole } = render(<Button variant="accent">Ход</Button>);
+
+        const button = getByRole('button');
+        expect(button.className).toMatch(/var\(--accent\)/);
+        expect(button.className).toMatch(/var\(--accent-ink\)/);
+        expect(button.className).not.toMatch(/#[0-9a-fA-F]{3,6}/);
+    });
 });

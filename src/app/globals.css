@@ -6,15 +6,66 @@
     --breakpoint-lg: 992px;
     --breakpoint-xl: 1200px;
 
-    /* Игровая палитра (Pico-8) */
+    /* Игровая палитра (Pico-8) — surface/panel/panel-deep/ink/muted ещё не
+       мигрированы на дизайн-систему из hero-арта (фаза 4, #272): их меняют
+       Panel/Select/Dialog/экраны разом, чтобы не разъезжаться семантикой
+       (старый --color-muted держит текст, новый token-spec --color-muted —
+       фон disabled; совместить оба под одним именем нельзя без миграции
+       потребителей). primary/accent/danger используются только в Button —
+       безопасно завести значениями из token-spec.md уже сейчас. */
     --color-surface: #1a1c2c;
     --color-panel: #29366f;
     --color-panel-deep: #262b44;
-    --color-primary: #ffcd75;
-    --color-accent: #38b764;
-    --color-danger: #b13e53;
     --color-ink: #f4f4f4;
     --color-muted: #94b0c2;
+
+    /* Дизайн-система из hero-арта — docs/design-system-theming/token-spec.md.
+       Ядро токенов для сквозного среза (Button + переключение темы фракции).
+       Полный перенос палитры/типографики — фаза 3 (#271). */
+    --color-primary: #ffc21f;
+    --color-primary-ink: #241900;
+    --color-accent: #48ff00;
+    --color-accent-ink: #052400;
+    --color-enemy: #c900ff;
+    --color-enemy-ink: #1e0030;
+    --color-danger: #ff4242;
+    --color-warning: #ffa900;
+    --color-warning-ink: #2a1600;
+    --color-success: #48ff00;
+    --color-bg: #080c08;
+    --color-panel-raised: #212f24;
+    --color-border: #2c3f30;
+    --color-border-strong: #3f5a41;
+    --color-text: #e9f5e6;
+    --color-text-muted: #a2bb9d;
+    --color-text-dim: #728a70;
+}
+
+/* Эффекты дизайн-системы (glow/edge/ring) — вне @theme, чтобы участвовать в
+   переключении темы через override переменных ниже (Tailwind 4 не переключает
+   @theme в рантайме, только обычные CSS-переменные). */
+:root {
+    --glow-primary: 0 0 6px rgba(255, 194, 31, 0.55), 0 0 18px rgba(255, 169, 0, 0.3);
+    --glow-accent: 0 0 6px rgba(72, 255, 0, 0.55), 0 0 18px rgba(72, 255, 0, 0.35);
+    --glow-enemy: 0 0 6px rgba(201, 0, 255, 0.55), 0 0 18px rgba(201, 0, 255, 0.35);
+    --glow-text: 0 0 8px currentColor;
+    --edge-pixel: 0 3px 0 #05140a;
+    --ring-focus: 0 0 0 3px var(--color-bg), 0 0 0 5px var(--color-accent);
+    --border-w: 2px;
+    --border-w-thick: 4px;
+
+    /* Тема по умолчанию — фракция игрока */
+    --accent: var(--color-accent);
+    --accent-ink: var(--color-accent-ink);
+    --glow: var(--glow-accent);
+}
+
+/* Переключение темы — фракция врага: компоненты, читающие --accent/--accent-ink/
+   --glow (напр. Button variant="accent"), меняются без правки самих компонентов. */
+[data-faction='enemy'] {
+    --accent: var(--color-enemy);
+    --accent-ink: var(--color-enemy-ink);
+    --glow: var(--glow-enemy);
 }
 
 /* Самостоятельный хостинг шрифтов вместо next/font/google: сборка гейта билдится
