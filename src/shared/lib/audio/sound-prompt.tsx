@@ -30,7 +30,7 @@ export function SoundPrompt() {
     return (
         <p
             aria-hidden
-            className="animate-pulse font-pixel text-[10px] text-primary/90 sm:text-xs motion-reduce:animate-none"
+            className="animate-pulse font-ui text-[10px] text-primary/90 sm:text-xs motion-reduce:animate-none"
         >
             ▶ нажми — играет музыка
         </p>

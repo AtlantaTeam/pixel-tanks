@@ -21,6 +21,11 @@ const SIZE_CLASSES: Record<TButtonSize, string> = {
     icon: 'size-11 text-[10px]',
 };
 
+/** `disabled` — токены token-spec.md §5 (`bg-muted`/`text-text-dim`, без glow),
+ *  а не opacity-затемнение: перекрывает цвет варианта у всех кнопок разом. */
+const DISABLED_CLASSES =
+    'disabled:cursor-not-allowed disabled:border-transparent disabled:bg-muted disabled:text-text-dim disabled:shadow-none';
+
 /** Классы кнопки отдельно от компонента — для Link и других не-button элементов */
 export function buttonClasses(
     variant: TButtonVariant = 'primary',
@@ -28,8 +33,9 @@ export function buttonClasses(
     className?: string,
 ) {
     return clsx(
-        'pixel-border m-1 inline-flex cursor-pointer items-center justify-center font-pixel uppercase',
-        'transition-[filter] active:translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40',
+        'pixel-border m-1 inline-flex cursor-pointer items-center justify-center font-ui tracking-[0.06em] uppercase',
+        'transition-[filter] active:translate-y-0.5',
+        DISABLED_CLASSES,
         VARIANT_CLASSES[variant],
         SIZE_CLASSES[size],
         className,

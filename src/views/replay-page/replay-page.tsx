@@ -21,7 +21,7 @@ export function ReplayPage({ code }: TReplayPageProps) {
         return (
             <main className="safe-area-inset flex h-dvh flex-col items-center justify-center gap-6 overflow-hidden p-4 text-center">
                 <h1 className="font-pixel text-lg text-primary">Реплей не найден</h1>
-                <p className="max-w-md text-sm text-muted">
+                <p className="max-w-md text-sm text-text-muted">
                     Ссылка повреждена или записана несовместимой версией игры — воспроизвести этот
                     бой не получилось.
                 </p>

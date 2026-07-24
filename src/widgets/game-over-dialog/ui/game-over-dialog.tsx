@@ -69,13 +69,17 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
 
     return (
         <Dialog open={isGameOver} className="text-center">
-            <h2 className="font-pixel text-xl text-primary">{winnerText}</h2>
-            <p className="mt-4 text-muted">
+            <h2 className="font-display text-h1 text-primary uppercase [text-shadow:var(--glow-text)]">
+                {winnerText}
+            </h2>
+            <p className="font-ui text-body mt-4 text-text-muted">
                 Счёт: {playerPoints} — {enemyPoints}
             </p>
             {isDaily && seed ? (
                 <div className="mt-2">
-                    <p className="font-pixel text-[10px] text-muted uppercase">Бой дня пройден</p>
+                    <p className="font-ui text-label text-text-muted uppercase tracking-[0.12em]">
+                        Бой дня пройден
+                    </p>
                     <ShareDailyResultButton points={points} seed={seed} />
                 </div>
             ) : null}

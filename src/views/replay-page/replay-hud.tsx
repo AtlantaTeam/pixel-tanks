@@ -26,13 +26,13 @@ export function ReplayHud() {
 
             <div className="flex items-center gap-3 sm:gap-6">
                 <div className="flex items-baseline gap-2">
-                    <span className="font-pixel text-xs text-muted">Игрок</span>
+                    <span className="font-pixel text-xs text-text-muted">Игрок</span>
                     <span className="font-pixel text-xl text-primary">{displayedPlayerPoints}</span>
                 </div>
-                <span className="font-pixel text-xs text-muted">:</span>
+                <span className="font-pixel text-xs text-text-muted">:</span>
                 <div className="flex items-baseline gap-2">
                     <span className="font-pixel text-xl text-danger">{displayedEnemyPoints}</span>
-                    <span className="font-pixel text-xs text-muted">{BOT_NAME}</span>
+                    <span className="font-pixel text-xs text-text-muted">{BOT_NAME}</span>
                 </div>
             </div>
 

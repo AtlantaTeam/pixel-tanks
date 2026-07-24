@@ -53,7 +53,7 @@ export function ChatBubble({
             className={clsx(
                 'pixel-border pointer-events-none absolute m-1 -translate-x-1/2 -translate-y-full',
                 'animate-bubble-pop motion-reduce:animate-none',
-                'max-w-40 bg-panel px-3 py-2 text-center font-pixel text-[10px] text-ink',
+                'max-w-40 bg-panel px-3 py-2 text-center font-ui text-[10px] text-text',
                 className,
             )}
             style={

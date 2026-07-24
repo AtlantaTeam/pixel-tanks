@@ -40,7 +40,7 @@ export function MainPage() {
                 />
             </div>
 
-            <p className="max-w-prose text-center text-muted">
+            <p className="max-w-prose text-center text-text-muted">
                 Танковая дуэль на Canvas. Управление: мышь — угол, колесо — мощность, клик —
                 выстрел. Стрелки — точная настройка угла/мощности, Ctrl+стрелки — смена оружия /
                 перемещение танка, Enter или Space — выстрел.

@@ -23,7 +23,7 @@ describe('ChatBubble', () => {
     it('renders in pixel-border game style', () => {
         const { getByText } = render(<ChatBubble reply={happyReply} x={100} y={200} />);
 
-        expect(getByText('Hasta la vista, baby')).toHaveClass('pixel-border', 'font-pixel');
+        expect(getByText('Hasta la vista, baby')).toHaveClass('pixel-border', 'font-ui');
     });
 
     it('is hidden from assistive tech (decorative teaser, not aria-live)', () => {

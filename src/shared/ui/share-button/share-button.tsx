@@ -48,7 +48,7 @@ export function ShareButton({ label, buildPayload }: TShareButtonProps) {
                 {label}
             </Button>
             {hint ? (
-                <p className="text-[10px] text-muted" aria-live="polite">
+                <p className="text-[10px] text-text-muted" aria-live="polite">
                     {hint}
                 </p>
             ) : null}

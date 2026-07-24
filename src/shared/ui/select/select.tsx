@@ -8,12 +8,13 @@ type TSelectProps = SelectHTMLAttributes<HTMLSelectElement> & {
 export function Select({ label, className, id, ...props }: TSelectProps) {
     return (
         <label className="flex flex-col items-center gap-1" htmlFor={id}>
-            {label && <span className="text-xs text-muted">{label}</span>}
+            {label && <span className="text-xs text-text-muted">{label}</span>}
             <select
                 id={id}
                 className={clsx(
-                    'pixel-border m-1 min-h-11 w-full cursor-pointer bg-panel-deep px-2 py-1.5',
-                    'font-pixel text-[10px] text-ink',
+                    'm-1 min-h-11 w-full cursor-pointer border-[length:var(--border-w)] border-border-strong bg-surface px-2 py-1.5',
+                    'font-ui text-[10px] text-text',
+                    'focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]',
                     className,
                 )}
                 {...props}

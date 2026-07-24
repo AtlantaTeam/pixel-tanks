@@ -6,22 +6,20 @@
     --breakpoint-lg: 992px;
     --breakpoint-xl: 1200px;
 
-    /* Игровая палитра (Pico-8) — surface/panel/panel-deep/ink/muted ещё не
-       мигрированы на дизайн-систему из hero-арта (фаза 4, #272): их меняют
-       Panel/Select/Dialog/экраны разом, чтобы не разъезжаться семантикой
-       (старый --color-muted держит текст, новый token-spec --color-muted —
-       фон disabled; совместить оба под одним именем нельзя без миграции
-       потребителей). Это же держит в силе фаза 3 (#271, кодификация токенов) —
-       коллизия имён с token-spec.md остаётся до миграции потребителей. */
-    --color-surface: #1a1c2c;
-    --color-panel: #29366f;
-    --color-panel-deep: #262b44;
-    --color-ink: #f4f4f4;
-    --color-muted: #94b0c2;
-
     /* Дизайн-система из hero-арта — docs/design-system-theming/token-spec.md.
-       Полная кодификация палитры/типографики (#271). Миграция потребителей
-       (shared/ui, экраны) на эти токены — фаза 4 (#272). */
+       Палитра/типографика кодифицированы в фазе 3 (#271), потребители
+       (shared/ui, экраны) мигрированы на неё в фазе 4 (#272). Старая Pico-8
+       палитра (surface/panel/panel-deep/ink/muted) снята — имена surface/panel/
+       muted переиспользованы token-spec под новыми значениями и новой ролью
+       (напр. --color-muted раньше держал текст, теперь — фон disabled). */
+    --color-bg: #080c08;
+    --color-surface: #101711;
+    --color-panel: #18221a;
+    --color-panel-raised: #212f24;
+    --color-border: #2c3f30;
+    --color-border-strong: #3f5a41;
+    --color-muted: #33452f;
+
     --color-primary: #ffc21f;
     --color-primary-ink: #241900;
     --color-accent: #48ff00;
@@ -33,10 +31,6 @@
     --color-warning: #ffa900;
     --color-warning-ink: #2a1600;
     --color-success: #48ff00;
-    --color-bg: #080c08;
-    --color-panel-raised: #212f24;
-    --color-border: #2c3f30;
-    --color-border-strong: #3f5a41;
     --color-text: #e9f5e6;
     --color-text-muted: #a2bb9d;
     --color-text-dim: #728a70;
@@ -46,10 +40,14 @@
     --radius-sm: 2px;
 
     /* Типографика дизайн-системы — Pixelify Sans (display) + JetBrains Mono (UI/HUD),
-       обе с кириллицей (в отличие от Press Start 2P/Montserrat выше, которые фаза 4
-       заменит по экранам, см. #272). Роли и обоснование — docs/design-system-theming/tokens.md. */
-    --font-display: 'Pixelify Sans', system-ui, sans-serif;
-    --font-ui: 'JetBrains Mono', ui-monospace, monospace;
+       обе с кириллицей. Роли и обоснование — docs/design-system-theming/tokens.md.
+       Emoji-фолбэки — как у --font-sans/--font-pixel ниже (мьют-кнопка, реплики бота). */
+    --font-display:
+        'Pixelify Sans', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-ui:
+        'JetBrains Mono', ui-monospace, monospace, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
 
     --text-display: clamp(48px, 7vw, 96px);
     --text-display--line-height: 0.95;
@@ -272,5 +270,5 @@ body {
 }
 
 body {
-    @apply bg-surface text-ink;
+    @apply bg-bg font-ui text-text;
 }

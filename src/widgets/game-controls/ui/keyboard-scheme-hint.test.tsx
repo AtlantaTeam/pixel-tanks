@@ -29,6 +29,6 @@ describe('KeyboardSchemeHint', () => {
     it('renders with muted text color', () => {
         const { container } = render(<KeyboardSchemeHint />);
 
-        expect(container.querySelector('.text-muted')).toBeInTheDocument();
+        expect(container.querySelector('.text-text-muted')).toBeInTheDocument();
     });
 });

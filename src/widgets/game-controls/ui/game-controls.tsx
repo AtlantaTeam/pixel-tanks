@@ -53,8 +53,10 @@ export function GameControls() {
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center sm:gap-4">
                 <div className="flex flex-col items-center gap-2">
-                    <div className="font-pixel text-xs text-muted">Игрок</div>
-                    <div className="font-pixel text-2xl text-primary">{displayedPlayerPoints}</div>
+                    <div className="font-ui text-xs text-text-muted">Игрок</div>
+                    <div className="font-ui text-hud-xl text-primary tabular-nums [text-shadow:var(--glow-text)]">
+                        {displayedPlayerPoints}
+                    </div>
                 </div>
 
                 <div className="flex flex-wrap items-end justify-center gap-2 sm:gap-4">
@@ -90,12 +92,14 @@ export function GameControls() {
                 </div>
 
                 <div className="flex flex-col items-center gap-2">
-                    <div className="font-pixel text-xs text-muted">{BOT_NAME}</div>
-                    <div className="font-pixel text-2xl text-danger">{displayedEnemyPoints}</div>
+                    <div className="font-ui text-xs text-text-muted">{BOT_NAME}</div>
+                    <div className="font-ui text-hud-xl text-danger tabular-nums [text-shadow:var(--glow-text)]">
+                        {displayedEnemyPoints}
+                    </div>
                 </div>
             </div>
 
-            <div className="border-t border-base-300 pt-2 sm:pt-4">
+            <div className="border-t border-border pt-2 sm:pt-4">
                 <KeyboardSchemeHint />
             </div>
         </div>
@@ -121,7 +125,7 @@ function Counter({ label, value, onDec, onInc }: TCounterProps) {
 
     return (
         <div className="flex flex-col items-center gap-1">
-            <span className="text-xs text-muted">{label}</span>
+            <span className="text-xs text-text-muted">{label}</span>
             <div className="flex items-center gap-2">
                 <Button
                     variant="ghost"
@@ -132,7 +136,9 @@ function Counter({ label, value, onDec, onInc }: TCounterProps) {
                 >
                     −
                 </Button>
-                <span className="min-w-[3rem] text-center font-pixel text-sm">{value}</span>
+                <span className="min-w-[3rem] text-center font-ui text-sm tabular-nums">
+                    {value}
+                </span>
                 <Button
                     variant="ghost"
                     size="icon"
