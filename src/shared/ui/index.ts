@@ -6,6 +6,7 @@ export { Select } from './select';
 export { SegmentedControl } from './segmented-control';
 export type { TSegmentedControlOption } from './segmented-control';
 export { TextInput } from './text-input';
+export { Toggle } from './toggle';
 export { Dialog } from './dialog';
 export { ICON_NAMES, Icon } from './icon';
 export type { TIconName } from './icon';

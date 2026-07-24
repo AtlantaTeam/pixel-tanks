@@ -13,6 +13,7 @@ import {
     Select,
     ShareButton,
     TextInput,
+    Toggle,
 } from '@/shared/ui';
 
 const PERIOD_OPTIONS: TSegmentedControlOption<'day' | 'all'>[] = [
@@ -46,6 +47,9 @@ export function DesignSystemPreview() {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [period, setPeriod] = useState<'day' | 'all'>('day');
     const [difficulty, setDifficulty] = useState<'rookie' | 'shooter' | 'terminator'>('shooter');
+    const [vibrationOn, setVibrationOn] = useState(false);
+    const [musicOn, setMusicOn] = useState(true);
+    const [calmMode, setCalmMode] = useState(false);
 
     return (
         <div className="flex flex-col gap-6">
@@ -201,6 +205,31 @@ export function DesignSystemPreview() {
                                 onChange={setDifficulty}
                             />
                         </div>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-4">
+                    <h3 className="font-ui text-hud text-text uppercase">Toggle</h3>
+                    <div className="flex flex-col gap-4">
+                        <Toggle label="Вибрация" checked={vibrationOn} onChange={setVibrationOn} />
+                        <Toggle
+                            label="Музыка"
+                            sublabel="фоновая тема"
+                            checked={musicOn}
+                            onChange={setMusicOn}
+                        />
+                        <Toggle
+                            label="Спокойный HUD"
+                            sublabel="гасит неон-glow · data-intensity=calm"
+                            checked={calmMode}
+                            onChange={setCalmMode}
+                        />
+                        <Toggle
+                            label="Отключённый тумблер"
+                            checked={false}
+                            onChange={() => {}}
+                            disabled
+                        />
                     </div>
                 </section>
 
