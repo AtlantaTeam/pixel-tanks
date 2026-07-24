@@ -65,8 +65,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Непрерывный prod ralph · Фаза 2: включение флага в prod",
-                "branch": "feature/ralph-continuous-prod-enable"
+                "milestone": "Баги игры · партия 1",
+                "branch": "feature/game-bugs-batch-1"
             }
         ]
     },
