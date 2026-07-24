@@ -1,7 +1,7 @@
 import { defineConfig, globalIgnores } from 'eslint/config';
 import nextVitals from 'eslint-config-next/core-web-vitals';
 import nextTs from 'eslint-config-next/typescript';
-import { pixelTanksEslintPlugin } from './src/shared/lib/eslint-rules/index.ts';
+import { pixelTanksEslintPlugin } from './src/shared/lib/eslint-rules/index.mjs';
 
 const eslintConfig = defineConfig([
     ...nextVitals,

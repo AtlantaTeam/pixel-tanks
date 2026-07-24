@@ -1,19 +1,31 @@
-import type { Rule } from 'eslint';
+/**
+ * @typedef {import('eslint').Rule.RuleModule} TRuleModule
+ * @typedef {import('eslint').Rule.Node} TRuleNode
+ */
 
-/** `JSXText` не поименован в `Rule.RuleListener` (только базовые estree-узлы) — достаём его
- *  из объединения `Rule.Node` (расширено JSX-типами через `@types/estree-jsx`) явно. */
-type TJsxTextNode = Extract<Rule.Node, { type: 'JSXText' }>;
+// Файл — на чистом JS (`.mjs`), а не `.ts`, намеренно: eslint.config.mjs импортирует правило
+// в рантайме нативным ESM-лоадером Node. Импорт `.ts` требовал бы стрипа типов (Node ≥22.18)
+// и печатал бы MODULE_TYPELESS_PACKAGE_JSON-варнинг на каждом `npm run lint`. `.mjs` — без этих
+// требований к версии Node и без варнинга.
 
 const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
 
 /** Атрибуты, чьё значение рендерится/озвучивается пользователю как замена иконки. */
 const ICON_LIKE_ATTRIBUTES = new Set(['aria-label', 'title', 'alt', 'placeholder']);
 
-function findEmoji(value: string): string | null {
+/**
+ * @param {string} value
+ * @returns {string | null}
+ */
+function findEmoji(value) {
     return value.match(EMOJI_PATTERN)?.[0] ?? null;
 }
 
-function getJsxAttributeName(node: Rule.Node): string | null {
+/**
+ * @param {TRuleNode} node
+ * @returns {string | null}
+ */
+function getJsxAttributeName(node) {
     if (node.type !== 'JSXAttribute') return null;
     return node.name.type === 'JSXIdentifier' ? node.name.name : null;
 }
@@ -21,8 +33,11 @@ function getJsxAttributeName(node: Rule.Node): string | null {
 /** Строковый литерал/шаблон — эмодзи в нём считается «иконкой», только если он рендерится
  *  как дочерний узел JSX-элемента/фрагмента либо как значение icon-подобного атрибута
  *  (`aria-label`/`title`/`alt`/`placeholder`). Эмодзи в обычных JS-данных (тестовые фикстуры,
- *  реплики бота) — не иконка, правило их не трогает. */
-function isJsxRenderPosition(node: Rule.Node): boolean {
+ *  реплики бота) — не иконка, правило их не трогает.
+ * @param {TRuleNode} node
+ * @returns {boolean}
+ */
+function isJsxRenderPosition(node) {
     let current = node;
     let parent = current.parent;
 
@@ -56,12 +71,17 @@ function isJsxRenderPosition(node: Rule.Node): boolean {
     return false;
 }
 
-export const noEmojiAsIconRule: Rule.RuleModule = {
+/** @type {TRuleModule} */
+export const noEmojiAsIconRule = {
     meta: {
         type: 'problem',
         docs: {
+            // Правило — эвристика по позиции литерала: ловит только ИНЛАЙН-эмодзи в JSX (текст
+            // элемента, строковый/шаблонный литерал в render-позиции, icon-подобные атрибуты).
+            // Эмодзи, протёкший через переменную/константу/объект (`const g = '🔥'; <b>{g}</b>`),
+            // оно НЕ ловит — этот слой страхуют компонентные тесты (mute/sound/replay).
             description:
-                'Запрещает эмодзи-пиктограммы вместо <Icon> из shared/ui/icon. Нет нужной иконки в наборе — заводи блокер для дизайна, не подставляй эмодзи-фолбэк.',
+                'Запрещает инлайн-эмодзи вместо <Icon> из shared/ui/icon (только литералы в JSX; протечку через переменную ловят компонентные тесты). Нет нужной иконки в наборе — заводи блокер для дизайна, не подставляй эмодзи-фолбэк.',
         },
         schema: [],
         messages: {
@@ -71,7 +91,7 @@ export const noEmojiAsIconRule: Rule.RuleModule = {
     },
     create(context) {
         return {
-            JSXText(node: TJsxTextNode) {
+            JSXText(node) {
                 const emoji = findEmoji(node.value);
                 if (emoji) {
                     context.report({ node, messageId: 'emojiAsIcon', data: { emoji } });

@@ -1,6 +1,6 @@
 import { RuleTester } from 'eslint';
 import { describe, it } from 'vitest';
-import { noEmojiAsIconRule } from './no-emoji-as-icon.ts';
+import { noEmojiAsIconRule } from './no-emoji-as-icon.mjs';
 
 RuleTester.describe = describe;
 RuleTester.it = it;

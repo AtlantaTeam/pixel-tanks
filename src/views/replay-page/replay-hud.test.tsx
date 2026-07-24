@@ -4,7 +4,12 @@ import { ReplayHud } from './replay-hud';
 
 describe('ReplayHud', () => {
     afterEach(() => {
-        useGameStore.getState().resetGame();
+        // resetGame меняет isGameOver в ещё смонтированном компоненте (auto-cleanup RTL
+        // отрабатывает позже этого хука) → Zustand перерендерит ReplayHud. Без act(...)
+        // vitest печатает «update to ReplayHud was not wrapped in act(...)».
+        act(() => {
+            useGameStore.getState().resetGame();
+        });
     });
 
     it('показывает бейдж «Реплей» с play-иконкой, а не эмодзи-глифом, пока бой идёт', () => {
@@ -22,7 +27,11 @@ describe('ReplayHud', () => {
         act(() => {
             useGameStore.setState({ isGameOver: true });
         });
-        render(<ReplayHud />);
+        // render в act(...): useAnimatedValue дёргает setState на rAF после монтирования —
+        // без обёртки vitest печатает «update to ReplayHud was not wrapped in act(...)».
+        act(() => {
+            render(<ReplayHud />);
+        });
 
         expect(screen.getByText('Бой завершён')).toBeInTheDocument();
         expect(screen.queryByText('Реплей')).not.toBeInTheDocument();

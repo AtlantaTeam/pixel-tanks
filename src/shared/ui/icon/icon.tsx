@@ -1,5 +1,4 @@
 import type { SVGAttributes } from 'react';
-import { clsx } from 'clsx';
 
 type TIconPrimitive =
     | { type: 'path'; d: string }
@@ -132,9 +131,9 @@ export function Icon({ name, size = 24, className, ...props }: TIconProps) {
             fill="none"
             stroke="currentColor"
             strokeWidth={2}
-            role="img"
+            role={isDecorative ? undefined : 'img'}
             aria-hidden={isDecorative ? true : undefined}
-            className={clsx(className)}
+            className={className}
             {...props}
         >
             {ICON_PATHS[name].map((primitive, index) =>

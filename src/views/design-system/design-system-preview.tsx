@@ -14,7 +14,9 @@ const VARIANTS: TButtonVariant[] = ['primary', 'accent', 'ghost', 'danger'];
 const SIZES: TButtonSize[] = ['sm', 'md', 'icon'];
 
 function buttonLabel(variant: TButtonVariant, size: TButtonSize) {
-    if (size === 'icon') return <Icon name="play" aria-label={`${variant} icon`} />;
+    // Витрина — статичный превью-срез, иконка чисто декоративна (кнопка ничего не делает):
+    // без aria-label, чтобы не озвучивать техническое имя варианта как содержимое.
+    if (size === 'icon') return <Icon name="play" />;
     return variant;
 }
 
