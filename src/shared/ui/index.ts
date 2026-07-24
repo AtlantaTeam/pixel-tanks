@@ -10,3 +10,7 @@ export { Toggle } from './toggle';
 export { Dialog } from './dialog';
 export { ICON_NAMES, Icon } from './icon';
 export type { TIconName } from './icon';
+export { Avatar } from './avatar';
+export type { TAvatarFaction } from './avatar';
+export { FactionBadge } from './faction-badge';
+export type { TFactionBadgeFaction, TFactionBadgeSize } from './faction-badge';

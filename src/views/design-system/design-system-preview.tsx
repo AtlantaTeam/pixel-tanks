@@ -4,8 +4,10 @@ import { useState } from 'react';
 import type { TFaction } from '@/shared/lib/theme';
 import type { TButtonSize, TButtonVariant, TSegmentedControlOption } from '@/shared/ui';
 import {
+    Avatar,
     Button,
     Dialog,
+    FactionBadge,
     ICON_NAMES,
     Icon,
     Panel,
@@ -268,6 +270,68 @@ export function DesignSystemPreview() {
                             </Button>
                         </div>
                     </Dialog>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">Avatar / FactionBadge</h3>
+                    <p className="max-w-prose text-caption text-text-muted">
+                        Бейджи фракции (player/enemy) с гло, или серый unknown без темы. Размеры: md
+                        (56×56) и sm (44×44). Тема следует <code>data-faction</code> предка.
+                    </p>
+                    <div className="flex flex-wrap items-start gap-8">
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                Avatar: player (с Icon)
+                            </span>
+                            <Avatar faction="player">
+                                <Icon name="star" />
+                            </Avatar>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                Avatar: enemy (с Icon)
+                            </span>
+                            <Avatar faction="enemy">
+                                <Icon name="skull" />
+                            </Avatar>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                FactionBadge: player (md)
+                            </span>
+                            <FactionBadge faction="player" />
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                FactionBadge: enemy (md)
+                            </span>
+                            <FactionBadge faction="enemy" />
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                FactionBadge: unknown (md)
+                            </span>
+                            <FactionBadge faction="unknown" />
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                FactionBadge: player (sm)
+                            </span>
+                            <FactionBadge faction="player" size="sm" />
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                FactionBadge: enemy (sm)
+                            </span>
+                            <FactionBadge faction="enemy" size="sm" />
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                FactionBadge: unknown (sm)
+                            </span>
+                            <FactionBadge faction="unknown" size="sm" />
+                        </div>
+                    </div>
                 </section>
 
                 <section className="flex flex-col gap-3">
