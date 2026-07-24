@@ -1,6 +1,8 @@
 # PRD: game-ui — своя UI-библиотека вместо DaisyUI
 
-**Дата**: 2026-07-18 · **Статус**: approved (решение из критического ревью стека)
+> ⚠️ **Устарело в части темы — вытеснено `docs/design-system-theming/`** (PR #296). Палитра Pico-8 и «Press Start 2P + Montserrat» ниже **НЕ актуальны**: текущая тема — неон hero-арта, **Pixelify Sans + JetBrains Mono**, токены в `globals.css` (витрина `/design-system`). Актуально и сейчас — только само решение отказаться от DaisyUI в пользу своей `shared/ui`. Файл сохранён как история.
+
+**Дата**: 2026-07-18 · **Статус**: superseded (тема) / решение про свою UI-либу — в силе
 
 ## Проблема
 
@@ -27,7 +29,7 @@ DaisyUI — кит для «обычных сайтов», его темы не 
 2. Тема в `globals.css` (`@theme` токены), удаление `@plugin 'daisyui'`
 3. Press Start 2P в layout через `next/font`
 4. Миграция: `main-page`, `game-controls`, `game-over-dialog`
-5. `npm uninstall daisyui`, чистка `web/CLAUDE.md`
+5. `npm uninstall daisyui`, чистка `CLAUDE.md`
 
 ## Критерии приёмки
 

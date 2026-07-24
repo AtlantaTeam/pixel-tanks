@@ -86,10 +86,9 @@ or directory`, по-строчный `\r` ломает команды. Фикс:
 - **monitor.js** в целом — критичных win32-точек нет; `--jq "length"`/`"."` в двойных
   кавычках на `/bin/sh` literal. ✅
 
-## ⬜ detached-spawn монитора — в коде ПОКА НЕТ
+## ✅ detached-spawn монитора — реализовано
 
-`ralph.js` НЕ спавнит `monitor.js` (запускается вручную). Авто-спавн — Фаза 2 (#74).
-При реализации учесть Linux: `spawn(..., { detached: true, stdio: 'ignore' })` + `unref()`.
+`ralph.js` спавнит `monitor.js` сам (`startMonitor`: `spawn(..., { detached: true, stdio: 'ignore' })` + `child.unref()`), плюс `adoptMonitor` подхватывает сироту прошлого прогона. Сделано в Фазе 2 прод-режима (#74, milestone закрыт). Исторический аудит — фиксировал состояние до реализации.
 
 ## Итог для #67
 
