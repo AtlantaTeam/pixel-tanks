@@ -24,7 +24,15 @@
             "Bash(gh api repos/AtlantaTeam/pixel-tanks/*)",
             "Bash(git add*)",
             "Bash(git commit*)",
-            "Bash(git push*)"
+            "Bash(git push*)",
+            "Bash(tmux capture-pane*)",
+            "WebSearch",
+            "WebFetch",
+            "mcp__timeweb__list_servers",
+            "mcp__timeweb__list_floating_ips",
+            "mcp__timeweb__list_images",
+            "mcp__timeweb__get_account_services_costs",
+            "mcp__timeweb__get_account_domains"
         ],
         "ask": ["Bash(npm install*)", "Bash(gh repo*)"],
         "deny": [
