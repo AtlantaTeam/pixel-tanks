@@ -76,4 +76,24 @@ describe('TextInput', () => {
 
         expect(screen.queryByRole('button')).not.toBeInTheDocument();
     });
+
+    it('отключает кнопку-переключатель пароля вместе с полем', () => {
+        render(<TextInput label="Пароль" id="password" type="password" disabled />);
+
+        expect(screen.getByRole('button', { name: 'Показать пароль' })).toBeDisabled();
+    });
+
+    it('рендерит поле с типом email', () => {
+        render(<TextInput label="Email" id="email" type="email" />);
+
+        expect(screen.getByLabelText('Email')).toHaveAttribute('type', 'email');
+    });
+
+    it('красит поле в accent-токены при фокусе, без ошибки', () => {
+        render(<TextInput label="Email" id="email" />);
+
+        const input = screen.getByLabelText('Email');
+        expect(input.className).toMatch(/focus-visible:border-\[var\(--accent\)\]/);
+        expect(input.className).toMatch(/focus-visible:shadow-\[var\(--glow\)\]/);
+    });
 });

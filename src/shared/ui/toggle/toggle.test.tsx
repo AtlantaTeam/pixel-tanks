@@ -112,4 +112,45 @@ describe('Toggle', () => {
         const switchElement = container.querySelector('[class*="w-13"]');
         expect(switchElement).toBeInTheDocument();
     });
+
+    it('переключает по клавише Space', async () => {
+        const user = userEvent.setup();
+        const onChange = vi.fn();
+        render(<Toggle label="Вибрация" checked={false} onChange={onChange} />);
+
+        screen.getByRole('switch').focus();
+        await user.keyboard(' ');
+
+        expect(onChange).toHaveBeenCalledWith(true);
+    });
+
+    it('переключает по клавише Enter', async () => {
+        const user = userEvent.setup();
+        const onChange = vi.fn();
+        render(<Toggle label="Вибрация" checked={false} onChange={onChange} />);
+
+        screen.getByRole('switch').focus();
+        await user.keyboard('{Enter}');
+
+        expect(onChange).toHaveBeenCalledWith(true);
+    });
+
+    it('не реагирует на клавиатуру, когда disabled', async () => {
+        const user = userEvent.setup();
+        const onChange = vi.fn();
+        render(<Toggle label="Вибрация" checked={false} onChange={onChange} disabled />);
+
+        screen.getByRole('switch').focus();
+        await user.keyboard(' ');
+
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('показывает accent-outline на фокусе', () => {
+        render(<Toggle label="Вибрация" checked={false} onChange={() => {}} />);
+
+        expect(screen.getByRole('switch').className).toMatch(
+            /focus-visible:outline-\[var\(--accent\)\]/,
+        );
+    });
 });

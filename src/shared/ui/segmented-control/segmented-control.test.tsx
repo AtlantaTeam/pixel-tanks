@@ -139,4 +139,18 @@ describe('SegmentedControl', () => {
         expect(screen.getByRole('radiogroup', { name: 'Период' })).toBeInTheDocument();
         expect(screen.queryByRole('radio')).not.toBeInTheDocument();
     });
+
+    it('показывает accent-outline на фокусе сегмента', () => {
+        render(
+            <SegmentedControl
+                label="Период"
+                options={PERIOD_OPTIONS}
+                value="day"
+                onChange={() => {}}
+            />,
+        );
+
+        const segment = screen.getByRole('radio', { name: 'День' });
+        expect(segment.className).toMatch(/focus-visible:outline-\[var\(--accent\)\]/);
+    });
 });
