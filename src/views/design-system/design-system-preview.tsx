@@ -9,6 +9,8 @@ import {
     ChatBubble,
     DEMO_WEAPONS,
     Dialog,
+    EmptyState,
+    ErrorBanner,
     FactionBadge,
     HPBar,
     ICON_NAMES,
@@ -18,6 +20,8 @@ import {
     SegmentedControl,
     Select,
     ShareButton,
+    Skeleton,
+    Spinner,
     TextInput,
     Toast,
     Toggle,
@@ -524,6 +528,95 @@ export function DesignSystemPreview() {
                         <Toast variant="success" message="Ссылка на реплей скопирована" />
                         <Toast variant="neutral" message="Синхронизация профиля…" />
                         <Toast variant="error" message="Не удалось поделиться" />
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">Skeleton</h3>
+                    <div className="flex max-w-sm flex-col gap-2 border-[length:var(--border-w)] border-border bg-panel p-5">
+                        <Skeleton className="h-[38px] w-full" />
+                        <Skeleton className="h-[38px] w-full" />
+                        <Skeleton className="h-[38px] w-[82%]" />
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">EmptyState</h3>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div className="flex flex-col gap-2">
+                            <span className="font-ui text-caption text-text-muted">с action</span>
+                            <div className="border-[length:var(--border-w)] border-border bg-panel">
+                                <EmptyState
+                                    icon="target"
+                                    title="Боёв пока нет"
+                                    description="Сыграй первый матч — история появится здесь."
+                                    action={
+                                        <Button variant="accent" size="md">
+                                            В бой
+                                        </Button>
+                                    }
+                                />
+                            </div>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                            <span className="font-ui text-caption text-text-muted">без action</span>
+                            <div className="border-[length:var(--border-w)] border-border bg-panel">
+                                <EmptyState
+                                    icon="target"
+                                    title="Реплеев пока нет"
+                                    description="Сыграй бой и сохрани реплей, чтобы посмотреть его здесь."
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">ErrorBanner</h3>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div className="flex flex-col gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                без повтора
+                            </span>
+                            <ErrorBanner
+                                title="Неверный email или пароль"
+                                description="Проверьте данные и попробуйте снова."
+                            />
+                        </div>
+                        <div className="flex flex-col gap-2">
+                            <span className="font-ui text-caption text-text-muted">с повтором</span>
+                            <ErrorBanner
+                                title="Не удалось загрузить"
+                                description="Сервер недоступен. Проверьте соединение."
+                                onRetry={() => {}}
+                            />
+                        </div>
+                    </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                    <h3 className="font-ui text-hud text-text uppercase">Spinner</h3>
+                    <div className="flex flex-wrap items-center gap-x-10 gap-y-4">
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                default (accent)
+                            </span>
+                            <Spinner className="text-accent" />
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                size 32 (primary-ink на primary)
+                            </span>
+                            <div className="flex items-center justify-center bg-primary p-2">
+                                <Spinner size={32} label="Загрузка" className="text-primary-ink" />
+                            </div>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                кастомная метка
+                            </span>
+                            <Spinner label="Синхронизация профиля" className="text-text-muted" />
+                        </div>
                     </div>
                 </section>
             </div>

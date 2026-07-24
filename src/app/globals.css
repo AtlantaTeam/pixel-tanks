@@ -293,6 +293,20 @@
     animation: crt-flicker 2.4s steps(3, end) infinite;
 }
 
+/* Skeleton-плейсхолдер (§09 инвентаря): бегущий блик по градиенту surface→panel-raised.
+   Гасится motion-reduce:animate-none в месте использования компонента. */
+@keyframes shimmer {
+    0% {
+        background-position: -200px 0;
+    }
+    100% {
+        background-position: 200px 0;
+    }
+}
+@utility animate-shimmer {
+    animation: shimmer 1.2s infinite linear;
+}
+
 /* Отступы под чёлку/скруглённые углы/жест-бар (iOS notch, Android gesture nav).
    viewport-fit: cover в metadata — без него env() всегда резолвится в 0. */
 @utility safe-area-inset {
