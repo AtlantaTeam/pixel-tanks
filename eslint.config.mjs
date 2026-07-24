@@ -1,6 +1,7 @@
 import { defineConfig, globalIgnores } from 'eslint/config';
 import nextVitals from 'eslint-config-next/core-web-vitals';
 import nextTs from 'eslint-config-next/typescript';
+import { pixelTanksEslintPlugin } from './src/shared/lib/eslint-rules/index.ts';
 
 const eslintConfig = defineConfig([
     ...nextVitals,
@@ -8,6 +9,15 @@ const eslintConfig = defineConfig([
     {
         rules: {
             '@typescript-eslint/no-explicit-any': 'error',
+        },
+    },
+    {
+        files: ['src/**/*.{ts,tsx}'],
+        plugins: {
+            'pixel-tanks': pixelTanksEslintPlugin,
+        },
+        rules: {
+            'pixel-tanks/no-emoji-as-icon': 'error',
         },
     },
     // playwright-report/** и test-results/** — артефакты e2e-прогона (#81); coverage/** —
