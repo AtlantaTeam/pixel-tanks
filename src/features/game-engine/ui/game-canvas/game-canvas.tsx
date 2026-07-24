@@ -252,7 +252,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     };
 
     return (
-        <>
+        <div className="relative h-full w-full">
             <canvas
                 ref={canvasRef}
                 className="game-canvas block h-full w-full touch-none bg-base-200"
@@ -349,6 +349,6 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                     onExpire={() => setBotBubble(null)}
                 />
             )}
-        </>
+        </div>
     );
 }
