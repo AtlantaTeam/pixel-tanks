@@ -25,21 +25,21 @@ export default function FrontendLayout({
             {/* Preload основных woff2 — вернули автоматику next/font, потерянную при
                 самостоятельном хостинге шрифтов: без него браузер узнаёт о шрифтах только
                 после загрузки и парса CSS, старт загрузки позже и дольше FOUT при
-                font-display: swap. Pixelify Sans — заголовки/лого/крупные счётчики,
-                JetBrains Mono — кнопки/метки/тело/HUD-числа (docs/design-system-theming/tokens.md);
+                font-display: swap. DotGothic16 — заголовки/лого/крупные счётчики,
+                JetBrains Mono — кнопки/метки/тело/HUD-числа (docs/design-system-theming/token-spec.md);
                 оба сабсета (latin + cyrillic)
                 нужны над сгибом на русской странице. */}
             <head>
                 <link
                     rel="preload"
-                    href="/fonts/pixelify-sans-cyrillic.woff2"
+                    href="/fonts/dotgothic16-cyrillic.woff2"
                     as="font"
                     type="font/woff2"
                     crossOrigin="anonymous"
                 />
                 <link
                     rel="preload"
-                    href="/fonts/pixelify-sans-latin.woff2"
+                    href="/fonts/dotgothic16-latin.woff2"
                     as="font"
                     type="font/woff2"
                     crossOrigin="anonymous"

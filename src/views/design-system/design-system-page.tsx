@@ -121,6 +121,7 @@ const EFFECTS: TEffect[] = [
     { name: '--glow-primary', kind: 'box', hint: 'Свечение primary-кнопок' },
     { name: '--glow-accent', kind: 'box', hint: 'Свечение неоновых обводок' },
     { name: '--glow-enemy', kind: 'box', hint: 'Вражеский glow (тема enemy)' },
+    { name: '--glow-danger', kind: 'box', hint: 'Свечение danger (поражение)' },
     { name: '--glow-text', kind: 'text', hint: 'Свечение HUD-цифр и лого' },
     { name: '--edge-pixel', kind: 'box', hint: 'Жёсткая пиксель-тень объёма' },
     { name: '--ring-focus', kind: 'box', hint: 'Клавиатурный фокус (двойной ринг)' },
