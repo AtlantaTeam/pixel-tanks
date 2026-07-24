@@ -142,6 +142,30 @@ describe('Bullet: столкновения', () => {
         expect(bullet.x + bullet.radius).toBeLessThanOrEqual(WIDTH);
     });
 
+    it('отскакивает от верхней стены: снаряд не покидает поле сверху, dy меняет знак', () => {
+        // Выстрел строго вверх на максимальной силе — снаряд неминуемо достигает
+        // верхней границы поля (#264: раньше уходил за верх, ни одна ветка не отбивала).
+        const { bullet } = makeBullet(-Math.PI / 2, 20, 0);
+        expect(bullet.dy).toBeLessThan(0);
+
+        let bouncedOffTop = false;
+        let minY = Infinity;
+        for (let i = 0; i < 300; i++) {
+            bullet.move();
+            const dyBeforeHit = bullet.dy;
+            bullet.isHit(ctxStub);
+            minY = Math.min(minY, bullet.y);
+            // Отскок именно от верхней стены: снаряд у верхней границы, а dy
+            // сменился с «вверх» на «вниз» внутри isHit (не естественный апогей).
+            if (bullet.y <= bullet.radius && dyBeforeHit < 0 && bullet.dy > 0) {
+                bouncedOffTop = true;
+            }
+        }
+
+        expect(minY).toBeGreaterThanOrEqual(bullet.radius);
+        expect(bouncedOffTop).toBe(true);
+    });
+
     it('приземляется в грунт за конечное число шагов на уровне рельефа', () => {
         const { bullet, ground } = makeBullet(-Math.PI / 3, 12, 0);
 

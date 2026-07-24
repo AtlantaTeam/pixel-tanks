@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { TReplayMove } from '@/entities/replays';
 import type { TWeapon } from '@/shared/model';
+import { clampPower } from '../lib/power';
 
 type TGameState = {
     angle: number;
@@ -62,8 +63,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
 
     setAngle: (angle) => set({ angle }),
     increaseAngle: (delta) => set((s) => ({ angle: s.angle + delta })),
-    setPower: (power) => set({ power }),
-    increasePower: (delta) => set((s) => ({ power: s.power + delta })),
+    setPower: (power) => set({ power: clampPower(power) }),
+    increasePower: (delta) => set((s) => ({ power: clampPower(s.power + delta) })),
     setMoves: (moves) => set({ moves }),
     decrementMoves: () => set((s) => ({ moves: s.moves - 1 })),
     setPlayerPoints: (playerPoints) => set({ playerPoints }),

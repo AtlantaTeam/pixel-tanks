@@ -13,7 +13,7 @@ export class Bullet {
     lastY = 0;
     power: number;
     dx: number;
-    private dy: number;
+    dy: number;
     gravity: number;
     elasticity: number;
     private wind: number;
@@ -93,6 +93,15 @@ export class Bullet {
                     this.dx *= -1;
                 } else if (this.y > this.innerHeight) {
                     return true;
+                }
+
+                // Верхняя стена отбивает снаряд так же, как боковые (#264): без
+                // этого снаряд с большой силой уходил за верх поля. Проверяется
+                // отдельным `if` (не в else-цепочке по x), чтобы угловое попадание
+                // одновременно в боковую и верхнюю границу отбило обе.
+                if (this.y - this.radius < 0) {
+                    this.y = this.radius;
+                    this.dy *= -1;
                 }
             }
 
