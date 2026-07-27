@@ -12,12 +12,18 @@ export type TButtonSize = 'sm' | 'md' | 'icon';
  *  (`--edge-pixel`/`--glow-*`), как в design-inventory.dc.html. `danger` — плоский
  *  outline (транспарентный фон + рамка/текст `--color-danger`), тот же паттерн,
  *  что и retry-кнопка в инвентаре. */
+/** `box-shadow` — одно свойство, поэтому фокус-ринг задаём ПОВАРИАНТНО, а не
+ *  одним общим классом: у primary/accent объём — тоже `box-shadow`
+ *  (`--edge-pixel`), и голый `focus-visible:shadow-[--ring-focus]` перебил бы
+ *  edge (у `:focus-visible` выше специфичность), съев 3D-грань под клавиатурным
+ *  фокусом. Домешиваем edge в фокус-тень (`edge,ring`); у ghost/danger грани
+ *  нет (рамка через `border`) — им достаточно кольца. */
 const VARIANT_CLASSES: Record<TButtonVariant, string> = {
     primary:
-        'bg-primary text-primary-ink shadow-[var(--edge-pixel)] hover:shadow-[var(--edge-pixel),var(--glow-primary)]',
-    accent: 'bg-[var(--accent)] text-[var(--accent-ink)] shadow-[var(--edge-pixel)] hover:shadow-[var(--edge-pixel),var(--glow)]',
-    ghost: 'border-[length:var(--border-w)] border-border-strong bg-transparent text-text hover:border-[var(--accent)]',
-    danger: 'border-[length:var(--border-w)] border-danger bg-transparent text-danger',
+        'bg-primary text-primary-ink shadow-[var(--edge-pixel)] hover:shadow-[var(--edge-pixel),var(--glow-primary)] focus-visible:shadow-[var(--edge-pixel),var(--ring-focus)]',
+    accent: 'bg-[var(--accent)] text-[var(--accent-ink)] shadow-[var(--edge-pixel)] hover:shadow-[var(--edge-pixel),var(--glow)] focus-visible:shadow-[var(--edge-pixel),var(--ring-focus)]',
+    ghost: 'border-[length:var(--border-w)] border-border-strong bg-transparent text-text hover:border-[var(--accent)] focus-visible:shadow-[var(--ring-focus)]',
+    danger: 'border-[length:var(--border-w)] border-danger bg-transparent text-danger focus-visible:shadow-[var(--ring-focus)]',
 };
 
 const SIZE_CLASSES: Record<TButtonSize, string> = {
@@ -40,7 +46,9 @@ export function buttonClasses(
     return clsx(
         'm-1 inline-flex cursor-pointer items-center justify-center font-ui tracking-[0.06em] uppercase',
         'transition-[filter] active:translate-y-0.5',
-        'focus-visible:outline-none focus-visible:shadow-[var(--ring-focus)]',
+        // Видимый фокус — поварианто в VARIANT_CLASSES (edge+ring там, где есть
+        // грань), тут только гасим нативный outline.
+        'focus-visible:outline-none',
         DISABLED_CLASSES,
         VARIANT_CLASSES[variant],
         SIZE_CLASSES[size],

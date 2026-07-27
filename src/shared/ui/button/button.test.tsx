@@ -59,9 +59,30 @@ describe('Button', () => {
     it('renders a keyboard focus ring via the ring-focus token', () => {
         const { getByRole } = render(<Button>Играть</Button>);
 
+        // Кольцо задаётся в фокус-тени (может делить её с edge у primary/accent).
+        expect(getByRole('button').className).toMatch(
+            /focus-visible:shadow-\[[^\]]*var\(--ring-focus\)[^\]]*\]/,
+        );
+    });
+
+    it('keeps the primary 3D edge under keyboard focus (edge composed with the ring)', () => {
+        const { getByRole } = render(<Button variant="primary">Играть</Button>);
+
+        // Регресс, который сторожим: голое focus-visible:shadow-[--ring-focus]
+        // перебивало бы базовый edge (box-shadow — одно свойство), съедая грань.
+        expect(getByRole('button').className).toMatch(
+            /focus-visible:shadow-\[var\(--edge-pixel\),var\(--ring-focus\)\]/,
+        );
+    });
+
+    it('gives the flat ghost variant a ring-only focus (no phantom edge)', () => {
+        const { getByRole } = render(<Button variant="ghost">Меню</Button>);
+
+        // У ghost грани нет (рамка через border) — фокус только кольцо, без edge.
         expect(getByRole('button').className).toMatch(
             /focus-visible:shadow-\[var\(--ring-focus\)\]/,
         );
+        expect(getByRole('button').className).not.toMatch(/var\(--edge-pixel\)/);
     });
 
     it('renders disabled state from semantic muted tokens, not opacity', () => {

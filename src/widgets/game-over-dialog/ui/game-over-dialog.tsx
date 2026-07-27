@@ -11,6 +11,18 @@ import { Button, Dialog, buttonClasses } from '@/shared/ui';
 
 type TGameOverDialogProps = {
     seed?: string;
+    /** Проброс `Dialog.variant` (по умолчанию боевой `'modal'`) — витрина
+     *  `/design-system` показывает исход статичным срезом `'static'`: в потоке
+     *  страницы, без `fixed` и без кражи фокуса, как `PauseOverlay` (#347). */
+    dialogVariant?: 'modal' | 'static';
+    /** Витрина: показать конкретный исход, НЕ мутируя боевой `useGameStore` —
+     *  три среза (победа/поражение/ничья) сосуществуют независимо. Диалог
+     *  считается открытым, а очки берутся отсюда, а не из стора. */
+    preview?: { playerPoints: number; enemyPoints: number };
+    /** id заголовка (`aria-labelledby`). По умолчанию `'game-over-title'`; на
+     *  витрине несколько диалогов на одной странице — нужен уникальный, иначе id
+     *  дублируется в DOM. */
+    titleId?: string;
 };
 
 /**
@@ -39,7 +51,12 @@ const markDailyScoreSubmitted = (seed: string): void => {
     }
 };
 
-export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
+export function GameOverDialog({
+    seed,
+    dialogVariant = 'modal',
+    preview,
+    titleId = 'game-over-title',
+}: TGameOverDialogProps = {}) {
     const isGameOver = useGameStore((s) => s.isGameOver);
     const livePlayerPoints = useGameStore((s) => s.playerPoints);
     const liveEnemyPoints = useGameStore((s) => s.enemyPoints);
@@ -47,9 +64,11 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
     const finalEnemyPoints = useGameStore((s) => s.finalEnemyPoints);
     // Снимок фиксируется один раз на переходе isGameOver false→true
     // (useGameStore.setGameOver) — пока бой идёт, снимка нет, и заголовок
-    // читает живые очки (#337).
-    const playerPoints = finalPlayerPoints ?? livePlayerPoints;
-    const enemyPoints = finalEnemyPoints ?? liveEnemyPoints;
+    // читает живые очки (#337). В режиме `preview` (витрина) очки заданы пропом,
+    // а стор не читаем и не трогаем.
+    const open = preview ? true : isGameOver;
+    const playerPoints = preview ? preview.playerPoints : (finalPlayerPoints ?? livePlayerPoints);
+    const enemyPoints = preview ? preview.enemyPoints : (finalEnemyPoints ?? liveEnemyPoints);
     const battleSeed = useGameStore((s) => s.battleSeed);
     const battleField = useGameStore((s) => s.battleField);
     const replayMoves = useGameStore((s) => s.replayMoves);
@@ -83,9 +102,14 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
 
     return (
         <ThemeScope outcome={outcome} className="contents">
-            <Dialog open={isGameOver} className="text-center" aria-labelledby="game-over-title">
+            <Dialog
+                open={open}
+                variant={dialogVariant}
+                className="text-center"
+                aria-labelledby={titleId}
+            >
                 <h2
-                    id="game-over-title"
+                    id={titleId}
                     className="font-display text-h1 text-[var(--accent)] uppercase [text-shadow:var(--glow-text)]"
                 >
                     {winnerText}
