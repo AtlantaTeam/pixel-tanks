@@ -17,7 +17,10 @@ type TGameOverDialogProps = {
     dialogVariant?: 'modal' | 'static';
     /** Витрина: показать конкретный исход, НЕ мутируя боевой `useGameStore` —
      *  три среза (победа/поражение/ничья) сосуществуют независимо. Диалог
-     *  считается открытым, а очки берутся отсюда, а не из стора. */
+     *  считается открытым, а очки берутся отсюда, а не из стора. В этом режиме
+     *  гасятся и все привязанные к бою ветки (daily-блок, «Поделиться боем»):
+     *  срез статичен и не должен внезапно показать их, если в этой же сессии
+     *  сначала сыграли бой, а потом ушли на витрину. */
     preview?: { playerPoints: number; enemyPoints: number };
     /** id заголовка (`aria-labelledby`). По умолчанию `'game-over-title'`; на
      *  витрине несколько диалогов на одной странице — нужен уникальный, иначе id
@@ -99,6 +102,11 @@ export function GameOverDialog({
     const outcome: TOutcome | undefined =
         playerPoints > enemyPoints ? 'victory' : playerPoints < enemyPoints ? 'defeat' : undefined;
     const isDaily = Boolean(seed && isDailySeed(seed));
+    // В режиме `preview` (витрина) стор в покое не гарантирован — если игрок
+    // сыграл бой и затем открыл /design-system в той же сессии, battleSeed и
+    // друзья ещё заполнены. Статичный срез должен быть детерминирован, поэтому
+    // все привязанные к бою ветки гасим явно, а не полагаемся на пустой стор.
+    const showBattleBound = !preview;
 
     return (
         <ThemeScope outcome={outcome} className="contents">
@@ -123,7 +131,7 @@ export function GameOverDialog({
                 <p className="font-ui text-body mt-4 text-text-muted">
                     Счёт: {playerPoints} — {enemyPoints}
                 </p>
-                {isDaily && seed ? (
+                {showBattleBound && isDaily && seed ? (
                     <div className="mt-2">
                         <p className="font-ui text-label text-text-muted uppercase tracking-[0.12em]">
                             Бой дня пройден
@@ -131,7 +139,7 @@ export function GameOverDialog({
                         <ShareDailyResultButton points={points} seed={seed} />
                     </div>
                 ) : null}
-                {battleSeed !== null && battleField !== null ? (
+                {showBattleBound && battleSeed !== null && battleField !== null ? (
                     <ShareReplayButton
                         seed={battleSeed}
                         width={battleField.width}

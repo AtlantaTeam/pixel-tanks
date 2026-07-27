@@ -22,13 +22,12 @@ export function GameOverSection() {
                     <h3 className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
                         {label}
                     </h3>
-                    <div
-                        role="region"
-                        aria-label={`Game over dialog - ${key}`}
-                        className="border-[length:var(--border-w)] border-border bg-panel p-6"
-                    >
+                    {/* Landmark для среза (по нему визрегрессия и тест отличают
+                        исходы); своей рамки не рисуем — статичный Dialog внутри
+                        отбивает срез собственным Panel, лишняя внешняя рамка дала
+                        бы двойной бокс. */}
+                    <div role="region" aria-label={`Экран конца боя — ${label}`} className="p-6">
                         <GameOverDialog
-                            seed="42"
                             dialogVariant="static"
                             preview={{ playerPoints, enemyPoints }}
                             titleId={`game-over-title-${key}`}

@@ -11,8 +11,9 @@ export type TButtonSize = 'sm' | 'md' | 'icon';
  *  primary/accent без рамки: объём и свечение — box-shadow из токенов
  *  (`--edge-pixel`/`--glow-*`), как в design-inventory.dc.html. `danger` — плоский
  *  outline (транспарентный фон + рамка/текст `--color-danger`), тот же паттерн,
- *  что и retry-кнопка в инвентаре. */
-/** `box-shadow` — одно свойство, поэтому фокус-ринг задаём ПОВАРИАНТНО, а не
+ *  что и retry-кнопка в инвентаре.
+ *
+ *  `box-shadow` — одно свойство, поэтому фокус-ринг задаём ПОВАРИАНТНО, а не
  *  одним общим классом: у primary/accent объём — тоже `box-shadow`
  *  (`--edge-pixel`), и голый `focus-visible:shadow-[--ring-focus]` перебил бы
  *  edge (у `:focus-visible` выше специфичность), съев 3D-грань под клавиатурным

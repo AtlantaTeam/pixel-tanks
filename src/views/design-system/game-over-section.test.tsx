@@ -22,15 +22,15 @@ describe('GameOverSection', () => {
     it('renders all three outcomes as static previews with their scores', () => {
         render(<GameOverSection />);
 
-        const victory = screen.getByRole('region', { name: /victory/i });
+        const victory = screen.getByRole('region', { name: /Победа/i });
         expect(within(victory).getByText('Победа!')).toBeInTheDocument();
         expect(within(victory).getByText(/30.*10/)).toBeInTheDocument();
 
-        const defeat = screen.getByRole('region', { name: /defeat/i });
+        const defeat = screen.getByRole('region', { name: /Поражение/i });
         expect(within(defeat).getByText('Поражение')).toBeInTheDocument();
         expect(within(defeat).getByText(/10.*30/)).toBeInTheDocument();
 
-        const draw = screen.getByRole('region', { name: /draw/i });
+        const draw = screen.getByRole('region', { name: /Ничья/i });
         expect(within(draw).getByText('Ничья')).toBeInTheDocument();
         expect(within(draw).getByText(/20.*20/)).toBeInTheDocument();
     });
