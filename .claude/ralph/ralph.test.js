@@ -4602,11 +4602,7 @@ describe('боевой ralph.config.json — профили playground/prod (#73
         // Ровно те значения, что стояли в `cfg.X ?? N` до переезда в конфиг.
         expect(cfg.blockedHealAttempts).toBe(3);
         expect(cfg.gateHealAttempts).toBe(2);
-        // apiLimitMaxWaits временно поднят 3→16 (+ apiLimitFallbackWaitMin 360) под тест
-        // недельного (долгого) лимита: недельный сброс не парсится parseResetWaitMs и уходит
-        // в fallback — при дефолтных 3×30мин раннер сгорел бы за ~1.5ч и не дожил бы до
-        // понедельничного сброса. 16×6ч = 96ч перекрывают выходные. Откатить после проверки.
-        expect(cfg.apiLimitMaxWaits).toBe(16);
+        expect(cfg.apiLimitMaxWaits).toBe(3);
     });
 
     // #216: prod больше НЕ выключает разбор blocked (был blockedHealAttempts: 0) —

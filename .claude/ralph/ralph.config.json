@@ -11,9 +11,8 @@
         "permissionMode": "bypassPermissions",
         "blockedHealAttempts": 3,
         "gateHealAttempts": 2,
-        "apiLimitMaxWaits": 16,
+        "apiLimitMaxWaits": 3,
         "apiLimitGraceMin": 5,
-        "apiLimitFallbackWaitMin": 360,
         "deployCheck": {
             "workflow": "deploy.yml",
             "timeoutMs": 1200000,
@@ -92,6 +91,10 @@
             {
                 "milestone": "Верстка ДС ralph · Фаза 7: Витрина 1:1",
                 "branch": "feature/ds-phase-7-showcase"
+            },
+            {
+                "milestone": "Баг-фиксы ralph · Экран боя и легаси UI",
+                "branch": "feature/bugfix-endgame-legacy"
             }
         ]
     },
