@@ -67,4 +67,53 @@ describe('Dialog', () => {
 
         expect(document.activeElement).toBe(getByRole('button', { name: 'OK' }));
     });
+
+    describe('variant="static"', () => {
+        it('renders in-flow (no fixed viewport overlay classes)', () => {
+            const { getByRole } = render(
+                <Dialog open variant="static">
+                    Содержимое
+                </Dialog>,
+            );
+
+            const overlay = getByRole('dialog');
+            expect(overlay.className).not.toMatch(/\bfixed\b/);
+            expect(overlay.className).toMatch(/\brelative\b/);
+        });
+
+        it('does not steal focus on mount', () => {
+            const activeBefore = document.activeElement;
+            render(
+                <Dialog open variant="static">
+                    <button type="button">OK</button>
+                </Dialog>,
+            );
+
+            expect(document.activeElement).toBe(activeBefore);
+        });
+
+        it('ignores Escape', () => {
+            const onClose = vi.fn();
+            render(
+                <Dialog open variant="static" onClose={onClose}>
+                    <button type="button">OK</button>
+                </Dialog>,
+            );
+
+            fireEvent.keyDown(document, { key: 'Escape' });
+            expect(onClose).not.toHaveBeenCalled();
+        });
+
+        it('does not close on backdrop click', () => {
+            const onClose = vi.fn();
+            const { getByRole } = render(
+                <Dialog open variant="static" onClose={onClose}>
+                    Содержимое
+                </Dialog>,
+            );
+
+            fireEvent.click(getByRole('dialog'));
+            expect(onClose).not.toHaveBeenCalled();
+        });
+    });
 });

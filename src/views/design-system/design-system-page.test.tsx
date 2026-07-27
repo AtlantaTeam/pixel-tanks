@@ -60,24 +60,15 @@ describe('DesignSystemPage', () => {
         expect(container.querySelectorAll('svg').length).toBeGreaterThan(0);
     });
 
-    it('Dialog (§03) открывается и закрывается по кнопке', () => {
-        const { getByRole, queryByRole } = render(<DesignSystemPage />);
+    it('Dialog (§03) показан статичным срезом без клика', () => {
+        const { getByRole } = render(<DesignSystemPage />);
 
-        expect(queryByRole('dialog')).not.toBeInTheDocument();
-
-        fireEvent.click(getByRole('button', { name: 'Открыть диалог' }));
-        expect(getByRole('dialog')).toBeInTheDocument();
-
-        fireEvent.click(getByRole('button', { name: 'Закрыть' }));
-        expect(queryByRole('dialog')).not.toBeInTheDocument();
+        expect(getByRole('dialog', { name: 'Победа' })).toBeInTheDocument();
     });
 
-    it('Пауза (§12) открывается по кнопке, PauseOverlay реален', () => {
-        const { getByRole, queryByRole } = render(<DesignSystemPage />);
+    it('Пауза (§12) показана статичным срезом без клика, PauseOverlay реален', () => {
+        const { getByRole } = render(<DesignSystemPage />);
 
-        expect(queryByRole('dialog', { name: 'Пауза' })).not.toBeInTheDocument();
-
-        fireEvent.click(getByRole('button', { name: 'Показать паузу' }));
         expect(getByRole('dialog', { name: 'Пауза' })).toBeInTheDocument();
     });
 

@@ -1,6 +1,3 @@
-'use client';
-
-import { useState } from 'react';
 import type { TButtonSize, TButtonVariant } from '@/shared/ui';
 import { Button, Dialog, Icon, Panel, Select } from '@/shared/ui';
 
@@ -17,8 +14,6 @@ function buttonLabel(variant: TButtonVariant, size: TButtonSize) {
 /** design-inventory.dc.html §03 «Компоненты»: базовые атомы (Button/Panel/Select)
  *  во всех вариантах/размерах + Dialog как оверлей общего назначения. */
 export function BaseComponentsSection() {
-    const [dialogOpen, setDialogOpen] = useState(false);
-
     return (
         <div className="flex flex-col gap-8">
             <section className="flex flex-col gap-4">
@@ -68,14 +63,7 @@ export function BaseComponentsSection() {
 
             <section className="flex flex-col gap-3">
                 <h3 className="font-ui text-hud text-text uppercase">Dialog</h3>
-                <Button variant="primary" onClick={() => setDialogOpen(true)}>
-                    Открыть диалог
-                </Button>
-                <Dialog
-                    open={dialogOpen}
-                    onClose={() => setDialogOpen(false)}
-                    aria-labelledby="ds-dialog-title"
-                >
+                <Dialog open variant="static" aria-labelledby="ds-dialog-title">
                     <h4
                         id="ds-dialog-title"
                         className="mb-3 font-display text-h1 text-text uppercase"
@@ -86,12 +74,8 @@ export function BaseComponentsSection() {
                         Прямое попадание. Враг повержен — можно взять реванш или вернуться в меню.
                     </p>
                     <div className="flex flex-wrap justify-end gap-2">
-                        <Button variant="ghost" onClick={() => setDialogOpen(false)}>
-                            Закрыть
-                        </Button>
-                        <Button variant="primary" onClick={() => setDialogOpen(false)}>
-                            Реванш
-                        </Button>
+                        <Button variant="ghost">Закрыть</Button>
+                        <Button variant="primary">Реванш</Button>
                     </div>
                 </Dialog>
             </section>

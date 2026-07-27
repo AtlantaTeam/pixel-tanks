@@ -33,6 +33,9 @@ type TPauseOverlayProps = {
     onResume: () => void;
     onRestart: () => void;
     onExitToMenu: () => void;
+    /** Проброс `Dialog.variant` (по умолчанию `'modal'`) — витрина показывает оверлей
+     *  статичным срезом `'static'`, не перехватывая страницу под собой. */
+    dialogVariant?: 'modal' | 'static';
 };
 
 /** Подпись секции настроек — единый стиль на все заголовки оверлея (Звук,
@@ -54,7 +57,13 @@ function Divider() {
  *  Настройки звука/HUD/языка/сложности — плейсхолдер: хранятся в локальном
  *  `useState` и наружу пока не выведены. Подключение реального стора звука (шаг 6)
  *  и i18n (шаг 10) потребует расширения пропсов (value/onChange на настройки). */
-export function PauseOverlay({ open, onResume, onRestart, onExitToMenu }: TPauseOverlayProps) {
+export function PauseOverlay({
+    open,
+    onResume,
+    onRestart,
+    onExitToMenu,
+    dialogVariant = 'modal',
+}: TPauseOverlayProps) {
     const [soundOn, setSoundOn] = useState(true);
     const [musicOn, setMusicOn] = useState(true);
     const [fxOn, setFxOn] = useState(true);
@@ -67,6 +76,7 @@ export function PauseOverlay({ open, onResume, onRestart, onExitToMenu }: TPause
             <Dialog
                 open={open}
                 onClose={onResume}
+                variant={dialogVariant}
                 className="p-0 text-left"
                 aria-labelledby="pause-overlay-title"
             >

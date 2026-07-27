@@ -10,6 +10,12 @@ type TDialogProps = HTMLAttributes<HTMLDivElement> & {
     /** Передан → Esc и клик по затемнению закрывают диалог. Без него (напр.
      *  game-over, где «закрывать» некуда) окно управляется только своим `open`. */
     onClose?: () => void;
+    /** `'modal'` (по умолчанию) — реальный оверлей `fixed` на весь viewport с
+     *  focus-trap и Esc. `'static'` — статичный срез состояния «открыто» в потоке
+     *  страницы (витрина `/design-system`): без `fixed`-позиционирования и без
+     *  кражи фокуса, так что несколько таких срезов спокойно сосуществуют на одной
+     *  странице рядом с остальными секциями. */
+    variant?: 'modal' | 'static';
 };
 
 /** Окно диалога темнее и «глубже» Panel (token-spec.md §5: `--color-border-strong`
@@ -23,14 +29,24 @@ const DIALOG_PANEL_STYLE = {
 const FOCUSABLE =
     'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function Dialog({ open, onClose, className, children, style, ...props }: TDialogProps) {
+export function Dialog({
+    open,
+    onClose,
+    variant = 'modal',
+    className,
+    children,
+    style,
+    ...props
+}: TDialogProps) {
     const rootRef = useRef<HTMLDivElement>(null);
+    const isStatic = variant === 'static';
 
     // Доступность модалки: на открытии фокус уводится внутрь окна и запирается в
     // нём (Tab не уходит на фон), Esc закрывает (если можно), по закрытии фокус
-    // возвращается на элемент, с которого открыли.
+    // возвращается на элемент, с которого открыли. Статичный срез витрины не
+    // делает ничего из этого — он не перехватывает страницу.
     useEffect(() => {
-        if (!open) return;
+        if (!open || isStatic) return;
         const root = rootRef.current;
         const previouslyFocused = document.activeElement as HTMLElement | null;
 
@@ -67,7 +83,7 @@ export function Dialog({ open, onClose, className, children, style, ...props }: 
             document.removeEventListener('keydown', onKeyDown);
             previouslyFocused?.focus?.();
         };
-    }, [open, onClose]);
+    }, [open, onClose, isStatic]);
 
     if (!open) return null;
 
@@ -75,10 +91,15 @@ export function Dialog({ open, onClose, className, children, style, ...props }: 
         <div
             ref={rootRef}
             role="dialog"
-            aria-modal="true"
-            tabIndex={-1}
-            onClick={onClose ? (e) => e.target === e.currentTarget && onClose() : undefined}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4 focus-visible:outline-none"
+            aria-modal={isStatic ? undefined : true}
+            tabIndex={isStatic ? undefined : -1}
+            onClick={
+                !isStatic && onClose ? (e) => e.target === e.currentTarget && onClose() : undefined
+            }
+            className={clsx(
+                'flex items-center justify-center bg-bg/70 p-4 focus-visible:outline-none',
+                isStatic ? 'relative' : 'fixed inset-0 z-50',
+            )}
             {...props}
         >
             <Panel
