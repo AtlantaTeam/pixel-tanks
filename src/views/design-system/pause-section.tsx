@@ -1,6 +1,5 @@
 import { PauseOverlay } from '@/widgets/pause-overlay';
-
-const noop = () => {};
+import { noop } from './screens/_demo';
 
 /** design-inventory.dc.html §12 «Пауза / Настройки боя»: реальный виджет
  *  `PauseOverlay` (фаза 6, #342) — не дублируем его разметку на витрине.

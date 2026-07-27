@@ -2,9 +2,8 @@ import { clsx } from 'clsx';
 import { APP_NAME } from '@/shared/config';
 import type { TSegmentedControlOption } from '@/shared/ui';
 import { Button, FactionBadge, Icon, SegmentedControl, TextInput } from '@/shared/ui';
+import { noop } from './_demo';
 import type { TScreenVariant } from './frameset';
-
-const noop = () => {};
 
 const MODE_OPTIONS: TSegmentedControlOption<'signin' | 'signup'>[] = [
     { value: 'signin', label: 'Вход' },

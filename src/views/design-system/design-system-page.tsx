@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { APP_NAME } from '@/shared/config';
 import { ThemeScope, type TFaction, type TIntensity } from '@/shared/lib/theme';
-import { Button } from '@/shared/ui';
+import { SegmentedControl, type TSegmentedControlOption } from '@/shared/ui';
 import { AtomicComponentsSection } from './atomic-components-section';
 import { BaseComponentsSection } from './base-components-section';
 import { DecisionsSection } from './decisions-section';
@@ -14,6 +14,16 @@ import { GameControlsSection } from './game-controls-section';
 import { IconSection } from './icon-section';
 import { PauseSection } from './pause-section';
 import { ScreensSection } from './screens-section';
+
+const FACTION_OPTIONS: TSegmentedControlOption<TFaction>[] = [
+    { value: 'player', label: 'Игрок' },
+    { value: 'enemy', label: 'Враг' },
+];
+
+const INTENSITY_OPTIONS: TSegmentedControlOption<TIntensity>[] = [
+    { value: 'normal', label: 'Неон' },
+    { value: 'calm', label: 'Спокойный HUD' },
+];
 
 type TSwatch = {
     name: string;
@@ -253,54 +263,34 @@ export function DesignSystemPage() {
 
                         <div className="mt-1 flex flex-wrap items-center gap-5.5">
                             <div className="flex items-center gap-3">
-                                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                                <span
+                                    id="ds-faction-switch-label"
+                                    className="font-ui text-label tracking-[0.14em] text-text-muted uppercase"
+                                >
                                     Тема акцента
                                 </span>
-                                <div className="flex gap-0.5 border-[length:var(--border-w)] border-border bg-surface p-[3px]">
-                                    <Button
-                                        variant={faction === 'player' ? 'accent' : 'ghost'}
-                                        size="sm"
-                                        onClick={() => setFaction('player')}
-                                        aria-pressed={faction === 'player'}
-                                        className="m-0 border-none"
-                                    >
-                                        Игрок
-                                    </Button>
-                                    <Button
-                                        variant={faction === 'enemy' ? 'accent' : 'ghost'}
-                                        size="sm"
-                                        onClick={() => setFaction('enemy')}
-                                        aria-pressed={faction === 'enemy'}
-                                        className="m-0 border-none"
-                                    >
-                                        Враг
-                                    </Button>
-                                </div>
+                                <SegmentedControl
+                                    label="Тема акцента"
+                                    labelledBy="ds-faction-switch-label"
+                                    options={FACTION_OPTIONS}
+                                    value={faction}
+                                    onChange={setFaction}
+                                />
                             </div>
                             <div className="flex items-center gap-3">
-                                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                                <span
+                                    id="ds-intensity-switch-label"
+                                    className="font-ui text-label tracking-[0.14em] text-text-muted uppercase"
+                                >
                                     Интенсивность (data-intensity)
                                 </span>
-                                <div className="flex gap-0.5 border-[length:var(--border-w)] border-border bg-surface p-[3px]">
-                                    <Button
-                                        variant={intensity === 'normal' ? 'accent' : 'ghost'}
-                                        size="sm"
-                                        onClick={() => setIntensity('normal')}
-                                        aria-pressed={intensity === 'normal'}
-                                        className="m-0 border-none"
-                                    >
-                                        Неон
-                                    </Button>
-                                    <Button
-                                        variant={intensity === 'calm' ? 'accent' : 'ghost'}
-                                        size="sm"
-                                        onClick={() => setIntensity('calm')}
-                                        aria-pressed={intensity === 'calm'}
-                                        className="m-0 border-none"
-                                    >
-                                        Спокойный HUD
-                                    </Button>
-                                </div>
+                                <SegmentedControl
+                                    label="Интенсивность"
+                                    labelledBy="ds-intensity-switch-label"
+                                    options={INTENSITY_OPTIONS}
+                                    value={intensity}
+                                    onChange={setIntensity}
+                                />
                             </div>
                         </div>
                     </header>

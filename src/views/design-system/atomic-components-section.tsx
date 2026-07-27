@@ -18,16 +18,12 @@ import {
     TextInput,
     WeaponSelector,
 } from '@/shared/ui';
+import { noop, PERIOD_OPTIONS } from './screens/_demo';
 
 // Тексты подсказок зеркалят STATUS_HINT из share-button.tsx (внутреннее состояние
 // компонента недоступно снаружи) — статичные репро состояний для витрины/визрегрессии.
 const SHARE_HINT_COPIED = 'Ссылка скопирована в буфер обмена';
 const SHARE_HINT_UNAVAILABLE = 'Не удалось поделиться — скопируйте ссылку из адресной строки';
-
-const PERIOD_OPTIONS: TSegmentedControlOption<'day' | 'all'>[] = [
-    { value: 'day', label: 'День' },
-    { value: 'all', label: 'Всё время' },
-];
 
 const DIFFICULTY_OPTIONS: TSegmentedControlOption<'rookie' | 'shooter' | 'terminator'>[] = [
     { value: 'rookie', label: 'Новобранец' },
@@ -42,7 +38,7 @@ const WEAPONS = DEMO_WEAPONS;
 export function AtomicComponentsSection() {
     const [period, setPeriod] = useState<'day' | 'all'>('day');
     const [difficulty, setDifficulty] = useState<'rookie' | 'shooter' | 'terminator'>('shooter');
-    const [vibrationOn, setVibrationOn] = useState(false);
+    const [vibrationOn, setVibrationOn] = useState(true);
     const [autoAimOn, setAutoAimOn] = useState(false);
     const [weaponIndex, setWeaponIndex] = useState(0);
 
@@ -112,6 +108,24 @@ export function AtomicComponentsSection() {
                         onChange={setDifficulty}
                         className="self-start"
                     />
+                    <span
+                        id="ds-atomic-difficulty-narrow-label"
+                        className="font-ui text-label tracking-[0.14em] text-text-muted uppercase"
+                    >
+                        Перенос в узком контейнере
+                    </span>
+                    {/* Срез переноса: на контейнере уже суммы сегментов длинные подписи
+                     *  переносятся на вторую строку (грациозная деградация вместо
+                     *  горизонтального overflow) — важно для моб. паузы 390px. */}
+                    <div className="w-52 max-w-full">
+                        <SegmentedControl
+                            label="Сложность (узко)"
+                            labelledBy="ds-atomic-difficulty-narrow-label"
+                            options={DIFFICULTY_OPTIONS}
+                            value={difficulty}
+                            onChange={setDifficulty}
+                        />
+                    </div>
                 </div>
 
                 <div className="h-0.5 bg-border" />
@@ -215,9 +229,13 @@ export function AtomicComponentsSection() {
                         checked={autoAimOn}
                         onChange={setAutoAimOn}
                     />
+                    {/* Статичные срезы disabled — состояние без интеракции для визрегрессии. */}
+                    <Toggle label="Звук боя (недоступно)" checked onChange={noop} disabled />
+                    <Toggle label="Музыка (недоступно)" checked={false} onChange={noop} disabled />
                 </div>
                 <span className="font-ui text-label leading-[1.5] text-text-dim">
-                    role=&quot;switch&quot;, тема через --accent, glow в состоянии «вкл».
+                    role=&quot;switch&quot;, тема через --accent, glow в состоянии «вкл»; ниже —
+                    срезы disabled (вкл/выкл).
                 </span>
             </div>
 

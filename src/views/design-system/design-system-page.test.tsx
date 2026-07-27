@@ -31,10 +31,10 @@ describe('DesignSystemPage', () => {
 
         expect(scope).toHaveAttribute('data-faction', 'player');
 
-        fireEvent.click(getByRole('button', { name: 'Враг' }));
+        fireEvent.click(getByRole('radio', { name: 'Враг' }));
         expect(scope).toHaveAttribute('data-faction', 'enemy');
 
-        fireEvent.click(getByRole('button', { name: 'Игрок' }));
+        fireEvent.click(getByRole('radio', { name: 'Игрок' }));
         expect(scope).toHaveAttribute('data-faction', 'player');
     });
 
@@ -44,10 +44,10 @@ describe('DesignSystemPage', () => {
 
         expect(scope).not.toHaveAttribute('data-intensity');
 
-        fireEvent.click(getByRole('button', { name: 'Спокойный HUD' }));
+        fireEvent.click(getByRole('radio', { name: 'Спокойный HUD' }));
         expect(scope).toHaveAttribute('data-intensity', 'calm');
 
-        fireEvent.click(getByRole('button', { name: 'Неон' }));
+        fireEvent.click(getByRole('radio', { name: 'Неон' }));
         expect(scope).not.toHaveAttribute('data-intensity');
     });
 
@@ -61,15 +61,17 @@ describe('DesignSystemPage', () => {
     });
 
     it('Dialog (§03) показан статичным срезом без клика', () => {
+        // Статичный срез не модальный → не заявляет role="dialog"; проверяем по
+        // заголовку среза, что он отрисован в потоке без интеракции.
         const { getByRole } = render(<DesignSystemPage />);
 
-        expect(getByRole('dialog', { name: 'Победа' })).toBeInTheDocument();
+        expect(getByRole('heading', { name: 'Победа' })).toBeInTheDocument();
     });
 
     it('Пауза (§12) показана статичным срезом без клика, PauseOverlay реален', () => {
         const { getByRole } = render(<DesignSystemPage />);
 
-        expect(getByRole('dialog', { name: 'Пауза' })).toBeInTheDocument();
+        expect(getByRole('heading', { name: 'Пауза' })).toBeInTheDocument();
     });
 
     it('роль-подписи цветов (§01) показывают ink-пару текстом на заливке, без отдельных -ink свотчей', () => {

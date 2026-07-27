@@ -1,20 +1,9 @@
 import { clsx } from 'clsx';
 import { BOT_NAME } from '@/shared/config';
-import type { TSegmentedControlOption } from '@/shared/ui';
 import { Button, HPBar, Icon, PipRow, SegmentedControl, ShareButton } from '@/shared/ui';
 import { ArenaPlaceholder } from './arena-placeholder';
+import { noop, REPLAY_CURRENT_TURN, REPLAY_TOTAL_TURNS, SPEED_OPTIONS } from './_demo';
 import type { TScreenVariant } from './frameset';
-
-const noop = () => {};
-
-const REPLAY_TOTAL_TURNS = 12;
-const REPLAY_CURRENT_TURN = 5;
-
-const SPEED_OPTIONS: TSegmentedControlOption<'0.5' | '1' | '2'>[] = [
-    { value: '0.5', label: '0.5×' },
-    { value: '1', label: '1×' },
-    { value: '2', label: '2×' },
-];
 
 const TURN_PIPS = Array.from(
     { length: REPLAY_TOTAL_TURNS },

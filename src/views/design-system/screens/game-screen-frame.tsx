@@ -2,9 +2,8 @@ import { clsx } from 'clsx';
 import { BOT_NAME } from '@/shared/config';
 import { Button, ChatBubble, DEMO_WEAPONS, HPBar, Icon, PipRow, WeaponSelector } from '@/shared/ui';
 import { ArenaPlaceholder } from './arena-placeholder';
+import { noop } from './_demo';
 import type { TScreenVariant } from './frameset';
-
-const noop = () => {};
 
 /** 5 снарядов на танк, 2 израсходовано; 4 хода на манёвр, 2 потрачено (GDD §1.1, §2.3). */
 const SHELL_PIPS = [true, true, true, false, false];

@@ -1,17 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import type { TSegmentedControlOption } from '@/shared/ui';
 import { Button, Icon, PipRow, SegmentedControl } from '@/shared/ui';
-
-const SPEED_OPTIONS: TSegmentedControlOption<'0.5' | '1' | '2'>[] = [
-    { value: '0.5', label: '0.5×' },
-    { value: '1', label: '1×' },
-    { value: '2', label: '2×' },
-];
-
-const REPLAY_TOTAL_TURNS = 12;
-const REPLAY_DEMO_TURN = 5;
+import { REPLAY_CURRENT_TURN, REPLAY_TOTAL_TURNS, SPEED_OPTIONS } from './screens/_demo';
 
 /** design-inventory.dc.html §10 «Тач-рогатка · плеер реплея»: чистая UI-оболочка
  *  игровых контролов (без канвас-арены — арт арены/танков сменяем, судит его не
@@ -69,13 +60,13 @@ export function GameControlsSection() {
                 </span>
                 <div className="flex items-center justify-between border-[length:var(--border-w)] border-border bg-surface px-3.5 py-2.5">
                     <span className="font-ui text-caption font-bold text-accent">
-                        РЕПЛЕЙ · ход {REPLAY_DEMO_TURN}/{REPLAY_TOTAL_TURNS}
+                        РЕПЛЕЙ · ход {REPLAY_CURRENT_TURN}/{REPLAY_TOTAL_TURNS}
                     </span>
                 </div>
                 <PipRow
                     pips={Array.from(
                         { length: REPLAY_TOTAL_TURNS },
-                        (_, i) => i < REPLAY_DEMO_TURN,
+                        (_, i) => i < REPLAY_CURRENT_TURN,
                     )}
                     label="ходов реплея"
                 />

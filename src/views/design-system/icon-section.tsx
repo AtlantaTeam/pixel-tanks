@@ -10,7 +10,7 @@ export function IconSection() {
                 SVG на сетке 16×16, штрих 2px, <code>currentColor</code> — красятся любым токеном.
                 Ниже стандартный размер 24px.
             </p>
-            <div className="max-w-prose border-[length:var(--border-w)] border-border border-l-[3px] border-l-accent bg-[color-mix(in_srgb,var(--color-accent-base)_6%,transparent)] p-3.5">
+            <div className="max-w-prose border-[length:var(--border-w)] border-border border-l-[3px] border-l-accent bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)] p-3.5">
                 <p className="text-caption leading-[1.55] text-text">
                     <b className="text-accent">Правило:</b> в продукте нет эмодзи и юникод-символов
                     в роли иконок — только SVG из этого набора (<code>currentColor</code>,

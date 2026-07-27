@@ -1,15 +1,8 @@
 import { clsx } from 'clsx';
-import type { TSegmentedControlOption } from '@/shared/ui';
 import { Button, FactionBadge, Icon, SegmentedControl } from '@/shared/ui';
 import { ArenaPlaceholder } from './arena-placeholder';
+import { noop, PERIOD_OPTIONS } from './_demo';
 import type { TScreenVariant } from './frameset';
-
-const noop = () => {};
-
-const PERIOD_OPTIONS: TSegmentedControlOption<'day' | 'all'>[] = [
-    { value: 'day', label: 'День' },
-    { value: 'all', label: 'Всё время' },
-];
 
 type TLeaderRow = {
     rank: number;

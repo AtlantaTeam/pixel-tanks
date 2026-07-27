@@ -19,7 +19,7 @@ export function ArenaPlaceholder({ className, children }: TArenaPlaceholderProps
         >
             <div
                 aria-hidden
-                className="absolute inset-0 bg-[linear-gradient(180deg,var(--color-panel)_0%,var(--color-surface)_60%,var(--color-muted)_100%)]"
+                className="absolute inset-0 bg-[linear-gradient(180deg,var(--color-panel)_0%,var(--color-surface)_60%,var(--color-bg)_100%)]"
             />
             <div
                 aria-hidden

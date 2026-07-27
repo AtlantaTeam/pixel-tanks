@@ -9,7 +9,7 @@ const SAMPLE_WORDS = ['Победа', 'Командир', 'Инвентарь', 
 export function DisplayFontSection() {
     return (
         <div className="flex flex-col gap-6">
-            <div className="max-w-prose border-[length:var(--border-w)] border-border border-l-[3px] border-l-accent bg-[color-mix(in_srgb,var(--color-accent-base)_6%,transparent)] p-3.5">
+            <div className="max-w-prose border-[length:var(--border-w)] border-border border-l-[3px] border-l-accent bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)] p-3.5">
                 <p className="text-caption leading-[1.6] text-text">
                     <b className="text-accent">D7 · переголосован → DotGothic16.</b> Pixelify Sans
                     хорош латиницей, но кириллица собрана неровно — на русских заголовках буквы «из

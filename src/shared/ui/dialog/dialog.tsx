@@ -90,7 +90,10 @@ export function Dialog({
     return (
         <div
             ref={rootRef}
-            role="dialog"
+            // Статичный срез витрины не модальный (без aria-modal/focus-trap), поэтому
+            // и роль "dialog" не заявляем — иначе скринридер объявляет диалог-в-потоке
+            // вне модального контекста. Остаётся обычный контейнер с aria-labelledby.
+            role={isStatic ? undefined : 'dialog'}
             aria-modal={isStatic ? undefined : true}
             tabIndex={isStatic ? undefined : -1}
             onClick={

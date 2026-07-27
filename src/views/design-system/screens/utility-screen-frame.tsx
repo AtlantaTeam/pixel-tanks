@@ -1,9 +1,8 @@
 import type { ReactNode } from 'react';
 import { clsx } from 'clsx';
 import { Button, EmptyState, ErrorBanner, Icon, Skeleton, Spinner } from '@/shared/ui';
+import { noop } from './_demo';
 import type { TScreenVariant } from './frameset';
-
-const noop = () => {};
 
 type TStateProps = {
     /** Мобильный кадр держит все три заглушки в стопке — контент ужимается, чтобы влезть. */
