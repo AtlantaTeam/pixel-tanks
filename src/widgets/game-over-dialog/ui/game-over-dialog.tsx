@@ -108,9 +108,15 @@ export function GameOverDialog({
                 className="text-center"
                 aria-labelledby={titleId}
             >
+                {/* Fluid-размер вместо фиксированного text-h1 (40px): длинное русское
+                    слово «ПОРАЖЕНИЕ» одним неразрывным токеном при 40px шире контейнера
+                    диалога на узком телефоне (390px) — переноситься ему негде, и он даёт
+                    горизонтальный скролл (в боевой модалке тоже, не только на витрине).
+                    clamp сжимает заголовок до влезающего на мобиле и держит 40px на
+                    десктопе (mobile-first, как fluid --text-display). */}
                 <h2
                     id={titleId}
-                    className="font-display text-h1 text-[var(--accent)] uppercase [text-shadow:var(--glow-text)]"
+                    className="font-display text-[clamp(1.75rem,7vw,2.5rem)] leading-[1.05] text-[var(--accent)] uppercase [text-shadow:var(--glow-text)]"
                 >
                     {winnerText}
                 </h2>
