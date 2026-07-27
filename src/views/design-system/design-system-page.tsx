@@ -238,7 +238,7 @@ export function DesignSystemPage() {
                         <p className="font-ui text-label tracking-[0.32em] text-accent uppercase">
                             {APP_NAME} · Design System · Extended Inventory
                         </p>
-                        <h1 className="font-display text-display text-text uppercase">
+                        <h1 className="font-display text-display text-text uppercase break-words">
                             Полный инвентарь
                             <br />
                             компонентов и экранов

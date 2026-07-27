@@ -65,7 +65,7 @@ export function SegmentedControl<TValue extends string>({
             aria-label={labelledBy ? undefined : label}
             aria-labelledby={labelledBy}
             className={clsx(
-                'inline-flex gap-0.5 border-[length:var(--border-w)] border-border bg-surface p-[3px]',
+                'inline-flex flex-wrap gap-0.5 border-[length:var(--border-w)] border-border bg-surface p-[3px]',
                 className,
             )}
         >

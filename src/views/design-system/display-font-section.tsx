@@ -28,7 +28,7 @@ export function DisplayFontSection() {
                             неровная кириллица · шрифт не вендорится
                         </span>
                     </div>
-                    <div className="flex flex-col gap-2.5 leading-none font-bold text-text-muted uppercase">
+                    <div className="flex flex-col gap-2.5 leading-none font-bold text-text-muted uppercase break-words">
                         {SAMPLE_WORDS.map((word) => (
                             <span key={word} className="font-sans text-[clamp(34px,7vw,46px)]">
                                 {word}
@@ -48,7 +48,7 @@ export function DisplayFontSection() {
                             целостная кириллица
                         </span>
                     </div>
-                    <div className="flex flex-col gap-2.5 leading-none font-bold text-text uppercase">
+                    <div className="flex flex-col gap-2.5 leading-none font-bold text-text uppercase break-words">
                         {SAMPLE_WORDS.map((word) => (
                             <span key={word} className="font-display text-[clamp(34px,7vw,46px)]">
                                 {word}
