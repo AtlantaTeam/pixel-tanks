@@ -38,30 +38,29 @@ describe('Button', () => {
         expect(button.className).not.toMatch(/#[0-9a-fA-F]{3,6}/);
     });
 
-    it('renders danger variant with its ink pair for contrast, not light body text', () => {
+    it('renders danger variant as a flat outline, not a competing legacy border', () => {
         const { getByRole } = render(<Button variant="danger">Сдаться</Button>);
 
         const button = getByRole('button');
-        expect(button.className).toMatch(/\bbg-danger\b/);
-        expect(button.className).toMatch(/\btext-danger-ink\b/);
-        // Тело кнопки не красится светлым text-text (даёт ~2.98:1 на #ff4242).
-        expect(button.className).not.toMatch(/\btext-text(?![\w-])/);
+        expect(button.className).toMatch(/\bborder-danger\b/);
+        expect(button.className).toMatch(/\btext-danger\b/);
+        expect(button.className).toMatch(/\bbg-transparent\b/);
+        expect(button.className).not.toMatch(/\bpixel-border\b/);
     });
 
-    it('feeds edge/glow into the pixel-border shadow slots, not a competing shadow utility', () => {
+    it('feeds edge/glow into box-shadow tokens directly, without the legacy pixel-border utility', () => {
         const { getByRole } = render(<Button variant="primary">Играть</Button>);
 
         const button = getByRole('button');
-        // Единый источник box-shadow — pixel-border; эффекты идут в его слоты.
-        expect(button.className).toMatch(/\[--pixel-border-edge:var\(--edge-pixel\)\]/);
-        expect(button.className).not.toMatch(/\bshadow-\[/);
+        expect(button.className).toMatch(/shadow-\[var\(--edge-pixel\)\]/);
+        expect(button.className).not.toMatch(/\bpixel-border\b/);
     });
 
-    it('renders a keyboard focus ring via the pixel-border ring slot', () => {
+    it('renders a keyboard focus ring via the ring-focus token', () => {
         const { getByRole } = render(<Button>Играть</Button>);
 
         expect(getByRole('button').className).toMatch(
-            /focus-visible:\[--pixel-border-ring:var\(--ring-focus\)\]/,
+            /focus-visible:shadow-\[var\(--ring-focus\)\]/,
         );
     });
 

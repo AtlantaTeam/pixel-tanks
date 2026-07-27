@@ -224,27 +224,6 @@
         'Segoe UI Symbol', 'Noto Color Emoji';
 }
 
-/* NES-рамка: 4 box-shadow по сторонам, углы остаются пустыми — пиксельный вид.
-   Цвет — через --pixel-border-color (дефолт currentColor: у primary-кнопки текст
-   тёмный на тёмном фоне страницы, там нужен явный светлый override).
-   Нужен внешний отступ >=4px (m-1), чтобы тень не резалась.
-
-   box-shadow — единственное свойство под рамку И под доп-эффекты кнопки (edge/glow/
-   ring). Свойство одно и не суммируется, поэтому объём (--edge-pixel), свечение
-   (--glow) и фокус-ринг (--ring-focus) вкомпонованы в ЭТОТ же список через слоты-
-   переменные, а не отдельными shadow-*-утилитами того же свойства (иначе рамка и
-   эффект конфликтуют — победит один). Слоты по умолчанию — прозрачный no-op. */
-@utility pixel-border {
-    box-shadow:
-        0 -4px 0 0 var(--pixel-border-color, currentColor),
-        0 4px 0 0 var(--pixel-border-color, currentColor),
-        -4px 0 0 0 var(--pixel-border-color, currentColor),
-        4px 0 0 0 var(--pixel-border-color, currentColor),
-        var(--pixel-border-edge, 0 0 transparent),
-        var(--pixel-border-glow, 0 0 transparent),
-        var(--pixel-border-ring, 0 0 transparent);
-}
-
 /* Появление chat-bubble бота: короткий pop через opacity/scale — НЕ transform,
    чтобы не конфликтовать с позиционированием через translate-утилиты Tailwind
    (в v4 translate/scale — самостоятельные CSS-свойства, а не transform).

@@ -20,10 +20,12 @@ describe('ChatBubble', () => {
         expect(getByText('Hasta la vista, baby')).toBeInTheDocument();
     });
 
-    it('renders in pixel-border game style', () => {
+    it('renders with a flat pixel-frame border, not the legacy pixel-border utility', () => {
         const { getByText } = render(<ChatBubble reply={happyReply} x={100} y={200} />);
 
-        expect(getByText('Hasta la vista, baby')).toHaveClass('pixel-border', 'font-ui');
+        const bubble = getByText('Hasta la vista, baby');
+        expect(bubble).toHaveClass('font-ui');
+        expect(bubble.className).not.toMatch(/\bpixel-border\b/);
     });
 
     it('is hidden from assistive tech (decorative teaser, not aria-live)', () => {
@@ -96,6 +98,6 @@ describe('ChatBubble', () => {
     ])('maps %s category to its accent color', (category, expectedColor) => {
         const { getByText } = render(<ChatBubble reply={{ text: 'т', category }} x={0} y={0} />);
 
-        expect(getByText('т').style.getPropertyValue('--pixel-border-color')).toBe(expectedColor);
+        expect(getByText('т').style.borderColor).toBe(expectedColor);
     });
 });
