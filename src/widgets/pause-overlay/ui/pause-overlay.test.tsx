@@ -112,6 +112,32 @@ describe('PauseOverlay', () => {
         expect(screen.getByRole('switch', { name: /^Эффекты/ })).toBeDisabled();
     });
 
+    it('keeps music and fx checked state when general sound is toggled off and back on', async () => {
+        const user = userEvent.setup();
+        renderOverlay();
+
+        // Пользователь снял «Музыку», оставил «Эффекты»
+        await user.click(screen.getByRole('switch', { name: /^Музыка/ }));
+        expect(screen.getByRole('switch', { name: /^Музыка/ })).toHaveAttribute(
+            'aria-checked',
+            'false',
+        );
+
+        const soundSwitch = screen.getByRole('switch', { name: 'Общий звук' });
+        await user.click(soundSwitch); // выключили общий звук
+        await user.click(soundSwitch); // включили обратно
+
+        // Индивидуальные состояния не сброшены выключением общего звука
+        expect(screen.getByRole('switch', { name: /^Музыка/ })).toHaveAttribute(
+            'aria-checked',
+            'false',
+        );
+        expect(screen.getByRole('switch', { name: /^Эффекты/ })).toHaveAttribute(
+            'aria-checked',
+            'true',
+        );
+    });
+
     it('sets data-intensity=calm on the theme scope when the calm HUD switch is on', async () => {
         const user = userEvent.setup();
         const { container } = renderOverlay();
@@ -121,6 +147,28 @@ describe('PauseOverlay', () => {
         await user.click(screen.getByRole('switch', { name: /^Спокойный HUD/ }));
 
         expect(container.querySelector('[data-intensity="calm"]')).not.toBeNull();
+    });
+
+    it('removes data-intensity=calm when the calm HUD switch is turned back off', async () => {
+        const user = userEvent.setup();
+        const { container } = renderOverlay();
+
+        const calmSwitch = screen.getByRole('switch', { name: /^Спокойный HUD/ });
+        await user.click(calmSwitch);
+        expect(container.querySelector('[data-intensity="calm"]')).not.toBeNull();
+
+        await user.click(calmSwitch);
+        expect(container.querySelector('[data-intensity="calm"]')).toBeNull();
+    });
+
+    it('calls onResume when clicking the backdrop', async () => {
+        const user = userEvent.setup();
+        const { onResume } = renderOverlay();
+
+        // Клик по самому корню-затемнению (не по содержимому окна) закрывает диалог
+        await user.click(screen.getByRole('dialog', { name: 'Пауза' }));
+
+        expect(onResume).toHaveBeenCalledTimes(1);
     });
 
     it('switches the selected language', async () => {

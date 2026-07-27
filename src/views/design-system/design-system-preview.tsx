@@ -199,22 +199,30 @@ export function DesignSystemPreview() {
                     <h3 className="font-ui text-hud text-text uppercase">SegmentedControl</h3>
                     <div className="grid gap-6 md:grid-cols-2">
                         <div className="flex flex-col gap-2">
-                            <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                            <span
+                                id="ds-seg-period-label"
+                                className="font-ui text-label tracking-[0.14em] text-text-muted uppercase"
+                            >
                                 Период
                             </span>
                             <SegmentedControl
                                 label="Период"
+                                labelledBy="ds-seg-period-label"
                                 options={PERIOD_OPTIONS}
                                 value={period}
                                 onChange={setPeriod}
                             />
                         </div>
                         <div className="flex flex-col gap-2">
-                            <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                            <span
+                                id="ds-seg-difficulty-label"
+                                className="font-ui text-label tracking-[0.14em] text-text-muted uppercase"
+                            >
                                 Сложность
                             </span>
                             <SegmentedControl
                                 label="Сложность"
+                                labelledBy="ds-seg-difficulty-label"
                                 options={DIFFICULTY_OPTIONS}
                                 value={difficulty}
                                 onChange={setDifficulty}

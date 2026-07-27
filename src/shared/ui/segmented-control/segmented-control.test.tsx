@@ -40,6 +40,25 @@ describe('SegmentedControl', () => {
         expect(screen.getAllByRole('radio')).toHaveLength(2);
     });
 
+    it('именует группу через aria-labelledby, без дублирующего aria-label, когда задан labelledBy', () => {
+        render(
+            <>
+                <span id="seg-heading">Период</span>
+                <SegmentedControl
+                    label="Период"
+                    labelledBy="seg-heading"
+                    options={PERIOD_OPTIONS}
+                    value="day"
+                    onChange={() => {}}
+                />
+            </>,
+        );
+
+        const group = screen.getByRole('radiogroup', { name: 'Период' });
+        expect(group).toHaveAttribute('aria-labelledby', 'seg-heading');
+        expect(group).not.toHaveAttribute('aria-label');
+    });
+
     it('отмечает активный сегмент через aria-checked', () => {
         render(
             <SegmentedControl

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { ThemeScope } from '@/shared/lib/theme';
 import {
     Button,
@@ -12,17 +12,20 @@ import {
 } from '@/shared/ui';
 
 export type TPauseLanguage = 'RU' | 'EN';
-export type TPauseDifficulty = 'Новобранец' | 'Стрелок' | 'Терминатор';
+// Стабильные ключи-идентичности значения, не RU-подписи: на шаге 10 (i18n) UI
+// переводится, а значения/тип остаются те же. Видимая подпись — в `label`.
+export type TPauseDifficulty = 'rookie' | 'shooter' | 'terminator';
 
+// RU/EN — это коды языков, поэтому value === label здесь легитимно (не копирайт).
 const LANGUAGE_OPTIONS: TSegmentedControlOption<TPauseLanguage>[] = [
     { value: 'RU', label: 'RU' },
     { value: 'EN', label: 'EN' },
 ];
 
 const DIFFICULTY_OPTIONS: TSegmentedControlOption<TPauseDifficulty>[] = [
-    { value: 'Новобранец', label: 'Новобранец' },
-    { value: 'Стрелок', label: 'Стрелок' },
-    { value: 'Терминатор', label: 'Терминатор' },
+    { value: 'rookie', label: 'Новобранец' },
+    { value: 'shooter', label: 'Стрелок' },
+    { value: 'terminator', label: 'Терминатор' },
 ];
 
 type TPauseOverlayProps = {
@@ -32,16 +35,32 @@ type TPauseOverlayProps = {
     onExitToMenu: () => void;
 };
 
+/** Подпись секции настроек — единый стиль на все заголовки оверлея (Звук,
+ *  Отображение, Язык, Сложность), чтобы при правке стиля один не отстал. */
+function SectionLabel({ id, children }: { id?: string; children: ReactNode }) {
+    return (
+        <p id={id} className="font-ui text-label text-text-muted uppercase tracking-[0.14em]">
+            {children}
+        </p>
+    );
+}
+
+/** Горизонтальный разделитель между секциями настроек. */
+function Divider() {
+    return <div className="h-0.5 bg-border" />;
+}
+
 /** design-inventory.dc.html §12 «Экран паузы»: оверлей поверх затемнённой арены.
- *  Настройки звука/HUD/языка/сложности хранятся локально — общего стора звука и
- *  i18n ещё нет (шаги 6 и 10 роадмапа), overlay готов к подключению без правки API. */
+ *  Настройки звука/HUD/языка/сложности — плейсхолдер: хранятся в локальном
+ *  `useState` и наружу пока не выведены. Подключение реального стора звука (шаг 6)
+ *  и i18n (шаг 10) потребует расширения пропсов (value/onChange на настройки). */
 export function PauseOverlay({ open, onResume, onRestart, onExitToMenu }: TPauseOverlayProps) {
     const [soundOn, setSoundOn] = useState(true);
     const [musicOn, setMusicOn] = useState(true);
     const [fxOn, setFxOn] = useState(true);
     const [calm, setCalm] = useState(false);
     const [language, setLanguage] = useState<TPauseLanguage>('RU');
-    const [difficulty, setDifficulty] = useState<TPauseDifficulty>('Стрелок');
+    const [difficulty, setDifficulty] = useState<TPauseDifficulty>('shooter');
 
     return (
         <ThemeScope intensity={calm ? 'calm' : 'normal'} className="contents">
@@ -68,11 +87,9 @@ export function PauseOverlay({ open, onResume, onRestart, onExitToMenu }: TPause
                     </button>
                 </div>
 
-                <div className="flex flex-col gap-[18px] px-5 py-5">
+                <div className="flex flex-col gap-4.5 px-5 py-5">
                     <div className="flex flex-col gap-3.5">
-                        <p className="font-ui text-label text-text-muted uppercase tracking-[0.14em]">
-                            Звук
-                        </p>
+                        <SectionLabel>Звук</SectionLabel>
                         <Toggle label="Общий звук" checked={soundOn} onChange={setSoundOn} />
                         <div className="flex flex-col gap-3.5 border-l-[length:var(--border-w)] border-border pl-3.5">
                             <Toggle
@@ -92,12 +109,10 @@ export function PauseOverlay({ open, onResume, onRestart, onExitToMenu }: TPause
                         </div>
                     </div>
 
-                    <div className="h-0.5 bg-border" />
+                    <Divider />
 
                     <div className="flex flex-col gap-3.5">
-                        <p className="font-ui text-label text-text-muted uppercase tracking-[0.14em]">
-                            Отображение
-                        </p>
+                        <SectionLabel>Отображение</SectionLabel>
                         <Toggle
                             label="Спокойный HUD"
                             sublabel="гасит неон-glow · data-intensity=calm"
@@ -106,14 +121,13 @@ export function PauseOverlay({ open, onResume, onRestart, onExitToMenu }: TPause
                         />
                     </div>
 
-                    <div className="h-0.5 bg-border" />
+                    <Divider />
 
                     <div className="flex flex-col gap-2">
-                        <p className="font-ui text-label text-text-muted uppercase tracking-[0.14em]">
-                            Язык
-                        </p>
+                        <SectionLabel id="pause-language-label">Язык</SectionLabel>
                         <SegmentedControl
                             label="Язык"
+                            labelledBy="pause-language-label"
                             options={LANGUAGE_OPTIONS}
                             value={language}
                             onChange={setLanguage}
@@ -121,11 +135,10 @@ export function PauseOverlay({ open, onResume, onRestart, onExitToMenu }: TPause
                     </div>
 
                     <div className="flex flex-col gap-2">
-                        <p className="font-ui text-label text-text-muted uppercase tracking-[0.14em]">
-                            Сложность
-                        </p>
+                        <SectionLabel id="pause-difficulty-label">Сложность</SectionLabel>
                         <SegmentedControl
                             label="Сложность"
+                            labelledBy="pause-difficulty-label"
                             options={DIFFICULTY_OPTIONS}
                             value={difficulty}
                             onChange={setDifficulty}
@@ -134,17 +147,17 @@ export function PauseOverlay({ open, onResume, onRestart, onExitToMenu }: TPause
                 </div>
 
                 <div className="flex flex-col gap-2.5 px-5 pb-5">
-                    <Button onClick={onResume} className="w-full">
+                    <Button onClick={onResume} className="mx-0 w-full">
                         Продолжить
                     </Button>
                     <div className="flex gap-2.5">
-                        <Button variant="ghost" onClick={onRestart} className="flex-1">
+                        <Button variant="ghost" onClick={onRestart} className="mx-0 flex-1">
                             Начать заново
                         </Button>
                         <Button
                             variant="ghost"
                             onClick={onExitToMenu}
-                            className="flex-1 hover:border-danger hover:text-danger"
+                            className="mx-0 flex-1 hover:border-danger! hover:text-danger"
                         >
                             Выйти в меню
                         </Button>

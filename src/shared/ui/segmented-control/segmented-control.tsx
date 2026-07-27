@@ -13,8 +13,14 @@ type TSegmentedControlProps<TValue extends string> = {
     value: TValue;
     onChange: (value: TValue) => void;
     /** Доступное имя группы (aria-label) — видимую подпись рисует вызывающий код рядом,
-     *  как в design-inventory.dc.html §08 («Язык», «Сложность» отдельным заголовком). */
+     *  как в design-inventory.dc.html §08 («Язык», «Сложность» отдельным заголовком).
+     *  Если рядом уже есть видимый заголовок, лучше связать его через `labelledBy`
+     *  (см. ниже) — тогда `label` служит только фолбэком. */
     label: string;
+    /** id видимого заголовка секции. Когда задан — группа именуется через
+     *  `aria-labelledby` (единый источник имени: видимый текст = имя группы), а не
+     *  дублирующим `aria-label`, чтобы скринридер не объявлял подпись дважды. */
+    labelledBy?: string;
     className?: string;
 };
 
@@ -27,6 +33,7 @@ export function SegmentedControl<TValue extends string>({
     value,
     onChange,
     label,
+    labelledBy,
     className,
 }: TSegmentedControlProps<TValue>) {
     const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -55,7 +62,8 @@ export function SegmentedControl<TValue extends string>({
     return (
         <div
             role="radiogroup"
-            aria-label={label}
+            aria-label={labelledBy ? undefined : label}
+            aria-labelledby={labelledBy}
             className={clsx(
                 'inline-flex gap-0.5 border-[length:var(--border-w)] border-border bg-surface p-[3px]',
                 className,
