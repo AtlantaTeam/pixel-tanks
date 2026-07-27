@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { submitDailyScore } from '@/features/daily-challenge';
 import { useGameStore } from '@/features/game-engine';
@@ -14,7 +14,10 @@ vi.mock('@/features/daily-challenge', async () => {
 const submitMock = vi.mocked(submitDailyScore);
 
 function setGameOver(playerPoints: number, enemyPoints: number) {
-    useGameStore.setState({ isGameOver: true, playerPoints, enemyPoints });
+    // Через реальное действие стора (не сырой setState), чтобы сработала
+    // фиксация снимка на переходе false→true (#337).
+    useGameStore.setState({ isGameOver: false, playerPoints, enemyPoints });
+    useGameStore.getState().setGameOver(true);
 }
 
 describe('GameOverDialog', () => {
@@ -25,6 +28,8 @@ describe('GameOverDialog', () => {
             isGameOver: false,
             playerPoints: 0,
             enemyPoints: 0,
+            finalPlayerPoints: null,
+            finalEnemyPoints: null,
             battleSeed: null,
             battleField: null,
             replayMoves: [],
@@ -133,6 +138,41 @@ describe('GameOverDialog', () => {
         render(<GameOverDialog seed="42" />);
 
         expect(screen.queryByRole('button', { name: /Поделиться боем/i })).not.toBeInTheDocument();
+    });
+
+    it('keeps the finished game outcome stable when the store points still change (#337)', () => {
+        setGameOver(5, 10);
+        const { container } = render(<GameOverDialog seed="42" />);
+
+        expect(screen.getByText('Поражение')).toBeInTheDocument();
+        expect(container.querySelector('[data-outcome="defeat"]')).not.toBeNull();
+
+        // Очки последних кадров боя «оседают» после того, как isGameOver уже
+        // true (root-cause #337) — заголовок и исход зафиксированного попапа
+        // не должны на это реагировать.
+        act(() => {
+            useGameStore.setState({ playerPoints: 10, enemyPoints: 10 });
+        });
+
+        expect(screen.getByText('Поражение')).toBeInTheDocument();
+        expect(container.querySelector('[data-outcome="defeat"]')).not.toBeNull();
+        expect(screen.queryByText('Ничья')).not.toBeInTheDocument();
+    });
+
+    it('shows both "Новая игра" and "В меню" buttons (#338)', () => {
+        setGameOver(10, 5);
+        render(<GameOverDialog seed="42" />);
+
+        expect(screen.getByRole('button', { name: /Новая игра/i })).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: /В меню/i })).toBeInTheDocument();
+    });
+
+    it('"В меню" link points to the home page (#338)', () => {
+        setGameOver(10, 5);
+        render(<GameOverDialog seed="42" />);
+
+        const menuLink = screen.getByRole('link', { name: /В меню/i });
+        expect(menuLink).toHaveAttribute('href', '/');
     });
 
     it('does not submit again for the same seed across a remount (reload guard)', async () => {

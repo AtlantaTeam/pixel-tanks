@@ -1,0 +1,40 @@
+import { GameOverDialog } from '@/widgets/game-over-dialog';
+
+/** design-inventory.dc.html — экран конца боя: диалог с кнопками «Новая игра»
+ *  (primary) и «В меню» (ghost) для всех исходов.
+ *
+ *  Витрина = срез визуальной регрессии (`design-system-showcase.md`): исход
+ *  показываем СТАТИЧНО (`dialogVariant="static"` — в потоке, без `fixed` и без
+ *  кражи фокуса, как `PauseSection`), а очки задаём через `preview` БЕЗ мутации
+ *  боевого `useGameStore`. Так три исхода сосуществуют независимо и попадают в
+ *  бейзлайн как реальный контент, а не пустые боксы. */
+const OUTCOMES = [
+    { key: 'victory', label: 'Победа', playerPoints: 30, enemyPoints: 10 },
+    { key: 'defeat', label: 'Поражение', playerPoints: 10, enemyPoints: 30 },
+    { key: 'draw', label: 'Ничья', playerPoints: 20, enemyPoints: 20 },
+] as const;
+
+export function GameOverSection() {
+    return (
+        <div className="flex flex-col gap-8">
+            {OUTCOMES.map(({ key, label, playerPoints, enemyPoints }) => (
+                <div key={key} className="flex flex-col gap-3">
+                    <h3 className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                        {label}
+                    </h3>
+                    {/* Landmark для среза (по нему визрегрессия и тест отличают
+                        исходы); своей рамки не рисуем — статичный Dialog внутри
+                        отбивает срез собственным Panel, лишняя внешняя рамка дала
+                        бы двойной бокс. */}
+                    <div role="region" aria-label={`Экран конца боя — ${label}`} className="p-6">
+                        <GameOverDialog
+                            dialogVariant="static"
+                            preview={{ playerPoints, enemyPoints }}
+                            titleId={`game-over-title-${key}`}
+                        />
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}

@@ -51,16 +51,16 @@ export function ChatBubble({
             // зачитывать реплику бота на каждый выстрел.
             aria-hidden="true"
             className={clsx(
-                'pixel-border pointer-events-none absolute m-1 -translate-x-1/2 -translate-y-full',
+                'pointer-events-none absolute -translate-x-1/2 -translate-y-full',
                 'animate-bubble-pop motion-reduce:animate-none',
-                'max-w-40 bg-panel px-3 py-2 text-center font-ui text-[10px] text-text',
+                'border-[length:var(--border-w)] max-w-40 bg-panel px-3 py-2 text-center font-ui text-[10px] text-text',
                 className,
             )}
             style={
                 {
                     left: x,
                     top: y,
-                    '--pixel-border-color': CATEGORY_COLOR[reply.category],
+                    borderColor: CATEGORY_COLOR[reply.category],
                 } as CSSProperties
             }
         >

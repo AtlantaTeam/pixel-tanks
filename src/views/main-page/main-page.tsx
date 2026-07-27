@@ -19,7 +19,7 @@ export function MainPage() {
             {/* Заголовок уже нарисован в hero-арте — дублируем текстом только для скринридеров и SEO */}
             <h1 className="sr-only">{APP_NAME}</h1>
 
-            <div className="pixel-border relative w-full max-w-3xl overflow-hidden shadow-[0_0_40px_-8px_rgba(0,228,54,0.35)]">
+            <div className="border-[length:var(--border-w-thick)] border-border relative w-full max-w-3xl overflow-hidden shadow-[0_0_40px_-8px_rgba(0,228,54,0.35)]">
                 {/* Оживлённый hero: клип из Kling (image→video). muted-видео браузеры
                     проигрывают без жеста, poster — первый кадр на время загрузки. */}
                 <video

@@ -11,6 +11,7 @@ import { DisplayFontSection } from './display-font-section';
 import { EffectTokensSection } from './effect-tokens-section';
 import { FeedbackStatesSection } from './feedback-states-section';
 import { GameControlsSection } from './game-controls-section';
+import { GameOverSection } from './game-over-section';
 import { IconSection } from './icon-section';
 import { PauseSection } from './pause-section';
 import { ScreensSection } from './screens-section';
@@ -433,7 +434,14 @@ export function DesignSystemPage() {
                     </section>
 
                     <section>
-                        <SectionHeading number="13" headline="Кириллица заголовков — решение D7">
+                        <SectionHeading number="13" headline="Конец боя — все исходы">
+                            Game Over
+                        </SectionHeading>
+                        <GameOverSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="14" headline="Кириллица заголовков — решение D7">
                             Дисплейный шрифт
                         </SectionHeading>
                         <DisplayFontSection />

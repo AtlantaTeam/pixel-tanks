@@ -1,15 +1,31 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import Link from 'next/link';
 import { isDailySeed, ShareDailyResultButton, submitDailyScore } from '@/features/daily-challenge';
 import { useGameStore } from '@/features/game-engine';
 import { ShareReplayButton } from '@/features/replays';
 import { BOT_NAME } from '@/shared/config';
 import { ThemeScope, type TOutcome } from '@/shared/lib/theme';
-import { Button, Dialog } from '@/shared/ui';
+import { Button, Dialog, buttonClasses } from '@/shared/ui';
 
 type TGameOverDialogProps = {
     seed?: string;
+    /** Проброс `Dialog.variant` (по умолчанию боевой `'modal'`) — витрина
+     *  `/design-system` показывает исход статичным срезом `'static'`: в потоке
+     *  страницы, без `fixed` и без кражи фокуса, как `PauseOverlay` (#347). */
+    dialogVariant?: 'modal' | 'static';
+    /** Витрина: показать конкретный исход, НЕ мутируя боевой `useGameStore` —
+     *  три среза (победа/поражение/ничья) сосуществуют независимо. Диалог
+     *  считается открытым, а очки берутся отсюда, а не из стора. В этом режиме
+     *  гасятся и все привязанные к бою ветки (daily-блок, «Поделиться боем»):
+     *  срез статичен и не должен внезапно показать их, если в этой же сессии
+     *  сначала сыграли бой, а потом ушли на витрину. */
+    preview?: { playerPoints: number; enemyPoints: number };
+    /** id заголовка (`aria-labelledby`). По умолчанию `'game-over-title'`; на
+     *  витрине несколько диалогов на одной странице — нужен уникальный, иначе id
+     *  дублируется в DOM. */
+    titleId?: string;
 };
 
 /**
@@ -38,10 +54,24 @@ const markDailyScoreSubmitted = (seed: string): void => {
     }
 };
 
-export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
+export function GameOverDialog({
+    seed,
+    dialogVariant = 'modal',
+    preview,
+    titleId = 'game-over-title',
+}: TGameOverDialogProps = {}) {
     const isGameOver = useGameStore((s) => s.isGameOver);
-    const playerPoints = useGameStore((s) => s.playerPoints);
-    const enemyPoints = useGameStore((s) => s.enemyPoints);
+    const livePlayerPoints = useGameStore((s) => s.playerPoints);
+    const liveEnemyPoints = useGameStore((s) => s.enemyPoints);
+    const finalPlayerPoints = useGameStore((s) => s.finalPlayerPoints);
+    const finalEnemyPoints = useGameStore((s) => s.finalEnemyPoints);
+    // Снимок фиксируется один раз на переходе isGameOver false→true
+    // (useGameStore.setGameOver) — пока бой идёт, снимка нет, и заголовок
+    // читает живые очки (#337). В режиме `preview` (витрина) очки заданы пропом,
+    // а стор не читаем и не трогаем.
+    const open = preview ? true : isGameOver;
+    const playerPoints = preview ? preview.playerPoints : (finalPlayerPoints ?? livePlayerPoints);
+    const enemyPoints = preview ? preview.enemyPoints : (finalEnemyPoints ?? liveEnemyPoints);
     const battleSeed = useGameStore((s) => s.battleSeed);
     const battleField = useGameStore((s) => s.battleField);
     const replayMoves = useGameStore((s) => s.replayMoves);
@@ -72,20 +102,36 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
     const outcome: TOutcome | undefined =
         playerPoints > enemyPoints ? 'victory' : playerPoints < enemyPoints ? 'defeat' : undefined;
     const isDaily = Boolean(seed && isDailySeed(seed));
+    // В режиме `preview` (витрина) стор в покое не гарантирован — если игрок
+    // сыграл бой и затем открыл /design-system в той же сессии, battleSeed и
+    // друзья ещё заполнены. Статичный срез должен быть детерминирован, поэтому
+    // все привязанные к бою ветки гасим явно, а не полагаемся на пустой стор.
+    const showBattleBound = !preview;
 
     return (
         <ThemeScope outcome={outcome} className="contents">
-            <Dialog open={isGameOver} className="text-center" aria-labelledby="game-over-title">
+            <Dialog
+                open={open}
+                variant={dialogVariant}
+                className="text-center"
+                aria-labelledby={titleId}
+            >
+                {/* Fluid-размер вместо фиксированного text-h1 (40px): длинное русское
+                    слово «ПОРАЖЕНИЕ» одним неразрывным токеном при 40px шире контейнера
+                    диалога на узком телефоне (390px) — переноситься ему негде, и он даёт
+                    горизонтальный скролл (в боевой модалке тоже, не только на витрине).
+                    clamp сжимает заголовок до влезающего на мобиле и держит 40px на
+                    десктопе (mobile-first, как fluid --text-display). */}
                 <h2
-                    id="game-over-title"
-                    className="font-display text-h1 text-[var(--accent)] uppercase [text-shadow:var(--glow-text)]"
+                    id={titleId}
+                    className="font-display text-[clamp(1.75rem,7vw,2.5rem)] leading-[1.05] text-[var(--accent)] uppercase [text-shadow:var(--glow-text)]"
                 >
                     {winnerText}
                 </h2>
                 <p className="font-ui text-body mt-4 text-text-muted">
                     Счёт: {playerPoints} — {enemyPoints}
                 </p>
-                {isDaily && seed ? (
+                {showBattleBound && isDaily && seed ? (
                     <div className="mt-2">
                         <p className="font-ui text-label text-text-muted uppercase tracking-[0.12em]">
                             Бой дня пройден
@@ -93,7 +139,7 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
                         <ShareDailyResultButton points={points} seed={seed} />
                     </div>
                 ) : null}
-                {battleSeed !== null && battleField !== null ? (
+                {showBattleBound && battleSeed !== null && battleField !== null ? (
                     <ShareReplayButton
                         seed={battleSeed}
                         width={battleField.width}
@@ -101,7 +147,7 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
                         moves={replayMoves}
                     />
                 ) : null}
-                <div className="mt-6">
+                <div className="mt-6 flex flex-wrap justify-center">
                     <Button
                         onClick={() => {
                             resetGame();
@@ -110,6 +156,9 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
                     >
                         Новая игра
                     </Button>
+                    <Link href="/" className={buttonClasses('ghost', 'md')}>
+                        В меню
+                    </Link>
                 </div>
             </Dialog>
         </ThemeScope>

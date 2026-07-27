@@ -38,31 +38,51 @@ describe('Button', () => {
         expect(button.className).not.toMatch(/#[0-9a-fA-F]{3,6}/);
     });
 
-    it('renders danger variant with its ink pair for contrast, not light body text', () => {
+    it('renders danger variant as a flat outline, not a competing legacy border', () => {
         const { getByRole } = render(<Button variant="danger">Сдаться</Button>);
 
         const button = getByRole('button');
-        expect(button.className).toMatch(/\bbg-danger\b/);
-        expect(button.className).toMatch(/\btext-danger-ink\b/);
-        // Тело кнопки не красится светлым text-text (даёт ~2.98:1 на #ff4242).
-        expect(button.className).not.toMatch(/\btext-text(?![\w-])/);
+        expect(button.className).toMatch(/\bborder-danger\b/);
+        expect(button.className).toMatch(/\btext-danger\b/);
+        expect(button.className).toMatch(/\bbg-transparent\b/);
+        expect(button.className).not.toMatch(/\bpixel-border\b/);
     });
 
-    it('feeds edge/glow into the pixel-border shadow slots, not a competing shadow utility', () => {
+    it('feeds edge/glow into box-shadow tokens directly, without the legacy pixel-border utility', () => {
         const { getByRole } = render(<Button variant="primary">Играть</Button>);
 
         const button = getByRole('button');
-        // Единый источник box-shadow — pixel-border; эффекты идут в его слоты.
-        expect(button.className).toMatch(/\[--pixel-border-edge:var\(--edge-pixel\)\]/);
-        expect(button.className).not.toMatch(/\bshadow-\[/);
+        expect(button.className).toMatch(/shadow-\[var\(--edge-pixel\)\]/);
+        expect(button.className).not.toMatch(/\bpixel-border\b/);
     });
 
-    it('renders a keyboard focus ring via the pixel-border ring slot', () => {
+    it('renders a keyboard focus ring via the ring-focus token', () => {
         const { getByRole } = render(<Button>Играть</Button>);
 
+        // Кольцо задаётся в фокус-тени (может делить её с edge у primary/accent).
         expect(getByRole('button').className).toMatch(
-            /focus-visible:\[--pixel-border-ring:var\(--ring-focus\)\]/,
+            /focus-visible:shadow-\[[^\]]*var\(--ring-focus\)[^\]]*\]/,
         );
+    });
+
+    it('keeps the primary 3D edge under keyboard focus (edge composed with the ring)', () => {
+        const { getByRole } = render(<Button variant="primary">Играть</Button>);
+
+        // Регресс, который сторожим: голое focus-visible:shadow-[--ring-focus]
+        // перебивало бы базовый edge (box-shadow — одно свойство), съедая грань.
+        expect(getByRole('button').className).toMatch(
+            /focus-visible:shadow-\[var\(--edge-pixel\),var\(--ring-focus\)\]/,
+        );
+    });
+
+    it('gives the flat ghost variant a ring-only focus (no phantom edge)', () => {
+        const { getByRole } = render(<Button variant="ghost">Меню</Button>);
+
+        // У ghost грани нет (рамка через border) — фокус только кольцо, без edge.
+        expect(getByRole('button').className).toMatch(
+            /focus-visible:shadow-\[var\(--ring-focus\)\]/,
+        );
+        expect(getByRole('button').className).not.toMatch(/var\(--edge-pixel\)/);
     });
 
     it('renders disabled state from semantic muted tokens, not opacity', () => {
