@@ -101,3 +101,56 @@ describe('game.store — запись реплея', () => {
         expect(useGameStore.getState().replayMoves).toEqual([]);
     });
 });
+
+describe('game.store — снимок очков на конце боя (#337)', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('не имеет зафиксированного снимка очков до конца боя', () => {
+        const state = useGameStore.getState();
+
+        expect(state.finalPlayerPoints).toBeNull();
+        expect(state.finalEnemyPoints).toBeNull();
+    });
+
+    it('фиксирует очки один раз на переходе isGameOver false→true', () => {
+        useGameStore.getState().setPlayerPoints(10);
+        useGameStore.getState().setEnemyPoints(5);
+
+        useGameStore.getState().setGameOver(true);
+
+        expect(useGameStore.getState().finalPlayerPoints).toBe(10);
+        expect(useGameStore.getState().finalEnemyPoints).toBe(5);
+    });
+
+    it('не переписывает снимок, если очки меняются после фиксации исхода', () => {
+        useGameStore.getState().setPlayerPoints(10);
+        useGameStore.getState().setEnemyPoints(10);
+        useGameStore.getState().setGameOver(true);
+
+        // «Оседающие» очки последних кадров боя (root-cause #337) — после
+        // фиксации исход больше не должен на них реагировать.
+        useGameStore.getState().setPlayerPoints(5);
+
+        expect(useGameStore.getState().finalPlayerPoints).toBe(10);
+        expect(useGameStore.getState().finalEnemyPoints).toBe(10);
+    });
+
+    it('сбрасывает снимок при startGame и resetGame', () => {
+        useGameStore.getState().setPlayerPoints(10);
+        useGameStore.getState().setGameOver(true);
+
+        useGameStore.getState().startGame();
+
+        expect(useGameStore.getState().finalPlayerPoints).toBeNull();
+        expect(useGameStore.getState().finalEnemyPoints).toBeNull();
+
+        useGameStore.getState().setPlayerPoints(7);
+        useGameStore.getState().setGameOver(true);
+        useGameStore.getState().resetGame();
+
+        expect(useGameStore.getState().finalPlayerPoints).toBeNull();
+        expect(useGameStore.getState().finalEnemyPoints).toBeNull();
+    });
+});

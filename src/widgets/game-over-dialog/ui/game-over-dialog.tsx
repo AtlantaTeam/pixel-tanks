@@ -40,8 +40,15 @@ const markDailyScoreSubmitted = (seed: string): void => {
 
 export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
     const isGameOver = useGameStore((s) => s.isGameOver);
-    const playerPoints = useGameStore((s) => s.playerPoints);
-    const enemyPoints = useGameStore((s) => s.enemyPoints);
+    const livePlayerPoints = useGameStore((s) => s.playerPoints);
+    const liveEnemyPoints = useGameStore((s) => s.enemyPoints);
+    const finalPlayerPoints = useGameStore((s) => s.finalPlayerPoints);
+    const finalEnemyPoints = useGameStore((s) => s.finalEnemyPoints);
+    // Снимок фиксируется один раз на переходе isGameOver false→true
+    // (useGameStore.setGameOver) — пока бой идёт, снимка нет, и заголовок
+    // читает живые очки (#337).
+    const playerPoints = finalPlayerPoints ?? livePlayerPoints;
+    const enemyPoints = finalEnemyPoints ?? liveEnemyPoints;
     const battleSeed = useGameStore((s) => s.battleSeed);
     const battleField = useGameStore((s) => s.battleField);
     const replayMoves = useGameStore((s) => s.replayMoves);

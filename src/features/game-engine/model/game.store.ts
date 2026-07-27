@@ -13,6 +13,13 @@ type TGameState = {
     selectedWeapon: TWeapon | null;
     isGameOver: boolean;
     isStarted: boolean;
+    /**
+     * Снимок очков на переходе isGameOver false→true. Пока последние кадры боя
+     * «оседают», playerPoints/enemyPoints могут ещё чуть измениться — исход
+     * законченной игры фиксируется один раз и не должен от этого дрожать (#337).
+     */
+    finalPlayerPoints: number | null;
+    finalEnemyPoints: number | null;
     /** Seed текущего боя — нужен для сборки ссылки-реплея после его окончания. */
     battleSeed: number | string | null;
     /**
@@ -57,6 +64,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     selectedWeapon: null,
     isGameOver: false,
     isStarted: false,
+    finalPlayerPoints: null,
+    finalEnemyPoints: null,
     battleSeed: null,
     battleField: null,
     replayMoves: [],
@@ -80,8 +89,19 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
                 s.selectedWeapon?.id === id ? (weapons[0] ?? null) : s.selectedWeapon;
             return { weapons, selectedWeapon };
         }),
-    setGameOver: (isGameOver) => set({ isGameOver }),
-    startGame: () => set({ isStarted: true, isGameOver: false }),
+    setGameOver: (isGameOver) =>
+        set((s) =>
+            isGameOver && !s.isGameOver
+                ? { isGameOver, finalPlayerPoints: s.playerPoints, finalEnemyPoints: s.enemyPoints }
+                : { isGameOver },
+        ),
+    startGame: () =>
+        set({
+            isStarted: true,
+            isGameOver: false,
+            finalPlayerPoints: null,
+            finalEnemyPoints: null,
+        }),
     resetGame: () =>
         set({
             angle: 0,
@@ -93,6 +113,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             selectedWeapon: null,
             isGameOver: false,
             isStarted: false,
+            finalPlayerPoints: null,
+            finalEnemyPoints: null,
             battleSeed: null,
             battleField: null,
             replayMoves: [],
