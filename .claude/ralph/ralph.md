@@ -22,7 +22,7 @@
 
 Если Issue затрагивает то, как игра выглядит или управляется (layout, HUD, тач, анимации, страницы):
 
-- ПЕРЕД вёрсткой запусти скилл `ui-ux-pro-max` (глобальный, `~/.claude/skills/ui-ux-pro-max/`): `python <skill>/scripts/search.py "<запрос>" --domain ux` (или `--design-system`) — возьми оттуда чек-лист под задачу. Наша тема: retro pixel game (Pixel Art, Press Start 2P, тёмный фон).
+- ПЕРЕД вёрсткой запусти скилл `ui-ux-pro-max` (в репо, `.claude/skills/ui-ux-pro-max/`): `python .claude/skills/ui-ux-pro-max/scripts/search.py "<запрос>" --domain ux` (или `--design-system`) — возьми оттуда чек-лист под задачу. Путь проектно-относительный (cwd кодер-сессии = корень worktree), скилл закоммичен в репо — глобальный `~/.claude/skills/` не использовать: он не переживает restore VDS. Наша тема: retro pixel game (пиксель-арт, тёмный фон).
 - ПОСЛЕ реализации проверь визуально через Playwright MCP: `npm run dev` (порт 3050) → навигация → скриншот в `screenshots/` → `browser_console_messages` (ошибок быть не должно). Мобильные Issue — проверять на вьюпортах 375×667 и 667×375.
 - Не закрывай Issue без визуальной проверки — «код написан» ≠ «выглядит правильно».
 
