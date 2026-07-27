@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import Link from 'next/link';
 import { isDailySeed, ShareDailyResultButton, submitDailyScore } from '@/features/daily-challenge';
 import { useGameStore } from '@/features/game-engine';
 import { ShareReplayButton } from '@/features/replays';
 import { BOT_NAME } from '@/shared/config';
 import { ThemeScope, type TOutcome } from '@/shared/lib/theme';
-import { Button, Dialog } from '@/shared/ui';
+import { Button, Dialog, buttonClasses } from '@/shared/ui';
 
 type TGameOverDialogProps = {
     seed?: string;
@@ -108,7 +109,7 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
                         moves={replayMoves}
                     />
                 ) : null}
-                <div className="mt-6">
+                <div className="mt-6 flex flex-wrap justify-center">
                     <Button
                         onClick={() => {
                             resetGame();
@@ -117,6 +118,9 @@ export function GameOverDialog({ seed }: TGameOverDialogProps = {}) {
                     >
                         Новая игра
                     </Button>
+                    <Link href="/" className={buttonClasses('ghost', 'md')}>
+                        В меню
+                    </Link>
                 </div>
             </Dialog>
         </ThemeScope>

@@ -11,7 +11,7 @@ describe('DesignSystemPage', () => {
         expect(getByRole('heading', { name: /Тема/ })).toBeInTheDocument();
     });
 
-    it('рендерит расширенные секции инвентаря (05-13) с нумерацией 1:1', () => {
+    it('рендерит расширенные секции инвентаря (05-14) с нумерацией 1:1', () => {
         const { getByText } = render(<DesignSystemPage />);
 
         expect(getByText(/05 — Решения/)).toBeInTheDocument();
@@ -22,7 +22,8 @@ describe('DesignSystemPage', () => {
         expect(getByText(/10 — Игровые контролы/)).toBeInTheDocument();
         expect(getByText(/11 — Экраны/)).toBeInTheDocument();
         expect(getByText(/12 — Новый экран/)).toBeInTheDocument();
-        expect(getByText(/13 — Дисплейный шрифт/)).toBeInTheDocument();
+        expect(getByText(/13 — Game Over/)).toBeInTheDocument();
+        expect(getByText(/14 — Дисплейный шрифт/)).toBeInTheDocument();
     });
 
     it('глобальный переключатель темы в шапке меняет data-faction на корневой обёртке', () => {
@@ -63,9 +64,10 @@ describe('DesignSystemPage', () => {
     it('Dialog (§03) показан статичным срезом без клика', () => {
         // Статичный срез не модальный → не заявляет role="dialog"; проверяем по
         // заголовку среза, что он отрисован в потоке без интеракции.
-        const { getByRole } = render(<DesignSystemPage />);
+        const { getAllByRole } = render(<DesignSystemPage />);
 
-        expect(getByRole('heading', { name: 'Победа' })).toBeInTheDocument();
+        const victory = getAllByRole('heading', { name: 'Победа' });
+        expect(victory.length).toBeGreaterThan(0);
     });
 
     it('Пауза (§12) показана статичным срезом без клика, PauseOverlay реален', () => {

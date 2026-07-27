@@ -159,6 +159,22 @@ describe('GameOverDialog', () => {
         expect(screen.queryByText('Ничья')).not.toBeInTheDocument();
     });
 
+    it('shows both "Новая игра" and "В меню" buttons (#338)', () => {
+        setGameOver(10, 5);
+        render(<GameOverDialog seed="42" />);
+
+        expect(screen.getByRole('button', { name: /Новая игра/i })).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: /В меню/i })).toBeInTheDocument();
+    });
+
+    it('"В меню" link points to the home page (#338)', () => {
+        setGameOver(10, 5);
+        render(<GameOverDialog seed="42" />);
+
+        const menuLink = screen.getByRole('link', { name: /В меню/i });
+        expect(menuLink).toHaveAttribute('href', '/');
+    });
+
     it('does not submit again for the same seed across a remount (reload guard)', async () => {
         setGameOver(30, 10);
         const { unmount } = render(<GameOverDialog seed="daily-2026-07-19" />);
