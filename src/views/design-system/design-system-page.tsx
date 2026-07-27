@@ -1,5 +1,19 @@
+'use client';
+
+import { useState } from 'react';
 import { APP_NAME } from '@/shared/config';
-import { DesignSystemPreview } from './design-system-preview';
+import { ThemeScope, type TFaction, type TIntensity } from '@/shared/lib/theme';
+import { Button } from '@/shared/ui';
+import { AtomicComponentsSection } from './atomic-components-section';
+import { BaseComponentsSection } from './base-components-section';
+import { DecisionsSection } from './decisions-section';
+import { DisplayFontSection } from './display-font-section';
+import { EffectTokensSection } from './effect-tokens-section';
+import { FeedbackStatesSection } from './feedback-states-section';
+import { GameControlsSection } from './game-controls-section';
+import { IconSection } from './icon-section';
+import { PauseSection } from './pause-section';
+import { ScreensSection } from './screens-section';
 
 type TSwatch = {
     name: string;
@@ -23,18 +37,53 @@ const TEXT_TOKENS: TSwatch[] = [
     { name: '--color-text-dim', hex: '#728a70', contrast: '~3.6:1' },
 ];
 
-const BRAND_TOKENS: TSwatch[] = [
-    { name: '--color-primary', hex: '#ffc21f' },
-    { name: '--color-primary-ink', hex: '#241900' },
-    { name: '--color-accent', hex: '#48ff00' },
-    { name: '--color-accent-ink', hex: '#052400' },
-    { name: '--color-enemy', hex: '#c900ff' },
-    { name: '--color-enemy-ink', hex: '#1e0030' },
-    { name: '--color-danger', hex: '#ff4242' },
-    { name: '--color-danger-ink', hex: '#2b0000' },
-    { name: '--color-warning', hex: '#ffa900' },
-    { name: '--color-warning-ink', hex: '#2a1600' },
-    { name: '--color-success', hex: '#48ff00' },
+type TBrandToken = {
+    name: string;
+    hex: string;
+    /** Токен `-ink` этой заливки — показан как контраст-подпись НА свотче
+     *  (D5 §05: ink-пары — это текст поверх заливки, не отдельные боксы). */
+    inkName: string;
+    /** Роль/контекст использования — «роль-подписи цветов» инвентаря. */
+    role: string;
+};
+
+const BRAND_TOKENS: TBrandToken[] = [
+    {
+        name: '--color-primary',
+        hex: '#ffc21f',
+        inkName: '--color-primary-ink',
+        role: 'действие · золото',
+    },
+    {
+        name: '--color-accent',
+        hex: '#48ff00',
+        inkName: '--color-accent-ink',
+        role: 'фокус · выбор · свой (тема через data-faction)',
+    },
+    {
+        name: '--color-enemy',
+        hex: '#c900ff',
+        inkName: '--color-enemy-ink',
+        role: 'враг · маджента',
+    },
+    {
+        name: '--color-danger',
+        hex: '#ff4242',
+        inkName: '--color-danger-ink',
+        role: 'поражение · удаление · ошибки',
+    },
+    {
+        name: '--color-warning',
+        hex: '#ffa900',
+        inkName: '--color-warning-ink',
+        role: 'предупреждение',
+    },
+    {
+        name: '--color-success',
+        hex: '#48ff00',
+        inkName: '--color-accent-ink',
+        role: '= accent, алиас (D1)',
+    },
 ];
 
 type TTypeRole = {
@@ -111,33 +160,6 @@ const TYPE_ROLES: TTypeRole[] = [
     },
 ];
 
-type TEffect = {
-    name: string;
-    kind: 'box' | 'text';
-    hint: string;
-};
-
-const EFFECTS: TEffect[] = [
-    { name: '--glow-primary', kind: 'box', hint: 'Свечение primary-кнопок' },
-    { name: '--glow-accent', kind: 'box', hint: 'Свечение неоновых обводок' },
-    { name: '--glow-enemy', kind: 'box', hint: 'Вражеский glow (тема enemy)' },
-    { name: '--glow-danger', kind: 'box', hint: 'Свечение danger (поражение)' },
-    { name: '--glow-text', kind: 'text', hint: 'Свечение HUD-цифр и лого' },
-    { name: '--edge-pixel', kind: 'box', hint: 'Жёсткая пиксель-тень объёма' },
-    { name: '--ring-focus', kind: 'box', hint: 'Клавиатурный фокус (двойной ринг)' },
-];
-
-type TRadius = {
-    name: string;
-    value: string;
-    hint: string;
-};
-
-const RADII: TRadius[] = [
-    { name: '--radius-none', value: '0px', hint: 'Панели, кнопки — острые углы' },
-    { name: '--radius-sm', value: '2px', hint: 'Лёгкое смягчение (чипы, бейджи)' },
-];
-
 function Swatch({ name, hex, contrast }: TSwatch) {
     const label = name.replace(/^--color-/, '');
     return (
@@ -158,166 +180,276 @@ function Swatch({ name, hex, contrast }: TSwatch) {
     );
 }
 
-function SectionHeading({ children }: { children: string }) {
-    return <h2 className="mb-6 font-display text-h2 text-text uppercase">{children}</h2>;
+/** Бренд/статус-свотч с ink-парой ПРЯМО на заливке (пример: primary-ink текстом
+ *  поверх primary), а не отдельным боксом — D4 §05 инвентаря. */
+function BrandSwatch({ name, hex, inkName, role }: TBrandToken) {
+    const label = name.replace(/^--color-/, '');
+    return (
+        <div className="flex flex-col gap-2">
+            <div
+                aria-hidden
+                className="flex h-16 w-full items-center justify-center border-[length:var(--border-w)] border-border font-ui text-[11px] font-bold uppercase"
+                style={{ backgroundColor: `var(${name})`, color: `var(${inkName})` }}
+            >
+                Aa
+            </div>
+            <div className="flex flex-col gap-0.5">
+                <span className="font-ui text-caption text-text">{label}</span>
+                <span className="font-ui text-label text-text-muted uppercase">{hex}</span>
+                <span className="font-ui text-label text-text-muted">{role}</span>
+            </div>
+        </div>
+    );
+}
+
+function SectionHeading({
+    number,
+    headline,
+    children,
+}: {
+    number: string;
+    headline?: string;
+    children: string;
+}) {
+    return (
+        <div className="mb-6 flex flex-col gap-1">
+            <p className="font-ui text-label tracking-[0.28em] text-accent uppercase">
+                {number} — {children}
+            </p>
+            <h2 className="font-display text-h2 text-text uppercase">{headline ?? children}</h2>
+        </div>
+    );
 }
 
 export function DesignSystemPage() {
+    const [faction, setFaction] = useState<TFaction>('player');
+    const [intensity, setIntensity] = useState<TIntensity>('normal');
+
     return (
-        <main className="min-h-dvh bg-bg px-4 py-10 text-text sm:px-6 lg:px-10">
-            <div className="mx-auto flex max-w-6xl flex-col gap-14">
-                <header className="flex flex-col gap-3">
-                    <p className="font-ui text-label tracking-[0.12em] text-accent uppercase">
-                        {APP_NAME} · Design System
-                    </p>
-                    <h1 className="font-display text-display text-text uppercase">Витрина</h1>
-                    <p className="max-w-prose text-body text-text-muted">
-                        Живой справочник дизайн-системы в реальном Next / Tailwind окружении:
-                        токены, типографика, компоненты и эффекты из hero-арта. Мишень визуальной
-                        регрессии.
-                    </p>
-                </header>
+        <ThemeScope
+            faction={faction}
+            intensity={intensity}
+            data-testid="ds-faction-scope"
+            className="block min-h-dvh bg-bg text-text"
+        >
+            <main className="px-4 py-10 sm:px-6 lg:px-10">
+                <div className="mx-auto flex max-w-6xl flex-col gap-22">
+                    <header className="flex flex-col gap-5.5">
+                        <p className="font-ui text-label tracking-[0.32em] text-accent uppercase">
+                            {APP_NAME} · Design System · Extended Inventory
+                        </p>
+                        <h1 className="font-display text-display text-text uppercase">
+                            Полный инвентарь
+                            <br />
+                            компонентов и экранов
+                        </h1>
+                        <p className="max-w-prose text-body text-text-muted">
+                            Живой справочник дизайн-системы в реальном Next / Tailwind окружении:
+                            токены, типографика, компоненты и эффекты из hero-арта. Живые примеры
+                            реагируют на переключатели ниже. Упаковка — Telegram Mini App, поэтому
+                            всё адаптивно от 390px и без десктоп-онли хрома. Мишень визуальной
+                            регрессии.
+                        </p>
 
-                <section>
-                    <SectionHeading>Палитра</SectionHeading>
-                    <div className="flex flex-col gap-8">
-                        <div>
-                            <h3 className="mb-3 font-ui text-hud text-text-muted uppercase">
-                                Поверхности
-                            </h3>
-                            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7">
-                                {SURFACE_TOKENS.map((token) => (
-                                    <Swatch key={token.name} {...token} />
-                                ))}
-                            </div>
-                        </div>
-                        <div>
-                            <h3 className="mb-3 font-ui text-hud text-text-muted uppercase">
-                                Текст
-                            </h3>
-                            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-                                {TEXT_TOKENS.map((token) => (
-                                    <Swatch key={token.name} {...token} />
-                                ))}
-                            </div>
-                        </div>
-                        <div>
-                            <h3 className="mb-3 font-ui text-hud text-text-muted uppercase">
-                                Бренд / статус
-                            </h3>
-                            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-                                {BRAND_TOKENS.map((token) => (
-                                    <Swatch key={token.name} {...token} />
-                                ))}
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-                <section>
-                    <SectionHeading>Типографика</SectionHeading>
-                    <div className="flex flex-col gap-8">
-                        {TYPE_ROLES.map((role) => (
-                            <div
-                                key={role.name}
-                                className="flex flex-col gap-2 border-b border-border pb-6 last:border-b-0 md:flex-row md:items-baseline md:gap-8"
-                            >
-                                <div className="flex shrink-0 flex-col gap-0.5 md:w-56">
-                                    <span className="font-ui text-caption text-text">
-                                        {role.name}
-                                    </span>
-                                    <span className="font-ui text-label text-text-muted uppercase">
-                                        {role.size}
-                                    </span>
-                                </div>
-                                <p className={`${role.className} ${role.fontClassName} text-text`}>
-                                    {role.sample}
-                                </p>
-                            </div>
-                        ))}
-                    </div>
-                </section>
-
-                <section>
-                    <SectionHeading>Компоненты</SectionHeading>
-                    <DesignSystemPreview />
-                </section>
-
-                <section>
-                    <SectionHeading>Эффекты</SectionHeading>
-                    <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                        {EFFECTS.map((effect) => (
-                            <div key={effect.name} className="flex flex-col gap-3">
-                                <div className="flex h-28 items-center justify-center bg-surface">
-                                    {effect.kind === 'text' ? (
-                                        <span
-                                            className="font-display text-hud-xl text-accent"
-                                            style={{ textShadow: `var(${effect.name})` }}
-                                        >
-                                            HUD
-                                        </span>
-                                    ) : (
-                                        <div
-                                            aria-hidden
-                                            className="size-12 bg-panel-raised"
-                                            style={{ boxShadow: `var(${effect.name})` }}
-                                        />
-                                    )}
-                                </div>
-                                <div className="flex flex-col gap-0.5">
-                                    <span className="font-ui text-caption text-text">
-                                        {effect.name}
-                                    </span>
-                                    <span className="font-ui text-label text-text-muted">
-                                        {effect.hint}
-                                    </span>
+                        <div className="mt-1 flex flex-wrap items-center gap-5.5">
+                            <div className="flex items-center gap-3">
+                                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                                    Тема акцента
+                                </span>
+                                <div className="flex gap-0.5 border-[length:var(--border-w)] border-border bg-surface p-[3px]">
+                                    <Button
+                                        variant={faction === 'player' ? 'accent' : 'ghost'}
+                                        size="sm"
+                                        onClick={() => setFaction('player')}
+                                        aria-pressed={faction === 'player'}
+                                        className="m-0 border-none"
+                                    >
+                                        Игрок
+                                    </Button>
+                                    <Button
+                                        variant={faction === 'enemy' ? 'accent' : 'ghost'}
+                                        size="sm"
+                                        onClick={() => setFaction('enemy')}
+                                        aria-pressed={faction === 'enemy'}
+                                        className="m-0 border-none"
+                                    >
+                                        Враг
+                                    </Button>
                                 </div>
                             </div>
-                        ))}
-                    </div>
-                </section>
+                            <div className="flex items-center gap-3">
+                                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                                    Интенсивность (data-intensity)
+                                </span>
+                                <div className="flex gap-0.5 border-[length:var(--border-w)] border-border bg-surface p-[3px]">
+                                    <Button
+                                        variant={intensity === 'normal' ? 'accent' : 'ghost'}
+                                        size="sm"
+                                        onClick={() => setIntensity('normal')}
+                                        aria-pressed={intensity === 'normal'}
+                                        className="m-0 border-none"
+                                    >
+                                        Неон
+                                    </Button>
+                                    <Button
+                                        variant={intensity === 'calm' ? 'accent' : 'ghost'}
+                                        size="sm"
+                                        onClick={() => setIntensity('calm')}
+                                        aria-pressed={intensity === 'calm'}
+                                        className="m-0 border-none"
+                                    >
+                                        Спокойный HUD
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </header>
 
-                <section>
-                    <SectionHeading>Радиусы</SectionHeading>
-                    <p className="mb-6 max-w-prose text-body text-text-muted">
-                        Пиксельная эстетика — почти без скруглений. <code>--radius-none</code>{' '}
-                        держит острые углы панелей и кнопок, <code>--radius-sm</code> (2px) лишь
-                        слегка смягчает мелкие элементы.
-                    </p>
-                    <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
-                        {RADII.map((radius) => (
-                            <div key={radius.name} className="flex flex-col gap-3">
+                    <section>
+                        <SectionHeading number="01">Палитра</SectionHeading>
+                        <div className="flex flex-col gap-8">
+                            <div>
+                                <h3 className="mb-3 font-ui text-hud text-text-muted uppercase">
+                                    Поверхности
+                                </h3>
+                                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7">
+                                    {SURFACE_TOKENS.map((token) => (
+                                        <Swatch key={token.name} {...token} />
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <h3 className="mb-3 font-ui text-hud text-text-muted uppercase">
+                                    Текст
+                                </h3>
+                                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                                    {TEXT_TOKENS.map((token) => (
+                                        <Swatch key={token.name} {...token} />
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <h3 className="mb-3 font-ui text-hud text-text-muted uppercase">
+                                    Бренд / статус
+                                </h3>
+                                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                                    {BRAND_TOKENS.map((token) => (
+                                        <BrandSwatch key={token.name} {...token} />
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section>
+                        <SectionHeading number="02">Типографика</SectionHeading>
+                        <div className="flex flex-col gap-8">
+                            {TYPE_ROLES.map((role) => (
                                 <div
-                                    aria-hidden
-                                    className="h-20 w-full border-[length:var(--border-w)] border-border-strong bg-panel-raised"
-                                    style={{ borderRadius: `var(${radius.name})` }}
-                                />
-                                <div className="flex flex-col gap-0.5">
-                                    <span className="font-ui text-caption text-text">
-                                        {radius.name}
-                                    </span>
-                                    <span className="font-ui text-label text-text-muted">
-                                        {radius.value} · {radius.hint}
-                                    </span>
+                                    key={role.name}
+                                    className="flex flex-col gap-2 border-b border-border pb-6 last:border-b-0 md:flex-row md:items-baseline md:gap-8"
+                                >
+                                    <div className="flex shrink-0 flex-col gap-0.5 md:w-56">
+                                        <span className="font-ui text-caption text-text">
+                                            {role.name}
+                                        </span>
+                                        <span className="font-ui text-label text-text-muted uppercase">
+                                            {role.size}
+                                        </span>
+                                    </div>
+                                    <p
+                                        className={`${role.className} ${role.fontClassName} text-text`}
+                                    >
+                                        {role.sample}
+                                    </p>
                                 </div>
-                            </div>
-                        ))}
-                    </div>
-                </section>
+                            ))}
+                        </div>
+                    </section>
 
-                <section>
-                    <SectionHeading>Тема</SectionHeading>
-                    <p className="mb-6 max-w-prose text-body text-text-muted">
-                        Ось тем — фракция. Переключатель ниже меняет <code>data-faction</code> на
-                        контейнере-обёртке; компоненты читают семантические
-                        <code> --accent / --glow</code> и переключаются без условных классов в
-                        разметке.
-                    </p>
-                    <p className="text-caption text-text-muted">
-                        Интерактивный переключатель — в секции «Компоненты» выше.
-                    </p>
-                </section>
-            </div>
-        </main>
+                    <section>
+                        <SectionHeading number="03">Компоненты</SectionHeading>
+                        <BaseComponentsSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="04">Тема</SectionHeading>
+                        <p className="mb-2 max-w-prose text-body text-text-muted">
+                            Ось тем — фракция. Переключатель в шапке страницы меняет{' '}
+                            <code>data-faction</code> на корневой обёртке витрины — компоненты
+                            читают семантические <code>--accent / --glow</code> и переключаются без
+                            условных классов в разметке.
+                        </p>
+                        <p className="text-caption text-text-muted">
+                            Попробуй прямо сейчас: переключи «Тема акцента» / «Интенсивность» в
+                            шапке — вся витрина ниже реагирует.
+                        </p>
+                    </section>
+
+                    <section>
+                        <SectionHeading number="05" headline="Нестыковки решены явно">
+                            Решения
+                        </SectionHeading>
+                        <DecisionsSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="06" headline="Glow · edge · focus · radius">
+                            Эффект-токены
+                        </SectionHeading>
+                        <EffectTokensSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="07" headline="Пиксельный набор · сетка 16×16">
+                            Иконки
+                        </SectionHeading>
+                        <IconSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="08" headline="Инвентарь · все состояния">
+                            Новые компоненты
+                        </SectionHeading>
+                        <AtomicComponentsSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="09" headline="Кнопки · данные · формы">
+                            Состояния
+                        </SectionHeading>
+                        <FeedbackStatesSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="10" headline="Тач-рогатка · плеер реплея">
+                            Игровые контролы
+                        </SectionHeading>
+                        <GameControlsSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="11" headline="Поток · все брейкпоинты">
+                            Экраны
+                        </SectionHeading>
+                        <ScreensSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="12" headline="Пауза / Настройки боя">
+                            Новый экран
+                        </SectionHeading>
+                        <PauseSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="13" headline="Кириллица заголовков — решение D7">
+                            Дисплейный шрифт
+                        </SectionHeading>
+                        <DisplayFontSection />
+                    </section>
+                </div>
+            </main>
+        </ThemeScope>
     );
 }
