@@ -19,6 +19,7 @@ function makeEnv(over: Partial<TunnelCheckEnv> = {}): TunnelCheckEnv {
         pushEvent: () => {
             throw new Error('pushEvent не подменён в тесте');
         },
+        guardSideEffect: () => {},
         ...over,
     };
 }
@@ -63,6 +64,38 @@ describe('tunnelCheckEnabled — включение health-check', () => {
     it('env RALPH_TUNNEL_CHECK=1 включает даже при config.enabled=false (мост до профилей)', () => {
         process.env.RALPH_TUNNEL_CHECK = '1';
         expect(tunnelCheckEnabled({ tunnelCheck: { enabled: false } })).toBe(true);
+    });
+});
+
+describe('expectedEgress — ожидаемый egress из env (RALPH_EXPECTED_EGRESS > SS_SERVER)', () => {
+    const { expectedEgress } = createTunnelCheck(makeEnv());
+    const savedEnv = { ...process.env };
+    afterEach(() => {
+        process.env = { ...savedEnv };
+    });
+
+    it('SS_SERVER задан, RALPH_EXPECTED_EGRESS нет → сверка идёт с SS_SERVER (контракт provision)', () => {
+        delete process.env.RALPH_EXPECTED_EGRESS;
+        process.env.SS_SERVER = '203.0.113.7';
+        expect(expectedEgress()).toBe('203.0.113.7');
+    });
+
+    it('RALPH_EXPECTED_EGRESS важнее SS_SERVER, если заданы оба', () => {
+        process.env.RALPH_EXPECTED_EGRESS = '198.51.100.9';
+        process.env.SS_SERVER = '203.0.113.7';
+        expect(expectedEgress()).toBe('198.51.100.9');
+    });
+
+    it('ни одного не задано → пустая строка (сверять не с чем)', () => {
+        delete process.env.RALPH_EXPECTED_EGRESS;
+        delete process.env.SS_SERVER;
+        expect(expectedEgress()).toBe('');
+    });
+
+    it('хвостовой CRLF/пробел (ralph.env редактируют на Windows) обрезается trim', () => {
+        delete process.env.RALPH_EXPECTED_EGRESS;
+        process.env.SS_SERVER = '203.0.113.7\r\n';
+        expect(expectedEgress()).toBe('203.0.113.7');
     });
 });
 
@@ -112,8 +145,7 @@ describe('probeEgress — фактический вызов curl (граница
     });
 
     it('proxy по умолчанию берётся из HTTPS_PROXY/HTTP_PROXY, иначе из tc.proxyUrl, иначе localhost:8118', () => {
-        delete process.env.HTTPS_PROXY;
-        delete process.env.HTTP_PROXY;
+        // HTTPS_PROXY/HTTP_PROXY уже сняты beforeEach этого блока — не дублируем.
         const execFn = vi.fn().mockReturnValue('1.2.3.4');
         probeEgress({}, execFn);
         expect(execFn.mock.calls[0][1]).toContain('http://127.0.0.1:8118');

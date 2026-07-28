@@ -1,4 +1,4 @@
-// Модуль health-check Shadowsocks-туннеля (#361, трек «Фреймворк ралph», фаза 2, исходно
+// Модуль health-check Shadowsocks-туннеля (#361, трек «Фреймворк ralph», фаза 2, исходно
 // #92). Вынесен из ralph.js по тому же приёму, что worktree.ts/state-lock.ts (#359/#360):
 // прод-режим — VDS в РФ ходит к Anthropic через Shadowsocks → privoxy (HTTPS_PROXY). Если
 // туннель ночью отвалится, claude-вызов упрётся в Cloudflare-403/таймаут, а ralph зря сожжёт
@@ -27,6 +27,7 @@ type LogFn = (msg: string) => void;
 type SleepFn = (ms: number) => void;
 type PushEventFn = (msg: string, cfg?: unknown, opts?: Record<string, unknown>) => unknown;
 type ExecFn = (file: string, args: string[], opts?: Record<string, unknown>) => string;
+type GuardFn = (what: string) => void;
 
 type TunnelCheckCfg = {
     tunnelCheck?: {
@@ -41,14 +42,18 @@ type TunnelCheckCfg = {
 // Контекст ralph.js, захватываемый фабрикой один раз. log/sleep — те же module-level
 // коллабораторы, что использует остальной раннер; pushEvent — единая точка пуш-событий
 // человеку (#86), общая для всех 4 событий прод-режима, не только туннеля.
+// guardSideEffect — общий предохранитель #138: его зовут ОПАСНЫЕ дефолты execFn (реальные
+// curl / systemctl restart), чтобы забытый в тесте override не ушёл в настоящую сеть или —
+// хуже — в реальный рестарт сервисов туннеля на прод-VDS, где гейт гоняет тесты.
 export type TunnelCheckEnv = {
     log: LogFn;
     sleep: SleepFn;
     pushEvent: PushEventFn;
+    guardSideEffect: GuardFn;
 };
 
 export function createTunnelCheck(env: TunnelCheckEnv) {
-    const { log, sleep, pushEvent } = env;
+    const { log, sleep, pushEvent, guardSideEffect } = env;
 
     // Включён ли health-check. Локально/в dev туннеля нет — по умолчанию ВЫКЛ, чтобы не
     // ломать обычный запуск. Включается прод-профилем (config.tunnelCheck.enabled) или
@@ -85,7 +90,15 @@ export function createTunnelCheck(env: TunnelCheckEnv) {
     // без -4 мог бы отдать IPv6 и увести сравнение в ложный красный.
     // Пустая строка при любой ошибке (таймаут, мёртвый прокси) — вызывающий трактует
     // пустоту как «не здоров». execFn инжектируется для тестов; в проде — execFileSync.
-    function probeEgress(cfg: TunnelCheckCfg, execFn: ExecFn = execFileSync as ExecFn): string {
+    // Дефолтный execFn гардится #138: забытый override в тесте ушёл бы в настоящий curl
+    // (сеть, до 15 с таймаута) — предохранитель краснит до реальной побочки.
+    function probeEgress(
+        cfg: TunnelCheckCfg,
+        execFn: ExecFn = (file, args, opts) => {
+            guardSideEffect('curl (probeEgress)');
+            return (execFileSync as ExecFn)(file, args, opts);
+        },
+    ): string {
         const tc = cfg.tunnelCheck || {};
         const proxy =
             process.env.HTTPS_PROXY ||
@@ -107,7 +120,15 @@ export function createTunnelCheck(env: TunnelCheckEnv) {
     // выполнить через execFileSync (тот же anti-RCE паттерн, что и probeEgress выше),
     // а не execSync(cmd) строкой через шелл. Fail-open: сбой самого рестарта лишь
     // логируем — финальная повторная сверка egress всё равно решит, здоров канал или нет.
-    function restartTunnel(cfg: TunnelCheckCfg, execFn: ExecFn = execFileSync as ExecFn): void {
+    // Дефолтный execFn гардится #138: забытый override в тесте ушёл бы в настоящий
+    // systemctl restart сервисов туннеля на прод-VDS, где гейт гоняет тесты.
+    function restartTunnel(
+        cfg: TunnelCheckCfg,
+        execFn: ExecFn = (file, args, opts) => {
+            guardSideEffect('systemctl (restartTunnel)');
+            return (execFileSync as ExecFn)(file, args, opts);
+        },
+    ): void {
         const cmd =
             (cfg.tunnelCheck && cfg.tunnelCheck.restartCmd) ||
             'systemctl restart shadowsocks-libev-local@frankfurt privoxy';

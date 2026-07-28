@@ -27,12 +27,16 @@ type ShqFn = (s: string) => string;
 type LogFn = (msg: string) => void;
 type FailFn = (msg: string) => unknown;
 type ExistsFn = typeof fs.existsSync;
+type GuardFn = (what: string) => void;
 
 // Контекст ralph.js, захватываемый фабрикой один раз. sh/shArgv/shq/log/fail — те же
 // module-level коллабораторы, что использует остальной раннер; buildSanitizedGateEnv —
 // санация env для `npm ci` (#189, дочерний процесс исполняет lifecycle-скрипты чужих
 // зависимостей, секретам петли там не место); writeLockMarker — из createStateLock
 // (#359): засевает маркер хэша lock сразу после `npm ci` нового worktree.
+// guardSideEffect — общий предохранитель #138: его зовут ОПАСНЫЕ дефолты addFn/installFn
+// (реальные git worktree add / npm ci), чтобы забытый в тесте override не ушёл в живой
+// git/npm дерева, где идут тесты (как в state-lock.ts у installFn/writeLock).
 export type WorktreeEnv = {
     defaultWorktreeDirname: string;
     sh: ShFn;
@@ -40,6 +44,7 @@ export type WorktreeEnv = {
     shq: ShqFn;
     log: LogFn;
     fail: FailFn;
+    guardSideEffect: GuardFn;
     buildSanitizedGateEnv: () => NodeJS.ProcessEnv;
     writeLockMarker: (dir?: string) => void;
 };
@@ -52,6 +57,7 @@ export function createWorktreeManager(env: WorktreeEnv) {
         shq,
         log,
         fail,
+        guardSideEffect,
         buildSanitizedGateEnv,
         writeLockMarker,
     } = env;
@@ -196,18 +202,28 @@ export function createWorktreeManager(env: WorktreeEnv) {
             // Путь в argv (execFile без shell), а не в шелл-строку: пробел/спецсимвол из
             // cfg.runnerWorktreePath/RALPH_WORKTREE_PATH не разваливает команду на аргументы
             // и не доезжает до шелла (та же гигиена, что spawnClaude/probeEgress) (#SiaUP).
-            addFn = (p: string) =>
-                execFileSync('git', ['worktree', 'add', '--detach', p, 'origin/main'], {
+            addFn = (p: string) => {
+                // Забытый addFn в тесте создал бы настоящий git worktree в дереве, где
+                // идут тесты (гейт гоняет npm run test прямо в worktree раннера) —
+                // предохранитель #138 краснит до реальной git-побочки.
+                guardSideEffect('git worktree add (ensureRunnerWorktree)');
+                return execFileSync('git', ['worktree', 'add', '--detach', p, 'origin/main'], {
                     stdio: 'inherit',
-                }),
+                });
+            },
             // env (#189): `npm ci` исполняет lifecycle-скрипты зависимостей — код с чужих
             // слов. Санируем окружение по allowlist, чтобы скомпрометированная зависимость
             // не нашла в env секретов петли (GH_TOKEN, CLAUDE_*, RALPH_TG_*). buildGateEnvFn —
             // DI для тестов; в проде строит env из gate-env-allowlist.json. Санированный env
             // приходит в installFn аргументом — так подмена видна в тестах через spy.
             buildGateEnvFn = buildSanitizedGateEnv,
-            installFn = (dir: string, gateEnv: NodeJS.ProcessEnv) =>
-                execSync('npm ci', { cwd: dir, stdio: 'inherit', env: gateEnv }),
+            installFn = (dir: string, gateEnv: NodeJS.ProcessEnv) => {
+                // Забытый installFn в тесте переустановил бы node_modules в дереве, где
+                // идут тесты (ревью PR #141) — тот же предохранитель #138, что у
+                // installFn в syncDepsIfLockChanged (state-lock.ts).
+                guardSideEffect('npm ci (ensureRunnerWorktree)');
+                return execSync('npm ci', { cwd: dir, stdio: 'inherit', env: gateEnv });
+            },
             markFn = writeLockMarker,
             repoRoot = process.cwd(),
         }: {
@@ -223,7 +239,11 @@ export function createWorktreeManager(env: WorktreeEnv) {
             markFn?: (dir?: string) => void;
             repoRoot?: string;
         } = {},
-    ): string | unknown {
+        // Возврат `unknown`, а не `string`: успех отдаёт worktreePath (string), но ветки
+        // ошибок возвращают failFn(...) — в бою fail не возвращается (process.exit), однако
+        // по типу FailFn это `unknown`. `string | unknown` схлопнулось бы в `unknown` и
+        // обманывало бы (юнион с unknown поглощает string), поэтому пишем `unknown` честно.
+    ): unknown {
         // #SiaUT: путь ВНУТРИ репозитория — ошибка (дефолт-сосед при запуске не из корня,
         // или кривой cfg/env-override): вложенное дерево игнорится .gitignore родителя либо
         // норовит закоммититься как sub-repo. Останавливаемся до любых git-побочек.

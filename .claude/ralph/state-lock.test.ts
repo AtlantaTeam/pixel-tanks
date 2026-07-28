@@ -4,6 +4,7 @@
 // функции, но с боевым контекстом раннера); тут — контракт extraction'а: модуль
 // самодостаточен и переносим (цель фазы 2), а не «работает только пока его зовёт ralph.js».
 import { describe, it, expect, vi } from 'vitest';
+import crypto from 'node:crypto';
 import type { StateLockEnv } from './state-lock.ts';
 import { createStateLock } from './state-lock.ts';
 
@@ -98,8 +99,7 @@ describe('saveState — C1 read-only (dry) + предохранитель #138',
 });
 
 describe('lockHash / syncDepsIfLockChanged — маркер .deps-lock.sha', () => {
-    const HASH_OF = (s: string) =>
-        require('node:crypto').createHash('sha256').update(s).digest('hex');
+    const HASH_OF = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
 
     it('lockHash: sha256 содержимого package-lock.json, null если файла нет', () => {
         const { lockHash } = createStateLock(makeEnv());
@@ -225,6 +225,54 @@ describe('acquireLock — fail-closed взятие через инжектиро
         });
         expect(ok).toBe(false);
         expect(failFn.mock.calls[0][0]).toMatch(/битый/);
+        expect(writeFn).not.toHaveBeenCalled();
+    });
+
+    it('гонка взятия: writeFn бросает EEXIST внутри claim() → fail-closed отказ, старт запрещён', () => {
+        // Лок появился между чтением (ENOENT) и записью — второй раннер стартовал
+        // одновременно и его 'wx' победил. Наш claim() ловит EEXIST и отказывает.
+        const { acquireLock } = createStateLock(makeEnv());
+        const failFn = vi.fn();
+        const writeFn = vi.fn(() => {
+            const e = new Error('EEXIST') as NodeJS.ErrnoException;
+            e.code = 'EEXIST';
+            throw e;
+        });
+        const ok = acquireLock({
+            lockPath: '/x/ralph.lock',
+            pid: 777,
+            readFn: enoent as never,
+            writeFn: writeFn as never,
+            logFn: vi.fn(),
+            failFn,
+        });
+        expect(ok).toBe(false);
+        expect(failFn).toHaveBeenCalledTimes(1);
+        expect(failFn.mock.calls[0][0]).toMatch(/в момент взятия/);
+    });
+
+    it('нечитаемый лок-файл (не-ENOENT, напр. EACCES) → fail-closed стоп, не «лока нет»', () => {
+        // Любая ошибка чтения кроме ENOENT — НЕ трактуем как свободный лок (это тихий
+        // старт поверх возможного живого раннера). Стоп с просьбой разобраться руками.
+        const { acquireLock } = createStateLock(makeEnv());
+        const failFn = vi.fn();
+        const writeFn = vi.fn();
+        const eacces = () => {
+            const e = new Error('EACCES') as NodeJS.ErrnoException;
+            e.code = 'EACCES';
+            throw e;
+        };
+        const ok = acquireLock({
+            lockPath: '/x/ralph.lock',
+            pid: 777,
+            readFn: eacces as never,
+            writeFn,
+            logFn: vi.fn(),
+            failFn,
+        });
+        expect(ok).toBe(false);
+        expect(failFn).toHaveBeenCalledTimes(1);
+        expect(failFn.mock.calls[0][0]).toMatch(/нечитаем|EACCES/);
         expect(writeFn).not.toHaveBeenCalled();
     });
 });

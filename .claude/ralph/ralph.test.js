@@ -3816,6 +3816,26 @@ const deployCfg = (o = {}) => ({
     deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20, ...o },
 });
 
+// #252: git-хелперы гейта разделены на shFn (чтения) и runArgvFn (argv-мутации). Этот
+// рекордер пишет ОБА канала в один общий `cmds`, нормализуя runArgvFn в `${file} ${args}`,
+// чтобы ассерты на ПОРЯДОК команд остались осмысленными. Общий на phaseDiffFiles и
+// refreshRunnerWorktree — иначе правка формата записи требовала бы синхронных правок в двух.
+const mkCmdRecorders = (shImpl) => {
+    const cmds = [];
+    return {
+        cmds,
+        shFn: (c) => {
+            cmds.push(c);
+            return shImpl ? shImpl(c) : '';
+        },
+        runArgvFn: (file, args) => {
+            const cmd = `${file} ${args.join(' ')}`;
+            cmds.push(cmd);
+            return shImpl ? shImpl(cmd) : '';
+        },
+    };
+};
+
 describe('waitForDeployRun — ожидание итога deploy-workflow на смердженном sha (#163)', () => {
     const SHA = 'a'.repeat(40);
     const OTHER = 'b'.repeat(40);
@@ -6371,23 +6391,9 @@ describe('phaseDiffFiles — какая именно git-команда уход
     const { phaseDiffFiles } = ralph;
 
     // #252: fetch — мутация через runArgvFn, diff --name-only остаётся на shFn.
-    // Рекордер нормализует runArgvFn в ту же строку `cmds`, чтобы ассерты на
-    // порядок команд остались осмысленными.
-    const mkRecorders = (shImpl) => {
-        const cmds = [];
-        return {
-            cmds,
-            shFn: (c) => {
-                cmds.push(c);
-                return shImpl ? shImpl(c) : '';
-            },
-            runArgvFn: (file, args) => {
-                const cmd = `${file} ${args.join(' ')}`;
-                cmds.push(cmd);
-                return shImpl ? shImpl(cmd) : '';
-            },
-        };
-    };
+    // Общий рекордер (см. mkCmdRecorders на уровне файла) нормализует runArgvFn в ту же
+    // строку `cmds`, чтобы ассерты на порядок команд остались осмысленными.
+    const mkRecorders = mkCmdRecorders;
 
     it('фетчит ДО диффа: решение не принимается по протухшим remote-ссылкам', () => {
         const { cmds, shFn, runArgvFn } = mkRecorders();
@@ -6961,23 +6967,9 @@ describe('refreshRunnerWorktree — перевод дерева раннера �
     const { refreshRunnerWorktree, ensureRunnerWorktree } = ralph;
 
     // #252: fetch/checkout — argv-мутации (runArgvFn), status --porcelain — чтение
-    // (shFn). Оба рекордера пишут в один общий `cmds` для сохранения прежней формы
-    // ассертов; runArgvFn нормализуется в `${file} ${args.join(' ')}`.
-    const mkRecorders = (shImpl) => {
-        const cmds = [];
-        return {
-            cmds,
-            shFn: (c) => {
-                cmds.push(c);
-                return shImpl ? shImpl(c) : '';
-            },
-            runArgvFn: (file, args) => {
-                const cmd = `${file} ${args.join(' ')}`;
-                cmds.push(cmd);
-                return shImpl ? shImpl(cmd) : '';
-            },
-        };
-    };
+    // (shFn). Оба канала пишут в один общий `cmds` — см. mkCmdRecorders на уровне файла
+    // (общий с phaseDiffFiles, чтобы правка формата записи не расходилась в двух местах).
+    const mkRecorders = mkCmdRecorders;
 
     it('чистое дерево: fetch затем detach на origin/main', () => {
         const { cmds, shFn, runArgvFn } = mkRecorders();

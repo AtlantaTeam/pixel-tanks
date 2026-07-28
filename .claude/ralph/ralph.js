@@ -492,7 +492,7 @@ const {
     probeEgress,
     restartTunnel,
     ensureTunnel,
-} = createTunnelCheck({ log, sleep, pushEvent });
+} = createTunnelCheck({ log, sleep, pushEvent, guardSideEffect });
 
 // #360 (трек «Фреймворк ralph», фаза 2): изоляция раннера в выделенный git worktree
 // (#76) — резолв пути (сосед репозитория `../pixel-tanks-ralph`), парсинг `git worktree
@@ -518,6 +518,7 @@ const {
     shq,
     log,
     fail,
+    guardSideEffect,
     buildSanitizedGateEnv,
     writeLockMarker,
 });
@@ -1142,6 +1143,15 @@ function removeBlockedLabel(branch, { shFn = sh, runArgvFn = shArgv, logFn = log
             logFn(`⚠ removeBlockedLabel: открытый PR ветки ${branch} не найден — метку не снимаю.`);
             return;
         }
+        // #251: тот же фильтр, что в findOpenPr — `--flag`-образное значение gh
+        // распарсил бы как флаг. Значение из `gh pr list --jq` доверенное, но канал
+        // тот же, а фильтр стоит одну строку. Fail-closed: не целое → в argv не пускаем.
+        if (!PR_NUMBER_RE.test(num)) {
+            logFn(
+                `⚠ removeBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не снимаю.`,
+            );
+            return;
+        }
         runArgvFn('gh', ['pr', 'edit', num, '--remove-label', 'blocked']);
         logFn(`🏷 Раннер снял label blocked с PR #${num} перед повторным ревью (#217).`);
     } catch (e) {
@@ -1170,6 +1180,13 @@ function addBlockedLabel(branch, { shFn = sh, runArgvFn = shArgv, logFn = log } 
         ).trim();
         if (!num) {
             logFn(`⚠ addBlockedLabel: открытый PR ветки ${branch} не найден — метку не вернул.`);
+            return;
+        }
+        // #251: тот же фильтр, что в findOpenPr/removeBlockedLabel — argument-injection.
+        if (!PR_NUMBER_RE.test(num)) {
+            logFn(
+                `⚠ addBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не вернул.`,
+            );
             return;
         }
         runArgvFn('gh', ['pr', 'edit', num, '--add-label', 'blocked']);
@@ -1211,6 +1228,10 @@ function closeCompletedMilestones({
     }
     for (const ms of milestones) {
         if (ms.open_issues > 0 || ms.closed_issues === 0) continue;
+        // #251: ms.number из внешнего API летит в argv `gh api` — тот же класс, что
+        // закрыл PR_NUMBER_RE в findOpenPr. Не целое → milestone не трогаем (fail-open,
+        // свип косметика: следующий старт подберёт).
+        if (!Number.isInteger(ms.number)) continue;
         const phase = cfg.phases.find((p) => p.milestone === ms.title);
         const merged = mergedPrs.some((pr) =>
             phase ? pr.headRefName === phase.branch : pr.title === `feat: ${ms.title}`,
@@ -1241,6 +1262,8 @@ function closeMilestoneByTitle(title, { ghJsonFn = ghJson, runArgvFn = shArgv, l
         const open = ghJsonFn('gh api "repos/{owner}/{repo}/milestones?state=open"');
         const ms = open.find((m) => m.title === title);
         if (!ms) return; // уже закрыт или не найден — не критично
+        // #251: ms.number из внешнего API — не целое в argv `gh api` не пускаем.
+        if (!Number.isInteger(ms.number)) return;
         runArgvFn('gh', [
             'api',
             '-X',

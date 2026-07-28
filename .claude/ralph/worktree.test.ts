@@ -4,7 +4,7 @@
 // и lock-scenarios.test.js (те же функции, но с боевым контекстом раннера); тут —
 // контракт extraction'а: модуль самодостаточен и переносим (цель фазы 2), а не
 // «работает только пока его зовёт ralph.js».
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { WorktreeEnv } from './worktree.ts';
 import { createWorktreeManager } from './worktree.ts';
 
@@ -25,6 +25,7 @@ function makeEnv(over: Partial<WorktreeEnv> = {}): WorktreeEnv {
         fail: (msg: string) => {
             throw new Error(msg);
         },
+        guardSideEffect: () => {},
         buildSanitizedGateEnv: () => ({ PATH: '/x' }),
         writeLockMarker: () => {},
         ...over,
@@ -32,6 +33,14 @@ function makeEnv(over: Partial<WorktreeEnv> = {}): WorktreeEnv {
 }
 
 describe('resolveWorktreePath — путь выделенного worktree раннера (#76)', () => {
+    // RALPH_WORKTREE_PATH — боевая env-переменная раннера (на VDS в ralph.env). Если она
+    // задана в окружении прогона, override перебил бы дефолт/относительный резолв и тесты
+    // ниже легли бы ложно. Чистим перед каждым (как родитель в ralph.test.js); тесты,
+    // которые сами её ставят, восстанавливают своё значение в finally.
+    beforeEach(() => {
+        delete process.env.RALPH_WORKTREE_PATH;
+    });
+
     it('дефолт: сосед репозитория по defaultWorktreeDirname', () => {
         const { resolveWorktreePath } = createWorktreeManager(makeEnv());
         expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/root/pixel-tanks-ralph');
