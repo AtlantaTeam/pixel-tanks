@@ -39,11 +39,11 @@
 
 ## Технологический стек
 
-**Основа:** Next.js 16 + React 19 + TypeScript 5 + Tailwind 4 + своя UI-библиотека `shared/ui` (игровая тема: шрифты **DotGothic16** (display) + **JetBrains Mono** (UI/HUD), self-hosted из `public/fonts`; NES-рамки `pixel-border`; кастомная dark-палитра + faction-темы через `[data-faction]` — токены в `globals.css`, витрина `/design-system`).
+**Основа:** Next.js 16 + React 19 + TypeScript 5 + Tailwind 4 + своя UI-библиотека `shared/ui` (игровая тема: шрифты **DotGothic16** (display) + **JetBrains Mono** (UI/HUD) + **Montserrat** (body-sans) + **Press Start 2P** (pixel-акценты), self-hosted из `public/fonts`; NES-рамки `pixel-border`; кастомная dark-палитра + faction-темы через `[data-faction]` — токены в `globals.css`, витрина `/design-system`).
 
 **Данные:** TanStack Query (server state) + Zustand (client state) + React Hook Form + Zod (валидация).
 
-**Backend (шаг 5):** Payload CMS 3, inline в Next.js. Адаптер БД — `@payloadcms/db-sqlite` (dev) или `@payloadcms/db-postgres` (prod). Оба адаптера **используют Drizzle под капотом** — для кастомных запросов `payload.db.drizzle`.
+**Backend (шаг 5):** Payload CMS 3, inline в Next.js. Адаптер БД — `@payloadcms/db-sqlite` (dev и prod; Postgres `@payloadcms/db-postgres` — опция на будущее, пакет пока не установлен). Оба адаптера **используют Drizzle под капотом** — для кастомных запросов `payload.db.drizzle`.
 
 **Auth (шаг 7):** Payload local auth (email/password) + OAuth через **Яндекс ID** (шаг 9). **Google OAuth не используем** — по закону РФ (поправки к 149-ФЗ, с 01.12.2023) авторизация пользователей на российских сайтах допускается только через телефон, Госуслуги (ЕСИА) или российские сервисы (Яндекс ID, VK ID).
 
@@ -63,7 +63,7 @@ src/
 ├── views/               — FSD-слой pages (переименован — конфликт с Next.js Pages Router)
 │   └── main-page, game-page, design-system, replay-page/
 │
-├── widgets/             — Составные UI-блоки (game-controls, game-over-dialog)
+├── widgets/             — Составные UI-блоки (game-controls, game-over-dialog, pause-overlay)
 │
 ├── features/            — Бизнес-фичи (game-engine, daily-challenge, replays)
 │
@@ -74,7 +74,7 @@ src/
     ├── config/          — APP_NAME, константы
     ├── ui/              — Переиспользуемые UI-компоненты
     ├── lib/             — Утилиты
-    └── model/           — Бизнес-типы (TPlayer, TScore)
+    └── model/           — Бизнес-типы (TCoords, TWeapon)
 ```
 
 ### Правила FSD (ОБЯЗАТЕЛЬНО)
