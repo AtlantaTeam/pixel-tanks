@@ -438,110 +438,17 @@ function resolveProfile(raw, name, failFn = fail) {
 // saveState/loadState/defaultState вынесены в state-lock.ts (#359) — см. createStateLock
 // выше. Читаются как const из деструктуризации.
 
-// ── Детекция API-лимита (идея из frankbria/ralph-claude-code) ────────────────
-// Claude CLI при упирании в 5-часовое окно / usage limit пишет об этом в вывод и
-// завершается с ошибкой. Без обработки AFK-итерация фейлится, breaker сжигает
-// оставшиеся попытки об ту же стену и ночной прогон умирает. Вместо этого:
-// распознать маркер → распарсить время сброса → доспать до него → повторить.
-
-// Боевой пример (2026-07-19): «You've hit your session limit · resets 1:20pm» —
-// первая версия ждала только «usage limit» и промахнулась; ловим шире.
-const API_LIMIT_RE =
-    /(usage limit|session limit|rate.?limit|5-hour limit|hit your .{0,20}limit|limit (?:reached|exceeded)|limit will reset|resets? at)/i;
-
-// «resets 3am» / «reset at 7:30pm» → мс до сброса (локальное время; прошедшее
-// время суток = завтра). Не распарсилось → null, вызывающий возьмёт fallback.
-function parseResetWaitMs(text) {
-    const m = /reset[s]?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(text);
-    if (!m) return null;
-    let h = parseInt(m[1], 10);
-    const min = m[2] ? parseInt(m[2], 10) : 0;
-    const ap = m[3] ? m[3].toLowerCase() : null;
-    if (ap === 'pm' && h < 12) h += 12;
-    if (ap === 'am' && h === 12) h = 0;
-    if (h > 23 || min > 59) return null;
-    const now = new Date();
-    const target = new Date(now);
-    target.setHours(h, min, 0, 0);
-    if (target <= now) target.setDate(target.getDate() + 1);
-    return target.getTime() - now.getTime();
-}
-
-// ── Health-check Shadowsocks-туннеля (#92) ───────────────────────────────────
-// Прод-режим: VDS в РФ ходит к Anthropic через Shadowsocks → privoxy (HTTPS_PROXY).
-// Если туннель ночью отвалится, claude-вызов упрётся в Cloudflare-403/таймаут, а
-// ralph зря сожжёт итерацию (а то и окно лимита) об мёртвый канал. Поэтому ПЕРЕД
-// каждой claude-сессией сверяем фактический egress-IP (через прокси) с ожидаемым
-// (IP Outline). Красный → перезапуск ss-local/privoxy → повторная сверка → если и
-// после этого красный, итерация не стартует (fail-closed) + пуш человеку.
-//
-// Юниты ss-local/privoxy уже с Restart=always (provision.sh) — это подстраховка
-// сверху: ловит и «сервис жив, но канал деградировал» (egress не тот), чего
-// systemd не видит.
-
-// Включён ли health-check. Локально/в dev туннеля нет — по умолчанию ВЫКЛ, чтобы не
-// ломать обычный запуск. Включается прод-профилем (config.tunnelCheck.enabled) или
-// env-флагом RALPH_TUNNEL_CHECK=1 (мост до профилей Фазы 2; ставится в ralph.env).
-function tunnelCheckEnabled(cfg) {
-    return process.env.RALPH_TUNNEL_CHECK === '1' || !!(cfg.tunnelCheck && cfg.tunnelCheck.enabled);
-}
-
-// Ожидаемый egress — публичный IP прокси-сервера (Франкфурт). Секрет-ish → из env,
-// НЕ из конфига в гите. SS_SERVER уже есть в ralph.env (его же сверяет provision.sh).
-// trim() (ревью #98): ralph.env часто редактируют/копируют с Windows-машины (CRLF) —
-// без обрезки хвостовой \r/пробел comparison с уже-трим'нутым egress НИКОГДА не
-// совпадёт, даже когда канал реально здоров, и health-check будет вечно красным.
-function expectedEgress() {
-    return (process.env.RALPH_EXPECTED_EGRESS || process.env.SS_SERVER || '').trim();
-}
-
-// Чистая функция (ядро проверки, юнит-тест «мок curl: совпал/не совпал IP»): туннель
-// здоров ⟺ фактический egress непуст И точно равен ожидаемому. Пустой ожидаемый или
-// пустой egress (ошибка curl) — НЕ здоров.
-function tunnelHealthy(egress, expected) {
-    return !!expected && egress === expected;
-}
-
-// Фактический egress-IP через прокси. Аргументы curl — МАССИВ через execFileSync
-// (ревью #98), не строка через sh()/execSync: тот же anti-RCE паттерн, которым #67
-// увёл spawnClaude от shell-интерполяции — proxy/ipUrl не проходят через шелл, так
-// спецсимволы в них не раскрываются. Сегодня оба значения из доверенных источников
-// (config.json в гите / env, который задаёт сам оператор VDS), но это тот класс
-// защиты, что ничего не стоит держать по умолчанию. -4 форсирует IPv4: ожидаемый
-// egress (SS_SERVER) — IPv4 Outline-сервера, а api.ipify.org на dual-stack хосте
-// без -4 мог бы отдать IPv6 и увести сравнение в ложный красный.
-// Пустая строка при любой ошибке (таймаут, мёртвый прокси) — вызывающий трактует
-// пустоту как «не здоров». execFn инжектируется для тестов; в проде — execFileSync.
-function probeEgress(cfg, execFn = execFileSync) {
-    const tc = cfg.tunnelCheck || {};
-    const proxy =
-        process.env.HTTPS_PROXY || process.env.HTTP_PROXY || tc.proxyUrl || 'http://127.0.0.1:8118';
-    const ipUrl = tc.ipCheckUrl || 'https://api.ipify.org';
-    try {
-        return execFn('curl', ['-4', '-s', '--max-time', '15', '-x', proxy, ipUrl], {
-            encoding: 'utf-8',
-        }).trim();
-    } catch {
-        return '';
-    }
-}
-
-// Перезапуск сервисов туннеля. restartCmd из конфига — простая команда без кавычек/
-// пайпов (бинарь + имена systemd-юнитов), поэтому безопасно разбить по пробелам и
-// выполнить через execFileSync (тот же anti-RCE паттерн, что и probeEgress выше),
-// а не execSync(cmd) строкой через шелл. Fail-open: сбой самого рестарта лишь
-// логируем — финальная повторная сверка egress всё равно решит, здоров канал или нет.
-function restartTunnel(cfg, execFn = execFileSync) {
-    const cmd =
-        (cfg.tunnelCheck && cfg.tunnelCheck.restartCmd) ||
-        'systemctl restart shadowsocks-libev-local@frankfurt privoxy';
-    const [bin, ...cmdArgs] = cmd.trim().split(/\s+/);
-    try {
-        execFn(bin, cmdArgs);
-    } catch (e) {
-        log(`⚠ Перезапуск сервисов туннеля упал: ${String(e.message).split('\n')[0]}`);
-    }
-}
+// #361 (трек «Фреймворк ralph», фаза 2): парсинг/ожидание API-лимита (идея из
+// frankbria/ralph-claude-code) — чистые преобразования без побочек — вынесены в
+// api-limit.ts тем же приёмом, что ralph-util.ts (#232). Сам цикл ожидания (sleep +
+// повтор claude, ниже в runClaude) остаётся здесь — он не чистый.
+const {
+    API_LIMIT_RE,
+    parseResetWaitMs,
+    minutesOrDefault,
+    apiLimitWaitMs,
+    apiLimitMessage,
+} = require('./api-limit.ts');
 
 // Пуш-событие человеку (#86) — единая точка для всех 4 событий прод-режима
 // (release-стоп #87, blocked отдан человеку, circuit breaker, rate-limit) и
@@ -567,45 +474,25 @@ function pushEvent(
     return sendFn(msg, { logFn, execFn });
 }
 
-// Оркестровка health-check. true = туннель здоров ИЛИ проверка выключена (можно
-// стартовать сессию); false = красный даже после перезапуска (стартовать нельзя).
-// Зависимости инжектируются (probe/restart/sleepFn/push) — для детерминированных
-// юнит-тестов без реального curl/systemctl/сна.
-function ensureTunnel(
-    cfg,
-    { probe = probeEgress, restart = restartTunnel, sleepFn = sleep, push = pushEvent } = {},
-) {
-    if (!tunnelCheckEnabled(cfg)) return true; // dev/локально — туннеля нет
-    const expected = expectedEgress();
-    if (!expected) {
-        // Проверка включена, но не задан ожидаемый egress — сверять не с чем. Fail-open
-        // с предупреждением: не блокируем прогон из-за неполной конфигурации канала.
-        log(
-            '⚠ Health-check туннеля включён, но не задан ожидаемый egress (RALPH_EXPECTED_EGRESS / SS_SERVER) — проверка пропущена.',
-        );
-        return true;
-    }
-    let egress = probe(cfg);
-    if (tunnelHealthy(egress, expected)) return true;
-    log(
-        `⚠ Туннель красный: egress='${egress || '—'}', ждали '${expected}'. Перезапуск ss-local/privoxy...`,
-    );
-    restart(cfg);
-    sleepFn((cfg.tunnelCheck && cfg.tunnelCheck.restartWaitMs) || 3000);
-    egress = probe(cfg);
-    if (tunnelHealthy(egress, expected)) {
-        log('✅ Туннель восстановлен после перезапуска сервисов.');
-        return true;
-    }
-    log(
-        `⛔ Туннель не восстановился (egress='${egress || '—'}', ждали '${expected}') — claude-сессия не стартует.`,
-    );
-    push(
-        `Ralph: Shadowsocks-туннель на VDS красный (egress='${egress || '—'}' != '${expected}') и не поднялся после перезапуска. Loop остановлен — почини канал.`,
-        cfg,
-    );
-    return false;
-}
+// #361 (трек «Фреймворк ralph», фаза 2): health-check Shadowsocks-туннеля (#92) —
+// tunnelCheckEnabled/expectedEgress/tunnelHealthy/probeEgress/restartTunnel/ensureTunnel —
+// вынесены в tunnel-check.ts тем же приёмом фабрики, что worktree.ts/state-lock.ts (#359/
+// #360): функции не чистые (curl/systemctl/sleep/pushEvent), поэтому фабрика захватывает
+// контекст ralph.js (log, sleep, pushEvent — общая точка пуш-событий, не только туннеля)
+// один раз, а возвращённые функции сохраняют показательную DI (probe/restart/sleepFn/push
+// параметром) — тесты (ralph.test.js) зовут их через тот же ре-экспорт из module.exports.
+// Поведение не меняется: прод-режим сверяет фактический egress (через прокси) с ожидаемым
+// (IP Outline) перед каждой claude-сессией, красный → рестарт ss-local/privoxy → повторная
+// сверка → fail-closed стоп + пуш, если канал не поднялся.
+const { createTunnelCheck } = require('./tunnel-check.ts');
+const {
+    tunnelCheckEnabled,
+    expectedEgress,
+    tunnelHealthy,
+    probeEgress,
+    restartTunnel,
+    ensureTunnel,
+} = createTunnelCheck({ log, sleep, pushEvent });
 
 // #360 (трек «Фреймворк ralph», фаза 2): изоляция раннера в выделенный git worktree
 // (#76) — резолв пути (сосед репозитория `../pixel-tanks-ralph`), парсинг `git worktree
@@ -638,40 +525,8 @@ const {
 // lockHash/writeLockMarker/syncDepsIfLockChanged (маркер .deps-lock.sha, #SiaUX) вынесены
 // в state-lock.ts (#359) — см. createStateLock выше. Читаются как const из деструктуризации.
 
-// Сколько спать после маркера лимита: время до сброса окна (или fallback, если
-// время не распарсилось) плюс запас config.apiLimitGraceMin.
-//
-// #130: запас был захардкожен как 2 минуты и оказался слишком тонким — окно
-// сбрасывается не мгновенно, и повтор рискует уйти в ту же стену, сжигая попытку
-// из apiLimitMaxWaits (их всего 3). Дефолт поднят до 5 минут и вынесен в конфиг.
-//
-// minutesOrDefault, а не `??`: `??` пропускал бы любой мусор, а мусор здесь не
-// «странное число минут», а вечный сон. Atomics.wait(buf, 0, 0, NaN) трактует NaN
-// как +∞ — раннер вставал бы навсегда, молча, с записью «Жду NaN мин» в логе
-// (блокер ревью PR #132). Ноль при этом остаётся законным: «без запаса» —
-// осознанный выбор, его подменять дефолтом нельзя.
-// typeof number строго, без приведения: Number(null) и Number('') дают 0, и
-// пропущенный/пустой ключ читался бы как осознанный «нулевой запас» вместо
-// дефолта. Строку '5' тоже не принимаем — в JSON-конфиге минуты обязаны быть
-// числом, а тихое приведение прячет опечатку вместо того, чтобы её проявить.
-function minutesOrDefault(value, dflt) {
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : dflt;
-}
-
-function apiLimitWaitMs(output, cfg) {
-    const fallbackMs = minutesOrDefault(cfg.apiLimitFallbackWaitMin, 30) * 60 * 1000;
-    const graceMs = minutesOrDefault(cfg.apiLimitGraceMin, 5) * 60 * 1000;
-    return (parseResetWaitMs(output) ?? fallbackMs) + graceMs;
-}
-
-// Текст события API-лимитной паузы — ЕДИНСТВЕННЫЙ источник правды его формата. deadman.js
-// (режим apiwait) парсит из него «Жду N мин» через API_WAIT_RE; раньше формат жил в двух
-// местах, связанных лишь копией текста, и правка формулировки здесь молча ломала бы
-// классификатор → ложный пуш ночью. Теперь функция экспортирована и её выход сверяется с
-// API_WAIT_RE тестом (deadman.test.js), так что рассинхрон краснит гейт, а не всплывает в бою.
-function apiLimitMessage(waitMs, attempt, maxWaits) {
-    return `⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`;
-}
+// minutesOrDefault/apiLimitWaitMs/apiLimitMessage — см. require('./api-limit.ts') выше
+// (#361, вместе с API_LIMIT_RE/parseResetWaitMs).
 
 /**
  * Запуск claude -p. Возвращает exit-код процесса (0 = успех; DRY всегда 0).
