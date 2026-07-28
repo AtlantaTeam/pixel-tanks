@@ -78,8 +78,6 @@ const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
 // (#SiaUX): фаза, добавившая зависимость, иначе гарантированно красила бы ночной гейт.
 const LOCK_MARKER_PATH = path.join(CLAUDE_DIR, 'ralph', '.deps-lock.sha');
 
-const DEFAULT_WORKTREE_DIRNAME = 'pixel-tanks-ralph';
-
 // ── Типы контрактов ──────────────────────────────────────────────────────────
 // Фаза в форме, которую хранит config.phases.
 type Phase = { milestone: string; branch: string };
@@ -119,6 +117,14 @@ export type RalphConfig = {
     claudeTimeoutMs?: number;
     haltBeforeDeploy?: boolean;
     runnerWorktreePath?: string;
+    // #204 (фаза 4): проектная специфика, вынесенная из кода ядра в конфиг.
+    // installCmd — команда установки зависимостей (дефолт `npm ci`); runnerWorktreeDirname —
+    // имя соседнего дерева раннера (дефолт — `<имя-репо>-ralph`); board — доска Projects
+    // для project-sync.mjs; gate — состав чеков (валидируется resolveGateChecks).
+    installCmd?: string;
+    runnerWorktreeDirname?: string;
+    board?: { owner?: string; number?: number };
+    gate?: { checks?: unknown; prodChecks?: unknown; prodDropChecks?: unknown };
     tunnelCheck?: {
         enabled?: boolean;
         proxyUrl?: string;
@@ -352,9 +358,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
     });
 
     // #360 (фаза 2): изоляция раннера в выделенный git worktree (#76) — worktree.ts.
-    // Резолв пути (сосед репозитория `../pixel-tanks-ralph`), парсинг `git worktree list`,
-    // DRY-читаемость (#SiaT3), обновление на свежий origin/main (#252) и идемпотентное
-    // создание/переиспользование дерева с `npm ci`. Фабрика захватывает контекст
+    // Резолв пути (сосед репозитория `../<имя-репо>-ralph` — #204), парсинг `git worktree
+    // list`, DRY-читаемость (#SiaT3), обновление на свежий origin/main (#252) и идемпотентное
+    // создание/переиспользование дерева с установкой зависимостей. Фабрика захватывает контекст
     // (sh/shArgv/shq/log/fail, санированный env для npm ci, маркер lock-хэша из
     // state-lock.ts) один раз; возвращённые функции сохраняют DI.
     const {
@@ -364,7 +370,6 @@ export function createOrchestrator(env: OrchestratorEnv) {
         refreshRunnerWorktree,
         ensureRunnerWorktree,
     } = createWorktreeManager({
-        defaultWorktreeDirname: DEFAULT_WORKTREE_DIRNAME,
         sh,
         shArgv,
         shq,
@@ -373,6 +378,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         guardSideEffect,
         buildSanitizedGateEnv,
         writeLockMarker,
+        // #204: команда установки из конфига (дефолт `npm ci`); имя дерева резолвится
+        // от repoRoot внутри resolveWorktreePath (конфиг важнее дефолта).
+        getInstallCmd: () => config?.installCmd || 'npm ci',
     });
 
     /**
@@ -1130,6 +1138,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         shArgv,
         shq,
         log,
+        fail,
         ghJson,
         safeBranch,
         findOpenPr,
@@ -1144,6 +1153,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
         SHA40_RE,
         PR_NUMBER_RE,
         runnerTreeFixHint: RUNNER_TREE_FIX_HINT,
+        // #204: состав чеков — из конфига (лениво, config присваивается в main()).
+        getConfig: () => config,
     });
 
     // #364 (фаза 3): деплой-проверка фазы — плейсхолдер маркера деплоя
@@ -2118,7 +2129,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // в prod «весь набор» включает толстые чеки (см. gate-heal ниже). С #216
                     // prod разбор blocked включён, так что чини-сессия гоняет именно толстый
                     // набор — хардкод базовых 5 тут прямо соврал бы.
-                    const bGateCmdList = gateChecksFor(cfg.profileName)
+                    const bGateCmdList = gateChecksFor(cfg.profileName, cfg)
                         .map(([, cmd]) => cmd)
                         .join(', ');
                     // #217: чини-сессия ЧИНИТ, но label blocked НЕ снимает — снятие за
@@ -2287,7 +2298,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // 5: в prod «весь набор» включает толстые (e2e/coverage/security), и heal
                     // по хардкоду перегнал бы после фикса только базу — упавший толстый чек
                     // остался бы непроверенным и сжёг ещё одну итерацию + цикл ревью.
-                    const gateCmdList = gateChecksFor(cfg.profileName)
+                    const gateCmdList = gateChecksFor(cfg.profileName, cfg)
                         .map(([, cmd]) => cmd)
                         .join(', ');
                     const healCode = runClaudeFn(
@@ -2850,12 +2861,22 @@ export function createOrchestrator(env: OrchestratorEnv) {
         });
     }
 
+    // #204: тест-хук. Часть функций (gateChecksFor, tryMergePhase→gateChecksFor) читают
+    // ФАБРИЧНЫЙ config, который в проде присваивает main(), а юнит-тесты её не запускают.
+    // Раньше состав гейта был хардкодом и от config не зависел; после переезда в конфиг
+    // тестам нужен способ засеять фабричный config боевым/синтетическим, не гоняя main()
+    // (с её preflight/loop/process.exit). Только для тестов; в бою config ставит main().
+    function setConfigForTests(cfg: RalphConfig): void {
+        config = cfg;
+    }
+
     // ── API-поверхность ──────────────────────────────────────────────────────
     // Ровно прежний module.exports ralph.js (#69 и далее) плюс main: на этой поверхности
     // сидят orchestrator.test.js, сценарные тесты и monitor.js (resolveProfile/parseProfileFlag/
     // pushEvent/shq). Пропавший ключ = молча сломанный тест или монитор — контракт
     // закреплён orchestrator.test.js (REQUIRED_API).
     return {
+        setConfigForTests,
         resolveProfile,
         deepMerge,
         parseProfileFlag,

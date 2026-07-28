@@ -246,7 +246,7 @@ describe('probeHttpStatus — HTTP-код через curl (#164)', () => {
     it('корректный числовой код от curl → возвращает его как число', () => {
         const execFn = vi.fn(() => '200');
         const { probeHttpStatus } = createDeployCheckModule(makeEnv());
-        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(200);
+        expect(probeHttpStatus('https://app.example.test', 10, execFn)).toBe(200);
     });
 
     it('curl бросает (таймаут/DNS) → 0, не пробрасывает исключение', () => {
@@ -254,22 +254,22 @@ describe('probeHttpStatus — HTTP-код через curl (#164)', () => {
             throw new Error('curl: (28) timeout');
         });
         const { probeHttpStatus } = createDeployCheckModule(makeEnv());
-        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(0);
+        expect(probeHttpStatus('https://app.example.test', 10, execFn)).toBe(0);
     });
 
     it('нечисловой вывод curl → 0 (fail-closed, не «сойдёт за живой»)', () => {
         const execFn = vi.fn(() => '');
         const { probeHttpStatus } = createDeployCheckModule(makeEnv());
-        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(0);
+        expect(probeHttpStatus('https://app.example.test', 10, execFn)).toBe(0);
     });
 
     it('только ЧТЕНИЕ: аргументы curl не содержат мутирующих флагов, url — отдельный элемент argv', () => {
         const execFn = vi.fn((_file: string, _args: string[]) => '200');
         const { probeHttpStatus } = createDeployCheckModule(makeEnv());
-        probeHttpStatus('https://pixeltanks.ru', 10, execFn);
+        probeHttpStatus('https://app.example.test', 10, execFn);
         const [bin, args] = execFn.mock.calls[0];
         expect(bin).toBe('curl');
-        expect(args).toContain('https://pixeltanks.ru');
+        expect(args).toContain('https://app.example.test');
         expect(args).not.toContain('-X');
         expect(args).not.toContain('POST');
     });
@@ -285,7 +285,7 @@ describe('probeHttpStatus — HTTP-код через curl (#164)', () => {
             throw new Error('side effect');
         });
         const { probeHttpStatus } = createDeployCheckModule(makeEnv({ guardSideEffect }));
-        expect(probeHttpStatus('https://pixeltanks.ru', 10)).toBe(0);
+        expect(probeHttpStatus('https://app.example.test', 10)).toBe(0);
         expect(guardSideEffect).toHaveBeenCalledWith('curl (probeHttpStatus)');
     });
 });
@@ -295,8 +295,11 @@ describe('checkProdHealth — HTTP-healthcheck главной страницы �
         const execFn = vi.fn(() => '200');
         const sleepFn = vi.fn();
         const { checkProdHealth } = createDeployCheckModule(makeEnv());
-        const out = checkProdHealth({}, { execFn, sleepFn, logFn: () => {} });
-        expect(out).toEqual({ ok: true, status: 200, url: 'https://pixeltanks.ru' });
+        const out = checkProdHealth(
+            { deployCheck: { healthUrl: 'https://app.example.test' } },
+            { execFn, sleepFn, logFn: () => {} },
+        );
+        expect(out).toEqual({ ok: true, status: 200, url: 'https://app.example.test' });
         expect(sleepFn).not.toHaveBeenCalled();
     });
 
@@ -309,7 +312,7 @@ describe('checkProdHealth — HTTP-healthcheck главной страницы �
         const sleepFn = vi.fn();
         const { checkProdHealth } = createDeployCheckModule(makeEnv());
         const out = checkProdHealth(
-            { deployCheck: { healthRetries: 3 } },
+            { deployCheck: { healthUrl: 'https://app.example.test', healthRetries: 3 } },
             { execFn, sleepFn, logFn: () => {} },
         );
         expect(out.ok).toBe(true);
@@ -321,10 +324,10 @@ describe('checkProdHealth — HTTP-healthcheck главной страницы �
         const execFn = vi.fn(() => '503');
         const { checkProdHealth } = createDeployCheckModule(makeEnv());
         const out = checkProdHealth(
-            { deployCheck: { healthRetries: 2 } },
+            { deployCheck: { healthUrl: 'https://app.example.test', healthRetries: 2 } },
             { execFn, sleepFn: () => {}, logFn: () => {} },
         );
-        expect(out).toEqual({ ok: false, status: 503, url: 'https://pixeltanks.ru' });
+        expect(out).toEqual({ ok: false, status: 503, url: 'https://app.example.test' });
         expect(execFn).toHaveBeenCalledTimes(2);
     });
 
@@ -338,11 +341,14 @@ describe('checkProdHealth — HTTP-healthcheck главной страницы �
         expect(execFn.mock.calls[0][1]).toContain('https://staging.example.com');
     });
 
-    it('без конфига deployCheck использует прод-дефолт https://pixeltanks.ru', () => {
+    it('#204: без healthUrl в конфиге → fail-closed ok:false, curl не зовётся (нет проектного фолбэка)', () => {
         const execFn = vi.fn((_file: string, _args: string[]) => '200');
+        const logFn = vi.fn();
         const { checkProdHealth } = createDeployCheckModule(makeEnv());
-        checkProdHealth({}, { execFn, sleepFn: () => {}, logFn: () => {} });
-        expect(execFn.mock.calls[0][1]).toContain('https://pixeltanks.ru');
+        const out = checkProdHealth({}, { execFn, sleepFn: () => {}, logFn });
+        expect(out).toEqual({ ok: false, status: 0, url: '' });
+        expect(execFn).not.toHaveBeenCalled();
+        expect(logFn).toHaveBeenCalledWith(expect.stringContaining('healthUrl не задан'));
     });
 
     it('кривой healthUrl (не http/https) → fail-closed ok:false, curl не зовётся', () => {
@@ -360,7 +366,7 @@ describe('checkProdHealth — HTTP-healthcheck главной страницы �
         const execFn = vi.fn((_file: string, _args: string[]) => '200');
         const { checkProdHealth } = createDeployCheckModule(makeEnv());
         checkProdHealth(
-            { deployCheck: { healthUrl: 'https://pixeltanks.ru', healthRetries: 1 } },
+            { deployCheck: { healthUrl: 'https://app.example.test', healthRetries: 1 } },
             { execFn, sleepFn: () => {}, logFn: () => {} },
         );
         expect(execFn).toHaveBeenCalledTimes(1);
@@ -382,10 +388,10 @@ describe('checkProdHealth — HTTP-healthcheck главной страницы �
         });
         const { checkProdHealth } = createDeployCheckModule(makeEnv({ guardSideEffect }));
         const out = checkProdHealth(
-            { deployCheck: { healthRetries: 1 } },
+            { deployCheck: { healthUrl: 'https://app.example.test', healthRetries: 1 } },
             { sleepFn: () => {}, logFn: () => {} },
         );
-        expect(out).toEqual({ ok: false, status: 0, url: 'https://pixeltanks.ru' });
+        expect(out).toEqual({ ok: false, status: 0, url: 'https://app.example.test' });
         expect(guardSideEffect).toHaveBeenCalledWith('curl (checkProdHealth)');
     });
 });
@@ -524,7 +530,7 @@ describe('Пост-мердж проверка — только чтение, б
     it('checkProdHealth зовёт curl только на чтение (GET) — без -X/-d/--data/--upload-file', () => {
         const execFn = vi.fn((_bin: string, _args: string[]) => '200');
         checkProdHealth(
-            { deployCheck: { healthUrl: 'https://pixeltanks.ru', healthRetries: 1 } },
+            { deployCheck: { healthUrl: 'https://app.example.test', healthRetries: 1 } },
             { execFn, sleepFn: () => {}, logFn: () => {} },
         );
         expect(execFn).toHaveBeenCalledTimes(1);
@@ -640,7 +646,7 @@ describe('#167: пост-мердж проверка — критерии гот
         const out = checkProdHealth(
             {
                 deployCheck: {
-                    healthUrl: 'https://pixeltanks.ru',
+                    healthUrl: 'https://app.example.test',
                     healthRetries: 3,
                     healthRetryDelayMs: 5,
                 },
@@ -648,7 +654,7 @@ describe('#167: пост-мердж проверка — критерии гот
             { execFn, sleepFn, logFn: () => {}, nowFn },
         );
         // Не бросает наружу и честно сообщает «не здоров» (status 0 = сеть недоступна).
-        expect(out).toEqual({ ok: false, status: 0, url: 'https://pixeltanks.ru' });
+        expect(out).toEqual({ ok: false, status: 0, url: 'https://app.example.test' });
         // Ретраи исчерпаны полностью — ровно healthRetries попыток.
         expect(execFn).toHaveBeenCalledTimes(3);
         // Паузы между попытками выдержаны (не busy-loop), но конечны.

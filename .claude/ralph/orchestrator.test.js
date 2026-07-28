@@ -30,6 +30,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import ralph from './ralph.js';
 
+// #204: состав чеков гейта переехал в ralph.config.json. gateChecksFor и tryMergePhase
+// читают ФАБРИЧНЫЙ config, который в проде ставит main() (в юнит-тестах не запускаемая).
+// Засеваем его боевым конфигом один раз — так gateChecksFor('prod') и внутренний вызов
+// в tryMergePhase получают реальный состав чеков, а ассерты сторожат ШИПНУТЫЙ конфиг
+// (что fail-fast порядок и дедуп не съехали в файле).
+const REAL_CONFIG = ralph.resolveProfile(
+    JSON.parse(fs.readFileSync('.claude/ralph/ralph.config.json', 'utf-8')),
+    'playground',
+);
+ralph.setConfigForTests(REAL_CONFIG);
+
 const {
     startMonitor,
     stopMonitor,
@@ -836,6 +847,16 @@ describe('runLoop — основной while-цикл: итерации коде
         prompt: 'сделай {milestone} в ветке {branch}',
         authorAllowlist: ['owner'],
         phases: [{ milestone: 'M1', branch: 'feature/m1' }],
+        // #204: heal-пути runLoop собирают список чеков из gateChecksFor(cfg.profileName, cfg),
+        // а состав теперь в конфиге — cfg нужен валидный gate-блок (иначе fail-closed).
+        gate: {
+            checks: [
+                ['build', 'npm run build'],
+                ['test', 'npm run test'],
+            ],
+            prodChecks: [['e2e', 'CI=1 npm run test:e2e']],
+            prodDropChecks: ['test'],
+        },
         ...o,
     });
     // Дефолтные зависимости «пустого зелёного» прохода. logFn собирает строки в
@@ -2665,8 +2686,11 @@ describe('ветковая хореография в worktree раннера (#7
         });
     });
 
-    describe('gateChecksFor — состав гейта по профилю (#80)', () => {
+    describe('gateChecksFor — состав гейта по профилю (#80), из боевого конфига (#204)', () => {
         const names = (checks) => checks.map(([name]) => name);
+        // #204: состав чеков переехал в ralph.config.json. Раньше эти ассерты пинили хардкод
+        // в gate.ts; теперь они сторожат ШИПНУТЫЙ конфиг — фабричный config засеян боевым
+        // выше (setConfigForTests), gateChecksFor читает его через getConfig().
 
         it('playground = ровно базовые 10 чеков, без толстых; канарейка, храповик, only- и skip-детект первыми (#190, #156, #160, #161)', () => {
             expect(names(gateChecksFor('playground'))).toEqual([

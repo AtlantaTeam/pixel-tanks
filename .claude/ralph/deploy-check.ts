@@ -327,16 +327,17 @@ export function createDeployCheckModule(env: DeployCheckEnv) {
         }: { execFn?: ExecFn; sleepFn?: SleepFn; logFn?: LogFn } = {},
     ): HealthResult {
         const dc = (cfg && cfg.deployCheck) || {};
-        const url =
-            typeof dc.healthUrl === 'string' && dc.healthUrl
-                ? dc.healthUrl
-                : 'https://pixeltanks.ru';
-        // #TFO9D: healthUrl из конфига обязан быть http(s)-адресом. Кривое значение (пустая
-        // схема, ведущий `-`) — это не «прод упал», а ошибка конфига; фиксируем её отдельно,
-        // fail-closed (ok:false), не отправляя мусор в curl-argv.
+        // #204: без проектного фолбэка (был 'https://pixeltanks.ru'). URL задаётся конфигом
+        // (deployCheck.healthUrl); его отсутствие/кривизна — не «прод упал», а ошибка
+        // конфига → fail-closed (ok:false), а НЕ подставим чужой домен и не спросим curl.
+        const url = typeof dc.healthUrl === 'string' && dc.healthUrl ? dc.healthUrl : '';
+        // #TFO9D: healthUrl из конфига обязан быть http(s)-адресом. Кривое/пустое значение —
+        // фиксируем отдельным сообщением, не отправляя мусор в curl-argv.
         if (!/^https?:\/\//.test(url)) {
             logFn(
-                `⚠ Пост-мердж: healthUrl "${url}" не похож на http(s)-адрес — проверка не выполнена.`,
+                url
+                    ? `⚠ Пост-мердж: healthUrl "${url}" не похож на http(s)-адрес — проверка не выполнена.`
+                    : `⚠ Пост-мердж: healthUrl не задан в конфиге (deployCheck.healthUrl) — проверка не выполнена.`,
             );
             return { ok: false, status: 0, url };
         }

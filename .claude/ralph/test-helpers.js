@@ -73,6 +73,16 @@ const scenarioCfg = (o = {}) => ({
     authorAllowlist: ['owner'],
     blockedHealAttempts: SCENARIO_B_MAX,
     phases: [{ milestone: 'M1', branch: 'feature/m1' }],
+    // #204: состав чеков гейта теперь в конфиге; runLoop зовёт gateChecksFor(cfg.profileName,
+    // cfg), так что сценарному cfg нужен валидный gate-блок (иначе resolveGateChecks fail-closed).
+    gate: {
+        checks: [
+            ['build', 'npm run build'],
+            ['test', 'npm run test'],
+        ],
+        prodChecks: [['e2e', 'npm run test:e2e']],
+        prodDropChecks: ['test'],
+    },
     ...o,
 });
 

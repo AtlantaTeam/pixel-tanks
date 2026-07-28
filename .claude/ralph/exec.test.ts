@@ -81,7 +81,8 @@ describe('предохранитель побочек в тестах: RALPH_NO_
                 writeFn: () => {},
             }),
         ).toThrow(/RALPH_NO_SIDE_EFFECTS/);
-        expect(sideEffectAttempts.splice(0)).toEqual(['npm ci (syncDepsIfLockChanged)']);
+        // #204: команда установки из конфига (дефолт npm ci); метка предохранителя обобщена.
+        expect(sideEffectAttempts.splice(0)).toEqual(['installCmd (syncDepsIfLockChanged)']);
     });
 
     it('дефолтный spawnFn (живая claude-сессия) тоже под предохранителем', () => {

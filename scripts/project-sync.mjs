@@ -2,6 +2,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 // #199: синк доски GitHub Projects с реальным состоянием issues.
 //
@@ -14,10 +15,51 @@ import { fileURLToPath } from 'node:url';
 //
 // Барьер вместо ритуала: детерминированный проход, приводящий Status закрытых карточек
 // к Done. Идемпотентен — карточка уже в Done не порождает ни одной мутации.
-const DEFAULT_OWNER = 'AtlantaTeam';
-const DEFAULT_NUMBER = 1;
+//
+// #204: owner/номер доски больше НЕ прибиты к проекту (был 'AtlantaTeam'/1). Их даёт
+// resolveBoard из env (RALPH_BOARD_OWNER/RALPH_BOARD_NUMBER) или ralph.config.json
+// (common.board), fail-closed при отсутствии: молча синкнуть ЧУЖУЮ доску (или ничью) —
+// хуже, чем честно упасть с просьбой заполнить конфиг.
 const STATUS_FIELD = 'Status';
 const DONE_OPTION = 'Done';
+
+// Путь к конфигу раннера от расположения скрипта (scripts/ и .claude/ — соседи в корне
+// репо), а не от cwd: project:sync зовётся и раннером, и человеком из разных мест.
+const CONFIG_PATH = fileURLToPath(new URL('../.claude/ralph/ralph.config.json', import.meta.url));
+
+// Резолв доски: env важнее конфига (быстрый оверрайд под другой проект без правки файла),
+// иначе common.board из ralph.config.json. Отсутствие owner ИЛИ невалидный номер — throw
+// (fail-closed): без адреса доски синкать нечего, а угадывать чужую нельзя.
+export function resolveBoard({
+    env = process.env,
+    configPath = CONFIG_PATH,
+    readFn = readFileSync,
+} = {}) {
+    let owner = env.RALPH_BOARD_OWNER;
+    let number = env.RALPH_BOARD_NUMBER;
+    if (!owner || number === undefined) {
+        let board = {};
+        try {
+            board = JSON.parse(readFn(configPath, 'utf-8'))?.common?.board ?? {};
+        } catch {
+            // Нет/битый конфиг — fail-closed сработает ниже на пустых owner/number.
+        }
+        owner = owner || board.owner;
+        number = number === undefined ? board.number : number;
+    }
+    if (!owner || typeof owner !== 'string') {
+        throw new Error(
+            'owner доски не задан: заполни RALPH_BOARD_OWNER (env) или common.board.owner в ralph.config.json',
+        );
+    }
+    const num = Number(number);
+    if (!Number.isInteger(num) || num <= 0) {
+        throw new Error(
+            'номер доски не задан/некорректен: заполни RALPH_BOARD_NUMBER (env) или common.board.number (целое > 0)',
+        );
+    }
+    return { owner, number: num };
+}
 
 // Закрытая карточка — это Issue в CLOSED и PR в CLOSED/MERGED. Списки состояний
 // ПОЛНЫЕ, а не только «закрытые»: незнакомое состояние (переименованный enum, новый
@@ -95,7 +137,7 @@ export function runGh(args, spawnFn = spawnSync) {
 // несинхронизированными — ровно тот молчаливый отказ, ради которого скрипт и пишется
 // (на доске уже 150+ карточек). Ограничение сверху — страховка от бесконечного цикла
 // на битом pageInfo, а не бизнес-лимит.
-export function fetchBoard(ghFn = runGh, { owner = DEFAULT_OWNER, number = DEFAULT_NUMBER } = {}) {
+export function fetchBoard(ghFn = runGh, { owner, number } = {}) {
     const items = [];
     let cursor = null;
     let meta = null;
@@ -228,7 +270,8 @@ export function syncBoard({ ghFn = runGh, owner, number, logFn = console.log } =
 
 function main() {
     try {
-        const { scanned, updated } = syncBoard();
+        const { owner, number } = resolveBoard();
+        const { scanned, updated } = syncBoard({ owner, number });
         console.log(
             updated
                 ? `✅ project-sync: переведено в ${DONE_OPTION} закрытых карточек — ${updated} (просмотрено ${scanned})`
