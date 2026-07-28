@@ -1,6 +1,6 @@
 # PRD: game-ui — своя UI-библиотека вместо DaisyUI
 
-> ⚠️ **Устарело в части темы — вытеснено `docs/design-system-theming/`** (PR #296). Палитра Pico-8 и «Press Start 2P + Montserrat» ниже **НЕ актуальны**: текущая тема — неон hero-арта, **Pixelify Sans + JetBrains Mono**, токены в `globals.css` (витрина `/design-system`). Актуально и сейчас — только само решение отказаться от DaisyUI в пользу своей `shared/ui`. Файл сохранён как история.
+> ⚠️ **Устарело в части темы — вытеснено `docs/design-system-theming/`** (PR #296). Палитра Pico-8 и «Press Start 2P + Montserrat» ниже **НЕ актуальны**: текущая тема — неон hero-арта, **DotGothic16 + JetBrains Mono**, токены в `globals.css` (витрина `/design-system`). Актуально и сейчас — только само решение отказаться от DaisyUI в пользу своей `shared/ui`. Файл сохранён как история.
 
 **Дата**: 2026-07-18 · **Статус**: superseded (тема) / решение про свою UI-либу — в силе
 

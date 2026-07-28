@@ -14,7 +14,7 @@
 ## Инструкция по использованию
 
 1. Открой Claude Design. В нём уже загружена **дизайн-система Pixel Tanks** (палитра, темы
-   `player`/`enemy`, шрифты Pixelify Sans + JetBrains Mono, компоненты Button/Panel/Select/Dialog).
+   `player`/`enemy`, шрифты DotGothic16 + JetBrains Mono, компоненты Button/Panel/Select/Dialog).
 2. **Для контекста приложи два файла** к чату Claude Design:
    `docs/game-design/gdd.md` и `docs/design-system-theming/token-spec.md`.
 3. Проектируй **по одному экрану за раз**, в порядке приоритетов **P0 → P1 → P2 → P3**.
