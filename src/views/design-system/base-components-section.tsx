@@ -51,12 +51,58 @@ export function BaseComponentsSection() {
 
                 <div className="flex flex-col gap-3">
                     <h3 className="font-ui text-hud text-text uppercase">Select</h3>
-                    <Panel className="flex items-center justify-center">
-                        <Select id="ds-difficulty" label="Сложность">
-                            <option value="easy">Лёгкая</option>
-                            <option value="normal">Обычная</option>
-                            <option value="hard">Тяжёлая</option>
-                        </Select>
+                    <Panel className="grid grid-cols-2 place-items-center gap-4 py-8">
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">закрыт</span>
+                            <Select id="ds-select-closed" label="Сложность">
+                                <option value="easy">Лёгкая</option>
+                                <option value="normal">Обычная</option>
+                                <option value="hard">Тяжёлая</option>
+                            </Select>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">выбран</span>
+                            <Select id="ds-select-selected" label="Сложность" value="hard">
+                                <option value="easy">Лёгкая</option>
+                                <option value="normal">Обычная</option>
+                                <option value="hard">Тяжёлая</option>
+                            </Select>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">focus</span>
+                            <Select
+                                id="ds-select-focus"
+                                label="Сложность"
+                                className="shadow-[var(--ring-focus)]"
+                            >
+                                <option value="easy">Лёгкая</option>
+                                <option value="normal">Обычная</option>
+                                <option value="hard">Тяжёлая</option>
+                            </Select>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">disabled</span>
+                            <Select id="ds-select-disabled" label="Сложность" disabled>
+                                <option value="easy">Лёгкая</option>
+                            </Select>
+                        </div>
+                        <div className="col-span-2 flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                открыт (одна опция disabled)
+                            </span>
+                            <Select
+                                id="ds-select-open"
+                                label="Сложность"
+                                value="normal"
+                                defaultOpen
+                            >
+                                <option value="easy">Лёгкая</option>
+                                <option value="normal">Обычная</option>
+                                <option value="hard" disabled>
+                                    Тяжёлая
+                                </option>
+                            </Select>
+                        </div>
                     </Panel>
                 </div>
             </section>

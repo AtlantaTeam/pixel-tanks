@@ -11,18 +11,21 @@ describe('GameControls', () => {
     });
 
     it('renders every counter button as a 44px touch target', () => {
-        const { getAllByRole } = render(<GameControls />);
+        const { getByRole, getAllByRole } = render(<GameControls />);
 
-        const buttons = getAllByRole('button');
+        // Триггер Select — не квадратная icon-кнопка, а полноширинный дропдаун:
+        // у него свой размерный класс (min-h-11), проверяемый отдельным тестом ниже.
+        const weaponTrigger = getByRole('button', { name: 'Оружие' });
+        const buttons = getAllByRole('button').filter((button) => button !== weaponTrigger);
         expect(buttons.length).toBeGreaterThan(0);
         for (const button of buttons) {
             expect(button).toHaveClass('size-11');
         }
     });
 
-    it('renders the weapon select as a 44px touch target', () => {
+    it('renders the weapon select trigger as a 44px touch target', () => {
         const { getByRole } = render(<GameControls />);
 
-        expect(getByRole('combobox')).toHaveClass('min-h-11');
+        expect(getByRole('button', { name: 'Оружие' })).toHaveClass('min-h-11');
     });
 });
