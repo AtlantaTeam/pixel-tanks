@@ -652,7 +652,10 @@ function runnerWorktreeReady(worktreePath, { shFn = sh, existsFn = fs.existsSync
 // Грязное дерево не трогаем: там может лежать незакоммиченная работа прошлой
 // сессии, и checkout её снесёт. Молча пропустить тоже нельзя — пишем в лог, а
 // остановит цикл дальше ensureClean с внятным сообщением (fail-closed уже есть).
-function refreshRunnerWorktree(worktreePath, { shFn = sh, logFn = log } = {}) {
+// #252: сами мутации (fetch/checkout) — через argv (shArgv), не строкой через шелл;
+// чтение (git status --porcelain) остаётся на shFn — не мутация. worktreePath уходит
+// отдельным элементом argv в -C, а не в шелл-строку через shq.
+function refreshRunnerWorktree(worktreePath, { shFn = sh, runArgvFn = shArgv, logFn = log } = {}) {
     let dirty = '';
     try {
         dirty = shFn(`git -C ${shq(worktreePath)} status --porcelain`);
@@ -668,8 +671,8 @@ function refreshRunnerWorktree(worktreePath, { shFn = sh, logFn = log } = {}) {
         return false;
     }
     try {
-        shFn(`git -C ${shq(worktreePath)} fetch origin main --quiet`);
-        shFn(`git -C ${shq(worktreePath)} checkout --detach origin/main --quiet`);
+        runArgvFn('git', ['-C', worktreePath, 'fetch', 'origin', 'main', '--quiet']);
+        runArgvFn('git', ['-C', worktreePath, 'checkout', '--detach', 'origin/main', '--quiet']);
     } catch (e) {
         logFn(`⚠ Не смог обновить worktree раннера на origin/main: ${e.message}`);
         return false;
@@ -682,6 +685,8 @@ function ensureRunnerWorktree(
     worktreePath,
     {
         shFn = sh,
+        // #252: git fetch перед первым созданием worktree — мутация, через argv.
+        runArgvFn = shArgv,
         logFn = log,
         failFn = fail,
         existsFn = fs.existsSync,
@@ -733,7 +738,7 @@ function ensureRunnerWorktree(
             );
         }
         logFn(`🌳 Worktree раннера уже поднят: ${worktreePath}`);
-        refreshFn(worktreePath, { shFn, logFn });
+        refreshFn(worktreePath, { shFn, runArgvFn, logFn });
         return worktreePath;
     }
     if (existsFn(worktreePath)) {
@@ -749,7 +754,7 @@ function ensureRunnerWorktree(
     // первого запуска может стоять где угодно (древняя ветка, детач посреди ручной
     // археологии), и npm ci ниже поставил бы зависимости случайного коммита.
     try {
-        shFn('git fetch origin main');
+        runArgvFn('git', ['fetch', 'origin', 'main']);
     } catch (e) {
         return failFn(`git fetch origin main перед созданием worktree упал: ${e.message}`);
     }
@@ -1169,10 +1174,13 @@ function safeBranch(branch, { logFn = log, where = '' } = {}) {
 // эскалации. core.quotePath=false — тоже про полноту охвата: по умолчанию git
 // оборачивает пути с не-ASCII в кавычки и экранирует байты (`"\321\204.ts"`), и
 // такой путь не совпал бы ни с одним глобом зоны риска.
-function phaseDiffFiles(branch, { shFn = sh, logFn = log } = {}) {
+// #252: сам fetch — мутация, через argv (shArgv); diff --name-only остаётся на shFn
+// (чтение, не мутация — обоснование #194). branch уже провалидирована safeBranch
+// выше, но argv закрывает класс структурно (не полагается только на shq()).
+function phaseDiffFiles(branch, { shFn = sh, runArgvFn = shArgv, logFn = log } = {}) {
     if (!safeBranch(branch, { logFn, where: 'выбор ревью-модели' })) return null;
     try {
-        shFn(`git fetch origin main ${shq(branch)} --quiet`);
+        runArgvFn('git', ['fetch', 'origin', 'main', branch, '--quiet']);
         const out = shFn(
             `git -c core.quotePath=false diff --name-only --no-renames ${shq(`origin/main...origin/${branch}`)}`,
         );
@@ -1224,9 +1232,9 @@ function sliceWholeChars(text, limit) {
 
 function reviewDiffContext(
     branch,
-    { shFn = sh, logFn = log, limit = REVIEW_DIFF_LIMIT, files: known } = {},
+    { shFn = sh, runArgvFn = shArgv, logFn = log, limit = REVIEW_DIFF_LIMIT, files: known } = {},
 ) {
-    const files = known !== undefined ? known : phaseDiffFiles(branch, { shFn, logFn });
+    const files = known !== undefined ? known : phaseDiffFiles(branch, { shFn, runArgvFn, logFn });
     if (!files || !files.length) return '';
 
     let diff = '';
@@ -1275,7 +1283,14 @@ function reviewDiffContext(
 function pickReviewModel(
     milestone,
     branch,
-    { cfg = config, ghJsonFn = ghJson, shFn = sh, logFn = log, files: known } = {},
+    {
+        cfg = config,
+        ghJsonFn = ghJson,
+        shFn = sh,
+        runArgvFn = shArgv,
+        logFn = log,
+        files: known,
+    } = {},
 ) {
     const review = cfg.review;
     if (!review) return cfg.reviewModel; // легаси-конфиг без блока review
@@ -1312,7 +1327,7 @@ function pickReviewModel(
     // files приходит извне, когда вызывающий уже собрал дифф (runLoop собирает его
     // один раз на выбор модели И на контекст ревью — иначе fetch+diff шли дважды
     // подряд, находка ревью #135).
-    const files = known !== undefined ? known : phaseDiffFiles(branch, { shFn, logFn });
+    const files = known !== undefined ? known : phaseDiffFiles(branch, { shFn, runArgvFn, logFn });
     const hit = files && matchRiskPaths(files, review.escalateOnPaths);
     if (hit) {
         logFn(`🔺 Ревью эскалировано: дифф фазы трогает зону риска (${hit}).`);
@@ -1465,7 +1480,10 @@ function strongerReviewModel(a, b) {
 // человеку), несмерджённым это не станет (отказ ужесточает, а не пропускает). Имя
 // ветки — только через SAFE_BRANCH_RE и
 // shq (anti-injection, инв. C3/7): значение уходит в шелл gh.
-function removeBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
+// #252: сама мутация (gh pr edit --remove-label) — через argv (shArgv), не строкой
+// через шелл. Чтение (gh pr list) остаётся на shFn — это не мутация, класс риска
+// закрыт shq (обоснование #194); DI runArgvFn — тот же предохранитель #138.
+function removeBlockedLabel(branch, { shFn = sh, runArgvFn = shArgv, logFn = log } = {}) {
     if (!safeBranch(branch, { logFn, where: 'removeBlockedLabel' })) return;
     try {
         const num = String(
@@ -1477,7 +1495,7 @@ function removeBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
             logFn(`⚠ removeBlockedLabel: открытый PR ветки ${branch} не найден — метку не снимаю.`);
             return;
         }
-        shFn(`gh pr edit ${shq(num)} --remove-label blocked`);
+        runArgvFn('gh', ['pr', 'edit', num, '--remove-label', 'blocked']);
         logFn(`🏷 Раннер снял label blocked с PR #${num} перед повторным ревью (#217).`);
     } catch (e) {
         logFn(
@@ -1494,7 +1512,8 @@ function removeBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
 // вердиктом» этим не закрывается — его держит персистентный флаг reReviewPending (см.
 // runLoop). Тот же anti-injection-путь, что removeBlockedLabel: имя ветки через
 // SAFE_BRANCH_RE и shq (инв. C3/7), значение уходит в шелл gh.
-function addBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
+// #252: та же конвертация мутации на argv, что и removeBlockedLabel — см. её докблок.
+function addBlockedLabel(branch, { shFn = sh, runArgvFn = shArgv, logFn = log } = {}) {
     if (!safeBranch(branch, { logFn, where: 'addBlockedLabel' })) return;
     try {
         const num = String(
@@ -1506,7 +1525,7 @@ function addBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
             logFn(`⚠ addBlockedLabel: открытый PR ветки ${branch} не найден — метку не вернул.`);
             return;
         }
-        shFn(`gh pr edit ${shq(num)} --add-label blocked`);
+        runArgvFn('gh', ['pr', 'edit', num, '--add-label', 'blocked']);
         logFn(
             `🏷 Раннер вернул label blocked на PR #${num} — повторное ревью не дало вердикта (#223).`,
         );
@@ -1524,29 +1543,44 @@ function addBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
 // хрупкий (L3): промах = milestone останется open, что безопасно — свип косметика,
 // на гейт мерджа не влияет; усложнять ради него не стоит.
 
-function closeCompletedMilestones() {
+// #252: сама мутация (gh api PATCH) — через argv (shArgv), не строкой через шелл;
+// чтения (ghJson) остаются read-only. DI-параметры — тот же предохранитель #138,
+// что у остальных функций файла.
+function closeCompletedMilestones({
+    cfg = config,
+    ghJsonFn = ghJson,
+    runArgvFn = shArgv,
+    logFn = log,
+} = {}) {
     let milestones = [];
     let mergedPrs = [];
     try {
-        milestones = ghJson('gh api "repos/{owner}/{repo}/milestones?state=open"');
+        milestones = ghJsonFn('gh api "repos/{owner}/{repo}/milestones?state=open"');
         // limit 200 (L3): при 100 свип начал бы молча промахиваться после сотни PR.
-        mergedPrs = ghJson('gh pr list --state merged --json title,headRefName --limit 200');
+        mergedPrs = ghJsonFn('gh pr list --state merged --json title,headRefName --limit 200');
     } catch (e) {
-        log(`⚠ Не смог получить данные для свипа milestones: ${e.message}`);
+        logFn(`⚠ Не смог получить данные для свипа milestones: ${e.message}`);
         return;
     }
     for (const ms of milestones) {
         if (ms.open_issues > 0 || ms.closed_issues === 0) continue;
-        const phase = config.phases.find((p) => p.milestone === ms.title);
+        const phase = cfg.phases.find((p) => p.milestone === ms.title);
         const merged = mergedPrs.some((pr) =>
             phase ? pr.headRefName === phase.branch : pr.title === `feat: ${ms.title}`,
         );
         if (!merged) continue;
         try {
-            sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${shq(ms.number)} -f state=closed`);
-            log(`🏁 Milestone закрыт: "${ms.title}" (issues разобраны, PR смерджен)`);
+            runArgvFn('gh', [
+                'api',
+                '-X',
+                'PATCH',
+                `repos/{owner}/{repo}/milestones/${ms.number}`,
+                '-f',
+                'state=closed',
+            ]);
+            logFn(`🏁 Milestone закрыт: "${ms.title}" (issues разобраны, PR смерджен)`);
         } catch (e) {
-            log(`⚠ Не смог закрыть milestone "${ms.title}": ${e.message}`);
+            logFn(`⚠ Не смог закрыть milestone "${ms.title}": ${e.message}`);
         }
     }
 }
@@ -1554,15 +1588,25 @@ function closeCompletedMilestones() {
 // Закрыть milestone фазы СРАЗУ после её мерджа, не дожидаясь свипа на следующем
 // старте раннера (из-за него смерджённый на 100% milestone висел open до рестарта).
 // Fail-open: любой сбой лишь логируется и НЕ роняет loop — свип закроет хвост потом.
-function closeMilestoneByTitle(title) {
+// #252: та же конвертация мутации на argv, что и closeCompletedMilestones — см. её докблок.
+function closeMilestoneByTitle(title, { ghJsonFn = ghJson, runArgvFn = shArgv, logFn = log } = {}) {
     try {
-        const open = ghJson('gh api "repos/{owner}/{repo}/milestones?state=open"');
+        const open = ghJsonFn('gh api "repos/{owner}/{repo}/milestones?state=open"');
         const ms = open.find((m) => m.title === title);
         if (!ms) return; // уже закрыт или не найден — не критично
-        sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${shq(ms.number)} -f state=closed`);
-        log(`🏁 Milestone закрыт: "${title}" (фаза смерджена)`);
+        runArgvFn('gh', [
+            'api',
+            '-X',
+            'PATCH',
+            `repos/{owner}/{repo}/milestones/${ms.number}`,
+            '-f',
+            'state=closed',
+        ]);
+        logFn(`🏁 Milestone закрыт: "${title}" (фаза смерджена)`);
     } catch (e) {
-        log(`⚠ Не смог закрыть milestone "${title}" сразу (свип подберёт на старте): ${e.message}`);
+        logFn(
+            `⚠ Не смог закрыть milestone "${title}" сразу (свип подберёт на старте): ${e.message}`,
+        );
     }
 }
 
@@ -1576,9 +1620,11 @@ function closeMilestoneByTitle(title) {
 // краснеет на любых сомнительных данных — это правильно для гейта и для человека, но
 // ронять из-за косметики доски уже смердженную фазу нельзя. Поэтому здесь — лог, как у
 // closeMilestoneByTitle: следующий прогон подберёт (синк идемпотентен).
-function syncProjectBoard(shFn = sh, logFn = log) {
+// #252: сама мутация — через argv (shArgv), без значений извне (нет инъекции), но
+// направление единообразно с остальными мутациями раннера.
+function syncProjectBoard(runArgvFn = shArgv, logFn = log) {
     try {
-        const out = shFn('node scripts/project-sync.mjs');
+        const out = runArgvFn('node', ['scripts/project-sync.mjs']);
         logFn(`🗂 ${String(out).trim().split('\n').pop()}`);
     } catch (e) {
         // String(e?.message ?? e), а не e.message: throw не-Error уронил бы TypeError
@@ -1595,22 +1641,33 @@ function syncProjectBoard(shFn = sh, logFn = log) {
 // косметика наблюдаемости не имеет права уронить уже смерджённую фазу. Журнал живёт в
 // рантайм-каталоге раннера (JOURNAL_PATH в scripts/review-findings-journal.mjs), не в
 // git — раннер нигде не коммитит в main напрямую, только через ревьюенные PR.
-function recordReviewFindings(phase, prNumber, authorAllowlist = [], shFn = sh, logFn = log) {
+// #252: мутация — через argv (shArgv), не строкой через шелл. Номер PR, milestone
+// и логины авторов уходят отдельными элементами argv — shq() больше не нужен для
+// закрытия инъекции (аргументы структурно не разбираются шеллом), но фильтр
+// authorAllowlist на пустые/нестроковые значения остаётся.
+function recordReviewFindings(
+    phase,
+    prNumber,
+    authorAllowlist = [],
+    runArgvFn = shArgv,
+    logFn = log,
+) {
     if (!Number.isInteger(prNumber) || prNumber <= 0) {
         logFn(`⚠ Журнал находок: номер PR неизвестен, запись пропущена.`);
         return;
     }
     // #237: прокидываем allowlist авторов в счёт — метрика считает только доверенные
-    // комментарии (репо публичный). Логины — в шелл только через shq (инвариант 7).
-    const authorArgs = (Array.isArray(authorAllowlist) ? authorAllowlist : [])
-        .filter((a) => typeof a === 'string' && a.trim())
-        .map((a) => shq(a))
-        .join(' ');
+    // комментарии (репо публичный).
+    const authors = (Array.isArray(authorAllowlist) ? authorAllowlist : []).filter(
+        (a) => typeof a === 'string' && a.trim(),
+    );
     try {
-        const out = shFn(
-            `node scripts/review-findings-journal.mjs ${shq(prNumber)} ${shq(phase.milestone)}` +
-                (authorArgs ? ` ${authorArgs}` : ''),
-        );
+        const out = runArgvFn('node', [
+            'scripts/review-findings-journal.mjs',
+            String(prNumber),
+            phase.milestone,
+            ...authors,
+        ]);
         logFn(`📊 Находки ревью зафиксированы в журнале: ${String(out).trim()}`);
     } catch (e) {
         const why = String(e?.message ?? e).split('\n')[0];
@@ -4292,6 +4349,8 @@ module.exports = {
     shArgv,
     log,
     sideEffectAttempts,
+    closeCompletedMilestones,
+    closeMilestoneByTitle,
     syncProjectBoard,
     recordReviewFindings,
     formatExcerpt,
