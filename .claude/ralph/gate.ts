@@ -172,6 +172,38 @@ export function resolveGateChecks(
         failFn('ralph.config.json: gate.prodDropChecks должен быть массивом имён чеков (строк).');
         return { base: [], prodChecks: [], prodDrop: [] };
     }
+    // Дубли имён внутри набора (#204-ревью): чек с тем же именем исполнится дважды, а
+    // атрибуция красного по имени станет неоднозначной (два `test` — какой упал?). Отвергаем
+    // на старте, а не гоняем один чек по два раза.
+    const checkNames = (rawChecks as GateCheck[]).map(([name]) => name);
+    const prodNames = (rawProd as GateCheck[]).map(([name]) => name);
+    const dupCheck = checkNames.find((n, i) => checkNames.indexOf(n) !== i);
+    if (dupCheck !== undefined) {
+        failFn(
+            `ralph.config.json: gate.checks содержит дублирующееся имя чека "${dupCheck}" — ` +
+                `имена чеков обязаны быть уникальны (иначе двойной прогон и неоднозначная атрибуция красного).`,
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    const dupProd = prodNames.find((n, i) => prodNames.indexOf(n) !== i);
+    if (dupProd !== undefined) {
+        failFn(
+            `ralph.config.json: gate.prodChecks содержит дублирующееся имя чека "${dupProd}" — имена обязаны быть уникальны.`,
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    // prodDropChecks обязан ссылаться на имя ИЗ базового набора (#204-ревью): опечатка
+    // (`tests` вместо `test`) иначе молча ничего не снимет — в prod поедут и `test`, и
+    // `coverage`, лишние минуты на каждом прогоне гейта, и никто не заметит (класс «гейт
+    // толще, чем задумано, молча»). Fail-closed здесь же, а не тихий no-op.
+    const unknownDrop = (rawDrop as string[]).find((n) => !checkNames.includes(n));
+    if (unknownDrop !== undefined) {
+        failFn(
+            `ralph.config.json: gate.prodDropChecks ссылается на "${unknownDrop}", которого нет ` +
+                `среди gate.checks (${checkNames.join(', ') || 'пусто'}) — опечатка молча ничего бы не сняла.`,
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
     return {
         base: rawChecks as GateCheck[],
         prodChecks: rawProd as GateCheck[],
@@ -384,6 +416,19 @@ export function createGateRunner(env: GateEnv) {
         // старый sha не должен доехать до --match-head-commit, если этот раунд упал до чеков.
         lastRedCheck = null;
         lastVerifiedHead = null;
+        // #204-ревью: пустой список чеков не имеет права привести к мерджу. Цикл ниже с
+        // пустым `checks` не сделал бы ни одной итерации, lastVerifiedHead записался бы и
+        // фаза уехала в main без единой проверки. Сегодня этот путь прикрыт тем, что боевой
+        // fail в resolveGateChecks делает process.exit(1), но сигнатура FailFn допускает
+        // возвращающийся fail (тест/иной потребитель) — тогда gateChecksFor() отдаёт []. По
+        // инварианту №5 (барьеры важнее промптов) дешёвая страховка в самой точке исполнения.
+        if (checks.length === 0) {
+            logFn(
+                `⛔ Гейт мерджа: список чеков пуст — мердж без единой проверки отменён (gate.checks в конфиге).`,
+            );
+            parkFn();
+            return false;
+        }
         // #135: валидация ДО git — это путь к авто-мерджу в main (= автодеплой прода),
         // и он единственный оставался без проверки имени ветки.
         if (!safeBranch(branch, { logFn, where: 'гейт мерджа' })) {

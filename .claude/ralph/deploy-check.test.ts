@@ -346,7 +346,8 @@ describe('checkProdHealth — HTTP-healthcheck главной страницы �
         const logFn = vi.fn();
         const { checkProdHealth } = createDeployCheckModule(makeEnv());
         const out = checkProdHealth({}, { execFn, sleepFn: () => {}, logFn });
-        expect(out).toEqual({ ok: false, status: 0, url: '' });
+        // reason:'config' (#204-ревью) — отличает ошибку конфига от «прод не ответил».
+        expect(out).toEqual({ ok: false, status: 0, url: '', reason: 'config' });
         expect(execFn).not.toHaveBeenCalled();
         expect(logFn).toHaveBeenCalledWith(expect.stringContaining('healthUrl не задан'));
     });
@@ -469,6 +470,19 @@ describe('classifyDeployOutcome — итог деплоя зелёный/кра�
         });
         expect(v.red).toBe(true);
         expect(v.reason).toContain('502');
+    });
+
+    it('#204-ревью: health.reason=config → красный, reason про ошибку конфига, НЕ «прод не отвечает»', () => {
+        const { classifyDeployOutcome } = createDeployCheckModule(makeEnv());
+        const v = classifyDeployOutcome({ status: 'completed', conclusion: 'success' } as never, {
+            ok: false,
+            status: 0,
+            url: '',
+            reason: 'config',
+        });
+        expect(v.red).toBe(true);
+        expect(v.reason).toContain('конфиг');
+        expect(v.reason).not.toContain('прод не отвечает');
     });
 
     it('outcome=null → красный (unknown), не бросает', () => {

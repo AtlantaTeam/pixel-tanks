@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import { resolveInstallCmd } from './ralph-util.ts';
 
 // Формат ralph.state.json — контракт, этим рефактором НЕ меняется (критерий #359).
 // milestone === null означает «все фазы пройдены» (см. phaseIndexOf/advancePhase в
@@ -192,8 +193,10 @@ export function createStateLock(env: StateLockEnv) {
             // Забытый installFn в тесте запустил бы настоящую установку в дереве, где идут
             // тесты, — переустановка node_modules посреди прогона (ревью PR #141).
             guardSideEffect('installCmd (syncDepsIfLockChanged)');
-            // #204: команда из конфига (дефолт `npm ci`) — не-npm стек ставит своё, не правя код.
-            return execSync(getConfig()?.installCmd || 'npm ci', {
+            // #204: команда из конфига (дефолт `npm ci`) — не-npm стек ставит своё, не правя
+            // код. Единый резолвер resolveInstallCmd (ralph-util) — тот же, что в логе ниже и
+            // в orchestrator.getInstallCmd: дефолт не разъедется между «сказано» и «сделано».
+            return execSync(resolveInstallCmd(getConfig()), {
                 stdio: 'inherit',
                 env: resolvedEnv,
             });
@@ -215,7 +218,7 @@ export function createStateLock(env: StateLockEnv) {
         } catch {}
         if (prev === current) return;
         logFn(
-            `📦 package-lock.json PR-головы отличается от установленного — ${getConfig()?.installCmd || 'npm ci'} перед чеками...`,
+            `📦 package-lock.json PR-головы отличается от установленного — ${resolveInstallCmd(getConfig())} перед чеками...`,
         );
         // env из checksGreen (уже санирован), иначе строим сам — fail-closed при битом allowlist.
         installFn(gateEnv ?? buildGateEnvFn());

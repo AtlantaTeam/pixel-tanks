@@ -545,6 +545,9 @@ describe('preflight — валидация конфига/среды и подг
         active: true,
         phases: [{ milestone: 'M1', branch: 'feature/m1' }],
         authorAllowlist: ['owner'],
+        // #204-ревью: preflight валидирует состав гейта на старте (resolveGateChecks) —
+        // валидный блок gate нужен «зелёному» пути, как phases/authorAllowlist.
+        gate: { checks: [['test', 'npm run test']] },
         ...overrides,
     });
 
@@ -588,8 +591,18 @@ describe('preflight — валидация конфига/среды и подг
         it('prod с заполненными RALPH_TG_* правильной формы → проверка проходит (не бросает на этой ветке)', () => {
             process.env.RALPH_TG_BOT_TOKEN = '123456789:AAExampleTokenLooksLikeThisThirtyPlusChars';
             process.env.RALPH_TG_CHAT_ID = '-1001234567890';
-            const cfg = validCfg({ profileName: 'prod' });
+            const cfg = validCfg({
+                profileName: 'prod',
+                deployCheck: { healthUrl: 'https://app.example.test' },
+            });
             expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).not.toThrow();
+        });
+
+        it('#204-ревью: prod без валидного deployCheck.healthUrl → fail (пост-мердж healthcheck обязателен)', () => {
+            process.env.RALPH_TG_BOT_TOKEN = '123456789:AAExampleTokenLooksLikeThisThirtyPlusChars';
+            process.env.RALPH_TG_CHAT_ID = '-1001234567890';
+            const cfg = validCfg({ profileName: 'prod' }); // deployCheck.healthUrl не задан
+            expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).toThrow(/healthUrl/);
         });
 
         it('prod с плейсхолдер-токеном неверной формы → fail (не только наличие, но и форма)', () => {
@@ -616,6 +629,13 @@ describe('preflight — валидация конфига/среды и подг
             const cfg = validCfg(); // profileName не задан → playground
             expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).not.toThrow();
         });
+    });
+
+    it('#204-ревью: битый/забытый блок gate → fail на СТАРТЕ (resolveGateChecks в preflight)', () => {
+        // Ранний отказ, а не спустя часы в tryMergePhase: свежий порт с кривым конфигом
+        // должен упасть при запуске, как на authorAllowlist/TG.
+        const cfg = validCfg({ gate: undefined });
+        expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).toThrow(/gate/);
     });
 
     it('state старой схемы (phaseIndex, без milestone) → fail (через реальный loadState)', () => {

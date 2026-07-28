@@ -158,6 +158,26 @@ describe('resolveBoard — адрес доски из env/конфига, fail-c
         expect(() => resolveBoard({ env: {}, readFn: boom })).toThrow(/owner доски не задан/);
     });
 
+    it('#204-ревью: задан только RALPH_BOARD_OWNER (без number) → берём ОБЕ из конфига, не кентавр', () => {
+        // Полу-заданный env не смешивается с конфигом: owner из env + number из конфига дал
+        // бы адрес чужой доски. Обе env заданы → env; иначе обе из конфига.
+        expect(
+            resolveBoard({
+                env: { RALPH_BOARD_OWNER: 'TestOrg' },
+                readFn: readCfg({ owner: 'CfgOrg', number: 5 }),
+            }),
+        ).toEqual({ owner: 'CfgOrg', number: 5 });
+    });
+
+    it('#204-ревью: пустые строки в env трактуются как «не задано» одинаково (owner и number)', () => {
+        expect(
+            resolveBoard({
+                env: { RALPH_BOARD_OWNER: '', RALPH_BOARD_NUMBER: '' },
+                readFn: readCfg({ owner: 'CfgOrg', number: 9 }),
+            }),
+        ).toEqual({ owner: 'CfgOrg', number: 9 });
+    });
+
     it('owner есть, но номер не целое > 0 → throw (fail-closed на кривом номере)', () => {
         expect(() =>
             resolveBoard({ env: {}, readFn: readCfg({ owner: 'AcmeOrg', number: 0 }) }),

@@ -81,7 +81,10 @@ export type DeployOutcome = {
     runId: number | null;
 };
 
-export type HealthResult = { ok: boolean; status: number; url: string };
+// reason (#204-ревью): различает «прод не ответил» (сеть/HTTP) и «ошибка конфига»
+// (healthUrl не задан/кривой). Без него classifyDeployOutcome врал «прод не отвечает
+// (HTTP —)», и человек шёл проверять живой прод, хотя причина — незаполненный конфиг.
+export type HealthResult = { ok: boolean; status: number; url: string; reason?: 'config' };
 
 export type DeployVerdict = { red: boolean; reason: string };
 
@@ -339,7 +342,7 @@ export function createDeployCheckModule(env: DeployCheckEnv) {
                     ? `⚠ Пост-мердж: healthUrl "${url}" не похож на http(s)-адрес — проверка не выполнена.`
                     : `⚠ Пост-мердж: healthUrl не задан в конфиге (deployCheck.healthUrl) — проверка не выполнена.`,
             );
-            return { ok: false, status: 0, url };
+            return { ok: false, status: 0, url, reason: 'config' };
         }
         const timeoutSec = Math.max(
             1,
@@ -395,6 +398,14 @@ export function createDeployCheckModule(env: DeployCheckEnv) {
             return { red: true, reason: `workflow ${status}${concl}` };
         }
         if (health && health.ok === false) {
+            // #204-ревью: ошибку конфига (healthUrl не задан/кривой) не выдаём за «прод
+            // упал» — иначе пуш зовёт человека проверять живой прод по ложному следу.
+            if (health.reason === 'config') {
+                return {
+                    red: true,
+                    reason: 'healthUrl не задан/неверен в конфиге (deployCheck.healthUrl) — ошибка конфига, не прод',
+                };
+            }
             return { red: true, reason: `прод не отвечает (HTTP ${health.status || '—'})` };
         }
         return { red: false, reason: 'workflow success + прод HTTP 200' };

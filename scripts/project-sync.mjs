@@ -30,22 +30,41 @@ const CONFIG_PATH = fileURLToPath(new URL('../.claude/ralph/ralph.config.json', 
 // Резолв доски: env важнее конфига (быстрый оверрайд под другой проект без правки файла),
 // иначе common.board из ralph.config.json. Отсутствие owner ИЛИ невалидный номер — throw
 // (fail-closed): без адреса доски синкать нечего, а угадывать чужую нельзя.
+//
+// Адрес берётся ЦЕЛИКОМ из одного источника — env ИЛИ конфиг, без смешения (#204-ревью):
+// «owner из env, number из конфига» дал бы адрес-кентавр. Сценарий: человек задал
+// RALPH_BOARD_OWNER=TestOrg для эксперимента, забыл про number → синк ушёл бы в чужую
+// доску с номером из конфига (ровно «чужая доска», от которой этот код и защищается).
+// Пустая строка = «не задано» для обеих переменных ОДИНАКОВО: иначе RALPH_BOARD_NUMBER=""
+// (не nullish) не смотрел бы в конфиг и валил Number('')→0→throw, а RALPH_BOARD_OWNER=""
+// (falsy) тихо падал в конфиг — асимметрия. Обе env-переменные непусты → env; иначе обе
+// из конфига.
+//
+// ВНИМАНИЕ (#204-ревью): читается только `common.board`, БЕЗ resolveProfile/deepMerge —
+// скрипт живёт вне раннера и профиля не знает. `board` в `profiles.<name>` синк НЕ увидит
+// (положишь его туда — упадёт «owner не задан», хотя конфиг с виду валиден). Держи `board`
+// только в `common`. Зафиксировано в docs/ralph-mini-framework/porting-checklist.md §4.
 export function resolveBoard({
     env = process.env,
     configPath = CONFIG_PATH,
     readFn = readFileSync,
 } = {}) {
-    let owner = env.RALPH_BOARD_OWNER;
-    let number = env.RALPH_BOARD_NUMBER;
-    if (!owner || number === undefined) {
+    const envOwner = typeof env.RALPH_BOARD_OWNER === 'string' ? env.RALPH_BOARD_OWNER : '';
+    const envNumber = typeof env.RALPH_BOARD_NUMBER === 'string' ? env.RALPH_BOARD_NUMBER : '';
+    let owner;
+    let number;
+    if (envOwner && envNumber) {
+        owner = envOwner;
+        number = envNumber;
+    } else {
         let board = {};
         try {
             board = JSON.parse(readFn(configPath, 'utf-8'))?.common?.board ?? {};
         } catch {
             // Нет/битый конфиг — fail-closed сработает ниже на пустых owner/number.
         }
-        owner = owner || board.owner;
-        number = number === undefined ? board.number : number;
+        owner = board.owner;
+        number = board.number;
     }
     if (!owner || typeof owner !== 'string') {
         throw new Error(

@@ -150,8 +150,12 @@ RUNBOOK). Раннер сам поднимает detached-`monitor.js` (пане
 - `board.owner`/`board.number` (#204) — доска Projects для `project-sync.mjs`
   (env `RALPH_BOARD_OWNER`/`RALPH_BOARD_NUMBER` важнее; `resolveBoard` fail-closed);
 - `runnerWorktreeDirname` (#204) — имя соседнего дерева раннера (дефолт `<имя-репо>-ralph`);
-- `deployCheck.healthUrl` — URL пост-мердж healthcheck (prod); без него проверка
-  fail-closed пропускается, проектного фолбэка в коде больше нет (#204);
+- `deployCheck.healthUrl` — URL пост-мердж healthcheck (#164, prod). Для профиля `prod`
+  **обязателен**: валидируется в preflight на старте (fail-closed, как `RALPH_TG_*`) — без
+  валидного http(s)-адреса раннер не запускается. Проверка не «пропускается»: при пустом/
+  кривом URL `checkProdHealth` возвращает `ok:false` с `reason:'config'`, что даёт КРАСНЫЙ
+  deploy block (различимый в пуше от «прод не отвечает»), а не тихий пропуск. Проектного
+  фолбэка в коде больше нет (#204);
 - `haltBeforeDeploy` (bool, #249) — только `profileName: 'prod'`. Дефолт (не задан
   либо `true`) = поведение #87: стоп после каждой смердженной фазы, следующая
   начинается новым запуском loop. `false` — непрерывный prod: на ЗЕЛЁНОМ пост-мердж

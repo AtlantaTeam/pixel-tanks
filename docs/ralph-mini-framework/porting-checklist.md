@@ -9,20 +9,20 @@
 
 Всё проектное теперь в конфиге (профили `common` + `profiles.<name>`):
 
-| Ключ (в `common`)        | Что задать                                                                                              |
-| ------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `installCmd`             | Команда установки зависимостей. Дефолт `npm ci`; для не-npm стека — своё (`pnpm i --frozen-lockfile`…). |
-| `board.owner`            | Организация/владелец доски GitHub Projects (env `RALPH_BOARD_OWNER` важнее).                            |
-| `board.number`           | Номер доски Projects (env `RALPH_BOARD_NUMBER` важнее). Целое > 0.                                      |
-| `gate.checks`            | Базовый состав чеков гейта — массив пар `[имя, команда]`. **Порядок = fail-fast, дешёвый → дорогой.**   |
-| `gate.prodChecks`        | Толстые чеки прод-профиля (добавляются к базе). Тоже пары `[имя, команда]`.                             |
-| `gate.prodDropChecks`    | Имена базовых чеков, снимаемых в prod (дедуп, напр. `test` в пользу `coverage`). Можно `[]`.            |
-| `runnerWorktreeDirname`  | Имя соседнего дерева раннера. Необязательно: дефолт — `<имя-репо>-ralph`.                               |
-| `runnerWorktreePath`     | Полный путь дерева раннера (важнее dirname и env `RALPH_WORKTREE_PATH`). Обычно не нужен.               |
-| `deployCheck.healthUrl`  | URL health-чека прода (только prod-профиль). Без него пост-мердж healthcheck fail-closed пропускается.  |
-| `phases`                 | Список фаз `{ milestone, branch }` в порядке исполнения.                                                |
-| `authorAllowlist`        | gh-логины доверенных авторов issues (репо публичный + bypassPermissions → защита от инъекций).          |
-| `modelRouting`, `review` | Роутинг кодер-модели по `complexity:*`; модель ревью и эскалация по зонам риска.                        |
+| Ключ (в `common`)        | Что задать                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `installCmd`             | Команда установки зависимостей. Дефолт `npm ci`; для не-npm стека — своё (`pnpm i --frozen-lockfile`…).                        |
+| `board.owner`            | Организация/владелец доски GitHub Projects (env `RALPH_BOARD_OWNER` важнее).                                                   |
+| `board.number`           | Номер доски Projects (env `RALPH_BOARD_NUMBER` важнее). Целое > 0.                                                             |
+| `gate.checks`            | Базовый состав чеков гейта — массив пар `[имя, команда]`. **Порядок = fail-fast, дешёвый → дорогой.**                          |
+| `gate.prodChecks`        | Толстые чеки прод-профиля (добавляются к базе). Тоже пары `[имя, команда]`.                                                    |
+| `gate.prodDropChecks`    | Имена базовых чеков, снимаемых в prod (дедуп, напр. `test` в пользу `coverage`). Можно `[]`.                                   |
+| `runnerWorktreeDirname`  | Имя соседнего дерева раннера. Необязательно: дефолт — `<имя-репо>-ralph`.                                                      |
+| `runnerWorktreePath`     | Полный путь дерева раннера (важнее dirname и env `RALPH_WORKTREE_PATH`). Обычно не нужен.                                      |
+| `deployCheck.healthUrl`  | URL health-чека прода. Для профиля `prod` **обязателен** — валидируется на старте (preflight), без него раннер не запускается. |
+| `phases`                 | Список фаз `{ milestone, branch }` в порядке исполнения.                                                                       |
+| `authorAllowlist`        | gh-логины доверенных авторов issues (репо публичный + bypassPermissions → защита от инъекций).                                 |
+| `modelRouting`, `review` | Роутинг кодер-модели по `complexity:*`; модель ревью и эскалация по зонам риска.                                               |
 
 Все обязательные значения — **fail-closed**: пустой `gate.checks`, отсутствующий
 `board.owner`/`number`, кривой `healthUrl` останавливают раннер с внятным сообщением, а не
@@ -48,6 +48,15 @@ test-ratchet, project-sync и т.д.). Перенеси нужные и попр
 - Single-select поле **`Status`** с опцией **`Done`** — `project-sync.mjs` переводит
   закрытые карточки в Done. Нет поля/опции → синк fail-closed.
 - Завести карточки фаз ДО старта; конвенция «фаза = milestone, ветка фазы = `feature/…`».
+- **Доска должна принадлежать организации, не пользователю.** `project-sync.mjs` ходит в
+  `organization.projectV2` — доска на личном аккаунте (`user.projectV2`) не сработает,
+  ошибка вылезет из GraphQL («Could not resolve to an Organization»). Если проекта-организации
+  нет — заведи org или отключи синк.
+- **`board` держи только в `common`, НЕ в `profiles.<name>`.** `project-sync.mjs` живёт вне
+  раннера и читает `common.board` из сырого конфига без `resolveProfile`/deepMerge —
+  профильную дельту `board` он не увидит и упадёт «owner не задан», хотя конфиг с виду
+  валиден. Оверрайд под другой проект — через env `RALPH_BOARD_OWNER`/`RALPH_BOARD_NUMBER`
+  (обе целиком, не по одной — иначе адрес-кентавр).
 
 ## 5. Секреты в env (`/root/ralph.env` или окружение прогона)
 
@@ -62,9 +71,19 @@ test-ratchet, project-sync и т.д.). Перенеси нужные и попр
   окружении `enabled: false`.
 - `provision/` — специфика конкретного VDS, не переносится дословно.
 
+## 7. Заменить своими файлами (не копируются как есть)
+
+- **`.claude/ralph/ralph.project.md`** — ПРОЕКТНАЯ половина промпт-контракта кодер-сессии
+  (UI-скилл, стек, тема). Копия из pixel-tanks говорила бы кодер-сессии не про твой проект —
+  **напиши свой**. Общий контракт `ralph.md` при этом берётся как есть, править его не надо.
+- **`scripts/security-audit.baseline.json`** — **начни с пустого** (`[]` или пустой набор).
+  Иначе новый проект унаследует advisory-долг pixel-tanks, и security-чек будет молча
+  пропускать чужие принятые уязвимости как «уже в baseline».
+
 ## Что переносится как есть (правок кода не требует)
 
 Вся хореография `ralph.js`/`orchestrator.ts` (профили, worktree-изоляция, цикл сдачи,
 детерминированный гейт, self-heal, breaker'ы, API-лимит), `deadman.js`,
-`telegram-notifier.js`, предохранитель побочек #138, `baseline-policy.mjs`. Проектная
-половина промпт-контракта — `ralph.project.md` (общий контракт — `ralph.md`).
+`telegram-notifier.js`, предохранитель побочек #138, `baseline-policy.mjs`, общий
+промпт-контракт `ralph.md`. (Проектную половину `ralph.project.md` и baseline — заменяешь,
+см. §7.)
