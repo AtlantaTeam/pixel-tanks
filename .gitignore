@@ -18,6 +18,10 @@ src/payload-types.ts
 .DS_Store
 *.log
 
+# Python bytecode (скиллы на python — напр. ui-ux-pro-max/scripts)
+__pycache__/
+*.pyc
+
 .claude/settings.local.json
 .claude/backups/
 screenshots/
