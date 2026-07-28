@@ -22,7 +22,7 @@
 // regex'ов). Фабрика захватывает этот контекст один раз, а возвращённые функции
 // сохраняют ПОКАЗАТЕЛЬНУЮ DI: каждая по-прежнему принимает свои коллабораторы
 // (shFn/logFn/checksGreenFn/…) параметром — ровно так их зовут существующие тесты
-// (ralph.test.js, blocked-scenarios.test.js, hold-scenarios.test.js) через ре-экспорт из
+// (gate.test.ts, blocked-scenarios.test.js, hold-scenarios.test.js) через ре-экспорт из
 // ralph.js. Module-level state гейта (lastRedCheck/lastVerifiedHead/lastGatePr) живёт в
 // замыкании фабрики и читается наружу геттерами — как раньше module.exports у ralph.js.
 
@@ -123,23 +123,59 @@ export function createGateRunner(env: GateEnv) {
     // #217: снятие label blocked — прерогатива РАННЕРА, не кодер-сессии (тот же принцип,
     // что в #207: решение принимает не тот, кого проверяют). Раннер снимает метку ПЕРЕД
     // повторным ревью — чистый лист, — и повторное ревью (судья) вешает её заново, если
-    // блокеры не устранены. Идемпотентно и fail-closed: не нашли PR / не смогли снять —
-    // метка остаётся, гейт увидит blocked и уведёт круг разбора дальше (в пределе — к
-    // человеку), несмерджённым это не станет (отказ ужесточает, а не пропускает). Имя
-    // ветки — только через SAFE_BRANCH_RE и
-    // shq (anti-injection, инв. C3/7): значение уходит в шелл gh.
-    // #252: сама мутация (gh pr edit --remove-label) — через argv (shArgv), не строкой
-    // через шелл. Чтение (gh pr list) остаётся на shFn — это не мутация, класс риска
-    // закрыт shq (обоснование #194); DI runArgvFn — тот же предохранитель #138.
-    function removeBlockedLabel(
+    // блокеры не устранены. #223: симметричный возврат метки нужен fail-closed'у разбора:
+    // если ревью-сессия упала (overload без фолбэка/#221, api-limit, таймаут), метку надо
+    // вернуть, иначе гейт следующего прохода увидит PR без метки и смерджит фазу БЕЗ
+    // вердикта повторного ревью (обход барьера #217). Окно «раннер убит между снятием и
+    // вердиктом» держит персистентный флаг reReviewPending (см. runLoop).
+    //
+    // Снятие и возврат — ЗЕРКАЛЬНЫЕ операции: тот же поиск PR, тот же фильтр PR_NUMBER_RE,
+    // тот же anti-injection путь и то же fail-open поведение — различаются лишь gh-флагом и
+    // текстами лога. Раньше это были два почти дословных тела (~40 строк каждое): правка
+    // общей части требовала синхронного внесения в оба, и их дрейф ничем не ловился. Теперь
+    // общая часть — приватный setBlockedLabel, а removeBlockedLabel/addBlockedLabel — тонкие
+    // обёртки с прежней публичной сигнатурой (тесты/ре-экспорт зовут именно их).
+    //
+    // Идемпотентно и fail-closed: не нашли PR / не смогли снять — метка остаётся, гейт
+    // увидит blocked и уведёт круг разбора дальше (в пределе — к человеку). Имя ветки —
+    // только через SAFE_BRANCH_RE и shq (anti-injection, инв. C3/7). #252: сама мутация
+    // (gh pr edit) — через argv (shArgv), не строкой через шелл; чтение (gh pr list)
+    // остаётся на shFn (не мутация, класс риска закрыт shq — #194); DI — предохранитель #138.
+    const BLOCKED_LABEL_COPY = {
+        remove: {
+            where: 'removeBlockedLabel',
+            ghFlag: '--remove-label',
+            noPr: (branch: string) =>
+                `⚠ removeBlockedLabel: открытый PR ветки ${branch} не найден — метку не снимаю.`,
+            badNum: (branch: string, num: string) =>
+                `⚠ removeBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не снимаю.`,
+            done: (num: string) =>
+                `🏷 Раннер снял label blocked с PR #${num} перед повторным ревью (#217).`,
+            fail: (msg: string) =>
+                `⚠ removeBlockedLabel не снял метку (гейт подберёт blocked): ${msg}`,
+        },
+        add: {
+            where: 'addBlockedLabel',
+            ghFlag: '--add-label',
+            noPr: (branch: string) =>
+                `⚠ addBlockedLabel: открытый PR ветки ${branch} не найден — метку не вернул.`,
+            badNum: (branch: string, num: string) =>
+                `⚠ addBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не вернул.`,
+            done: (num: string) =>
+                `🏷 Раннер вернул label blocked на PR #${num} — повторное ревью не дало вердикта (#223).`,
+            fail: (msg: string) => `⚠ addBlockedLabel не вернул метку: ${msg}`,
+        },
+    } as const;
+
+    type BlockedLabelOpts = { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn };
+
+    function setBlockedLabel(
         branch: string,
-        {
-            shFn = sh,
-            runArgvFn = shArgv,
-            logFn = log,
-        }: { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn } = {},
+        action: 'add' | 'remove',
+        { shFn = sh, runArgvFn = shArgv, logFn = log }: BlockedLabelOpts = {},
     ): void {
-        if (!safeBranch(branch, { logFn, where: 'removeBlockedLabel' })) return;
+        const copy = BLOCKED_LABEL_COPY[action];
+        if (!safeBranch(branch, { logFn, where: copy.where })) return;
         try {
             const num = String(
                 shFn(
@@ -147,75 +183,29 @@ export function createGateRunner(env: GateEnv) {
                 ),
             ).trim();
             if (!num) {
-                logFn(
-                    `⚠ removeBlockedLabel: открытый PR ветки ${branch} не найден — метку не снимаю.`,
-                );
+                logFn(copy.noPr(branch));
                 return;
             }
             // #251: тот же фильтр, что в findOpenPr — `--flag`-образное значение gh
             // распарсил бы как флаг. Значение из `gh pr list --jq` доверенное, но канал
             // тот же, а фильтр стоит одну строку. Fail-closed: не целое → в argv не пускаем.
             if (!PR_NUMBER_RE.test(num)) {
-                logFn(
-                    `⚠ removeBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не снимаю.`,
-                );
+                logFn(copy.badNum(branch, num));
                 return;
             }
-            runArgvFn('gh', ['pr', 'edit', num, '--remove-label', 'blocked']);
-            logFn(`🏷 Раннер снял label blocked с PR #${num} перед повторным ревью (#217).`);
+            runArgvFn('gh', ['pr', 'edit', num, copy.ghFlag, 'blocked']);
+            logFn(copy.done(num));
         } catch (e: unknown) {
-            logFn(
-                `⚠ removeBlockedLabel не снял метку (гейт подберёт blocked): ${String((e as Error)?.message ?? e).split('\n')[0]}`,
-            );
+            logFn(copy.fail(String((e as Error)?.message ?? e).split('\n')[0]));
         }
     }
 
-    // #223: симметрична removeBlockedLabel — детерминированно ВОЗВРАЩАЕТ label blocked на
-    // PR ветки. Нужна fail-closed'у разбора: раннер снимает метку ПЕРЕД повторным ревью, и
-    // если ревью-сессия упала (overload без фолбэка/#221, api-limit, таймаут) — метку надо
-    // вернуть, иначе гейт следующего прохода увидит PR без метки и смерджит фазу БЕЗ
-    // вердикта повторного ревью (обход барьера #217). Окно «раннер убит между снятием и
-    // вердиктом» этим не закрывается — его держит персистентный флаг reReviewPending (см.
-    // runLoop). Тот же anti-injection-путь, что removeBlockedLabel: имя ветки через
-    // SAFE_BRANCH_RE и shq (инв. C3/7), значение уходит в шелл gh.
-    // #252: та же конвертация мутации на argv, что и removeBlockedLabel — см. её докблок.
-    function addBlockedLabel(
-        branch: string,
-        {
-            shFn = sh,
-            runArgvFn = shArgv,
-            logFn = log,
-        }: { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn } = {},
-    ): void {
-        if (!safeBranch(branch, { logFn, where: 'addBlockedLabel' })) return;
-        try {
-            const num = String(
-                shFn(
-                    `gh pr list --head ${shq(branch)} --state open --json number --jq '.[0].number // empty'`,
-                ),
-            ).trim();
-            if (!num) {
-                logFn(
-                    `⚠ addBlockedLabel: открытый PR ветки ${branch} не найден — метку не вернул.`,
-                );
-                return;
-            }
-            // #251: тот же фильтр, что в findOpenPr/removeBlockedLabel — argument-injection.
-            if (!PR_NUMBER_RE.test(num)) {
-                logFn(
-                    `⚠ addBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не вернул.`,
-                );
-                return;
-            }
-            runArgvFn('gh', ['pr', 'edit', num, '--add-label', 'blocked']);
-            logFn(
-                `🏷 Раннер вернул label blocked на PR #${num} — повторное ревью не дало вердикта (#223).`,
-            );
-        } catch (e: unknown) {
-            logFn(
-                `⚠ addBlockedLabel не вернул метку: ${String((e as Error)?.message ?? e).split('\n')[0]}`,
-            );
-        }
+    function removeBlockedLabel(branch: string, opts: BlockedLabelOpts = {}): void {
+        setBlockedLabel(branch, 'remove', opts);
+    }
+
+    function addBlockedLabel(branch: string, opts: BlockedLabelOpts = {}): void {
+        setBlockedLabel(branch, 'add', opts);
     }
 
     // ── Состав шагов гейта (пока хардкод; в конфиг — фаза 4, #204) ────────────

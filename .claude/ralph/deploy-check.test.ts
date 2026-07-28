@@ -99,6 +99,19 @@ describe('mergedShaOf — sha squash-мерджа PR (#163)', () => {
         expect(cmd).toMatch(/^gh pr view\b/);
         expect(cmd).not.toMatch(/\b(merge|close|edit|delete)\b/);
     });
+
+    // getLastGatePr() отдаёт null, если гейт не дошёл до findOpenPr. Без fail-fast гарда
+    // `gh pr view 'null'` сжёг бы attempts×ретраи ghJson с бэкоффом, прежде чем упасть.
+    it('невалидный prNumber (null/0/дробь) → fail-fast, ghJson не зовётся', () => {
+        const ghJsonFn = vi.fn(() => ({ mergeCommit: { oid: SHA } }));
+        const { mergedShaOf } = createDeployCheckModule(makeEnv());
+        for (const bad of [null, 0, -1, 1.5, undefined, '12']) {
+            expect(() => mergedShaOf(bad as unknown as number, { ghJsonFn })).toThrow(
+                /невалидный номер PR/,
+            );
+        }
+        expect(ghJsonFn).not.toHaveBeenCalled();
+    });
 });
 
 describe('deployWaitMessage — формат сообщения ожидания (#TFO89)', () => {

@@ -11,7 +11,7 @@
  *      криптичной ошибки в глубине зависимостей (инвариант №1 — fail-closed);
  *   2) парсинг CLI-флагов режима и передача argv фабрике;
  *   3) запуск main() под guard require.main === module и ре-экспорт API-поверхности
- *      (module.exports = runtime) — на ней сидят ralph.test.js, сценарные тесты и
+ *      (module.exports = runtime) — на ней сидят orchestrator.test.js, сценарные тесты и
  *      monitor.js, ровно как на прежнем монолите.
  *
  * Запуск:
@@ -49,7 +49,7 @@ if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
 const { createOrchestrator } = require('./orchestrator.ts');
 // Мост к JS-соседям: их require остаётся в entry, фабрика получает функции готовыми —
 // orchestrator.ts при импорте не тянет env/сеть, а тесты передают фейки
-// (см. orchestrator.test.ts). telegram-notifier.js самостоятелен (не require ralph.js —
+// (см. orchestrator.test.js). telegram-notifier.js самостоятелен (не require ralph.js —
 // цикл), предохранитель #138 у него общий через side-effect-guard.ts.
 const { sendTelegramMessage, telegramConfigFromEnv } = require('./telegram-notifier.js');
 const { buildSanitizedGateEnv } = require('./gate-env.js');
@@ -67,6 +67,38 @@ const flags = {
     deployResolved: argv.includes('--deploy-resolved'),
 };
 
+// Allowlist известных флагов — fail-closed против тихого сдвига режима (инвариант №1,
+// в духе fail-closed parseProfileFlag). Неизвестный флаг иначе молча игнорируется:
+// опечатка (`--dryrun`, `--onse`, кириллическая «у» в `--dry-run`) превратила бы
+// намеренный read-only/HITL-запуск в живой AFK-прогон с bypassPermissions и авто-мерджем.
+// Значение после `--profile <name>` — не флаг, его пропускаем; форму `--profile=<name>`
+// ловит startsWith. Валидность самого имени профиля — уже за parseProfileFlag в main().
+const KNOWN_FLAGS = new Set([
+    '--once',
+    '--dry-run',
+    '--reset',
+    '--resubmit',
+    '--deploy-resolved',
+    '--profile',
+]);
+function assertKnownFlags(args) {
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--profile') {
+            i++; // следующий токен — имя профиля, не флаг
+            continue;
+        }
+        if (a.startsWith('--profile=')) continue;
+        if (!KNOWN_FLAGS.has(a)) {
+            console.error(
+                `❌ Неизвестный флаг "${a}". Допустимы: --once, --dry-run, --reset, --resubmit, ` +
+                    `--deploy-resolved, --profile <name> | --profile=<name>.`,
+            );
+            process.exit(1);
+        }
+    }
+}
+
 const runtime = createOrchestrator({
     argv,
     flags,
@@ -74,9 +106,14 @@ const runtime = createOrchestrator({
 });
 
 // Прежняя API-поверхность module.exports монолита (плюс main) — контракт закреплён
-// orchestrator.test.ts (REQUIRED_API): пропавший ключ = молча сломанный тест или монитор.
+// orchestrator.test.js (REQUIRED_API): пропавший ключ = молча сломанный тест или монитор.
 module.exports = runtime;
 
 // Сборка фабрики чистая (не запускает петлю и не трогает процесс) — require/import
-// файла в юнит-тестах безопасен, как и раньше: петля стартует только под guard.
-if (require.main === module) runtime.main();
+// файла в юнит-тестах безопасен, как и раньше: петля стартует только под guard. Проверку
+// флагов держим ПОД guard'ом: на require из теста process.argv — это argv раннера тестов,
+// его валидировать нельзя (иначе тест-раннер упал бы на своих же флагах).
+if (require.main === module) {
+    assertKnownFlags(argv);
+    runtime.main();
+}

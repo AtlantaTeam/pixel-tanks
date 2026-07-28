@@ -12,7 +12,7 @@
 // ralph.js (process.exit), а resolveProfile зовёт валидаторы соседних зон
 // (assertKnownReviewModels из review.ts, #223) — фабрика захватывает их один раз,
 // возвращённые функции сохраняют показательную DI (failFn параметром) — ровно так их
-// зовут существующие тесты (ralph.test.js) и monitor.js (мягкий failFn `() => null`).
+// зовут существующие тесты (config-profile.test.ts) и monitor.js (мягкий failFn `() => null`).
 
 // fail() боевой уходит в process.exit(1); тестовый failFn может вернуть значение или
 // бросить — поэтому возврат unknown, а не never (мягкий результат пробрасывается наверх).
@@ -62,28 +62,43 @@ function findForbiddenKey(value: unknown, path: string): string | null {
 export function createConfigProfile(env: ConfigProfileEnv) {
     const { fail, assertKnownReviewModels } = env;
 
-    function deepMerge(
+    // Рекурсивный мердж БЕЗ скана запрещённых ключей: findForbiddenKey уже прошёл оба
+    // дерева на всю глубину в deepMerge (единожды, до мерджа), поэтому здесь повторно
+    // сканировать нечего — иначе каждый уровень рекурсии перепроверял бы всё поддерево
+    // заново (лишний проход на каждый уровень глубины). Никогда не зовёт failFn.
+    function deepMergeInner(
         base: Record<string, unknown>,
         override: Record<string, unknown>,
-        failFn: FailFn = fail,
-        path = 'common',
-    ): unknown {
-        const bad = findForbiddenKey(base, path) || findForbiddenKey(override, path);
-        if (bad) return failFn(`ralph.config.json: запрещённый ключ ${bad}.`);
-
+    ): Record<string, unknown> {
         const out: Record<string, unknown> = { ...base };
         for (const [k, v] of Object.entries(override)) {
             if (!isPlainObject(v) || !isPlainObject(base[k])) {
                 out[k] = v;
                 continue;
             }
-            const merged = deepMerge(base[k] as Record<string, unknown>, v, failFn, `${path}.${k}`);
-            // failFn мог не бросить (монитор передаёт `() => null`) — тогда обрываем мердж
-            // и прокидываем его результат наверх, а не собираем конфиг из полуфабриката.
-            if (!isPlainObject(merged)) return merged;
-            out[k] = merged;
+            out[k] = deepMergeInner(base[k] as Record<string, unknown>, v);
         }
         return out;
+    }
+
+    function deepMerge(
+        base: Record<string, unknown>,
+        override: Record<string, unknown>,
+        failFn: FailFn = fail,
+        basePath = 'common',
+        // base — это common, override — профиль: у них РАЗНЫЕ блоки конфига, поэтому и
+        // ярлыки пути разные (иначе запрещённый ключ из common всплывёт как «в блоке
+        // "prod.…"» — внятность сообщения соврёт про блок). Прямые вызовы (тесты/монитор)
+        // с одним path получают его для обоих аргументов — обратная совместимость.
+        overridePath: string = basePath,
+    ): unknown {
+        // Один скан обоих деревьев на верхнем уровне (findForbiddenKey сам рекурсивен на
+        // всю глубину), а не на каждом уровне мерджа. failFn мог не бросить (монитор
+        // передаёт `() => null`) — тогда его результат уходит наверх, а не собирается
+        // конфиг из полуфабриката (resolveProfile проверяет isPlainObject).
+        const bad = findForbiddenKey(base, basePath) || findForbiddenKey(override, overridePath);
+        if (bad) return failFn(`ralph.config.json: запрещённый ключ ${bad}.`);
+        return deepMergeInner(base, override);
     }
 
     // Флаг --profile <name> | --profile=<name> (#72). Нет флага → null, дальше решает
@@ -100,9 +115,15 @@ export function createConfigProfile(env: ConfigProfileEnv) {
             return failFn(`Флаг --profile указан ${hits.length} раза — оставь один.`);
         }
         if (hits[0].startsWith('--profile=')) {
-            return (
-                hits[0].slice('--profile='.length) || failFn('Флаг --profile= без имени профиля.')
-            );
+            const name = hits[0].slice('--profile='.length);
+            // Пустое имя ИЛИ ведущий `--` (`--profile=--once`) — пропущенное имя, ровно как
+            // у пробельной формы ниже: без этой проверки `--once` уехал бы в имя профиля
+            // (downstream resolveProfile отверг бы «Неизвестный профиль "--once"», но
+            // сообщение хуже и поведение двух форм расходится).
+            if (!name || name.startsWith('--')) {
+                return failFn('Флаг --profile= без имени профиля.');
+            }
+            return name;
         }
         const value = argv[argv.indexOf('--profile') + 1];
         // Следующий флаг вместо имени (`--profile --once`) — тоже пропущенное имя.
@@ -180,6 +201,7 @@ export function createConfigProfile(env: ConfigProfileEnv) {
             raw.common,
             profiles[wanted] as Record<string, unknown>,
             failFn,
+            'common',
             wanted,
         );
         if (!isPlainObject(merged)) return merged; // мягкий failFn — наверх как есть

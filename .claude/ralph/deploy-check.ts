@@ -27,8 +27,8 @@
 // positiveIntOrDefault — тоже общие). Фабрика захватывает этот контекст один раз, а
 // возвращённые функции сохраняют ПОКАЗАТЕЛЬНУЮ DI: каждая
 // по-прежнему принимает свои коллабораторы (ghJsonFn/execFn/sleepFn/logFn/nowFn/…)
-// параметром — ровно так их зовут существующие тесты (ralph.test.js) через ре-экспорт из
-// ralph.js.
+// параметром — ровно так их зовут существующие тесты (deploy-check.test.ts) через ре-экспорт
+// из ralph.js.
 //
 // getConfig, а не захваченный config: module-level `config` в ralph.js заполняется в main()
 // ПОСЛЕ загрузки этого модуля (createDeployCheckModule зовётся на верхнем уровне), поэтому
@@ -130,6 +130,13 @@ export function createDeployCheckModule(env: DeployCheckEnv) {
             retryMs = 5000,
         }: { ghJsonFn?: GhJsonFn; sleepFn?: SleepFn; attempts?: number; retryMs?: number } = {},
     ): string {
+        // fail-fast на невалидном prNumber (getLastGatePr() отдаёт null, если гейт не дошёл
+        // до findOpenPr): без гарда `gh pr view 'null'` сжёг бы attempts×ретраи ghJson с
+        // бэкофф-паузами (десятки секунд сети), прежде чем упасть. Симметрично гарду
+        // recordReviewFindings (#169) — оба честно обрабатывают null (см. RunLoopDeps).
+        if (!Number.isInteger(prNumber) || prNumber <= 0) {
+            throw new Error(`mergedShaOf: невалидный номер PR "${prNumber}"`);
+        }
         // GitHub иногда отдаёт mergeCommit: null с лагом сразу после squash-мерджа. ghJson
         // ретраит только exec/parse-ошибки — валидный ответ с пустым oid его не смущает.
         // Короткая петля именно на пустой oid (attempts×retryMs) убирает самый вероятный

@@ -14,12 +14,12 @@
 // Фабрика, а не standalone-экспорты: почти всё здесь НЕ чистое (git/gh/claude/fs/
 // process), а флаги режима (--once/--dry-run/…) и argv приходят из entry — фабрика
 // захватывает их один раз, возвращённые функции сохраняют показательную DI
-// (shFn/logFn/… параметрами) — ровно так их зовут существующие тесты (ralph.test.js,
+// (shFn/logFn/… параметрами) — ровно так их зовут существующие тесты (orchestrator.test.js,
 // сценарные *.test.js) и monitor.js через ре-экспорт из ralph.js, как раньше.
 //
 // external — мост из entry к JS-соседям (telegram-notifier.js, gate-env.js): их
 // require остаётся в entry, фабрика получает готовые функции. Так orchestrator.ts не
-// тянет env/сеть при сборке, а тесты передают фейки (см. orchestrator.test.ts).
+// тянет env/сеть при сборке, а тесты передают фейки (см. orchestrator.test.js).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -261,7 +261,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // один раз (пути, DRY, ленивый config, общий предохранитель #138, process-примитивы
     // processAlive/cmdlineIncludes, которые остаются здесь — их делит и монитор).
     // Возвращённые функции сохраняют DI: сценарные (lock-scenarios.test.js) и юнит-тесты
-    // (ralph.test.js) зовут их через ре-экспорт из ralph.js как раньше. processAlive/
+    // (state-lock.test.ts) зовут их через ре-экспорт из ralph.js как раньше. processAlive/
     // cmdlineIncludes — function-объявления (hoisted, зона монитора ниже), доступны здесь
     // до их текста.
     const {
@@ -331,7 +331,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // чистые (curl/systemctl/sleep/pushEvent), фабрика захватывает контекст (log, sleep,
     // pushEvent — общая точка пуш-событий, не только туннеля) один раз; возвращённые
     // функции сохраняют показательную DI (probe/restart/sleepFn/push параметром) — тесты
-    // (ralph.test.js) зовут их через тот же ре-экспорт. Поведение не меняется: прод-режим
+    // (tunnel-check.test.ts) зовут их через тот же ре-экспорт. Поведение не меняется: прод-режим
     // сверяет фактический egress (через прокси) с ожидаемым (IP Outline) перед каждой
     // claude-сессией, красный → рестарт ss-local/privoxy → повторная сверка → fail-closed
     // стоп + пуш, если канал не поднялся.
@@ -420,7 +420,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
             log('⛔ Health-check туннеля не прошёл — loop остановлен (fail-closed).');
             process.exit(1);
         }
-        const maxWaits = cfg.apiLimitMaxWaits ?? 3;
+        // #132: нечисловой мусор из конфига (`?? 3` его пропускает) сделал бы
+        // `attempt >= maxWaits` вечно ложным — документированный предел «не более N раз»
+        // молча исчез бы, и раннер спал/повторял без ограничения. positiveIntOrDefault
+        // отсекает NaN/строку/≤0, как уже делают apiLimitGraceMin/FallbackWaitMin.
+        const maxWaits = positiveIntOrDefault(cfg.apiLimitMaxWaits, 3);
         for (let attempt = 0; ; attempt++) {
             const { code, output } = runClaudeOnceFn(prompt, opts);
             const limitHit = code !== 0 && API_LIMIT_RE.test(output);
@@ -703,7 +707,18 @@ export function createOrchestrator(env: OrchestratorEnv) {
     ): string[] | null {
         if (!safeBranch(branch, { logFn, where: 'выбор ревью-модели' })) return null;
         try {
-            runArgvFn('git', ['fetch', 'origin', 'main', branch, '--quiet']);
+            // #252/C1: сам fetch — мутация (обновляет remote-ссылки .git), а --dry-run
+            // строго read-only (инвариант №8). Живой --dry-run доходит до цикла сдачи и
+            // зовёт phaseDiffFiles для выбора ревью-модели — без этого guard'а фетч реально
+            // ходил бы в сеть. В DRY фетч пропускаем: дифф считается по уже имеющимся
+            // origin-ссылкам — для предпросмотра «что будет сделано» этого достаточно.
+            if (!DRY) {
+                runArgvFn('git', ['fetch', 'origin', 'main', branch, '--quiet']);
+            } else {
+                logFn(
+                    '💤 DRY: git fetch пропущен (C1 read-only) — дифф по текущим origin-ссылкам.',
+                );
+            }
             const out = shFn(
                 `git -c core.quotePath=false diff --name-only --no-renames ${shq(`origin/main...origin/${branch}`)}`,
             );
@@ -842,7 +857,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // config-profile.ts. Фабрика захватывает боевой fail и валидатор соседней зоны
     // assertKnownReviewModels (#223, планка #217 не должна инвертироваться незнакомой
     // моделью); возвращённые функции сохраняют DI (failFn параметром) — так их зовут
-    // ralph.test.js и monitor.js (мягкий failFn `() => null`).
+    // config-profile.test.ts и monitor.js (мягкий failFn `() => null`).
     const { deepMerge, parseProfileFlag, assertValidHaltBeforeDeploy, resolveProfile } =
         createConfigProfile({ fail, assertKnownReviewModels });
 
@@ -2837,9 +2852,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // ── API-поверхность ──────────────────────────────────────────────────────
     // Ровно прежний module.exports ralph.js (#69 и далее) плюс main: на этой поверхности
-    // сидят ralph.test.js, сценарные тесты и monitor.js (resolveProfile/parseProfileFlag/
+    // сидят orchestrator.test.js, сценарные тесты и monitor.js (resolveProfile/parseProfileFlag/
     // pushEvent/shq). Пропавший ключ = молча сломанный тест или монитор — контракт
-    // закреплён orchestrator.test.ts (REQUIRED_API).
+    // закреплён orchestrator.test.js (REQUIRED_API).
     return {
         resolveProfile,
         deepMerge,

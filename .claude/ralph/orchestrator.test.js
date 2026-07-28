@@ -4841,6 +4841,35 @@ describe('createOrchestrator: флаги CLI', () => {
         });
         expect(called).toBe(1);
     });
+
+    // #252/C1 (ревью #365): сам git fetch — мутация remote-ссылок, а --dry-run строго
+    // read-only. Живой --dry-run доходит до phaseDiffFiles (выбор ревью-модели), поэтому
+    // фетч в нём пропускается; дифф всё же считается по имеющимся origin-ссылкам.
+    it('dry: phaseDiffFiles не делает git fetch (C1 read-only)', () => {
+        const runtime = buildRuntime({ ...FLAGS_OFF, dry: true });
+        const runArgv = vi.fn(() => '');
+        const shFn = vi.fn(() => '');
+        runtime.phaseDiffFiles('feature/x', { runArgvFn: runArgv, shFn, logFn: () => {} });
+        expect(runArgv).not.toHaveBeenCalled();
+        expect(shFn).toHaveBeenCalled(); // дифф считается, фетч — нет
+    });
+
+    it('без dry: phaseDiffFiles фетчит перед диффом (свежие ссылки)', () => {
+        const runtime = buildRuntime({ ...FLAGS_OFF, dry: false });
+        const runArgv = vi.fn(() => '');
+        runtime.phaseDiffFiles('feature/x', {
+            runArgvFn: runArgv,
+            shFn: () => '',
+            logFn: () => {},
+        });
+        expect(runArgv).toHaveBeenCalledWith('git', [
+            'fetch',
+            'origin',
+            'main',
+            'feature/x',
+            '--quiet',
+        ]);
+    });
 });
 
 describe('ralph.js: тонкий entry (храповик распила #365)', () => {
@@ -4865,5 +4894,18 @@ describe('ralph.js: тонкий entry (храповик распила #365)', 
         }
         // --profile парсится в main() оркестратора из argv, entry обязан его передать.
         expect(source).toMatch(/argv/);
+    });
+
+    // Ревью #365: неизвестный флаг иначе молча игнорировался бы — опечатка (`--dryrun`,
+    // кириллическая «у» в `--dry-run`) превратила бы намеренный read-only/HITL-запуск в
+    // живой AFK-прогон. Allowlist срабатывает ДО main() (лок не берётся) — spawn безопасен.
+    it('неизвестный флаг → entry падает с ненулевым кодом ДО старта петли', () => {
+        const { spawnSync } = require('node:child_process');
+        const res = spawnSync('node', [RALPH_JS, '--dryrun'], {
+            encoding: 'utf-8',
+            timeout: 15000,
+        });
+        expect(res.status).toBe(1);
+        expect(res.stderr).toMatch(/Неизвестный флаг "--dryrun"/);
     });
 });

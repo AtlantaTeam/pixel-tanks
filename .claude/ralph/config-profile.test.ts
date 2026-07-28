@@ -97,6 +97,25 @@ describe('findForbiddenKey — скан всей глубины конфига (
     });
 });
 
+// Ревью #365: base — это common, override — профиль, у них РАЗНЫЕ блоки конфига. Раньше
+// resolveProfile сканировал оба под одним ярлыком (имя профиля), и запрещённый ключ из
+// common всплывал как «в блоке "prod"» — сообщение врало про блок.
+describe('deepMerge — ярлык блока в сообщении о запрещённом ключе (ревью #365)', () => {
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+
+    it('запрещённый ключ в common репортится в блоке "common", не в имени профиля', () => {
+        const raw = JSON.parse('{"common": {"__proto__": {"x": 1}}, "profiles": {"prod": {}}}');
+        expect(() => resolveProfile(raw, 'prod', boom)).toThrow(/в блоке "common"/);
+    });
+
+    it('запрещённый ключ в профиле репортится в блоке имени профиля, не в "common"', () => {
+        const raw = JSON.parse('{"common": {}, "profiles": {"prod": {"__proto__": {"x": 1}}}}');
+        expect(() => resolveProfile(raw, 'prod', boom)).toThrow(/в блоке "prod"/);
+    });
+});
+
 describe('resolveProfile — сборка итогового конфига из common + профиль (#71)', () => {
     const raw = () => ({
         defaultProfile: 'playground',
@@ -266,6 +285,10 @@ describe('parseProfileFlag — выбор профиля из argv (#72)', () =>
 
     it('--profile= с пустым значением → стоп', () => {
         expect(() => parseProfileFlag(['--profile='], boom)).toThrow(/без имени/);
+    });
+
+    it('--profile=--once → стоп, а не имя профиля "--once" (форма = как пробельная)', () => {
+        expect(() => parseProfileFlag(['--profile=--once'], boom)).toThrow(/без имени/);
     });
 
     // Дубль с разными именами: «кто победит» нельзя решать порядком веток парсера —
