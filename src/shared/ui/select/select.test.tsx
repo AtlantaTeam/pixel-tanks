@@ -30,6 +30,18 @@ describe('Select', () => {
         expect(trigger.className).not.toMatch(/#[0-9a-fA-F]{3,6}/);
     });
 
+    it('отражает число опций в data-option-count триггера, не раскрывая попап', () => {
+        renderWeaponSelect();
+
+        // Атрибут держит состав закрытым — на него опираются e2e бои, считая
+        // оставшееся оружие без открытия списка (нативных <option> в DOM больше нет).
+        expect(screen.getByRole('button', { name: /Оружие/ })).toHaveAttribute(
+            'data-option-count',
+            '3',
+        );
+        expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    });
+
     it('не рендерит попап, пока закрыт', () => {
         renderWeaponSelect();
 

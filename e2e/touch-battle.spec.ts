@@ -78,9 +78,13 @@ async function dispatchDragGesture(page: Page, shot: TShot): Promise<void> {
     );
 }
 
-/** Сколько снарядов осталось у игрока — по числу опций в селекте оружия HUD. */
+/** Сколько снарядов осталось у игрока — по числу опций в селекте оружия HUD.
+ *  Селект оружия — кастомный попап (не нативный `<select>`), опции в DOM живут
+ *  только раскрытыми; читаем состав из `data-option-count` триггера — он актуален
+ *  и в закрытом состоянии, поэтому счётчик не требует открывать список. */
 async function weaponCount(page: Page): Promise<number> {
-    return page.locator('#weapon-select option').count();
+    const raw = await page.locator('#weapon-select').getAttribute('data-option-count');
+    return raw === null ? 0 : Number(raw);
 }
 
 /**

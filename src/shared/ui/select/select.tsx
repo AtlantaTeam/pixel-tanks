@@ -252,6 +252,11 @@ export function Select({
                 id={selectId}
                 type="button"
                 disabled={disabled}
+                // Число опций как атрибут триггера — попап рендерит `<li role="option">`
+                // лишь в открытом состоянии, а нативных `<option>` больше нет. Атрибут
+                // отражает состав селекта всегда (открыт он или нет) — за него цепляются
+                // e2e бои, считая оставшееся у игрока оружие, не раскрывая список.
+                data-option-count={options.length}
                 aria-haspopup="listbox"
                 aria-expanded={open}
                 aria-controls={listboxId}
