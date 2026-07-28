@@ -1,0 +1,150 @@
+// Юнит-тесты модуля детекции/ожидания API-лимита (#361). Здесь проверяется САМ модуль
+// api-limit.ts — чистые преобразования вход→выход, без ralph.js. Проход «через ре-экспорт
+// ralph.js» уже покрыт ralph.test.js (те же функции, но с боевым контекстом раннера);
+// тут — контракт extraction'а: модуль самодостаточен (цель фазы 2), а не «работает
+// только пока его зовёт ralph.js».
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+    API_LIMIT_RE,
+    parseResetWaitMs,
+    minutesOrDefault,
+    apiLimitWaitMs,
+    apiLimitMessage,
+} from './api-limit.ts';
+
+describe('API_LIMIT_RE — детекция маркера лимита в выводе сессии', () => {
+    it.each([
+        "You've hit your session limit · resets 1:20pm",
+        'usage limit reached',
+        'rate-limit exceeded',
+        'rate limit hit',
+        '5-hour limit will reset soon',
+        'your window resets at 3am',
+        'limit exceeded',
+    ])('распознаёт маркер лимита: %s', (text) => {
+        expect(API_LIMIT_RE.test(text)).toBe(true);
+    });
+
+    it.each([
+        'All tests passed',
+        'Error: cannot find module',
+        'build succeeded in 12s',
+        'no problems detected',
+    ])('НЕ ложно-срабатывает на обычном выводе: %s', (text) => {
+        expect(API_LIMIT_RE.test(text)).toBe(false);
+    });
+});
+
+describe('parseResetWaitMs — время до сброса окна API-лимита', () => {
+    // Фиксируем «сейчас» = локальное 2026-01-15 10:00:00. Delta между двумя
+    // локально-сконструированными Date не зависит от TZ хоста → тест детерминирован.
+    const H = 3600_000;
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 0, 15, 10, 0, 0, 0));
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('«resets 11am» (позже сейчас в тот же день) → 1 час', () => {
+        expect(parseResetWaitMs('you can retry — resets 11am')).toBe(1 * H);
+    });
+
+    it('«reset at 7:30pm» → 9.5 часа (12h-формат, pm)', () => {
+        expect(parseResetWaitMs('limit will reset at 7:30pm')).toBe(9.5 * H);
+    });
+
+    it('«resets 3am» (уже прошло сегодня) → переносится на завтра', () => {
+        // с 10:00 до завтрашних 03:00 = 17 часов
+        expect(parseResetWaitMs('resets 3am')).toBe(17 * H);
+    });
+
+    it('«resets 12am» трактуется как полночь (h=0), не 12:00', () => {
+        // ближайшая полночь — завтра 00:00 = через 14 часов
+        expect(parseResetWaitMs('resets 12am')).toBe(14 * H);
+    });
+
+    it('«resets 12pm» трактуется как полдень (h=12) → 2 часа', () => {
+        expect(parseResetWaitMs('resets 12pm')).toBe(2 * H);
+    });
+
+    it('невалидный час (>23) → null (вызывающий возьмёт fallback)', () => {
+        expect(parseResetWaitMs('resets 27')).toBeNull();
+    });
+
+    it('нет упоминания reset → null', () => {
+        expect(parseResetWaitMs('just a normal claude output, all good')).toBeNull();
+    });
+});
+
+describe('minutesOrDefault — валидация минут из конфига (#132)', () => {
+    it('корректное неотрицательное число — берётся как есть', () => {
+        expect(minutesOrDefault(5, 30)).toBe(5);
+        expect(minutesOrDefault(0, 30)).toBe(0);
+    });
+
+    it.each([
+        ['строка вместо числа', '5'],
+        ['NaN', NaN],
+        ['+Infinity', Infinity],
+        ['-Infinity', -Infinity],
+        ['отрицательное', -1],
+        ['null', null],
+        ['undefined', undefined],
+    ])('мусор (%s) → дефолт, не вечный сон', (_name, value) => {
+        expect(minutesOrDefault(value, 30)).toBe(30);
+    });
+});
+
+describe('apiLimitWaitMs — сон до сброса окна лимита (#130)', () => {
+    const MIN = 60_000;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 0, 15, 12, 0, 0, 0));
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('время распарсилось — до сброса + apiLimitGraceMin запаса', () => {
+        expect(apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: 5 })).toBe(60 * MIN + 5 * MIN);
+    });
+
+    it('без apiLimitGraceMin в конфиге — дефолт 5 минут запаса', () => {
+        expect(apiLimitWaitMs('resets 1pm', {})).toBe(60 * MIN + 5 * MIN);
+    });
+
+    it('время не распарсилось — apiLimitFallbackWaitMin + запас', () => {
+        expect(apiLimitWaitMs('лимит, но без времени', { apiLimitFallbackWaitMin: 30 })).toBe(
+            30 * MIN + 5 * MIN,
+        );
+    });
+
+    it('apiLimitGraceMin=0 — «без запаса» законный осознанный выбор', () => {
+        expect(apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: 0 })).toBe(60 * MIN);
+    });
+
+    it('мусор в apiLimitGraceMin/apiLimitFallbackWaitMin не превращается в вечный сон (#132)', () => {
+        const ms = apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: NaN });
+        expect(Number.isFinite(ms)).toBe(true);
+        const ms2 = apiLimitWaitMs('лимит без времени', {
+            apiLimitFallbackWaitMin: 'скоро' as never,
+        });
+        expect(Number.isFinite(ms2)).toBe(true);
+    });
+});
+
+describe('apiLimitMessage — формат события паузы (контракт с deadman.js API_WAIT_RE)', () => {
+    it('содержит округлённые минуты и «попытка N/maxWaits»', () => {
+        const msg = apiLimitMessage(5.4 * 60_000, 0, 3);
+        expect(msg).toMatch(/Жду 5 мин/);
+        expect(msg).toMatch(/попытка 1\/3/);
+    });
+
+    it('attempt индексируется с 0, в сообщении — attempt+1', () => {
+        const msg = apiLimitMessage(60_000, 2, 3);
+        expect(msg).toMatch(/попытка 3\/3/);
+    });
+});

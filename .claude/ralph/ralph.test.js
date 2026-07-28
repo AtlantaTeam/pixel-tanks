@@ -894,13 +894,14 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         expect(installFn).not.toHaveBeenCalled();
     });
 
-    it('не зарегистрирован и путь свободен → git fetch origin main + add (argv, execFile) + npm ci', () => {
+    it('не зарегистрирован и путь свободен → git fetch origin main (argv) + add (argv, execFile) + npm ci', () => {
         const shFn = vi
             .fn()
             .mockReturnValueOnce(
                 'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n',
             )
             .mockReturnValue('');
+        const runArgvFn = vi.fn();
         const existsFn = vi.fn().mockReturnValue(false);
         const installFn = vi.fn();
         const addFn = vi.fn();
@@ -908,6 +909,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         const logFn = vi.fn();
         const result = ensureRunnerWorktree(WT, {
             shFn,
+            runArgvFn,
             existsFn,
             installFn,
             addFn,
@@ -916,8 +918,9 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
             repoRoot: REPO,
         });
         expect(result).toBe(WT);
-        // База — свежий origin/main, а не текущий HEAD дерева человека (#499).
-        expect(shFn).toHaveBeenCalledWith('git fetch origin main');
+        // #252: база — свежий origin/main, а не текущий HEAD дерева человека (#499),
+        // мутация уходит через argv, не строкой через шелл.
+        expect(runArgvFn).toHaveBeenCalledWith('git', ['fetch', 'origin', 'main']);
         // add идёт через argv-collaborator (execFile без shell) — путь одним аргументом (#SiaUP).
         expect(addFn).toHaveBeenCalledWith(WT);
         // #189: installFn получает путь И санированный env (второй аргумент).
@@ -983,6 +986,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
             )
             .mockReturnValue('');
         const existsFn = vi.fn().mockReturnValue(false);
+        const runArgvFn = vi.fn();
         const addFn = vi.fn(() => {
             throw new Error('branch already checked out');
         });
@@ -994,6 +998,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         expect(() =>
             ensureRunnerWorktree(WT, {
                 shFn,
+                runArgvFn,
                 existsFn,
                 addFn,
                 failFn,
@@ -1013,6 +1018,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
             )
             .mockReturnValue('');
         const existsFn = vi.fn().mockReturnValue(false);
+        const runArgvFn = vi.fn();
         const addFn = vi.fn();
         const installFn = vi.fn(() => {
             throw new Error('npm ci failed');
@@ -1024,6 +1030,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         expect(() =>
             ensureRunnerWorktree(WT, {
                 shFn,
+                runArgvFn,
                 existsFn,
                 addFn,
                 installFn,
@@ -1041,6 +1048,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
             .mockReturnValueOnce('worktree /root/pixel-tanks\nHEAD abc\nbranch refs/heads/main\n')
             .mockReturnValue('');
         const existsFn = vi.fn().mockReturnValue(false);
+        const runArgvFn = vi.fn();
         const installFn = vi.fn();
         const addFn = vi.fn();
         const markFn = vi.fn();
@@ -1048,6 +1056,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         const buildGateEnvFn = vi.fn(() => SAN);
         ensureRunnerWorktree(WT, {
             shFn,
+            runArgvFn,
             existsFn,
             installFn,
             addFn,
@@ -1066,6 +1075,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
             .mockReturnValueOnce('worktree /root/pixel-tanks\nHEAD abc\nbranch refs/heads/main\n')
             .mockReturnValue('');
         const existsFn = vi.fn().mockReturnValue(false);
+        const runArgvFn = vi.fn();
         const installFn = vi.fn();
         const addFn = vi.fn();
         const failFn = vi.fn(() => {
@@ -1077,6 +1087,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         expect(() =>
             ensureRunnerWorktree(WT, {
                 shFn,
+                runArgvFn,
                 existsFn,
                 installFn,
                 addFn,
@@ -3805,6 +3816,26 @@ const deployCfg = (o = {}) => ({
     deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20, ...o },
 });
 
+// #252: git-хелперы гейта разделены на shFn (чтения) и runArgvFn (argv-мутации). Этот
+// рекордер пишет ОБА канала в один общий `cmds`, нормализуя runArgvFn в `${file} ${args}`,
+// чтобы ассерты на ПОРЯДОК команд остались осмысленными. Общий на phaseDiffFiles и
+// refreshRunnerWorktree — иначе правка формата записи требовала бы синхронных правок в двух.
+const mkCmdRecorders = (shImpl) => {
+    const cmds = [];
+    return {
+        cmds,
+        shFn: (c) => {
+            cmds.push(c);
+            return shImpl ? shImpl(c) : '';
+        },
+        runArgvFn: (file, args) => {
+            const cmd = `${file} ${args.join(' ')}`;
+            cmds.push(cmd);
+            return shImpl ? shImpl(cmd) : '';
+        },
+    };
+};
+
 describe('waitForDeployRun — ожидание итога deploy-workflow на смердженном sha (#163)', () => {
     const SHA = 'a'.repeat(40);
     const OTHER = 'b'.repeat(40);
@@ -6053,6 +6084,8 @@ describe('pickReviewModel — эскалация ревью (#130)', () => {
         logFn: () => {},
         ghJsonFn: () => [],
         shFn: () => '',
+        // #252: fetch внутри phaseDiffFiles теперь мутация через argv.
+        runArgvFn: () => '',
         ...over,
     });
 
@@ -6297,10 +6330,12 @@ describe('предохранитель побочек в тестах: RALPH_NO_
     it('проглоченный try/catch-ом вызов всё равно виден в журнале', () => {
         // Ровно исходный сценарий #138: phaseDiffFiles ловит ошибку git и возвращает
         // null, поэтому одного throw для покраснения теста не хватило бы.
+        // #252: fetch теперь мутация через shArgv — формат записи журнала другой
+        // (file+argv, а не строка через шелл).
         const files = ralph.phaseDiffFiles('feature/m1', { logFn: () => {} });
         expect(files).toBe(null);
         expect(sideEffectAttempts.splice(0)).toEqual([
-            "sh(git fetch origin main 'feature/m1' --quiet)",
+            'shArgv(git fetch origin main feature/m1 --quiet)',
         ]);
     });
 
@@ -6355,38 +6390,48 @@ describe('matchRiskPaths — кривой конфиг не роняет цик�
 describe('phaseDiffFiles — какая именно git-команда уходит в шелл (#132)', () => {
     const { phaseDiffFiles } = ralph;
 
+    // #252: fetch — мутация через runArgvFn, diff --name-only остаётся на shFn.
+    // Общий рекордер (см. mkCmdRecorders на уровне файла) нормализует runArgvFn в ту же
+    // строку `cmds`, чтобы ассерты на порядок команд остались осмысленными.
+    const mkRecorders = mkCmdRecorders;
+
     it('фетчит ДО диффа: решение не принимается по протухшим remote-ссылкам', () => {
-        const cmds = [];
+        const { cmds, shFn, runArgvFn } = mkRecorders();
+        phaseDiffFiles('feature/x', { shFn, runArgvFn, logFn: () => {} });
+        expect(cmds[0]).toContain('git fetch origin main feature/x --quiet');
+        expect(cmds[1]).toContain('diff --name-only');
+        expect(cmds[1]).toContain('origin/main...origin/feature/x');
+    });
+
+    it('#252: fetch уходит раздельными элементами argv (branch не в шелл-строке)', () => {
+        const argvCalls = [];
         phaseDiffFiles('feature/x', {
-            shFn: (c) => {
-                cmds.push(c);
+            shFn: () => '',
+            runArgvFn: (file, args) => {
+                argvCalls.push([file, args]);
                 return '';
             },
             logFn: () => {},
         });
-        expect(cmds[0]).toContain("git fetch origin main 'feature/x'");
-        expect(cmds[1]).toContain('diff --name-only');
-        expect(cmds[1]).toContain('origin/main...origin/feature/x');
+        expect(argvCalls).toContainEqual([
+            'git',
+            ['fetch', 'origin', 'main', 'feature/x', '--quiet'],
+        ]);
     });
 
     it('дифф идёт с --no-renames: перенос файла ИЗ зоны риска виден', () => {
         // Без --no-renames git отдаёт только НОВЫЙ путь, и переезд
         // .github/workflows/deploy.yml → docs/old.yml прошёл бы мимо эскалации.
-        const cmds = [];
-        phaseDiffFiles('feature/x', {
-            shFn: (c) => {
-                cmds.push(c);
-                return '';
-            },
-            logFn: () => {},
-        });
+        const { cmds, shFn, runArgvFn } = mkRecorders();
+        phaseDiffFiles('feature/x', { shFn, runArgvFn, logFn: () => {} });
         expect(cmds[1]).toContain('--no-renames');
     });
 
     it('падение fetch не роняет сдачу — null и предупреждение в лог', () => {
         const logs = [];
         const files = phaseDiffFiles('feature/x', {
-            shFn: () => {
+            shFn: () => '',
+            runArgvFn: () => {
                 throw new Error('fatal: could not read from remote');
             },
             logFn: (m) => logs.push(m),
@@ -6412,6 +6457,7 @@ describe('pickReviewModel — отсутствующая escalated-модель 
             },
             logFn: (m) => logs.push(m),
             shFn: () => '.github/workflows/deploy.yml',
+            runArgvFn: () => '',
             ghJsonFn: () => [],
         });
         expect(model).toBe('claude-opus-4-8');
@@ -6431,6 +6477,7 @@ describe('pickReviewModel — отсутствующая escalated-модель 
                 },
                 logFn: () => {},
                 shFn: () => '',
+                runArgvFn: () => '',
                 ghJsonFn: () => [],
             }),
         ).not.toThrow();
@@ -6491,19 +6538,21 @@ describe('#217: планка модели повторного ревью (revie
 describe('#217: removeBlockedLabel — снятие метки раннером (граница побочки, anti-injection)', () => {
     const { removeBlockedLabel } = ralph;
 
-    it('находит открытый PR ветки и снимает label blocked', () => {
+    it('находит открытый PR ветки и снимает label blocked через argv (#252)', () => {
         const calls = [];
+        const argvCalls = [];
         const shFn = (cmd) => {
             calls.push(cmd);
             if (cmd.includes('gh pr list')) return '42\n';
             return '';
         };
+        const runArgvFn = (file, args) => argvCalls.push([file, args]);
         const logs = [];
-        removeBlockedLabel('feature/m1', { shFn, logFn: (m) => logs.push(m) });
+        removeBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m) => logs.push(m) });
         expect(calls.some((c) => c.includes('gh pr list') && c.includes('feature/m1'))).toBe(true);
-        expect(
-            calls.some((c) => c.includes('gh pr edit') && c.includes('--remove-label blocked')),
-        ).toBe(true);
+        // #252: мутация уходит argv-массивом, не строкой через шелл — номер PR отдельным
+        // элементом, шелл-инъекция/argument-injection закрыты структурно.
+        expect(argvCalls).toContainEqual(['gh', ['pr', 'edit', '42', '--remove-label', 'blocked']]);
         expect(logs.join('\n')).toMatch(/снял label blocked с PR #42/);
     });
 
@@ -6513,14 +6562,17 @@ describe('#217: removeBlockedLabel — снятие метки раннером 
             calls.push(cmd);
             return ''; // gh pr list вернул пусто
         };
-        removeBlockedLabel('feature/m1', { shFn, logFn: () => {} });
-        expect(calls.some((c) => c.includes('gh pr edit'))).toBe(false);
+        const runArgvFn = vi.fn();
+        removeBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: () => {} });
+        expect(runArgvFn).not.toHaveBeenCalled();
     });
 
     it('небезопасное имя ветки → отказ без единого вызова gh (anti-injection, инв. C3/7)', () => {
         const shFn = vi.fn(() => '');
-        removeBlockedLabel('feature/m1; rm -rf /', { shFn, logFn: () => {} });
+        const runArgvFn = vi.fn();
+        removeBlockedLabel('feature/m1; rm -rf /', { shFn, runArgvFn, logFn: () => {} });
         expect(shFn).not.toHaveBeenCalled();
+        expect(runArgvFn).not.toHaveBeenCalled();
     });
 
     it('сбой gh не роняет (fail-open): метка останется, гейт подберёт blocked', () => {
@@ -6532,6 +6584,59 @@ describe('#217: removeBlockedLabel — снятие метки раннером 
             removeBlockedLabel('feature/m1', { shFn, logFn: (m) => logs.push(m) }),
         ).not.toThrow();
         expect(logs.join('\n')).toMatch(/не снял метку/);
+    });
+
+    it('сбой argv-мутации не роняет (fail-open): метка останется, гейт подберёт blocked', () => {
+        const shFn = (cmd) => (cmd.includes('gh pr list') ? '42\n' : '');
+        const runArgvFn = () => {
+            throw new Error('gh edit boom');
+        };
+        const logs = [];
+        expect(() =>
+            removeBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m) => logs.push(m) }),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/не снял метку/);
+    });
+});
+
+describe('#223: addBlockedLabel — возврат метки раннером (граница побочки, anti-injection, #252)', () => {
+    const { addBlockedLabel } = ralph;
+
+    it('находит открытый PR ветки и возвращает label blocked через argv', () => {
+        const shFn = (cmd) => (cmd.includes('gh pr list') ? '42\n' : '');
+        const argvCalls = [];
+        const runArgvFn = (file, args) => argvCalls.push([file, args]);
+        const logs = [];
+        addBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m) => logs.push(m) });
+        expect(argvCalls).toContainEqual(['gh', ['pr', 'edit', '42', '--add-label', 'blocked']]);
+        expect(logs.join('\n')).toMatch(/вернул label blocked на PR #42/);
+    });
+
+    it('открытого PR нет → метку не возвращает', () => {
+        const shFn = () => '';
+        const runArgvFn = vi.fn();
+        addBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: () => {} });
+        expect(runArgvFn).not.toHaveBeenCalled();
+    });
+
+    it('небезопасное имя ветки → отказ без единого вызова gh', () => {
+        const shFn = vi.fn(() => '');
+        const runArgvFn = vi.fn();
+        addBlockedLabel('feature/m1; rm -rf /', { shFn, runArgvFn, logFn: () => {} });
+        expect(shFn).not.toHaveBeenCalled();
+        expect(runArgvFn).not.toHaveBeenCalled();
+    });
+
+    it('сбой argv-мутации не роняет: только лог', () => {
+        const shFn = (cmd) => (cmd.includes('gh pr list') ? '42\n' : '');
+        const runArgvFn = () => {
+            throw new Error('gh edit boom');
+        };
+        const logs = [];
+        expect(() =>
+            addBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m) => logs.push(m) }),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/не вернул метку/);
     });
 });
 
@@ -6577,9 +6682,10 @@ describe('phaseDiffFiles — не-ASCII пути и пустой дифф (#132)
                 cmds.push(c);
                 return c.includes('diff') ? 'src/payload/коллекции/пользователи.ts' : '';
             },
+            runArgvFn: () => '',
             logFn: () => {},
         });
-        expect(cmds[1]).toContain('core.quotePath=false');
+        expect(cmds[0]).toContain('core.quotePath=false');
         // Без флага git отдал бы "src/payload/\320\272..." — мимо любого глоба.
         expect(matchRiskPaths(files, ['src/payload/**'])).toBe(
             'src/payload/коллекции/пользователи.ts',
@@ -6588,7 +6694,11 @@ describe('phaseDiffFiles — не-ASCII пути и пустой дифф (#132)
 
     it('пустой дифф пишет предупреждение — это аномалия, а не «зоны не задеты»', () => {
         const logs = [];
-        const files = phaseDiffFiles('feature/x', { shFn: () => '', logFn: (m) => logs.push(m) });
+        const files = phaseDiffFiles('feature/x', {
+            shFn: () => '',
+            runArgvFn: () => '',
+            logFn: (m) => logs.push(m),
+        });
         expect(files).toEqual([]);
         expect(logs.join('\n')).toMatch(/пуст/i);
     });
@@ -6606,8 +6716,10 @@ describe('phaseDiffFiles — не-ASCII пути и пустой дифф (#132)
 describe('reviewDiffContext — дифф в промпт ревью (#133)', () => {
     const { reviewDiffContext } = ralph;
 
+    // #252: fetch внутри phaseDiffFiles — теперь argv-мутация; noArgv — общий
+    // «успешный» стаб, когда сценарий не проверяет саму фазу fetch.
+    const noArgv = () => '';
     const shOk = (diffBody) => (cmd) => {
-        if (cmd.includes('fetch')) return '';
         if (cmd.includes('--name-only')) return 'src/a.ts\nsrc/b.ts';
         return diffBody;
     };
@@ -6615,6 +6727,7 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
     it('подаёт список файлов и сам дифф', () => {
         const ctx = reviewDiffContext('feature/x', {
             shFn: shOk('diff --git a/src/a.ts b/src/a.ts\n+строка'),
+            runArgvFn: noArgv,
             logFn: () => {},
         });
         expect(ctx).toContain('2 файлов');
@@ -6627,6 +6740,7 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
         const huge = 'x'.repeat(5000);
         const ctx = reviewDiffContext('feature/x', {
             shFn: shOk(huge),
+            runArgvFn: noArgv,
             logFn: () => {},
             limit: 1000,
         });
@@ -6639,6 +6753,7 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
     it('дифф в пределах лимита не помечается обрезанным', () => {
         const ctx = reviewDiffContext('feature/x', {
             shFn: shOk('короткий дифф'),
+            runArgvFn: noArgv,
             logFn: () => {},
             limit: 1000,
         });
@@ -6649,9 +6764,9 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
         const ctx = reviewDiffContext('feature/x', {
             shFn: (cmd) => {
                 if (cmd.includes('--name-only')) return 'src/a.ts';
-                if (cmd.includes('fetch')) return '';
                 throw new Error('git diff умер');
             },
+            runArgvFn: noArgv,
             logFn: () => {},
         });
         expect(ctx).toContain('- src/a.ts');
@@ -6660,7 +6775,8 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
 
     it('дифф недоступен целиком — пустая строка, промпт остаётся валидным', () => {
         const ctx = reviewDiffContext('feature/x', {
-            shFn: () => {
+            shFn: () => '',
+            runArgvFn: () => {
                 throw new Error('нет remote');
             },
             logFn: () => {},
@@ -6668,16 +6784,25 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
         expect(ctx).toBe('');
     });
 
-    it('имя ветки уходит в git заквотированным', () => {
+    it('имя ветки уходит в git заквотированным (диф-чтение) и argv-элементом (fetch)', () => {
         const cmds = [];
+        const argvCalls = [];
         reviewDiffContext('feature/x', {
             shFn: (c) => {
                 cmds.push(c);
                 return c.includes('--name-only') ? 'src/a.ts' : 'дифф';
             },
+            runArgvFn: (file, args) => {
+                argvCalls.push([file, args]);
+                return '';
+            },
             logFn: () => {},
         });
         expect(cmds.some((c) => c.includes(`'origin/main...origin/feature/x'`))).toBe(true);
+        expect(argvCalls).toContainEqual([
+            'git',
+            ['fetch', 'origin', 'main', 'feature/x', '--quiet'],
+        ]);
     });
 });
 
@@ -6823,6 +6948,7 @@ describe('sliceWholeChars — обрезка не рубит суррогатн�
         const diff = 'a'.repeat(9) + '💥' + 'b'.repeat(100);
         const ctx = reviewDiffContext('feature/x', {
             shFn: (c) => (c.includes('--name-only') ? 'src/a.ts' : diff),
+            runArgvFn: () => '',
             logFn: () => {},
             limit: 10,
         });
@@ -6840,43 +6966,57 @@ describe('sliceWholeChars — обрезка не рубит суррогатн�
 describe('refreshRunnerWorktree — перевод дерева раннера на свежий origin/main', () => {
     const { refreshRunnerWorktree, ensureRunnerWorktree } = ralph;
 
+    // #252: fetch/checkout — argv-мутации (runArgvFn), status --porcelain — чтение
+    // (shFn). Оба канала пишут в один общий `cmds` — см. mkCmdRecorders на уровне файла
+    // (общий с phaseDiffFiles, чтобы правка формата записи не расходилась в двух местах).
+    const mkRecorders = mkCmdRecorders;
+
     it('чистое дерево: fetch затем detach на origin/main', () => {
-        const cmds = [];
-        const ok = refreshRunnerWorktree('/tmp/wt', {
-            shFn: (c) => {
-                cmds.push(c);
-                return '';
-            },
-            logFn: () => {},
-        });
+        const { cmds, shFn, runArgvFn } = mkRecorders();
+        const ok = refreshRunnerWorktree('/tmp/wt', { shFn, runArgvFn, logFn: () => {} });
         expect(ok).toBe(true);
         expect(cmds[0]).toContain('status --porcelain');
         expect(cmds[1]).toContain('fetch origin main');
         expect(cmds[2]).toContain('checkout --detach origin/main');
     });
 
+    it('#252: fetch/checkout уходят раздельными элементами argv (worktreePath не в шелл-строке)', () => {
+        const argvCalls = [];
+        refreshRunnerWorktree('/tmp/wt', {
+            shFn: () => '',
+            runArgvFn: (file, args) => argvCalls.push([file, args]),
+            logFn: () => {},
+        });
+        expect(argvCalls).toContainEqual([
+            'git',
+            ['-C', '/tmp/wt', 'fetch', 'origin', 'main', '--quiet'],
+        ]);
+        expect(argvCalls).toContainEqual([
+            'git',
+            ['-C', '/tmp/wt', 'checkout', '--detach', 'origin/main', '--quiet'],
+        ]);
+    });
+
     // Незакоммиченная работа прошлой сессии дороже свежести: checkout её снесёт.
     it('грязное дерево не трогается, предупреждение в лог', () => {
-        const cmds = [];
         const logs = [];
+        const argvCalls = [];
         const ok = refreshRunnerWorktree('/tmp/wt', {
-            shFn: (c) => {
-                cmds.push(c);
-                return c.includes('status') ? ' M src/a.ts' : '';
-            },
+            shFn: (c) => (c.includes('status') ? ' M src/a.ts' : ''),
+            runArgvFn: (file, args) => argvCalls.push([file, args]),
             logFn: (m) => logs.push(m),
         });
         expect(ok).toBe(false);
-        expect(cmds.some((c) => c.includes('checkout'))).toBe(false);
+        expect(argvCalls).toEqual([]);
         expect(logs.join('\n')).toMatch(/незакоммиченные/i);
     });
 
     it('сбой git не роняет запуск — false и запись в лог', () => {
         const logs = [];
         const ok = refreshRunnerWorktree('/tmp/wt', {
-            shFn: (c) => {
-                if (c.includes('fetch')) throw new Error('нет сети');
-                return '';
+            shFn: () => '',
+            runArgvFn: () => {
+                throw new Error('нет сети');
             },
             logFn: (m) => logs.push(m),
         });
@@ -6884,16 +7024,12 @@ describe('refreshRunnerWorktree — перевод дерева раннера �
         expect(logs.join('\n')).toMatch(/обновить worktree/i);
     });
 
-    it('путь worktree уходит в git заквотированным', () => {
-        const cmds = [];
-        refreshRunnerWorktree('/tmp/wt with space', {
-            shFn: (c) => {
-                cmds.push(c);
-                return '';
-            },
-            logFn: () => {},
-        });
-        expect(cmds.every((c) => c.includes(`'/tmp/wt with space'`))).toBe(true);
+    it('путь worktree уходит в status --porcelain заквотированным, в argv-мутациях — отдельным элементом', () => {
+        const { cmds, shFn, runArgvFn } = mkRecorders();
+        refreshRunnerWorktree('/tmp/wt with space', { shFn, runArgvFn, logFn: () => {} });
+        expect(cmds[0]).toContain(`'/tmp/wt with space'`);
+        expect(cmds[1]).toContain('-C /tmp/wt with space fetch');
+        expect(cmds[2]).toContain('-C /tmp/wt with space checkout');
     });
 
     it('ensureRunnerWorktree зовёт обновление при подхвате существующего дерева', () => {
@@ -6916,18 +7052,126 @@ describe('refreshRunnerWorktree — перевод дерева раннера �
 // краснеет на сомнительных данных — это его тесты. Здесь проверяется ровно обёртка:
 // она обязана быть best-effort, потому что косметика доски не имеет права ронять уже
 // смердженную фазу.
+describe('closeMilestoneByTitle — закрытие milestone сразу после мерджа фазы (#252: argv)', () => {
+    const { closeMilestoneByTitle } = ralph;
+
+    it('находит открытый milestone по title и закрывает через argv', () => {
+        const argvCalls = [];
+        const logs = [];
+        closeMilestoneByTitle('Фаза X', {
+            ghJsonFn: () => [{ number: 7, title: 'Фаза X' }],
+            runArgvFn: (file, args) => argvCalls.push([file, args]),
+            logFn: (m) => logs.push(m),
+        });
+        expect(argvCalls).toContainEqual([
+            'gh',
+            ['api', '-X', 'PATCH', 'repos/{owner}/{repo}/milestones/7', '-f', 'state=closed'],
+        ]);
+        expect(logs.join('\n')).toMatch(/Milestone закрыт: "Фаза X"/);
+    });
+
+    it('milestone не найден среди открытых → не мутирует', () => {
+        const runArgvFn = vi.fn();
+        closeMilestoneByTitle('Фаза Y', {
+            ghJsonFn: () => [{ number: 7, title: 'Фаза X' }],
+            runArgvFn,
+            logFn: () => {},
+        });
+        expect(runArgvFn).not.toHaveBeenCalled();
+    });
+
+    it('сбой чтения/мутации — fail-open, только лог', () => {
+        const logs = [];
+        expect(() =>
+            closeMilestoneByTitle('Фаза X', {
+                ghJsonFn: () => {
+                    throw new Error('gh boom');
+                },
+                logFn: (m) => logs.push(m),
+            }),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/свип подберёт/);
+    });
+});
+
+describe('closeCompletedMilestones — свип хвостов прошлых фаз (#252: argv)', () => {
+    const { closeCompletedMilestones } = ralph;
+
+    it('milestone с закрытыми issues и смерджённым PR фазы — закрывает через argv', () => {
+        const argvCalls = [];
+        const logs = [];
+        closeCompletedMilestones({
+            // Milestone выпал из config.phases (старая фаза) — совпадение по
+            // заголовку PR "feat: <milestone>", как его создаёт сам раннер.
+            cfg: { phases: [] },
+            ghJsonFn: (cmd) =>
+                cmd.includes('milestones')
+                    ? [{ number: 9, title: 'Фаза X', open_issues: 0, closed_issues: 3 }]
+                    : [{ title: 'feat: Фаза X', headRefName: 'feature/x' }],
+            runArgvFn: (file, args) => argvCalls.push([file, args]),
+            logFn: (m) => logs.push(m),
+        });
+        expect(argvCalls).toContainEqual([
+            'gh',
+            ['api', '-X', 'PATCH', 'repos/{owner}/{repo}/milestones/9', '-f', 'state=closed'],
+        ]);
+        expect(logs.join('\n')).toMatch(/Milestone закрыт: "Фаза X"/);
+    });
+
+    it('milestone с открытыми issues — пропускается, без мутации', () => {
+        const runArgvFn = vi.fn();
+        closeCompletedMilestones({
+            ghJsonFn: (cmd) =>
+                cmd.includes('milestones')
+                    ? [{ number: 9, title: 'Фаза X', open_issues: 2, closed_issues: 1 }]
+                    : [],
+            runArgvFn,
+            logFn: () => {},
+        });
+        expect(runArgvFn).not.toHaveBeenCalled();
+    });
+
+    it('нет смерджённого PR фазы — пропускается, без мутации', () => {
+        const runArgvFn = vi.fn();
+        closeCompletedMilestones({
+            cfg: { phases: [] },
+            ghJsonFn: (cmd) =>
+                cmd.includes('milestones')
+                    ? [{ number: 9, title: 'Фаза X', open_issues: 0, closed_issues: 3 }]
+                    : [],
+            runArgvFn,
+            logFn: () => {},
+        });
+        expect(runArgvFn).not.toHaveBeenCalled();
+    });
+
+    it('сбой чтения данных для свипа — fail-open, только лог', () => {
+        const logs = [];
+        expect(() =>
+            closeCompletedMilestones({
+                ghJsonFn: () => {
+                    throw new Error('gh boom');
+                },
+                logFn: (m) => logs.push(m),
+            }),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/свипа milestones/);
+    });
+});
+
 describe('syncProjectBoard', () => {
-    it('зовёт скрипт синка и логирует последнюю строку его вывода', () => {
-        const cmds = [];
+    // #252: мутация — через argv (runArgvFn), не строкой через шелл.
+    it('зовёт скрипт синка через argv и логирует последнюю строку его вывода', () => {
+        const argvCalls = [];
         const logs = [];
         ralph.syncProjectBoard(
-            (c) => {
-                cmds.push(c);
+            (file, args) => {
+                argvCalls.push([file, args]);
                 return 'шум\n✅ project-sync: доска в порядке\n';
             },
             (m) => logs.push(m),
         );
-        expect(cmds).toEqual(['node scripts/project-sync.mjs']);
+        expect(argvCalls).toEqual([['node', ['scripts/project-sync.mjs']]]);
         expect(logs[0]).toContain('доска в порядке');
     });
 
@@ -6946,60 +7190,76 @@ describe('syncProjectBoard', () => {
     });
 });
 
-describe('recordReviewFindings', () => {
+describe('recordReviewFindings (#252: argv)', () => {
     const phase = { milestone: 'Наблюдаемость ralph · Фаза 6', branch: 'feature/x' };
 
-    it('зовёт журнал-скрипт с номером PR и milestone, логирует вывод', () => {
-        const cmds = [];
+    it('зовёт журнал-скрипт с номером PR и milestone через argv, логирует вывод', () => {
+        const argvCalls = [];
         const logs = [];
         ralph.recordReviewFindings(
             phase,
             235,
             [],
-            (c) => {
-                cmds.push(c);
+            (file, args) => {
+                argvCalls.push([file, args]);
                 return '{"pr":235}\n';
             },
             (m) => logs.push(m),
         );
-        expect(cmds).toEqual([
-            `node scripts/review-findings-journal.mjs '235' 'Наблюдаемость ralph · Фаза 6'`,
+        expect(argvCalls).toEqual([
+            [
+                'node',
+                ['scripts/review-findings-journal.mjs', '235', 'Наблюдаемость ralph · Фаза 6'],
+            ],
         ]);
         expect(logs[0]).toContain('{"pr":235}');
     });
 
-    it('#237 прокидывает authorAllowlist позиционными аргументами (через shq)', () => {
-        const cmds = [];
+    it('#237 прокидывает authorAllowlist отдельными элементами argv', () => {
+        const argvCalls = [];
         ralph.recordReviewFindings(
             phase,
             235,
             ['Pelmenya', 'other-user'],
-            (c) => {
-                cmds.push(c);
+            (file, args) => {
+                argvCalls.push([file, args]);
                 return '';
             },
             () => {},
         );
-        expect(cmds[0]).toBe(
-            `node scripts/review-findings-journal.mjs '235' 'Наблюдаемость ralph · Фаза 6' 'Pelmenya' 'other-user'`,
-        );
+        expect(argvCalls[0]).toEqual([
+            'node',
+            [
+                'scripts/review-findings-journal.mjs',
+                '235',
+                'Наблюдаемость ralph · Фаза 6',
+                'Pelmenya',
+                'other-user',
+            ],
+        ]);
     });
 
     it('#237 пустые/нестроковые авторы в allowlist отфильтрованы', () => {
-        const cmds = [];
+        const argvCalls = [];
         ralph.recordReviewFindings(
             phase,
             235,
             ['Pelmenya', '', '  ', null, 7],
-            (c) => {
-                cmds.push(c);
+            (file, args) => {
+                argvCalls.push([file, args]);
                 return '';
             },
             () => {},
         );
-        expect(cmds[0]).toBe(
-            `node scripts/review-findings-journal.mjs '235' 'Наблюдаемость ralph · Фаза 6' 'Pelmenya'`,
-        );
+        expect(argvCalls[0]).toEqual([
+            'node',
+            [
+                'scripts/review-findings-journal.mjs',
+                '235',
+                'Наблюдаемость ralph · Фаза 6',
+                'Pelmenya',
+            ],
+        ]);
     });
 
     it('не бросает, когда запись в журнал упала — фаза уже смерджена, ронять её нельзя', () => {
@@ -7020,16 +7280,16 @@ describe('recordReviewFindings', () => {
     });
 
     it('номер PR неизвестен (не положительное целое) — лог и выход, скрипт не зовётся', () => {
-        const cmds = [];
+        const argvCalls = [];
         const logs = [];
         ralph.recordReviewFindings(
             phase,
             null,
             [],
-            (c) => cmds.push(c),
+            (file, args) => argvCalls.push([file, args]),
             (m) => logs.push(m),
         );
-        expect(cmds).toEqual([]);
+        expect(argvCalls).toEqual([]);
         expect(logs[0]).toContain('PR неизвестен');
     });
 });

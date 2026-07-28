@@ -71,7 +71,6 @@
 
 const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
-const crypto = require('node:crypto');
 const path = require('node:path');
 
 // #232: ядро подключает TS-модули (ralph-util.ts, side-effect-guard.ts и др.) напрямую,
@@ -201,6 +200,44 @@ function fail(msg) {
 // #232: сама shq (и positiveIntOrDefault/sleep ниже) вынесена в общий util-модуль —
 // копия жила и здесь, и в telegram-notifier.js, правка в одной не доезжала до другой.
 const { shq, positiveIntOrDefault, sleep } = require('./ralph-util.ts');
+
+// #359 (трек «Фреймворк ralph», фаза 2): работа с тремя файлами раннера —
+// ralph.state.json (state фазы), ralph.lock (файл-лок #176/#177/#178) и .deps-lock.sha
+// (маркер npm ci #SiaUX) — вынесена в state-lock.ts. Фабрика захватывает контекст ralph.js
+// один раз (пути, DRY, ленивый config, общий предохранитель #138, process-примитивы
+// processAlive/cmdlineIncludes, которые остаются здесь — их делит и монитор). Возвращённые
+// функции сохраняют DI: сценарные (lock-scenarios.test.js) и юнит-тесты (ralph.test.js)
+// зовут их через ре-экспорт из module.exports как раньше. loadJson/log/fail/guardSideEffect/
+// processAlive/cmdlineIncludes — function-объявления (hoisted), доступны здесь до их текста.
+const { createStateLock } = require('./state-lock.ts');
+const {
+    defaultState,
+    loadState,
+    saveState,
+    lockHash,
+    writeLockMarker,
+    syncDepsIfLockChanged,
+    isRalphProcess,
+    lockAlive,
+    writeLock,
+    removeLock,
+    releaseLockIfOurs,
+    acquireLock,
+} = createStateLock({
+    statePath: STATE_PATH,
+    lockPath: LOCK_PATH,
+    lockMarkerPath: LOCK_MARKER_PATH,
+    ralphPath: RALPH_PATH,
+    dry: DRY,
+    getConfig: () => config,
+    log,
+    fail,
+    guardSideEffect,
+    loadJson,
+    processAlive,
+    cmdlineIncludes,
+    buildSanitizedGateEnv,
+});
 
 // env (#189): по умолчанию дочерний процесс наследует полный env раннера — так гонятся
 // git-команды хореографии гейта, которым нужны секреты (GH_TOKEN для fetch). Но команды
@@ -398,121 +435,20 @@ function resolveProfile(raw, name, failFn = fail) {
     return { ...merged, profileName: wanted };
 }
 
-function saveState(state) {
-    // C1: --dry-run обязан быть строго read-only. Guard ЗДЕСЬ, в единственной точке
-    // записи, а не у каждого вызова — невозможно забыть обернуть новый вызов в !DRY
-    // (именно так dry-run и начал когда-то двигать phaseIndex).
-    if (DRY) return;
-    // Тот же guard, что у sh(): забытый saveStateFn в тесте перезаписал бы state
-    // ЖИВОГО прогона — гейт мерджа гоняет npm run test прямо в worktree раннера.
-    guardSideEffect(`saveState(${STATE_PATH})`);
-    fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
-}
+// saveState/loadState/defaultState вынесены в state-lock.ts (#359) — см. createStateLock
+// выше. Читаются как const из деструктуризации.
 
-// ── Детекция API-лимита (идея из frankbria/ralph-claude-code) ────────────────
-// Claude CLI при упирании в 5-часовое окно / usage limit пишет об этом в вывод и
-// завершается с ошибкой. Без обработки AFK-итерация фейлится, breaker сжигает
-// оставшиеся попытки об ту же стену и ночной прогон умирает. Вместо этого:
-// распознать маркер → распарсить время сброса → доспать до него → повторить.
-
-// Боевой пример (2026-07-19): «You've hit your session limit · resets 1:20pm» —
-// первая версия ждала только «usage limit» и промахнулась; ловим шире.
-const API_LIMIT_RE =
-    /(usage limit|session limit|rate.?limit|5-hour limit|hit your .{0,20}limit|limit (?:reached|exceeded)|limit will reset|resets? at)/i;
-
-// «resets 3am» / «reset at 7:30pm» → мс до сброса (локальное время; прошедшее
-// время суток = завтра). Не распарсилось → null, вызывающий возьмёт fallback.
-function parseResetWaitMs(text) {
-    const m = /reset[s]?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(text);
-    if (!m) return null;
-    let h = parseInt(m[1], 10);
-    const min = m[2] ? parseInt(m[2], 10) : 0;
-    const ap = m[3] ? m[3].toLowerCase() : null;
-    if (ap === 'pm' && h < 12) h += 12;
-    if (ap === 'am' && h === 12) h = 0;
-    if (h > 23 || min > 59) return null;
-    const now = new Date();
-    const target = new Date(now);
-    target.setHours(h, min, 0, 0);
-    if (target <= now) target.setDate(target.getDate() + 1);
-    return target.getTime() - now.getTime();
-}
-
-// ── Health-check Shadowsocks-туннеля (#92) ───────────────────────────────────
-// Прод-режим: VDS в РФ ходит к Anthropic через Shadowsocks → privoxy (HTTPS_PROXY).
-// Если туннель ночью отвалится, claude-вызов упрётся в Cloudflare-403/таймаут, а
-// ralph зря сожжёт итерацию (а то и окно лимита) об мёртвый канал. Поэтому ПЕРЕД
-// каждой claude-сессией сверяем фактический egress-IP (через прокси) с ожидаемым
-// (IP Outline). Красный → перезапуск ss-local/privoxy → повторная сверка → если и
-// после этого красный, итерация не стартует (fail-closed) + пуш человеку.
-//
-// Юниты ss-local/privoxy уже с Restart=always (provision.sh) — это подстраховка
-// сверху: ловит и «сервис жив, но канал деградировал» (egress не тот), чего
-// systemd не видит.
-
-// Включён ли health-check. Локально/в dev туннеля нет — по умолчанию ВЫКЛ, чтобы не
-// ломать обычный запуск. Включается прод-профилем (config.tunnelCheck.enabled) или
-// env-флагом RALPH_TUNNEL_CHECK=1 (мост до профилей Фазы 2; ставится в ralph.env).
-function tunnelCheckEnabled(cfg) {
-    return process.env.RALPH_TUNNEL_CHECK === '1' || !!(cfg.tunnelCheck && cfg.tunnelCheck.enabled);
-}
-
-// Ожидаемый egress — публичный IP прокси-сервера (Франкфурт). Секрет-ish → из env,
-// НЕ из конфига в гите. SS_SERVER уже есть в ralph.env (его же сверяет provision.sh).
-// trim() (ревью #98): ralph.env часто редактируют/копируют с Windows-машины (CRLF) —
-// без обрезки хвостовой \r/пробел comparison с уже-трим'нутым egress НИКОГДА не
-// совпадёт, даже когда канал реально здоров, и health-check будет вечно красным.
-function expectedEgress() {
-    return (process.env.RALPH_EXPECTED_EGRESS || process.env.SS_SERVER || '').trim();
-}
-
-// Чистая функция (ядро проверки, юнит-тест «мок curl: совпал/не совпал IP»): туннель
-// здоров ⟺ фактический egress непуст И точно равен ожидаемому. Пустой ожидаемый или
-// пустой egress (ошибка curl) — НЕ здоров.
-function tunnelHealthy(egress, expected) {
-    return !!expected && egress === expected;
-}
-
-// Фактический egress-IP через прокси. Аргументы curl — МАССИВ через execFileSync
-// (ревью #98), не строка через sh()/execSync: тот же anti-RCE паттерн, которым #67
-// увёл spawnClaude от shell-интерполяции — proxy/ipUrl не проходят через шелл, так
-// спецсимволы в них не раскрываются. Сегодня оба значения из доверенных источников
-// (config.json в гите / env, который задаёт сам оператор VDS), но это тот класс
-// защиты, что ничего не стоит держать по умолчанию. -4 форсирует IPv4: ожидаемый
-// egress (SS_SERVER) — IPv4 Outline-сервера, а api.ipify.org на dual-stack хосте
-// без -4 мог бы отдать IPv6 и увести сравнение в ложный красный.
-// Пустая строка при любой ошибке (таймаут, мёртвый прокси) — вызывающий трактует
-// пустоту как «не здоров». execFn инжектируется для тестов; в проде — execFileSync.
-function probeEgress(cfg, execFn = execFileSync) {
-    const tc = cfg.tunnelCheck || {};
-    const proxy =
-        process.env.HTTPS_PROXY || process.env.HTTP_PROXY || tc.proxyUrl || 'http://127.0.0.1:8118';
-    const ipUrl = tc.ipCheckUrl || 'https://api.ipify.org';
-    try {
-        return execFn('curl', ['-4', '-s', '--max-time', '15', '-x', proxy, ipUrl], {
-            encoding: 'utf-8',
-        }).trim();
-    } catch {
-        return '';
-    }
-}
-
-// Перезапуск сервисов туннеля. restartCmd из конфига — простая команда без кавычек/
-// пайпов (бинарь + имена systemd-юнитов), поэтому безопасно разбить по пробелам и
-// выполнить через execFileSync (тот же anti-RCE паттерн, что и probeEgress выше),
-// а не execSync(cmd) строкой через шелл. Fail-open: сбой самого рестарта лишь
-// логируем — финальная повторная сверка egress всё равно решит, здоров канал или нет.
-function restartTunnel(cfg, execFn = execFileSync) {
-    const cmd =
-        (cfg.tunnelCheck && cfg.tunnelCheck.restartCmd) ||
-        'systemctl restart shadowsocks-libev-local@frankfurt privoxy';
-    const [bin, ...cmdArgs] = cmd.trim().split(/\s+/);
-    try {
-        execFn(bin, cmdArgs);
-    } catch (e) {
-        log(`⚠ Перезапуск сервисов туннеля упал: ${String(e.message).split('\n')[0]}`);
-    }
-}
+// #361 (трек «Фреймворк ralph», фаза 2): парсинг/ожидание API-лимита (идея из
+// frankbria/ralph-claude-code) — чистые преобразования без побочек — вынесены в
+// api-limit.ts тем же приёмом, что ralph-util.ts (#232). Сам цикл ожидания (sleep +
+// повтор claude, ниже в runClaude) остаётся здесь — он не чистый.
+const {
+    API_LIMIT_RE,
+    parseResetWaitMs,
+    minutesOrDefault,
+    apiLimitWaitMs,
+    apiLimitMessage,
+} = require('./api-limit.ts');
 
 // Пуш-событие человеку (#86) — единая точка для всех 4 событий прод-режима
 // (release-стоп #87, blocked отдан человеку, circuit breaker, rate-limit) и
@@ -538,343 +474,60 @@ function pushEvent(
     return sendFn(msg, { logFn, execFn });
 }
 
-// Оркестровка health-check. true = туннель здоров ИЛИ проверка выключена (можно
-// стартовать сессию); false = красный даже после перезапуска (стартовать нельзя).
-// Зависимости инжектируются (probe/restart/sleepFn/push) — для детерминированных
-// юнит-тестов без реального curl/systemctl/сна.
-function ensureTunnel(
-    cfg,
-    { probe = probeEgress, restart = restartTunnel, sleepFn = sleep, push = pushEvent } = {},
-) {
-    if (!tunnelCheckEnabled(cfg)) return true; // dev/локально — туннеля нет
-    const expected = expectedEgress();
-    if (!expected) {
-        // Проверка включена, но не задан ожидаемый egress — сверять не с чем. Fail-open
-        // с предупреждением: не блокируем прогон из-за неполной конфигурации канала.
-        log(
-            '⚠ Health-check туннеля включён, но не задан ожидаемый egress (RALPH_EXPECTED_EGRESS / SS_SERVER) — проверка пропущена.',
-        );
-        return true;
-    }
-    let egress = probe(cfg);
-    if (tunnelHealthy(egress, expected)) return true;
-    log(
-        `⚠ Туннель красный: egress='${egress || '—'}', ждали '${expected}'. Перезапуск ss-local/privoxy...`,
-    );
-    restart(cfg);
-    sleepFn((cfg.tunnelCheck && cfg.tunnelCheck.restartWaitMs) || 3000);
-    egress = probe(cfg);
-    if (tunnelHealthy(egress, expected)) {
-        log('✅ Туннель восстановлен после перезапуска сервисов.');
-        return true;
-    }
-    log(
-        `⛔ Туннель не восстановился (egress='${egress || '—'}', ждали '${expected}') — claude-сессия не стартует.`,
-    );
-    push(
-        `Ralph: Shadowsocks-туннель на VDS красный (egress='${egress || '—'}' != '${expected}') и не поднялся после перезапуска. Loop остановлен — почини канал.`,
-        cfg,
-    );
-    return false;
-}
+// #361 (трек «Фреймворк ralph», фаза 2): health-check Shadowsocks-туннеля (#92) —
+// tunnelCheckEnabled/expectedEgress/tunnelHealthy/probeEgress/restartTunnel/ensureTunnel —
+// вынесены в tunnel-check.ts тем же приёмом фабрики, что worktree.ts/state-lock.ts (#359/
+// #360): функции не чистые (curl/systemctl/sleep/pushEvent), поэтому фабрика захватывает
+// контекст ralph.js (log, sleep, pushEvent — общая точка пуш-событий, не только туннеля)
+// один раз, а возвращённые функции сохраняют показательную DI (probe/restart/sleepFn/push
+// параметром) — тесты (ralph.test.js) зовут их через тот же ре-экспорт из module.exports.
+// Поведение не меняется: прод-режим сверяет фактический egress (через прокси) с ожидаемым
+// (IP Outline) перед каждой claude-сессией, красный → рестарт ss-local/privoxy → повторная
+// сверка → fail-closed стоп + пуш, если канал не поднялся.
+const { createTunnelCheck } = require('./tunnel-check.ts');
+const {
+    tunnelCheckEnabled,
+    expectedEgress,
+    tunnelHealthy,
+    probeEgress,
+    restartTunnel,
+    ensureTunnel,
+} = createTunnelCheck({ log, sleep, pushEvent, guardSideEffect });
 
-// ── Изоляция раннера в git worktree (#76) ────────────────────────────────────
-// Раннер работает в ВЫДЕЛЕННОМ дереве, соседнем с рабочим деревом человека: без
-// этого git-хореография гейта (checkout ветки фазы/main) утаскивала бы за собой
-// и дерево человека — правки/коммиты вручную посреди AFK-прогона рвали ensureClean
-// (см. docs/ralph-prod-mode/prd.md, feedback-ralph-shared-worktree). Путь — СОСЕД
-// репозитория (`../pixel-tanks-ralph`), не поддиректория внутри него: иначе он
-// либо игнорится .gitignore-правилами родителя, либо норовит закоммититься как
-// вложенный git-репозиторий.
+// #360 (трек «Фреймворк ralph», фаза 2): изоляция раннера в выделенный git worktree
+// (#76) — резолв пути (сосед репозитория `../pixel-tanks-ralph`), парсинг `git worktree
+// list`, DRY-читаемость (#SiaT3), обновление на свежий origin/main (#252) и идемпотентное
+// создание/переиспользование дерева с `npm ci` — вынесены в worktree.ts. Фабрика
+// захватывает контекст ralph.js (sh/shArgv/shq/log/fail, санированный env для npm ci,
+// маркер lock-хэша из state-lock.ts) один раз; возвращённые функции сохраняют DI и
+// читаются здесь как const из деструктуризации — тесты (ralph.test.js,
+// lock-scenarios.test.js) зовут их через тот же ре-экспорт из module.exports, что раньше.
 const DEFAULT_WORKTREE_DIRNAME = 'pixel-tanks-ralph';
 
-// cfg.runnerWorktreePath (явный конфиг) важнее RALPH_WORKTREE_PATH (env) — молчаливая
-// перебивка явной настройки переменной окружения была бы тем же тихим сдвигом режима,
-// от которого fail-closed уже защищает профили (см. resolveProfile). Both отсутствуют →
-// дефолт-сосед. repoRoot — параметр (не process.cwd() внутри resolve), чтобы функция
-// оставалась чистой и тестируемой без реального cwd.
-function resolveWorktreePath(cfg = {}, repoRoot = process.cwd()) {
-    const override = cfg.runnerWorktreePath || process.env.RALPH_WORKTREE_PATH;
-    return override
-        ? path.resolve(repoRoot, override)
-        : path.resolve(repoRoot, '..', DEFAULT_WORKTREE_DIRNAME);
-}
+const { createWorktreeManager } = require('./worktree.ts');
+const {
+    resolveWorktreePath,
+    parseWorktreeList,
+    runnerWorktreeReady,
+    refreshRunnerWorktree,
+    ensureRunnerWorktree,
+} = createWorktreeManager({
+    defaultWorktreeDirname: DEFAULT_WORKTREE_DIRNAME,
+    sh,
+    shArgv,
+    shq,
+    log,
+    fail,
+    guardSideEffect,
+    buildSanitizedGateEnv,
+    writeLockMarker,
+});
 
-// `git worktree list --porcelain`: блоки разделены пустой строкой, первая строка
-// блока — "worktree <абсолютный путь>". Достаточно собрать все такие строки.
-function parseWorktreeList(raw) {
-    return raw
-        .split('\n')
-        .filter((l) => l.startsWith('worktree '))
-        .map((l) => l.slice('worktree '.length).trim());
-}
+// lockHash/writeLockMarker/syncDepsIfLockChanged (маркер .deps-lock.sha, #SiaUX) вынесены
+// в state-lock.ts (#359) — см. createStateLock выше. Читаются как const из деструктуризации.
 
-// Дерево раннера УЖЕ поднято (зарегистрировано И папка на месте)? Для DRY: только тогда
-// dry-run переезжает читать state/лог оттуда — ничего не создавая и не чиня (#SiaT3).
-function runnerWorktreeReady(worktreePath, { shFn = sh, existsFn = fs.existsSync } = {}) {
-    let list = '';
-    try {
-        list = shFn('git worktree list --porcelain');
-    } catch {
-        return false;
-    }
-    return parseWorktreeList(list).includes(worktreePath) && existsFn(worktreePath);
-}
-
-/**
- * Гарантирует существование выделенного worktree раннера. Идемпотентно: уже
- * зарегистрированный worktree переиспользуется без побочных эффектов (M2-стиль —
- * не пересоздаём то, что уже есть).
- *
- * Fail-closed (тот же принцип, что во всём файле — C1/M2): если путь ЗАНЯТ чем-то,
- * что не зарегистрировано как worktree этого репозитория (чужая папка, мусор от
- * ручного `rm -rf` вместо `git worktree remove`), НЕ трогаем и НЕ угадываем —
- * останавливаем раннер, разбор за человеком.
- *
- * Свежий worktree создаётся `--detach` (детач, не ветка): на этом шаге раннер ещё
- * не знает, какая ветка фазы понадобится, а `main` почти всегда уже занят деревом
- * человека — git не даёт одну и ту же ветку в двух worktree одновременно.
- * Ветку фазы дальше занимают кодер-сессии в этом дереве; git-хелперы гейта (#77)
- * работают строго детачем (PR-голова / origin/main), именованных веток не занимая.
- *
- * `npm ci` сразу после создания: `git worktree add` линкует только git-отслеживаемые
- * файлы, `node_modules` (в .gitignore) в новом дереве нет — без установки первый же
- * чек гейта упал бы на отсутствующих зависимостях.
- */
-// Обновление УЖЕ существующего worktree на свежий origin/main.
-//
-// Без этого раннер подхватывал дерево в том состоянии, в каком его оставил прошлый
-// прогон, — на коммите, который мог устареть на несколько мерджей. Симптом
-// неочевидный: раннер работает и выглядит здоровым, но кодер-сессия внутри читает
-// СТАРЫЕ .claude/ralph/ralph.md и ralph.js, то есть работает по отменённым правилам.
-// Ручной шаг «обновить перед запуском» держать в голове нельзя — забудется молча.
-//
-// Грязное дерево не трогаем: там может лежать незакоммиченная работа прошлой
-// сессии, и checkout её снесёт. Молча пропустить тоже нельзя — пишем в лог, а
-// остановит цикл дальше ensureClean с внятным сообщением (fail-closed уже есть).
-function refreshRunnerWorktree(worktreePath, { shFn = sh, logFn = log } = {}) {
-    let dirty = '';
-    try {
-        dirty = shFn(`git -C ${shq(worktreePath)} status --porcelain`);
-    } catch (e) {
-        logFn(`⚠ Не смог проверить чистоту worktree раннера: ${e.message} — обновление пропущено.`);
-        return false;
-    }
-    if (dirty) {
-        logFn(
-            `⚠ В worktree раннера есть незакоммиченные правки — на свежий origin/main НЕ перевожу ` +
-                `(снесло бы работу). Разбери руками: ${worktreePath}`,
-        );
-        return false;
-    }
-    try {
-        shFn(`git -C ${shq(worktreePath)} fetch origin main --quiet`);
-        shFn(`git -C ${shq(worktreePath)} checkout --detach origin/main --quiet`);
-    } catch (e) {
-        logFn(`⚠ Не смог обновить worktree раннера на origin/main: ${e.message}`);
-        return false;
-    }
-    logFn('🌳 Worktree раннера переведён на свежий origin/main.');
-    return true;
-}
-
-function ensureRunnerWorktree(
-    worktreePath,
-    {
-        shFn = sh,
-        logFn = log,
-        failFn = fail,
-        existsFn = fs.existsSync,
-        refreshFn = refreshRunnerWorktree,
-        // Путь в argv (execFile без shell), а не в шелл-строку: пробел/спецсимвол из
-        // cfg.runnerWorktreePath/RALPH_WORKTREE_PATH не разваливает команду на аргументы
-        // и не доезжает до шелла (та же гигиена, что spawnClaude/probeEgress) (#SiaUP).
-        addFn = (p) =>
-            execFileSync('git', ['worktree', 'add', '--detach', p, 'origin/main'], {
-                stdio: 'inherit',
-            }),
-        // env (#189): `npm ci` исполняет lifecycle-скрипты зависимостей — код с чужих
-        // слов. Санируем окружение по allowlist, чтобы скомпрометированная зависимость
-        // не нашла в env секретов петли (GH_TOKEN, CLAUDE_*, RALPH_TG_*). buildGateEnvFn —
-        // DI для тестов; в проде строит env из gate-env-allowlist.json. Санированный env
-        // приходит в installFn аргументом — так подмена видна в тестах через spy.
-        buildGateEnvFn = buildSanitizedGateEnv,
-        installFn = (dir, env) => execSync('npm ci', { cwd: dir, stdio: 'inherit', env }),
-        markFn = writeLockMarker,
-        repoRoot = process.cwd(),
-    } = {},
-) {
-    // #SiaUT: путь ВНУТРИ репозитория — ошибка (дефолт-сосед при запуске не из корня,
-    // или кривой cfg/env-override): вложенное дерево игнорится .gitignore родителя либо
-    // норовит закоммититься как sub-repo. Останавливаемся до любых git-побочек.
-    if (worktreePath === repoRoot || worktreePath.startsWith(repoRoot + path.sep)) {
-        return failFn(
-            `Путь worktree раннера ${worktreePath} — внутри репозитория ${repoRoot}. ` +
-                `Он должен быть СОСЕДОМ репозитория (дефолт ../pixel-tanks-ralph); ` +
-                `поправь runnerWorktreePath/RALPH_WORKTREE_PATH и перезапусти.`,
-        );
-    }
-    let list = '';
-    try {
-        list = shFn('git worktree list --porcelain');
-    } catch (e) {
-        return failFn(`git worktree list упал: ${e.message}`);
-    }
-    if (parseWorktreeList(list).includes(worktreePath)) {
-        // #SiaUG: обратный к следующей ветке случай — путь ЗАРЕГИСТРИРОВАН, но папки нет
-        // (итог ручного `rm -rf` без `git worktree remove`: list отдаёт путь до prune).
-        // Без этой проверки main() свалился бы на process.chdir с голым ENOENT. Здесь
-        // prune как раз к месту — он чистит регистрации без папок.
-        if (!existsFn(worktreePath)) {
-            return failFn(
-                `${worktreePath} зарегистрирован как git worktree, но папки на диске нет — ` +
-                    `похоже, ручной rm -rf вместо "git worktree remove". Почисти реестр: ` +
-                    `"git worktree prune" — и перезапусти.`,
-            );
-        }
-        logFn(`🌳 Worktree раннера уже поднят: ${worktreePath}`);
-        refreshFn(worktreePath, { shFn, logFn });
-        return worktreePath;
-    }
-    if (existsFn(worktreePath)) {
-        // #SiaUJ: здесь папка ЕСТЬ, но не зарегистрирована — prune тут не поможет (он
-        // чистит противоположное). Fail-closed: путь занят посторонней папкой.
-        return failFn(
-            `${worktreePath} существует, но не зарегистрирован как git worktree этого репозитория — ` +
-                `путь занят посторонней папкой. Перенеси или удали её и перезапусти.`,
-        );
-    }
-    logFn(`🌳 Создаю выделенный worktree раннера: ${worktreePath}`);
-    // База — свежий origin/main, а не текущий HEAD дерева человека (#499): тот в момент
-    // первого запуска может стоять где угодно (древняя ветка, детач посреди ручной
-    // археологии), и npm ci ниже поставил бы зависимости случайного коммита.
-    try {
-        shFn('git fetch origin main');
-    } catch (e) {
-        return failFn(`git fetch origin main перед созданием worktree упал: ${e.message}`);
-    }
-    try {
-        addFn(worktreePath);
-    } catch (e) {
-        return failFn(`git worktree add ${worktreePath} упал: ${e.message}`);
-    }
-    logFn('📦 npm ci в новом worktree (git worktree add не копирует node_modules)...');
-    // Санацию env считаем ОТДЕЛЬНЫМ шагом с собственной атрибуцией (как в checksGreen):
-    // битый allowlist → санировать нельзя → fail-closed, но это не «npm ci упал» (он даже
-    // не стартовал), а «санация не удалась» — иначе диагностика врёт про несуществующий сбой.
-    let gateEnv;
-    try {
-        gateEnv = buildGateEnvFn();
-    } catch (e) {
-        return failFn(
-            `санация env для npm ci не удалась (allowlist не читается): ${e.message} — ` +
-                `чеки без allowlist не запускаем (fail-closed)`,
-        );
-    }
-    try {
-        installFn(worktreePath, gateEnv);
-    } catch (e) {
-        return failFn(`npm ci в ${worktreePath} упал: ${e.message}`);
-    }
-    // Засеваем маркер хэша lock: первый гейт на PR-голове с тем же lock не будет
-    // гонять npm ci заново (#SiaUX). Best-effort — маркер лишь оптимизация.
-    markFn(worktreePath);
-    return worktreePath;
-}
-
-// Хэш package-lock.json в дереве dir (sha256 содержимого) или null, если файла нет.
-// Чистая обёртка над fs — вынесена, чтобы гейт и bootstrap считали хэш одинаково.
-function lockHash(dir = '.', readFn = fs.readFileSync) {
-    try {
-        return crypto
-            .createHash('sha256')
-            .update(readFn(path.join(dir, 'package-lock.json')))
-            .digest('hex');
-    } catch {
-        return null;
-    }
-}
-
-// Записывает текущий хэш lock как маркер «под эти зависимости уже прогнан npm ci».
-function writeLockMarker(dir = '.', { readFn = fs.readFileSync, writeFn = fs.writeFileSync } = {}) {
-    const h = lockHash(dir, readFn);
-    if (!h) return;
-    try {
-        writeFn(path.join(dir, LOCK_MARKER_PATH), h);
-    } catch {}
-}
-
-// Гейт детачится на PR-голову ТОЧНОГО коммита, который уедет в main — а её lock мог
-// добавить зависимость (node_modules дерева раннера при этом старые). Сверяем хэш lock
-// с маркером последнего npm ci и при расхождении переустанавливаем ДО чеков (#SiaUX):
-// иначе фаза-с-новой-зависимостью гарантированно красила бы ночной гейт на «module not
-// found», а README честно, но против цели AFK-прогона, отсылал бы чинить руками.
-function syncDepsIfLockChanged({
-    logFn = log,
-    existsFn = fs.existsSync,
-    readFn = fs.readFileSync,
-    writeFn = fs.writeFileSync,
-    // env (#189): санированное окружение для `npm ci`. checksGreen прокидывает сюда уже
-    // построенный env (один allowlist-load на прогон гейта); при прямом вызове дефолт
-    // строит его сам через buildGateEnvFn. installFn исполняет lifecycle-скрипты
-    // зависимостей — код с чужих слов, ему секреты петли видеть нельзя. Разрешённый env
-    // приходит в installFn аргументом — так подмена видна в тестах через spy.
-    env,
-    buildGateEnvFn = buildSanitizedGateEnv,
-    installFn = (resolvedEnv) => {
-        // Забытый installFn в тесте запустил бы настоящий npm ci в дереве, где идут
-        // тесты, — переустановка node_modules посреди прогона (ревью PR #141).
-        guardSideEffect('npm ci (syncDepsIfLockChanged)');
-        return execSync('npm ci', { stdio: 'inherit', env: resolvedEnv });
-    },
-} = {}) {
-    const current = lockHash('.', readFn);
-    if (!current) return; // нет package-lock.json — сверять нечего
-    let prev = null;
-    try {
-        if (existsFn(LOCK_MARKER_PATH)) prev = readFn(LOCK_MARKER_PATH, 'utf-8').trim();
-    } catch {}
-    if (prev === current) return;
-    logFn('📦 package-lock.json PR-головы отличается от установленного — npm ci перед чеками...');
-    // env из checksGreen (уже санирован), иначе строим сам — fail-closed при битом allowlist.
-    installFn(env ?? buildGateEnvFn());
-    writeLockMarker('.', { readFn, writeFn });
-}
-
-// Сколько спать после маркера лимита: время до сброса окна (или fallback, если
-// время не распарсилось) плюс запас config.apiLimitGraceMin.
-//
-// #130: запас был захардкожен как 2 минуты и оказался слишком тонким — окно
-// сбрасывается не мгновенно, и повтор рискует уйти в ту же стену, сжигая попытку
-// из apiLimitMaxWaits (их всего 3). Дефолт поднят до 5 минут и вынесен в конфиг.
-//
-// minutesOrDefault, а не `??`: `??` пропускал бы любой мусор, а мусор здесь не
-// «странное число минут», а вечный сон. Atomics.wait(buf, 0, 0, NaN) трактует NaN
-// как +∞ — раннер вставал бы навсегда, молча, с записью «Жду NaN мин» в логе
-// (блокер ревью PR #132). Ноль при этом остаётся законным: «без запаса» —
-// осознанный выбор, его подменять дефолтом нельзя.
-// typeof number строго, без приведения: Number(null) и Number('') дают 0, и
-// пропущенный/пустой ключ читался бы как осознанный «нулевой запас» вместо
-// дефолта. Строку '5' тоже не принимаем — в JSON-конфиге минуты обязаны быть
-// числом, а тихое приведение прячет опечатку вместо того, чтобы её проявить.
-function minutesOrDefault(value, dflt) {
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : dflt;
-}
-
-function apiLimitWaitMs(output, cfg) {
-    const fallbackMs = minutesOrDefault(cfg.apiLimitFallbackWaitMin, 30) * 60 * 1000;
-    const graceMs = minutesOrDefault(cfg.apiLimitGraceMin, 5) * 60 * 1000;
-    return (parseResetWaitMs(output) ?? fallbackMs) + graceMs;
-}
-
-// Текст события API-лимитной паузы — ЕДИНСТВЕННЫЙ источник правды его формата. deadman.js
-// (режим apiwait) парсит из него «Жду N мин» через API_WAIT_RE; раньше формат жил в двух
-// местах, связанных лишь копией текста, и правка формулировки здесь молча ломала бы
-// классификатор → ложный пуш ночью. Теперь функция экспортирована и её выход сверяется с
-// API_WAIT_RE тестом (deadman.test.js), так что рассинхрон краснит гейт, а не всплывает в бою.
-function apiLimitMessage(waitMs, attempt, maxWaits) {
-    return `⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`;
-}
+// minutesOrDefault/apiLimitWaitMs/apiLimitMessage — см. require('./api-limit.ts') выше
+// (#361, вместе с API_LIMIT_RE/parseResetWaitMs).
 
 /**
  * Запуск claude -p. Возвращает exit-код процесса (0 = успех; DRY всегда 0).
@@ -1169,10 +822,13 @@ function safeBranch(branch, { logFn = log, where = '' } = {}) {
 // эскалации. core.quotePath=false — тоже про полноту охвата: по умолчанию git
 // оборачивает пути с не-ASCII в кавычки и экранирует байты (`"\321\204.ts"`), и
 // такой путь не совпал бы ни с одним глобом зоны риска.
-function phaseDiffFiles(branch, { shFn = sh, logFn = log } = {}) {
+// #252: сам fetch — мутация, через argv (shArgv); diff --name-only остаётся на shFn
+// (чтение, не мутация — обоснование #194). branch уже провалидирована safeBranch
+// выше, но argv закрывает класс структурно (не полагается только на shq()).
+function phaseDiffFiles(branch, { shFn = sh, runArgvFn = shArgv, logFn = log } = {}) {
     if (!safeBranch(branch, { logFn, where: 'выбор ревью-модели' })) return null;
     try {
-        shFn(`git fetch origin main ${shq(branch)} --quiet`);
+        runArgvFn('git', ['fetch', 'origin', 'main', branch, '--quiet']);
         const out = shFn(
             `git -c core.quotePath=false diff --name-only --no-renames ${shq(`origin/main...origin/${branch}`)}`,
         );
@@ -1224,9 +880,9 @@ function sliceWholeChars(text, limit) {
 
 function reviewDiffContext(
     branch,
-    { shFn = sh, logFn = log, limit = REVIEW_DIFF_LIMIT, files: known } = {},
+    { shFn = sh, runArgvFn = shArgv, logFn = log, limit = REVIEW_DIFF_LIMIT, files: known } = {},
 ) {
-    const files = known !== undefined ? known : phaseDiffFiles(branch, { shFn, logFn });
+    const files = known !== undefined ? known : phaseDiffFiles(branch, { shFn, runArgvFn, logFn });
     if (!files || !files.length) return '';
 
     let diff = '';
@@ -1275,7 +931,14 @@ function reviewDiffContext(
 function pickReviewModel(
     milestone,
     branch,
-    { cfg = config, ghJsonFn = ghJson, shFn = sh, logFn = log, files: known } = {},
+    {
+        cfg = config,
+        ghJsonFn = ghJson,
+        shFn = sh,
+        runArgvFn = shArgv,
+        logFn = log,
+        files: known,
+    } = {},
 ) {
     const review = cfg.review;
     if (!review) return cfg.reviewModel; // легаси-конфиг без блока review
@@ -1312,7 +975,7 @@ function pickReviewModel(
     // files приходит извне, когда вызывающий уже собрал дифф (runLoop собирает его
     // один раз на выбор модели И на контекст ревью — иначе fetch+diff шли дважды
     // подряд, находка ревью #135).
-    const files = known !== undefined ? known : phaseDiffFiles(branch, { shFn, logFn });
+    const files = known !== undefined ? known : phaseDiffFiles(branch, { shFn, runArgvFn, logFn });
     const hit = files && matchRiskPaths(files, review.escalateOnPaths);
     if (hit) {
         logFn(`🔺 Ревью эскалировано: дифф фазы трогает зону риска (${hit}).`);
@@ -1465,7 +1128,10 @@ function strongerReviewModel(a, b) {
 // человеку), несмерджённым это не станет (отказ ужесточает, а не пропускает). Имя
 // ветки — только через SAFE_BRANCH_RE и
 // shq (anti-injection, инв. C3/7): значение уходит в шелл gh.
-function removeBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
+// #252: сама мутация (gh pr edit --remove-label) — через argv (shArgv), не строкой
+// через шелл. Чтение (gh pr list) остаётся на shFn — это не мутация, класс риска
+// закрыт shq (обоснование #194); DI runArgvFn — тот же предохранитель #138.
+function removeBlockedLabel(branch, { shFn = sh, runArgvFn = shArgv, logFn = log } = {}) {
     if (!safeBranch(branch, { logFn, where: 'removeBlockedLabel' })) return;
     try {
         const num = String(
@@ -1477,7 +1143,16 @@ function removeBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
             logFn(`⚠ removeBlockedLabel: открытый PR ветки ${branch} не найден — метку не снимаю.`);
             return;
         }
-        shFn(`gh pr edit ${shq(num)} --remove-label blocked`);
+        // #251: тот же фильтр, что в findOpenPr — `--flag`-образное значение gh
+        // распарсил бы как флаг. Значение из `gh pr list --jq` доверенное, но канал
+        // тот же, а фильтр стоит одну строку. Fail-closed: не целое → в argv не пускаем.
+        if (!PR_NUMBER_RE.test(num)) {
+            logFn(
+                `⚠ removeBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не снимаю.`,
+            );
+            return;
+        }
+        runArgvFn('gh', ['pr', 'edit', num, '--remove-label', 'blocked']);
         logFn(`🏷 Раннер снял label blocked с PR #${num} перед повторным ревью (#217).`);
     } catch (e) {
         logFn(
@@ -1494,7 +1169,8 @@ function removeBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
 // вердиктом» этим не закрывается — его держит персистентный флаг reReviewPending (см.
 // runLoop). Тот же anti-injection-путь, что removeBlockedLabel: имя ветки через
 // SAFE_BRANCH_RE и shq (инв. C3/7), значение уходит в шелл gh.
-function addBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
+// #252: та же конвертация мутации на argv, что и removeBlockedLabel — см. её докблок.
+function addBlockedLabel(branch, { shFn = sh, runArgvFn = shArgv, logFn = log } = {}) {
     if (!safeBranch(branch, { logFn, where: 'addBlockedLabel' })) return;
     try {
         const num = String(
@@ -1506,7 +1182,14 @@ function addBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
             logFn(`⚠ addBlockedLabel: открытый PR ветки ${branch} не найден — метку не вернул.`);
             return;
         }
-        shFn(`gh pr edit ${shq(num)} --add-label blocked`);
+        // #251: тот же фильтр, что в findOpenPr/removeBlockedLabel — argument-injection.
+        if (!PR_NUMBER_RE.test(num)) {
+            logFn(
+                `⚠ addBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не вернул.`,
+            );
+            return;
+        }
+        runArgvFn('gh', ['pr', 'edit', num, '--add-label', 'blocked']);
         logFn(
             `🏷 Раннер вернул label blocked на PR #${num} — повторное ревью не дало вердикта (#223).`,
         );
@@ -1524,29 +1207,48 @@ function addBlockedLabel(branch, { shFn = sh, logFn = log } = {}) {
 // хрупкий (L3): промах = milestone останется open, что безопасно — свип косметика,
 // на гейт мерджа не влияет; усложнять ради него не стоит.
 
-function closeCompletedMilestones() {
+// #252: сама мутация (gh api PATCH) — через argv (shArgv), не строкой через шелл;
+// чтения (ghJson) остаются read-only. DI-параметры — тот же предохранитель #138,
+// что у остальных функций файла.
+function closeCompletedMilestones({
+    cfg = config,
+    ghJsonFn = ghJson,
+    runArgvFn = shArgv,
+    logFn = log,
+} = {}) {
     let milestones = [];
     let mergedPrs = [];
     try {
-        milestones = ghJson('gh api "repos/{owner}/{repo}/milestones?state=open"');
+        milestones = ghJsonFn('gh api "repos/{owner}/{repo}/milestones?state=open"');
         // limit 200 (L3): при 100 свип начал бы молча промахиваться после сотни PR.
-        mergedPrs = ghJson('gh pr list --state merged --json title,headRefName --limit 200');
+        mergedPrs = ghJsonFn('gh pr list --state merged --json title,headRefName --limit 200');
     } catch (e) {
-        log(`⚠ Не смог получить данные для свипа milestones: ${e.message}`);
+        logFn(`⚠ Не смог получить данные для свипа milestones: ${e.message}`);
         return;
     }
     for (const ms of milestones) {
         if (ms.open_issues > 0 || ms.closed_issues === 0) continue;
-        const phase = config.phases.find((p) => p.milestone === ms.title);
+        // #251: ms.number из внешнего API летит в argv `gh api` — тот же класс, что
+        // закрыл PR_NUMBER_RE в findOpenPr. Не целое → milestone не трогаем (fail-open,
+        // свип косметика: следующий старт подберёт).
+        if (!Number.isInteger(ms.number)) continue;
+        const phase = cfg.phases.find((p) => p.milestone === ms.title);
         const merged = mergedPrs.some((pr) =>
             phase ? pr.headRefName === phase.branch : pr.title === `feat: ${ms.title}`,
         );
         if (!merged) continue;
         try {
-            sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${shq(ms.number)} -f state=closed`);
-            log(`🏁 Milestone закрыт: "${ms.title}" (issues разобраны, PR смерджен)`);
+            runArgvFn('gh', [
+                'api',
+                '-X',
+                'PATCH',
+                `repos/{owner}/{repo}/milestones/${ms.number}`,
+                '-f',
+                'state=closed',
+            ]);
+            logFn(`🏁 Milestone закрыт: "${ms.title}" (issues разобраны, PR смерджен)`);
         } catch (e) {
-            log(`⚠ Не смог закрыть milestone "${ms.title}": ${e.message}`);
+            logFn(`⚠ Не смог закрыть milestone "${ms.title}": ${e.message}`);
         }
     }
 }
@@ -1554,15 +1256,27 @@ function closeCompletedMilestones() {
 // Закрыть milestone фазы СРАЗУ после её мерджа, не дожидаясь свипа на следующем
 // старте раннера (из-за него смерджённый на 100% milestone висел open до рестарта).
 // Fail-open: любой сбой лишь логируется и НЕ роняет loop — свип закроет хвост потом.
-function closeMilestoneByTitle(title) {
+// #252: та же конвертация мутации на argv, что и closeCompletedMilestones — см. её докблок.
+function closeMilestoneByTitle(title, { ghJsonFn = ghJson, runArgvFn = shArgv, logFn = log } = {}) {
     try {
-        const open = ghJson('gh api "repos/{owner}/{repo}/milestones?state=open"');
+        const open = ghJsonFn('gh api "repos/{owner}/{repo}/milestones?state=open"');
         const ms = open.find((m) => m.title === title);
         if (!ms) return; // уже закрыт или не найден — не критично
-        sh(`gh api -X PATCH repos/{owner}/{repo}/milestones/${shq(ms.number)} -f state=closed`);
-        log(`🏁 Milestone закрыт: "${title}" (фаза смерджена)`);
+        // #251: ms.number из внешнего API — не целое в argv `gh api` не пускаем.
+        if (!Number.isInteger(ms.number)) return;
+        runArgvFn('gh', [
+            'api',
+            '-X',
+            'PATCH',
+            `repos/{owner}/{repo}/milestones/${ms.number}`,
+            '-f',
+            'state=closed',
+        ]);
+        logFn(`🏁 Milestone закрыт: "${title}" (фаза смерджена)`);
     } catch (e) {
-        log(`⚠ Не смог закрыть milestone "${title}" сразу (свип подберёт на старте): ${e.message}`);
+        logFn(
+            `⚠ Не смог закрыть milestone "${title}" сразу (свип подберёт на старте): ${e.message}`,
+        );
     }
 }
 
@@ -1576,9 +1290,11 @@ function closeMilestoneByTitle(title) {
 // краснеет на любых сомнительных данных — это правильно для гейта и для человека, но
 // ронять из-за косметики доски уже смердженную фазу нельзя. Поэтому здесь — лог, как у
 // closeMilestoneByTitle: следующий прогон подберёт (синк идемпотентен).
-function syncProjectBoard(shFn = sh, logFn = log) {
+// #252: сама мутация — через argv (shArgv), без значений извне (нет инъекции), но
+// направление единообразно с остальными мутациями раннера.
+function syncProjectBoard(runArgvFn = shArgv, logFn = log) {
     try {
-        const out = shFn('node scripts/project-sync.mjs');
+        const out = runArgvFn('node', ['scripts/project-sync.mjs']);
         logFn(`🗂 ${String(out).trim().split('\n').pop()}`);
     } catch (e) {
         // String(e?.message ?? e), а не e.message: throw не-Error уронил бы TypeError
@@ -1595,22 +1311,33 @@ function syncProjectBoard(shFn = sh, logFn = log) {
 // косметика наблюдаемости не имеет права уронить уже смерджённую фазу. Журнал живёт в
 // рантайм-каталоге раннера (JOURNAL_PATH в scripts/review-findings-journal.mjs), не в
 // git — раннер нигде не коммитит в main напрямую, только через ревьюенные PR.
-function recordReviewFindings(phase, prNumber, authorAllowlist = [], shFn = sh, logFn = log) {
+// #252: мутация — через argv (shArgv), не строкой через шелл. Номер PR, milestone
+// и логины авторов уходят отдельными элементами argv — shq() больше не нужен для
+// закрытия инъекции (аргументы структурно не разбираются шеллом), но фильтр
+// authorAllowlist на пустые/нестроковые значения остаётся.
+function recordReviewFindings(
+    phase,
+    prNumber,
+    authorAllowlist = [],
+    runArgvFn = shArgv,
+    logFn = log,
+) {
     if (!Number.isInteger(prNumber) || prNumber <= 0) {
         logFn(`⚠ Журнал находок: номер PR неизвестен, запись пропущена.`);
         return;
     }
     // #237: прокидываем allowlist авторов в счёт — метрика считает только доверенные
-    // комментарии (репо публичный). Логины — в шелл только через shq (инвариант 7).
-    const authorArgs = (Array.isArray(authorAllowlist) ? authorAllowlist : [])
-        .filter((a) => typeof a === 'string' && a.trim())
-        .map((a) => shq(a))
-        .join(' ');
+    // комментарии (репо публичный).
+    const authors = (Array.isArray(authorAllowlist) ? authorAllowlist : []).filter(
+        (a) => typeof a === 'string' && a.trim(),
+    );
     try {
-        const out = shFn(
-            `node scripts/review-findings-journal.mjs ${shq(prNumber)} ${shq(phase.milestone)}` +
-                (authorArgs ? ` ${authorArgs}` : ''),
-        );
+        const out = runArgvFn('node', [
+            'scripts/review-findings-journal.mjs',
+            String(prNumber),
+            phase.milestone,
+            ...authors,
+        ]);
         logFn(`📊 Находки ревью зафиксированы в журнале: ${String(out).trim()}`);
     } catch (e) {
         const why = String(e?.message ?? e).split('\n')[0];
@@ -2431,43 +2158,10 @@ function classifyDeployOutcome(outcome, health) {
 //               могло заново повесить blocked, который человек только что снял).
 //               Полный повтор цикла сдачи — только явным флагом --resubmit.
 
-function defaultState() {
-    return {
-        count: 0,
-        milestone: config.phases[0].milestone,
-        submitted: false,
-        noProgress: 0,
-        gateHeals: 0,
-        blockedHeals: 0,
-        // #217: планка модели повторного ревью (сильнейшая модель, поставившая блок в
-        // этой фазе) и модель последнего проведённого ревью — из них считается floor.
-        reviewModelFloor: null,
-        lastReviewModel: null,
-        // #223: раннер снял label blocked, но повторное ревью ещё не дало вердикта.
-        // Флаг переживает рестарт → гейт вернёт метку, если сессия ревью погибла.
-        reReviewPending: false,
-        // #165: красный/недосмотренный пост-мердж деплой прошлой фазы. Пока не null —
-        // барьер в preflight не даёт строить следующую фазу поверх недоехавшего до
-        // прода main; снимает только человек флагом --deploy-resolved (см. preflight).
-        // advancePhase его НЕ обнуляет: блок ставится уже ПОСЛЕ advancePhase и обязан
-        // пережить и переход фазы, и рестарт.
-        deployBlock: null,
-    };
-}
-
-// failFn инжектируется (дефолт — module-level fail): preflight пробрасывает свой
-// failFn, чтобы юнит-тест ловил fail старой схемы через исключение, а не process.exit.
-function loadState(failFn = fail) {
-    const s = loadJson(STATE_PATH, null);
-    if (!s) return defaultState();
-    if (s.milestone === undefined) {
-        failFn(
-            `${STATE_PATH} старой схемы (phaseIndex). Раннер адресует фазы по имени milestone. ` +
-                `Запусти --reset (вернёт на первую фазу конфига) или пропиши руками: { count, milestone: <имя фазы>, submitted: false }.`,
-        );
-    }
-    return s;
-}
+// defaultState/loadState вынесены в state-lock.ts (#359) — см. createStateLock выше.
+// defaultState читает config.phases[0] лениво (через getConfig), loadState — через
+// инжектированный loadJson (тот же fs, что и здесь: спай fs.readFileSync в тестах виден).
+// Читаются как const из деструктуризации.
 
 // Резолв фазы по имени. Имя не найдено = state и конфиг разъехались — это fail,
 // а не «начнём с нулевой» (M7): молчаливый дефолт снова строил бы фазы не по порядку.
@@ -3583,198 +3277,13 @@ function isRalphMonitorProcess(pid, readFn = fs.readFileSync) {
     return cmdlineIncludes(pid, MONITOR_PATH, readFn);
 }
 
-// --- Файл-лок от двойного запуска (#176) ----------------------------------
-// Второй раннер на том же состоянии стартовать не должен. Механику живости берём один
-// в один у монитора (adoptMonitor/isMonitorProcess): kill(pid, 0) отвечает лишь «номер
-// занят», а ОС переиспользует номера — после смерти раннера его pid мог достаться чужому
-// процессу. Поэтому «жив» = номер занят И за ним стоит именно наш ralph.js по cmdline.
-// Linux-only (/proc), как весь раннер.
-
-// Сверка «за этим pid именно наш ralph.js» — по пути RALPH_PATH в cmdline. Тот же приём,
-// что isRalphMonitorProcess. ВНИМАНИЕ: RALPH_PATH относительный и уникальности проекта не
-// гарантирует (см. коммент у объявления RALPH_PATH) — для лока это лишь ложный отказ при
-// pid-reuse (fail-closed), не снос чужого процесса. Переиспользованный pid (чужой процесс
-// под тем же номером) → подстроки нет → false, лок считается сиротой.
-function isRalphProcess(pid, readFn = fs.readFileSync) {
-    return cmdlineIncludes(pid, RALPH_PATH, readFn);
-}
-
-// Держит ли лок ЖИВОЙ раннер: номер занят (kill 0) И cmdline подтверждает ralph.js.
-// Обе проверки обязательны и в этом порядке — kill(pid, 0) на мёртвом pid бросит
-// (ESRCH → false) и до чтения /proc не дойдём; на переиспользованном номере kill
-// пройдёт, но cmdline-сверка отсечёт чужой процесс. Так pid-reuse не сойдёт за живой
-// раннер и не заблокирует легитимный запуск. procReadFn читает ТОЛЬКО /proc/<pid>/cmdline
-// (отдельный от чтения лок-файла контракт — в acquireLock это разные dep'ы).
-function lockAlive(pid, { killFn = process.kill, procReadFn = fs.readFileSync } = {}) {
-    return processAlive(pid, killFn) && isRalphProcess(pid, procReadFn);
-}
-
-// Пишет pid текущего процесса в лок-файл ЭКСКЛЮЗИВНО (flag 'wx'): создаёт файл, только
-// если его ещё нет, иначе бросает EEXIST. Это закрывает гонку check-then-act в acquireLock
-// (см. там) — второй одновременно стартующий раннер, прошедший ту же проверку «лока нет»,
-// на записи получит EEXIST и не перезапишет победителя. Побочка — под предохранителем
-// #138: забытый writeFn в тесте иначе насорил бы настоящим ralph.lock в дереве тестов.
-function writeLock(pid = process.pid, { writeFn, lockPath = LOCK_PATH } = {}) {
-    const doWrite =
-        writeFn ||
-        ((p, data) => {
-            guardSideEffect(`writeLock (${p})`);
-            return fs.writeFileSync(p, data, { flag: 'wx' });
-        });
-    doWrite(lockPath, String(pid));
-}
-
-// Снимает лок-файл (осиротевший лок при взятии, свой лок при выходе). Побочка — под
-// предохранителем #138. ENOENT при удалении не ошибка: лок уже снят (гонка, ручная
-// чистка) — цель «файла нет» достигнута, а не «удаление провалилось».
-function removeLock({ lockPath = LOCK_PATH, removeFn } = {}) {
-    const doRemove =
-        removeFn ||
-        ((p) => {
-            guardSideEffect(`removeLock (${p})`);
-            try {
-                fs.unlinkSync(p);
-            } catch (e) {
-                if (!e || e.code !== 'ENOENT') throw e;
-            }
-        });
-    doRemove(lockPath);
-}
-
-// Снятие СВОЕГО лока при штатном выходе (exit-хендлер main()). Без него каждый рестарт
-// шёл бы через путь «🔓 осиротевший лок»: шум в логе + событие перестаёт быть сигналом
-// РЕАЛЬНОГО kill -9, а устаревший файл расширяет окно pid-reuse (номер достанется grep/
-// tail/vim по ralph.js → ложный «живой раннер» и отказ старта). Две оговорки: (1) снимаем
-// ТОЛЬКО если файл ещё держит наш pid — если лок в странной гонке украли/переписали,
-// слепой unlink снёс бы чужой; (2) путь передаётся АБСОЛЮТНЫЙ, зафиксированный ДО chdir в
-// worktree, — относительный LOCK_PATH после chdir указал бы внутрь дерева раннера (тот же
-// прецедент, что репойнт logTarget, #SiaUB). Свои побочки — через DI под #138.
-function releaseLockIfOurs(
-    lockPath,
-    { readFn = fs.readFileSync, removeFn, pid = process.pid } = {},
-) {
-    let held;
-    try {
-        held = Number(String(readFn(lockPath, 'utf-8')).trim());
-    } catch {
-        return; // нет файла / нечитаем — снимать нечего
-    }
-    if (held !== pid) return; // лок уже не наш — чужой не трогаем
-    removeLock({ lockPath, removeFn });
-}
-
-// --- Взятие лока: fail-closed решение (#177) -------------------------------
-// Единственная точка решения «стартовать или отказать» по лок-файлу. Четыре исхода:
-//
-//   нет файла (ENOENT)                  → лок свободен: пишем свой pid, стартуем.
-//   живой раннер (kill 0 + cmdline)     → ОТКАЗ fail-closed, сообщение с pid и путём.
-//   сирота (pid мёртв / чужой cmdline)  → снимаем лок, событие в лог, берём себе.
-//   нечитаем / битый pid                → СТОП fail-closed (не «лока нет»).
-//
-// Читаем файл здесь напрямую и парсим со СТРОГОЙ валидацией: «нет файла», «нет прав» и
-// «битый pid» для #177 — три разных исхода (ENOENT — норм-путь, EACCES/битое содержимое —
-// fail-closed стоп по образцу scripts/security-audit.mjs). lockAlive — примитив живости;
-// acquireLock — слой политики над ним.
-//
-// Взятие лока АТОМАРНО: и на пути «нет файла», и на пути реклейма сироты запись идёт через
-// writeLock (flag 'wx' — эксклюзивное создание). Между нашим чтением и записью второй
-// одновременно стартующий раннер мог пройти ту же проверку и записать свой pid — тогда наш
-// 'wx' бросит EEXIST, и это ОТКАЗ (лок только что появился), а не молчаливая перезапись
-// победителя гонки. Иначе неатомарный check-then-act пропустил бы оба процесса — ровно та
-// гонка за state/ветки/мердж, ради запрета которой лок существует.
-//
-// Все побочки — через DI (#138): чтение лок-файла (readFn) и /proc (procReadFn) РАЗДЕЛЕНЫ
-// (у каждого свой контракт, тестам не надо мультиплексировать по пути), плюс удаление,
-// запись, kill, лог, стоп. failFn по умолчанию — fail() (process.exit(1)); в бою после
-// него исполнение не продолжается, return в тестах нужен мок-failFn, который не роняет
-// процесс.
-function acquireLock({
-    lockPath = LOCK_PATH,
-    pid = process.pid,
-    readFn = fs.readFileSync,
-    procReadFn = fs.readFileSync,
-    killFn = process.kill,
-    removeFn,
-    writeFn,
-    logFn = log,
-    failFn = fail,
-} = {}) {
-    // Эксклюзивная запись своего pid: writeLock идёт через flag 'wx', поэтому если лок УСПЕЛ
-    // появиться между проверкой и записью (гонка двух стартов) — EEXIST → fail-closed отказ.
-    const claim = () => {
-        try {
-            writeLock(pid, { writeFn, lockPath });
-            return true;
-        } catch (e) {
-            if (e && e.code === 'EEXIST') {
-                failFn(
-                    `Лок ${lockPath} возник в момент взятия — другой раннер стартовал ` +
-                        `одновременно. Второй запуск на том же состоянии запрещён.`,
-                );
-                return false;
-            }
-            throw e;
-        }
-    };
-
-    let raw;
-    try {
-        raw = readFn(lockPath, 'utf-8');
-    } catch (e) {
-        // Файла нет — лок свободен, это норм-путь. Только ENOENT: любую другую ошибку
-        // чтения (нет прав, битый inode) трактовать как «лока нет» = тихо стартовать
-        // поверх возможного живого раннера, ровно то, что fail-closed запрещает.
-        if (e && e.code === 'ENOENT') {
-            return claim();
-        }
-        failFn(
-            `Лок-файл ${lockPath} нечитаем (${String(e?.code ?? e?.message ?? e)}) — ` +
-                `не берусь решать, жив ли другой раннер. Разберись руками и перезапусти.`,
-        );
-        return false;
-    }
-
-    const trimmed = String(raw).trim();
-    const heldPid = Number(trimmed);
-    // Битое содержимое: пусто или не положительное целое. Не «пропустим проверку» и не
-    // «считаем сиротой и крадём» — стоп fail-closed. Осознанная цена: усечённый при
-    // падении лок требует ручной чистки, но гонка двух раннеров дороже (deadman заметит
-    // «не стартовал»).
-    if (!trimmed || !Number.isInteger(heldPid) || heldPid <= 0) {
-        failFn(
-            `Лок-файл ${lockPath} битый (содержимое ${JSON.stringify(trimmed)}) — ` +
-                `не берусь решать, жив ли другой раннер. Разберись руками и перезапусти.`,
-        );
-        return false;
-    }
-
-    if (lockAlive(heldPid, { killFn, procReadFn })) {
-        // Живой раннер держит лок — отказ. Сообщение обязано назвать pid и путь (кто
-        // держит и где), критерий #177.
-        failFn(
-            `Другой раннер уже держит лок: pid ${heldPid}, файл ${lockPath}. ` +
-                `Второй запуск на том же состоянии запрещён — гонка за state/ветки/мердж.`,
-        );
-        return false;
-    }
-
-    // Сирота: pid мёртв (kill 0 → ESRCH) или за ним чужой процесс (pid-reuse, cmdline не
-    // наш ralph.js). Снимаем лок и берём себе — без ручной чистки после kill -9 / OOM.
-    // ВНИМАНИЕ (#178): это событие уходит через log() ДО репойнта logTarget на worktree (он
-    // в main() ПОСЛЕ загрузки конфига, а лок — самый первый шаг, впереди конфига по
-    // построению). Поэтому строка «🔓» ляжет в ralph.log ДЕРЕВА ЧЕЛОВЕКА, а монитор тейлит
-    // только worktree-лог — на панели этого события НЕ будет. Ищи его в ralph.log клона
-    // запуска, не в monitor.out. Изменить порядок нельзя: лок обязан быть до побочек.
-    logFn(
-        `🔓 Осиротевший лок pid ${heldPid} (процесс мёртв или не наш ralph.js) — ` +
-            `снимаю ${lockPath} и стартую.`,
-    );
-    removeLock({ lockPath, removeFn });
-    // Реклейм тоже через эксклюзивную запись: между unlink и созданием второй процесс мог
-    // снять ту же сироту и взять лок — тогда наш claim() получит EEXIST, а не перезапишет
-    // победителя гонки за реклейм.
-    return claim();
-}
+// --- Файл-лок от двойного запуска (#176/#177/#178) ------------------------
+// isRalphProcess/lockAlive/writeLock/removeLock/releaseLockIfOurs/acquireLock вынесены в
+// state-lock.ts (#359) — см. createStateLock выше. Механику живости берут один в один у
+// монитора (processAlive/cmdlineIncludes остаются здесь — их делит и монитор): kill(pid, 0)
+// отвечает лишь «номер занят», а ОС переиспользует номера, поэтому «жив» = номер занят И за
+// ним стоит именно наш ralph.js по cmdline (RALPH_PATH). Все шесть функций читаются как const
+// из деструктуризации и ре-экспортируются через module.exports как раньше.
 
 // PID-файл монитора один на все профили. Читаем его в одном месте: и adoptMonitor
 // (подхват сироты на старте), и ensureMonitorAlive (переподнятие между итерациями)
@@ -4242,7 +3751,9 @@ if (require.main === module) main();
 // common + профиль. failFn инжектируется, поэтому отказы тестируются без process.exit.
 // resolveWorktreePath/parseWorktreeList/ensureRunnerWorktree (#76) — изоляция раннера
 // в выделенный git worktree, соседний с деревом человека; побочки (git/npm/fs/log/fail)
-// инжектируются, как и везде выше, поэтому тестируются без реального git/npm.
+// инжектируются, как и везде выше, поэтому тестируются без реального git/npm. Сами функции
+// вынесены в worktree.ts (#360) — см. createWorktreeManager выше, читаются как const из
+// деструктуризации.
 // parkOnOriginMain/checksGreen/tryMergePhase (#77) — ветковая хореография гейта в
 // worktree-модели: только detached checkout (PR-голова / origin/main), именованные
 // ветки не занимаются; побочки (sh/gh/log/park/sleep) и dry — инжектируемые.
@@ -4292,6 +3803,8 @@ module.exports = {
     shArgv,
     log,
     sideEffectAttempts,
+    closeCompletedMilestones,
+    closeMilestoneByTitle,
     syncProjectBoard,
     recordReviewFindings,
     formatExcerpt,
