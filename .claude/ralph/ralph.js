@@ -1243,254 +1243,35 @@ const {
     runnerTreeFixHint: RUNNER_TREE_FIX_HINT,
 });
 
-// Деплой фазы (#87) — явный no-op-плейсхолдер. Боевой прод уже раскатывается
-// САМ CI (.github/workflows/deploy.yml → scripts/deploy-remote.sh) по факту пуша
-// в main — squash-мердж внутри tryMergePhase выше его и запускает. Раннеру незачем
-// ДУБЛИРОВАТЬ деплой; эта функция — только маркер точки цикла, где prod-loop
-// логически передаёт фазу релизу. Исход CI-раскатки раннер, однако, ДОЖИДАЕТСЯ
-// (#163): сразу после этого маркера runLoop зовёт waitForDeployRun на смердженном
-// sha — иначе откат деплоя остался бы в main незамеченным (см. runLoop, gate === 'merged').
-function deployPhasePlaceholder(phase, { logFn = log } = {}) {
-    logFn(
-        `🚀 Деплой фазы "${phase.milestone}": плейсхолдер — раскатку уже делает CI по пушу в main, раннер её не дублирует.`,
-    );
-}
-
-// #163: sha squash-мерджа PR. Это ровно тот коммит, что уехал в main и запустил
-// deploy-workflow (headSha его run'а), — по нему пост-мердж проверка и следит.
-// Чтение через ghJson (ретраи). Fail-closed: без валидного oid — бросаем, «не смог
-// узнать sha» и «деплой прошёл» — разные ответы, молчаливый пропуск здесь недопустим.
-function mergedShaOf(
-    prNumber,
-    { ghJsonFn = ghJson, sleepFn = sleep, attempts = 3, retryMs = 5000 } = {},
-) {
-    // GitHub иногда отдаёт mergeCommit: null с лагом сразу после squash-мерджа. ghJson
-    // ретраит только exec/parse-ошибки — валидный ответ с пустым oid его не смущает.
-    // Короткая петля именно на пустой oid (attempts×retryMs) убирает самый вероятный
-    // ложный красный этого пути; исчерпав её — fail-closed бросаем (в runLoop это барьер).
-    let oid = null;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-        const view = ghJsonFn(`gh pr view ${shq(prNumber)} --json mergeCommit`);
-        oid = view && view.mergeCommit && view.mergeCommit.oid;
-        if (SHA40_RE.test(String(oid))) return oid;
-        if (attempt < attempts) sleepFn(retryMs);
-    }
-    throw new Error(`mergedShaOf: не удалось получить sha мерджа PR #${prNumber}`);
-}
-
-// #TFO89: единственный источник формата строки ожидания пост-мердж деплоя. Её парсит
-// DEPLOY_WAIT_RE в deadman.js (режим deploywait, порог = таймаут ожидания + запас):
-// цикл опроса ниже за ~20 мин не пишет в лог ни строки, и без своего режима deadman
-// увёл бы классификацию к default (5 мин) → ложный DEADMAN-пуш на каждом prod-мердже
-// (нарушение инварианта 10 и критерия PRD «ноль ложных пушей»). N (таймаут в минутах)
-// захватывается тем же способом, что «Жду N мин» у apiLimitMessage; синхронность
-// формата и regex закреплена тестом (deadman.test.js: deployWaitMessage ↔ DEPLOY_WAIT_RE).
-function deployWaitMessage(workflow, sha, timeoutMs) {
-    return (
-        `⏳ Пост-мердж: жду итог deploy-workflow «${workflow}» на sha ${String(sha).slice(0, 8)} ` +
-        `(таймаут ${Math.round(timeoutMs / 60000)} мин).`
-    );
-}
-
-// #163: После squash-мерджа фазы deploy-workflow раскатывает main на прод. Прежде
-// чем строить следующую фазу поверх этого main, раннер (prod) ДОЖИДАЕТСЯ итога
-// workflow на смердженном sha — иначе откат раскатки остаётся в main и следующий
-// мердж передеплоит битый коммит. Возвращает {status, conclusion, sha, url, runId}:
-//   status='completed' — workflow досмотрен, conclusion — его итог (success/failure/…);
-//   status='timeout'   — run найден, но не завершился за timeoutMs (итог не считаем ни
-//                        зелёным, ни красным — решение стоп+пуш за #165);
-//   status='not-found' — run на sha так и не появился за таймаут.
-// Только ЧТЕНИЕ gh run (ретраи внутри ghJson): прод и main не трогаем (#166). Устойчивый
-// сетевой чих (ghJson исчерпал свои ретраи) не роняет всё ожидание — впереди ещё поллы,
-// один чих не даёт ложного красного. Часы (nowFn) инжектируемы ради детерминизма тестов.
-function waitForDeployRun(
-    sha,
-    cfg = config,
-    { ghJsonFn = ghJson, sleepFn = sleep, logFn = log, nowFn = Date.now } = {},
-) {
-    // fail-closed: без валидного sha следить не за чем — это ошибка вызывающего,
-    // а не повод молча вернуть «всё хорошо».
-    if (!SHA40_RE.test(String(sha))) {
-        throw new Error(`waitForDeployRun: невалидный sha "${sha}"`);
-    }
-    const dc = (cfg && cfg.deployCheck) || {};
-    const workflow = typeof dc.workflow === 'string' && dc.workflow ? dc.workflow : 'deploy.yml';
-    const timeoutMs = positiveIntOrDefault(dc.timeoutMs, 1_200_000);
-    const pollIntervalMs = positiveIntOrDefault(dc.pollIntervalMs, 15_000);
-
-    logFn(deployWaitMessage(workflow, sha, timeoutMs));
-
-    const start = nowFn();
-    let lastSeen = null;
-    while (nowFn() - start < timeoutMs) {
-        let runs = null;
-        try {
-            runs = ghJsonFn(
-                `gh run list --workflow ${shq(workflow)} ` +
-                    `--json databaseId,headSha,status,conclusion,url --limit 30`,
-            );
-        } catch (e) {
-            // ghJson уже отретраил свой набор попыток; устойчивый чих не роняет всё
-            // ожидание — до таймаута ещё поллы, ложного красного он не даёт. runs=null
-            // → падаем в общий sleep-or-break ниже (повтор на следующем опросе).
-            logFn(
-                `⚠ Пост-мердж: чтение gh run не удалось (${String(e.message).split('\n')[0]}) — ` +
-                    `повтор на следующем опросе.`,
-            );
-        }
-        const run = (Array.isArray(runs) ? runs : []).find((r) => r && r.headSha === sha);
-        if (run) {
-            lastSeen = run;
-            if (run.status === 'completed') {
-                logFn(
-                    `✓ Пост-мердж: deploy-workflow на ${sha.slice(0, 8)} завершён — ` +
-                        `итог «${run.conclusion}».`,
-                );
-                return {
-                    status: 'completed',
-                    conclusion: run.conclusion ?? null,
-                    sha,
-                    url: run.url ?? null,
-                    runId: run.databaseId ?? null,
-                };
-            }
-        }
-        // #THS8T: не спим перед гарантированным таймаутом — иначе холостые pollIntervalMs
-        // на каждом timeout/not-found исходе (проснулись бы ровно чтобы while вышел).
-        if (nowFn() - start + pollIntervalMs >= timeoutMs) break;
-        sleepFn(pollIntervalMs);
-    }
-    // Таймаут. Итог не досмотрен — не выдаём его за зелёный (риск ложного красного на
-    // каждом мердже как раз в обратную сторону: молча «сойдёт» опаснее честного «не знаю»).
-    if (lastSeen) {
-        logFn(
-            `⚠ Пост-мердж: deploy-workflow на ${sha.slice(0, 8)} не завершился за таймаут ` +
-                `(последний статус «${lastSeen.status}»).`,
-        );
-        return {
-            status: 'timeout',
-            conclusion: null,
-            sha,
-            url: lastSeen.url ?? null,
-            runId: lastSeen.databaseId ?? null,
-        };
-    }
-    logFn(`⚠ Пост-мердж: deploy-workflow на ${sha.slice(0, 8)} не найден за таймаут ожидания.`);
-    return { status: 'not-found', conclusion: null, sha, url: null, runId: null };
-}
-
-// #164: HTTP-код главной страницы прода. Только ЧТЕНИЕ (GET) — прод не трогаем (#166).
-// Аргументы curl — МАССИВ через execFileSync (тот же anti-RCE паттерн, что и
-// probeEgress/restartTunnel выше), не строка через sh(): url приходит из конфига в
-// гите, но защита ничего не стоит. Пустая/нечисловая строка ответа (таймаут, DNS-сбой)
-// → код 0, не 200 — вызывающий трактует как «не здоров», та же логика, что у probeEgress.
-function probeHttpStatus(url, timeoutSec, execFn = execFileSync) {
-    try {
-        const out = execFn(
-            'curl',
-            [
-                '-4',
-                '-s',
-                // -L: следуем редиректам главной (www, локаль-префикс, смена схемы) —
-                // иначе будущий 301/308 дал бы устойчивый ложнокрасный барьер на каждом
-                // prod-мердже (#THS8Q). %{http_code} после -L — код КОНЕЧНОГО ответа.
-                '-L',
-                '-o',
-                '/dev/null',
-                '-w',
-                '%{http_code}',
-                '--max-time',
-                String(timeoutSec),
-                // `--` завершает опции: даже url с ведущим `-` (argument injection, тот
-                // же класс, что и SAFE_BRANCH_RE) curl прочтёт как адрес, а не как флаг.
-                '--',
-                url,
-            ],
-            { encoding: 'utf-8' },
-        ).trim();
-        const code = Number(out);
-        return Number.isInteger(code) ? code : 0;
-    } catch {
-        return 0;
-    }
-}
-
-// #164: Healthcheck прода после деплоя — MVP-определение «живо» (PRD/plan фаза 5):
-// workflow success (waitForDeployRun выше) + HTTP 200 главной страницы. Игровой смоук
-// (Playwright по проду) — кандидат в бэклог, не MVP.
-// Флаки-запрос (сетевой чих до прода) ретраится с фиксированной паузой между попытками
-// (дефолт 3×5с, как таймауты/паузы остальных пост-мердж проверок) — не должен стопить
-// петлю зря (критерий готовности #164). Итог не используется здесь для решения
-// стоп/пуш — это #165; #164 только сообщает {ok, status, url} и логирует попытки.
-function checkProdHealth(
-    cfg = config,
-    { execFn = execFileSync, sleepFn = sleep, logFn = log } = {},
-) {
-    const dc = (cfg && cfg.deployCheck) || {};
-    const url =
-        typeof dc.healthUrl === 'string' && dc.healthUrl ? dc.healthUrl : 'https://pixeltanks.ru';
-    // #TFO9D: healthUrl из конфига обязан быть http(s)-адресом. Кривое значение (пустая
-    // схема, ведущий `-`) — это не «прод упал», а ошибка конфига; фиксируем её отдельно,
-    // fail-closed (ok:false), не отправляя мусор в curl-argv.
-    if (!/^https?:\/\//.test(url)) {
-        logFn(
-            `⚠ Пост-мердж: healthUrl "${url}" не похож на http(s)-адрес — проверка не выполнена.`,
-        );
-        return { ok: false, status: 0, url };
-    }
-    const timeoutSec = Math.max(
-        1,
-        Math.round(positiveIntOrDefault(dc.healthTimeoutMs, 10_000) / 1000),
-    );
-    const retries = positiveIntOrDefault(dc.healthRetries, 3);
-    const retryDelayMs = positiveIntOrDefault(dc.healthRetryDelayMs, 5_000);
-
-    let status = 0;
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        status = probeHttpStatus(url, timeoutSec, execFn);
-        if (status === 200) {
-            logFn(`✓ Пост-мердж: healthcheck ${url} — HTTP 200 (попытка ${attempt}/${retries}).`);
-            return { ok: true, status, url };
-        }
-        logFn(
-            `⚠ Пост-мердж: healthcheck ${url} — HTTP ${status || '—'} (попытка ${attempt}/${retries}).`,
-        );
-        if (attempt < retries) sleepFn(retryDelayMs);
-    }
-    logFn(
-        `⚠ Пост-мердж: healthcheck ${url} не вернул 200 после ${retries} попыток ` +
-            `(последний код ${status || '—'}).`,
-    );
-    return { ok: false, status, url };
-}
-
-// #THS8S: единственный предикат «workflow зелёный» — и для решения «звать ли
-// healthcheck» в runLoop, и для первой ветки classifyDeployOutcome (как отрицание).
-// Иначе условие продублировано в двух местах и при уточнении классификации (например,
-// neutral/skipped станет допустимым) одно из них легко забыть — healthcheck разошёлся
-// бы с вердиктом.
-function isWorkflowGreen(outcome) {
-    return !!outcome && outcome.status === 'completed' && outcome.conclusion === 'success';
-}
-
-// #165: классификация пост-мердж итога → зелёный/красный (alert-first, fail-closed).
-// GREEN только при ПОДТВЕРЖДЁННО успешном workflow И здоровом проде. Всё прочее —
-// упавший/недосмотренный workflow (failure/timeout/not-found), недоступный прод,
-// брошенная ошибка чтения — красный: «не знаю» опаснее ложного «всё хорошо», иначе
-// следующий мердж передеплоит недоехавший main. Чистая функция (тестируема без gh/сети);
-// `reason` — человекочитаемая причина для пуша и лога. health=null трактуем как
-// «не проверяли» (workflow сам уже не зелёный) — до healthcheck дело не дошло.
-function classifyDeployOutcome(outcome, health) {
-    if (!isWorkflowGreen(outcome)) {
-        const status = outcome && outcome.status ? outcome.status : 'unknown';
-        const concl = outcome && outcome.conclusion ? ` (${outcome.conclusion})` : '';
-        return { red: true, reason: `workflow ${status}${concl}` };
-    }
-    if (health && health.ok === false) {
-        return { red: true, reason: `прод не отвечает (HTTP ${health.status || '—'})` };
-    }
-    return { red: false, reason: 'workflow success + прод HTTP 200' };
-}
+// #364 (трек «Фреймворк ralph», фаза 3): деплой-проверка фазы — плейсхолдер маркера
+// деплоя (deployPhasePlaceholder), sha squash-мерджа (mergedShaOf), поллинг deploy-workflow
+// (waitForDeployRun/deployWaitMessage), HTTP-healthcheck прода (probeHttpStatus/
+// checkProdHealth) и классификация итога (isWorkflowGreen/classifyDeployOutcome) — вынесены
+// в deploy-check.ts тем же приёмом, что gate.ts (#362) и review.ts (#363). Фабрика захватывает
+// контекст ralph.js (ленивый config через getConfig, ghJson, shq, log, sleep, guardSideEffect,
+// positiveIntOrDefault, SHA40_RE) один раз, а возвращённые функции сохраняют показательную DI
+// и читаются здесь как const из деструктуризации — тесты (ralph.test.js) зовут их через тот же
+// ре-экспорт module.exports. Поведение НЕ меняется.
+const { createDeployCheckModule } = require('./deploy-check.ts');
+const {
+    deployPhasePlaceholder,
+    mergedShaOf,
+    deployWaitMessage,
+    waitForDeployRun,
+    probeHttpStatus,
+    checkProdHealth,
+    isWorkflowGreen,
+    classifyDeployOutcome,
+} = createDeployCheckModule({
+    getConfig: () => config,
+    ghJson,
+    shq,
+    log,
+    sleep,
+    guardSideEffect,
+    positiveIntOrDefault,
+    SHA40_RE,
+});
 
 // ── State ────────────────────────────────────────────────────────────────────
 // Схема: { count, milestone, submitted }.
