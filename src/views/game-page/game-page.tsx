@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { GameCanvas } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
 import { GameControls } from '@/widgets/game-controls';
@@ -18,6 +19,17 @@ export function GamePage({ seed }: TGamePageProps = {}) {
                 <GameControls />
             </div>
             <GameOverDialog seed={seed} />
+            <Link
+                href="/design-system"
+                aria-label="Витрина компонентов"
+                style={{
+                    top: 'max(1rem, env(safe-area-inset-top))',
+                    right: 'max(1rem, env(safe-area-inset-right))',
+                }}
+                className="fixed min-h-11 min-w-11 flex items-center justify-center rounded-sm bg-panel-raised text-text-muted opacity-50 transition-all hover:opacity-100 hover:text-primary focus-visible:ring-2 focus-visible:ring-primary"
+            >
+                ◆
+            </Link>
         </main>
     );
 }
