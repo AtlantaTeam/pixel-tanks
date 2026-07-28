@@ -73,6 +73,21 @@ const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
+
+// #232: ядро подключает TS-модули (ralph-util.ts, side-effect-guard.ts и др.) напрямую,
+// без билд-шага — их исполняет нативный type stripping Node 24 (проект стандартизует
+// Node 24, engines в package.json это фиксирует). На Node <24 первый же require('*.ts')
+// упал бы криптичным ERR_UNKNOWN_FILE_EXTENSION в глубине зависимостей; отсекаем раньше
+// внятным сообщением (инвариант №1 — fail-closed). fail() ещё не определён — пишем в
+// stderr и выходим напрямую.
+const nodeMajor = Number(process.versions.node.split('.')[0]);
+if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
+    console.error(
+        `❌ Раннер требует Node >=24 (нативный type stripping для .ts-модулей ядра), запущен на ${process.versions.node}.`,
+    );
+    process.exit(1);
+}
+
 const { sendTelegramMessage, telegramConfigFromEnv } = require('./telegram-notifier.js');
 const { buildSanitizedGateEnv } = require('./gate-env.js');
 
@@ -143,22 +158,23 @@ let config;
 // снова невидима. Поэтому каждая попытка ещё и записывается в журнал, а общий
 // afterEach в тестах валит тест, если журнал не пуст. Журнал наполняется ТОЛЬКО под
 // предохранителем: в бою массив всегда пуст и не растёт.
-const NO_SIDE_EFFECTS = process.env.RALPH_NO_SIDE_EFFECTS === '1';
-const sideEffectAttempts = [];
+//
+// #145: сам предохранитель вынесен в side-effect-guard.ts — общий модуль на ralph.js,
+// telegram-notifier.js и security-audit.mjs (раньше три независимые копии с тремя
+// журналами, сверяемыми вручную в test-setup.js). hint параметризован там же —
+// подсказка про DI-коллабораторов ralph.js остаётся здесь, рядом с местом использования.
+const {
+    NO_SIDE_EFFECTS,
+    sideEffectAttempts,
+    guardSideEffect: sharedGuardSideEffect,
+} = require('./side-effect-guard.ts');
 
-// Один вход для всех боевых дефолтов, а не только для sh(). Ревью PR #141 показало,
-// что защищать один канал мало: тест, забывший подменить, например, saveStateFn или
-// installFn, перезаписал бы ralph.state.json (фазовый указатель ЖИВОГО прогона — гейт
-// гоняет npm run test прямо в worktree раннера) или запустил бы настоящий npm ci.
-// Последствия хуже мусора в логе, а предохранитель их не видел.
+const SIDE_EFFECT_HINT =
+    'Тест дошёл до боевого дефолта. Подмени зависимость в deps теста ' +
+    '(shFn, saveStateFn, installFn, spawnFn, …).';
+
 function guardSideEffect(what) {
-    if (!NO_SIDE_EFFECTS) return;
-    sideEffectAttempts.push(what);
-    throw new Error(
-        `${what} — побочка в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1).\n` +
-            `Тест дошёл до боевого дефолта. Подмени зависимость в deps теста ` +
-            `(shFn, saveStateFn, installFn, spawnFn, …).`,
-    );
+    sharedGuardSideEffect(what, SIDE_EFFECT_HINT);
 }
 
 function log(msg) {
@@ -177,24 +193,14 @@ function fail(msg) {
 
 // #133: sh() исполняет СТРОКУ через /bin/sh, поэтому любое значение, попадающее
 // в неё, обязано быть заквотировано (14 мест; ещё две — remoteHead и
-// --match-head-commit — идут голыми, но там строгий SHA40_RE-фильтр). Раньше значения подставлялись голыми либо в
-// двойных кавычках — а внутри двойных кавычек `$( )`, обратные кавычки и `\`
-// раскрываются шеллом. Источники не гипотетические: milestone и branch приходят
-// из конфига, номера PR и заголовки — из ответов gh, то есть с публичного
-// GitHub, где заголовок issue пишет кто угодно.
+// --match-head-commit — идут голыми, но там строгий SHA40_RE-фильтр). Стратегически
+// правильнее вообще уйти от шелла на execFileSync с argv — так уже сделано для claude
+// (см. buildClaudeArgs, #66/#67). Здесь это отдельный крупный рефактор всех вызовов
+// sh(); квотирование закрывает дыру сейчас.
 //
-// Одинарные кавычки в POSIX sh не интерпретируют ВООБЩЕ ничего, поэтому
-// достаточно закрыть-экранировать-открыть на каждой одинарной кавычке внутри
-// значения: don't → 'don'\''t'. Это снимает весь класс разом, в отличие от
-// валидации по списку разрешённых символов — та отсекала бы легальные milestone
-// с кириллицей, скобками и «·».
-//
-// Стратегически правильнее вообще уйти от шелла на execFileSync с argv — так уже
-// сделано для claude (см. buildClaudeArgs, #66/#67). Здесь это отдельный крупный
-// рефактор всех вызовов sh(); квотирование закрывает дыру сейчас.
-function shq(value) {
-    return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
+// #232: сама shq (и positiveIntOrDefault/sleep ниже) вынесена в общий util-модуль —
+// копия жила и здесь, и в telegram-notifier.js, правка в одной не доезжала до другой.
+const { shq, positiveIntOrDefault, sleep } = require('./ralph-util.ts');
 
 // env (#189): по умолчанию дочерний процесс наследует полный env раннера — так гонятся
 // git-команды хореографии гейта, которым нужны секреты (GH_TOKEN для fetch). Но команды
@@ -237,12 +243,6 @@ function shArgv(file, args, { env } = {}) {
         ...EXEC_OPTS,
         ...(env ? { env } : {}),
     }).trim();
-}
-
-// Синхронный sleep: раннер — синхронный скрипт (execSync-хореография), event loop
-// свободен, поэтому Atomics.wait — корректный способ подождать без busy-loop.
-function sleep(ms) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 // M3: все ЧТЕНИЯ через gh — с ретраями и backoff. AFK-прогон идёт часами без
@@ -859,13 +859,6 @@ function syncDepsIfLockChanged({
 // числом, а тихое приведение прячет опечатку вместо того, чтобы её проявить.
 function minutesOrDefault(value, dflt) {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : dflt;
-}
-
-// То же для бюджета ходов, но строго > 0: maxTurns: 0 — не «без ограничения», а
-// сессия, которой не дали сделать ни хода. Прежний `||` молча ронял такое
-// значение на кодерские 200, что противоречило аргументации PR про `??`.
-function positiveIntOrDefault(value, dflt) {
-    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : dflt;
 }
 
 function apiLimitWaitMs(output, cfg) {
@@ -1678,6 +1671,12 @@ const BASE_GATE_CHECKS = [
     ['lint', 'npm run lint'],
     ['lint:fsd', 'npm run lint:fsd'],
     ['typecheck', 'npm run typecheck'],
+    // #232: ядро раннера (.claude/ralph/*.ts) — отдельный tsconfig под нативный type
+    // stripping Node 24 (erasable-only синтаксис, nodenext-резолюция), а не под Next.js
+    // (dom-либы, bundler-резолюция) из корневого typecheck — тот .ts-файлы ядра формально
+    // видит по глобу **/*.ts, но не той конфигурацией, которой их реально исполняет
+    // Node. Секундный (маленький модуль) — стоит рядом с typecheck, до дорогого test.
+    ['typecheck:ralph', 'npm run typecheck:ralph'],
     ['test', 'npm run test --silent'],
 ];
 

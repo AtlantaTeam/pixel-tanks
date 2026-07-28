@@ -39,33 +39,30 @@ const TELEGRAM_MAX_TEXT = 4096;
 const TELEGRAM_DEFAULT_ATTEMPTS = 3;
 const TELEGRAM_RETRY_BASE_MS = 5000;
 
-// Синхронный sleep для паузы между попытками — тот же Atomics.wait-приём, что и
-// `sleep()` в ralph.js (event loop свободен, раннер синхронный). Не заведён под
-// guardSideEffect: как и sleepFn в ralph.js, это DI ради скорости тестов, а не
+// #232: sleep/positiveIntOrDefault вынесены в общий util-модуль без побочек (копия
+// жила и здесь, и в ralph.js — правка в одной не доезжала до другой, ревью PR #231);
+// не требует ralph.js, тот же приём, что и side-effect-guard.ts ниже. Не заведены под
+// guardSideEffect: как и sleepFn в ralph.js, sleep — DI ради скорости тестов, а не
 // граница anti-RCE — забытый мок делает тест медленным, а не боевым.
-function realSleep(ms) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
+// Сознательное ужесточение (#132): локальная копия прощала строку через Number(value)
+// (attempts: '5' → 5), общая — строгая typeof number ('5' → дефолт). Для текущих
+// вызовов безопасно (attempts/retryBaseMs передают только тесты), строгая семантика
+// правильнее; будущему потребителю из конфига число слать числом, не строкой.
+const { positiveIntOrDefault, sleep: realSleep } = require('./ralph-util.ts');
 
-function positiveIntOrDefault(value, fallback) {
-    const n = Number(value);
-    return Number.isInteger(n) && n > 0 ? n : fallback;
-}
-
-// Тот же предохранитель, что #138 в ralph.js (см. комментарий там), но свой
-// журнал: модуль самостоятельный, require('./ralph.js') отсюда создал бы
-// циклическую зависимость, как только ralph.js подключит этот модуль в pushEvent
-// (#86). test-setup.js сверяет журналы обоих модулей в одном afterEach.
-const NO_SIDE_EFFECTS = process.env.RALPH_NO_SIDE_EFFECTS === '1';
-const sideEffectAttempts = [];
+// Тот же предохранитель, что #138 в ralph.js (см. комментарий там), но модуль
+// самостоятельный: require('./ralph.js') отсюда создал бы циклическую зависимость,
+// как только ralph.js подключит этот модуль в pushEvent (#86). #145: сам предохранитель
+// (NO_SIDE_EFFECTS/sideEffectAttempts/guardSideEffect) вынесен в side-effect-guard.ts —
+// журнал общий на ralph.js/telegram-notifier.js/security-audit.mjs, test-setup.js
+// сверяет один.
+const {
+    sideEffectAttempts,
+    guardSideEffect: sharedGuardSideEffect,
+} = require('./side-effect-guard.ts');
 
 function guardSideEffect(what) {
-    if (!NO_SIDE_EFFECTS) return;
-    sideEffectAttempts.push(what);
-    throw new Error(
-        `${what} — побочка в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1).\n` +
-            'Подмени execFn в опциях sendTelegramMessage.',
-    );
+    sharedGuardSideEffect(what, 'Подмени execFn в опциях sendTelegramMessage.');
 }
 
 function realExecFn(...args) {

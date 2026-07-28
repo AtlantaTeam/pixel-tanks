@@ -3407,7 +3407,7 @@ describe('ветковая хореография в worktree раннера (#7
     describe('gateChecksFor — состав гейта по профилю (#80)', () => {
         const names = (checks) => checks.map(([name]) => name);
 
-        it('playground = ровно базовые 9 чеков, без толстых; канарейка, храповик, only- и skip-детект первыми (#190, #156, #160, #161)', () => {
+        it('playground = ровно базовые 10 чеков, без толстых; канарейка, храповик, only- и skip-детект первыми (#190, #156, #160, #161)', () => {
             expect(names(gateChecksFor('playground'))).toEqual([
                 'security:canary',
                 'test:ratchet',
@@ -3417,6 +3417,7 @@ describe('ветковая хореография в worktree раннера (#7
                 'lint',
                 'lint:fsd',
                 'typecheck',
+                'typecheck:ralph',
                 'test',
             ]);
         });
@@ -3431,6 +3432,7 @@ describe('ветковая хореография в worktree раннера (#7
                 'lint',
                 'lint:fsd',
                 'typecheck',
+                'typecheck:ralph',
                 'security',
                 'coverage',
                 'e2e',
@@ -6550,23 +6552,18 @@ describe('globToRegExp — ветки конвертера, не покрыты�
     });
 });
 
-describe('positiveIntOrDefault — бюджет ходов ревью (#132)', () => {
-    const { positiveIntOrDefault } = ralph;
+// #232: shq/positiveIntOrDefault/sleep вынесены в общий ralph-util.ts — единственный
+// источник правды; их полные негативные наборы (в т.ч. anti-injection round-trip shq
+// через живой /bin/sh) живут в ralph-util.test.ts. Здесь — только смоук ре-экспорта:
+// ralph.js отдаёт ровно тот же объект, а не свою копию (иначе дубль снова разъедется).
+describe('ре-экспорт утилит из ralph-util.ts (#232)', () => {
+    const util = require('./ralph-util.ts');
 
-    it('нормальное значение проходит', () => {
-        expect(positiveIntOrDefault(80, 200)).toBe(80);
-    });
-
-    // maxTurns: 0 — не «без ограничения», а сессия без единого хода.
-    it.each([
-        ['ноль', 0],
-        ['отрицательное', -1],
-        ['дробное', 12.5],
-        ['строка', '80'],
-        ['undefined', undefined],
-        ['null', null],
-    ])('%s → дефолт', (_name, value) => {
-        expect(positiveIntOrDefault(value, 200)).toBe(200);
+    // sleep в module.exports ralph.js не выведен (используется только внутри), поэтому
+    // сверяем экспортируемую пару — этого достаточно, чтобы поймать «завёл вторую копию».
+    it('shq/positiveIntOrDefault — тот же объект, что в ralph-util.ts', () => {
+        expect(ralph.shq).toBe(util.shq);
+        expect(ralph.positiveIntOrDefault).toBe(util.positiveIntOrDefault);
     });
 });
 
@@ -6603,47 +6600,6 @@ describe('phaseDiffFiles — не-ASCII пути и пустой дифф (#132)
         );
         expect(logs.join('\n')).toMatch(/не задана/i);
         expect(logs.join('\n')).not.toMatch(/небезопасн/i);
-    });
-});
-
-// ── #133: квотирование значений, уходящих в sh() ─────────────────────────────
-// sh() исполняет строку через /bin/sh. milestone и branch приходят из конфига,
-// номера и заголовки — из ответов gh (публичный GitHub). Раньше значения
-// подставлялись голыми или в двойных кавычках, где $( ) раскрывается.
-
-describe('shq — POSIX-квотирование для sh() (#133)', () => {
-    const { shq } = ralph;
-    const { execSync } = require('node:child_process');
-
-    it('оборачивает обычное значение в одинарные кавычки', () => {
-        expect(shq('feature/x')).toBe("'feature/x'");
-    });
-
-    it('одинарная кавычка внутри значения не разрывает квотирование', () => {
-        expect(shq("don't")).toBe(`'don'\\''t'`);
-    });
-
-    // Главный сценарий: подстановка НЕ должна исполниться. Проверяем на живом
-    // шелле, а не сверкой строк — иначе тест доказывает лишь мои представления
-    // о квотировании, а не поведение /bin/sh.
-    it.each([
-        ['подстановка команды', '$(echo ВЗЛОМ)'],
-        ['обратные кавычки', '`echo ВЗЛОМ`'],
-        ['разделитель команд', '; echo ВЗЛОМ'],
-        ['переменная', '$HOME'],
-        ['кавычка и подстановка', `'; echo ВЗЛОМ; echo '`],
-    ])('%s проходит через шелл дословно', (_name, payload) => {
-        const out = execSync(`printf '%s' ${shq(payload)}`, { encoding: 'utf-8' });
-        // Дословно = payload вернулся как есть. Если бы шелл его ИСПОЛНИЛ, на
-        // выходе было бы 'ВЗЛОМ' (или подставленный $HOME) вместо самой строки.
-        expect(out).toBe(payload);
-        expect(out.trim()).not.toBe('ВЗЛОМ');
-    });
-
-    it('кириллица и типографика milestone переживают квотирование дословно', () => {
-        const milestone = 'Прод-режим ralph · Фаза 4: Толстый гейт (prod)';
-        const out = execSync(`printf '%s' ${shq(milestone)}`, { encoding: 'utf-8' });
-        expect(out).toBe(milestone);
     });
 });
 
