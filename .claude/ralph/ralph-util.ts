@@ -28,6 +28,12 @@ export function positiveIntOrDefault(value: unknown, dflt: number): number {
 
 // Синхронный sleep: раннер и телеграм-ретраи — синхронный код (execSync-хореография),
 // event loop свободен, поэтому Atomics.wait — корректный способ подождать без busy-loop.
+// Валидация ms на правильном слое (#232): Atomics.wait трактует NaN-таймаут как +∞ —
+// вечный сон посреди прогона. Пока функция была приватной копией, защиту держали
+// вызывающие (minutesOrDefault в ralph.js, комментарий у base в telegram-notifier.js);
+// теперь это общий API фреймворка — новый потребитель про эту мину не знает, поэтому
+// отсекаем NaN/±∞/отрицательное здесь: нечего ждать — сразу возвращаемся.
 export function sleep(ms: number): void {
+    if (!Number.isFinite(ms) || ms < 0) return;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

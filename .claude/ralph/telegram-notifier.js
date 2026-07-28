@@ -44,6 +44,10 @@ const TELEGRAM_RETRY_BASE_MS = 5000;
 // не требует ralph.js, тот же приём, что и side-effect-guard.ts ниже. Не заведены под
 // guardSideEffect: как и sleepFn в ralph.js, sleep — DI ради скорости тестов, а не
 // граница anti-RCE — забытый мок делает тест медленным, а не боевым.
+// Сознательное ужесточение (#132): локальная копия прощала строку через Number(value)
+// (attempts: '5' → 5), общая — строгая typeof number ('5' → дефолт). Для текущих
+// вызовов безопасно (attempts/retryBaseMs передают только тесты), строгая семантика
+// правильнее; будущему потребителю из конфига число слать числом, не строкой.
 const { positiveIntOrDefault, sleep: realSleep } = require('./ralph-util.ts');
 
 // Тот же предохранитель, что #138 в ralph.js (см. комментарий там), но модуль

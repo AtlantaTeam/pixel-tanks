@@ -73,6 +73,21 @@ const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
+
+// #232: ядро подключает TS-модули (ralph-util.ts, side-effect-guard.ts и др.) напрямую,
+// без билд-шага — их исполняет нативный type stripping Node 24 (проект стандартизует
+// Node 24, engines в package.json это фиксирует). На Node <24 первый же require('*.ts')
+// упал бы криптичным ERR_UNKNOWN_FILE_EXTENSION в глубине зависимостей; отсекаем раньше
+// внятным сообщением (инвариант №1 — fail-closed). fail() ещё не определён — пишем в
+// stderr и выходим напрямую.
+const nodeMajor = Number(process.versions.node.split('.')[0]);
+if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
+    console.error(
+        `❌ Раннер требует Node >=24 (нативный type stripping для .ts-модулей ядра), запущен на ${process.versions.node}.`,
+    );
+    process.exit(1);
+}
+
 const { sendTelegramMessage, telegramConfigFromEnv } = require('./telegram-notifier.js');
 const { buildSanitizedGateEnv } = require('./gate-env.js');
 

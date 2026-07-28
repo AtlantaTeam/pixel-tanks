@@ -11,10 +11,15 @@ import {
     evaluateBaselineChange,
     mergePushedKeys,
 } from './baseline-policy.mjs';
-import * as sideEffectGuard from '../.claude/ralph/side-effect-guard.ts';
+import { guardSideEffect as sharedGuardSideEffect } from '../.claude/ralph/side-effect-guard.ts';
+// #145: журнал попыток — тот же общий массив из side-effect-guard.ts; ре-экспортируем
+// его как live binding, а не деструктурируем локальной константой (форма записи показывает
+// намерение «лишь ре-экспорт», а не «завёл свою копию»).
+export { sideEffectAttempts } from '../.claude/ralph/side-effect-guard.ts';
 
 // telegram-notifier.js — CommonJS-модуль раннера (#85), самостоятельный: он не тянет
-// ralph.js и уже носит собственный guardSideEffect, поэтому в тестах побочка не улетит.
+// ralph.js, а предохранитель берёт из того же общего side-effect-guard.ts, поэтому в
+// тестах побочка не улетит.
 const { sendTelegramMessage } = createRequire(import.meta.url)(
     '../.claude/ralph/telegram-notifier.js',
 );
@@ -240,9 +245,9 @@ const PUSH_DEDUP_PATH = path.join(
 // #145: предохранитель (NO_SIDE_EFFECTS/sideEffectAttempts/guardSideEffect) вынесен в
 // side-effect-guard.ts — общий модуль на ralph.js/telegram-notifier.js/security-audit.mjs,
 // журнал один на все три, test-setup.js сверяет его одним afterEach вместо трёх.
-export const { sideEffectAttempts } = sideEffectGuard;
+// sideEffectAttempts ре-экспортируется выше (`export { … } from …`), рядом с импортом.
 function guardSideEffect(what) {
-    sideEffectGuard.guardSideEffect(
+    sharedGuardSideEffect(
         what,
         'Тест дошёл до боевого дефолта — подмени writeFn у savePushedKeys.',
     );
