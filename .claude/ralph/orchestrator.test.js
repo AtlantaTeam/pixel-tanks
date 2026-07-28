@@ -1,12 +1,24 @@
-// Юнит-тесты на функции Linux-порта ralph.js (#66/#67 → #69).
-// Покрываем ровно то, что изменил порт: построение argv для claude (guard/путь —
-// вместо shell-строки), сам вызов spawn-функции с shell:false (граница anti-RCE
-// защиты, не только сборка argv), формат excerpt (вместо shell-санитизации) и
-// парсинг API-лимита. Тесты детерминированы: время мокается фейк-таймерами,
-// платформо- и TZ-независимы (deltas считаются между двумя локально-
-// сконструированными Date).
-// Окружение (node, без DOM-setupFiles приложения) задаёт project "ralph" в
-// vitest.config.ts — этому файлу отдельный докблок @vitest-environment не нужен.
+// Тесты оркестратора петли (orchestrator.ts) через боевую поверхность ralph.js — так их
+// видит вызывающий: entry собирает фабрику createOrchestrator и ре-экспортирует функции,
+// поэтому здесь проверяется и поведение петли целиком (сессия claude, preflight, runLoop,
+// ветковая хореография, монитор, ревью-контекст, milestones/доска), и контракт самой
+// фабрики/«тонкость» entry (створки блоки в конце файла).
+//
+// Файл — единственный тест-файл модуля orchestrator.ts (#366, один файл на модуль):
+// намеренно .js, а не .ts — дословный перенос блоков из монолитного ralph.test.js (тоже
+// .js) под tsc --strict потребовал бы переписывания моков под явные типы на ~4600 строк,
+// то есть менял бы суть сценариев, а не их расположение. .claude/ralph/tsconfig.json
+// включает только **/*.ts, поэтому файл вне периметра typecheck:ralph — как и остальные
+// тесты .js-модулей (monitor.test.js, deadman.test.js, telegram-notifier.test.js,
+// gate-env.test.js); orchestrator.ts сам по себе остаётся типизированным и проверяемым.
+//
+// Файл собран при разнесении монолитного ralph.test.js по модульным тест-файлам (#366):
+// блоки перенесены как есть, включая их фикстуры и комментарии.
+//
+// Тесты детерминированы: время мокается фейк-таймерами, платформо- и TZ-независимы.
+// Побочек нет ни одной: все коллабораторы (sh/shArgv/spawn/gh/fs) инжектируются, а
+// боевые дефолты под RALPH_NO_SIDE_EFFECTS=1 громко падают на guardSideEffect (#138) —
+// общий afterEach из test-setup.js сверяет журнал попыток.
 //
 // spawnClaude тестируем через явную инъекцию фейковой spawn-функции (3-й параметр),
 // НЕ через vi.mock('node:child_process'): мок модуля на границе CJS require()
@@ -19,9 +31,6 @@ import fs from 'node:fs';
 import ralph from './ralph.js';
 
 const {
-    resolveProfile,
-    deepMerge,
-    parseProfileFlag,
     startMonitor,
     stopMonitor,
     adoptMonitor,
@@ -29,12 +38,6 @@ const {
     cmdlineIncludes,
     isMonitorProcess,
     isRalphMonitorProcess,
-    isRalphProcess,
-    lockAlive,
-    writeLock,
-    removeLock,
-    releaseLockIfOurs,
-    acquireLock,
     acquireRunnerLock,
     listMonitorPids,
     processPpid,
@@ -42,20 +45,9 @@ const {
     ensureMonitorAlive,
     buildClaudeArgs,
     formatExcerpt,
-    parseResetWaitMs,
-    API_LIMIT_RE,
     spawnClaude,
-    tunnelHealthy,
     ensureTunnel,
-    tunnelCheckEnabled,
     pushEvent,
-    probeEgress,
-    restartTunnel,
-    resolveWorktreePath,
-    parseWorktreeList,
-    runnerWorktreeReady,
-    ensureRunnerWorktree,
-    lockHash,
     syncDepsIfLockChanged,
     preflight,
     runLoop,
@@ -64,17 +56,34 @@ const {
     parkOnOriginMain,
     gateChecksFor,
     checksGreen,
-    shArgv,
     tryMergePhase,
     waitForDeployRun,
     mergedShaOf,
-    probeHttpStatus,
     checkProdHealth,
-    classifyDeployOutcome,
     getLastRedCheck,
     getVerifiedHead,
     getLastGatePr,
 } = ralph;
+
+// #252: git-хелперы гейта разделены на shFn (чтения) и runArgvFn (argv-мутации). Этот
+// рекордер пишет ОБА канала в один общий `cmds`, нормализуя runArgvFn в `${file} ${args}`,
+// чтобы ассерты на ПОРЯДОК команд остались осмысленными. Общий на phaseDiffFiles и
+// refreshRunnerWorktree — иначе правка формата записи требовала бы синхронных правок в двух.
+const mkCmdRecorders = (shImpl) => {
+    const cmds = [];
+    return {
+        cmds,
+        shFn: (c) => {
+            cmds.push(c);
+            return shImpl ? shImpl(c) : '';
+        },
+        runArgvFn: (file, args) => {
+            const cmd = `${file} ${args.join(' ')}`;
+            cmds.push(cmd);
+            return shImpl ? shImpl(cmd) : '';
+        },
+    };
+};
 
 describe('buildClaudeArgs — построение argv для claude -p (ядро порта)', () => {
     it('минимальный вызов: -p <prompt> --max-turns <n> и больше ничего при пустом конфиге', () => {
@@ -253,30 +262,6 @@ describe('spawnClaude — фактический вызов spawn-функции
     });
 });
 
-describe('#195: тесты изменённых вызовов гейта на argv (#193)', () => {
-    // #195: Критерий готовности (2) — побочки через DI, RALPH_NO_SIDE_EFFECTS=1,
-    // guardSideEffect: настоящая shArgv в тестовом окружении бросает И пишет в журнал.
-    //
-    // Критерий (1) — «значения с пробелами/спецсимволами не интерпретируются шеллом» —
-    // это ПОВЕДЕНИЕ argv-границ, а не текст реализации: проверяется ассертами на
-    // реальные argv-массивы в describe-блоках ниже (checksGreen — «git fetch/checkout
-    // раздельными элементами argv»; tryMergePhase — «номер PR и sha отдельными
-    // элементами»; parkOnOriginMain — `['git', ['checkout', '--detach', 'origin/main']]`).
-    // Прежние toString()-ассерты (`toContain('runArgvFn')`/`toContain('shArgv')`) убраны:
-    // они проверяли текст функции, а не поведение (rules/tests.md), и остались бы
-    // зелёными даже при откате мутации на строковый shFn — ровно ту регрессию, ради
-    // которой блок написан, они не ловили.
-
-    it('shArgv в тестовом окружении бросает через guardSideEffect и пишет попытку в журнал', () => {
-        // RALPH_NO_SIDE_EFFECTS=1 запрещает реальный execFileSync. Зовём НАСТОЯЩУЮ
-        // ralph.shArgv (не голый идентификатор — иначе ReferenceError замаскировал бы
-        // отсутствие вызова), сверяем и throw, и формат записи журнала #138 — иначе
-        // общий afterEach из test-setup.js уронил бы прогон на непустом sideEffectAttempts.
-        expect(() => ralph.shArgv('echo', ['hello'])).toThrow();
-        expect(ralph.sideEffectAttempts.splice(0)).toEqual(['shArgv(echo hello)']);
-    });
-});
-
 describe('formatExcerpt — хвост вывода упавшего чека для heal-промпта', () => {
     it('сплющивает переводы строк, табы и повторные пробелы в один пробел', () => {
         expect(formatExcerpt('a\n\nb\t\tc   d')).toBe('a b c d');
@@ -301,195 +286,6 @@ describe('formatExcerpt — хвост вывода упавшего чека д
         expect(out).toContain('`foo()`');
         expect(out).toContain('$undefined');
         expect(out).toContain('"quoted"');
-    });
-});
-
-describe('parseResetWaitMs — время до сброса окна API-лимита', () => {
-    // Фиксируем «сейчас» = локальное 2026-01-15 10:00:00. Delta между двумя
-    // локально-сконструированными Date не зависит от TZ хоста → тест детерминирован.
-    const H = 3600_000;
-    beforeEach(() => {
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date(2026, 0, 15, 10, 0, 0, 0));
-    });
-    afterEach(() => {
-        vi.useRealTimers();
-    });
-
-    it('«resets 11am» (позже сейчас в тот же день) → 1 час', () => {
-        expect(parseResetWaitMs('you can retry — resets 11am')).toBe(1 * H);
-    });
-
-    it('«reset at 7:30pm» → 9.5 часа (12h-формат, pm)', () => {
-        expect(parseResetWaitMs('limit will reset at 7:30pm')).toBe(9.5 * H);
-    });
-
-    it('«resets 3am» (уже прошло сегодня) → переносится на завтра', () => {
-        // с 10:00 до завтрашних 03:00 = 17 часов
-        expect(parseResetWaitMs('resets 3am')).toBe(17 * H);
-    });
-
-    it('«resets 12am» трактуется как полночь (h=0), не 12:00', () => {
-        // ближайшая полночь — завтра 00:00 = через 14 часов
-        expect(parseResetWaitMs('resets 12am')).toBe(14 * H);
-    });
-
-    it('«resets 12pm» трактуется как полдень (h=12) → 2 часа', () => {
-        expect(parseResetWaitMs('resets 12pm')).toBe(2 * H);
-    });
-
-    it('невалидный час (>23) → null (вызывающий возьмёт fallback)', () => {
-        expect(parseResetWaitMs('resets 27')).toBeNull();
-    });
-
-    it('нет упоминания reset → null', () => {
-        expect(parseResetWaitMs('just a normal claude output, all good')).toBeNull();
-    });
-});
-
-describe('API_LIMIT_RE — детекция маркера лимита в выводе сессии', () => {
-    it.each([
-        "You've hit your session limit · resets 1:20pm",
-        'usage limit reached',
-        'rate-limit exceeded',
-        'rate limit hit',
-        '5-hour limit will reset soon',
-        'your window resets at 3am',
-        'limit exceeded',
-    ])('распознаёт маркер лимита: %s', (text) => {
-        expect(API_LIMIT_RE.test(text)).toBe(true);
-    });
-
-    it.each([
-        'All tests passed',
-        'Error: cannot find module',
-        'build succeeded in 12s',
-        'no problems detected',
-    ])('НЕ ложно-срабатывает на обычном выводе: %s', (text) => {
-        expect(API_LIMIT_RE.test(text)).toBe(false);
-    });
-});
-
-describe('tunnelHealthy — ядро egress-проверки туннеля (#92)', () => {
-    it('egress точно равен ожидаемому → здоров', () => {
-        expect(tunnelHealthy('203.0.113.7', '203.0.113.7')).toBe(true);
-    });
-
-    it('egress не тот (вышли не через прокси) → не здоров', () => {
-        expect(tunnelHealthy('198.51.100.2', '203.0.113.7')).toBe(false);
-    });
-
-    it('пустой egress (curl упал/таймаут) → не здоров', () => {
-        expect(tunnelHealthy('', '203.0.113.7')).toBe(false);
-    });
-
-    it('пустой ожидаемый (egress не с чем сверять) → не здоров', () => {
-        expect(tunnelHealthy('203.0.113.7', '')).toBe(false);
-    });
-});
-
-describe('tunnelCheckEnabled — включение health-check', () => {
-    const savedEnv = { ...process.env };
-    afterEach(() => {
-        process.env = { ...savedEnv };
-    });
-
-    it('по умолчанию (нет env-флага, config без tunnelCheck) — выключен', () => {
-        delete process.env.RALPH_TUNNEL_CHECK;
-        expect(tunnelCheckEnabled({})).toBe(false);
-    });
-
-    it('config.tunnelCheck.enabled=true → включён', () => {
-        delete process.env.RALPH_TUNNEL_CHECK;
-        expect(tunnelCheckEnabled({ tunnelCheck: { enabled: true } })).toBe(true);
-    });
-
-    it('env RALPH_TUNNEL_CHECK=1 включает даже при config.enabled=false (мост до профилей)', () => {
-        process.env.RALPH_TUNNEL_CHECK = '1';
-        expect(tunnelCheckEnabled({ tunnelCheck: { enabled: false } })).toBe(true);
-    });
-});
-
-describe('ensureTunnel — оркестровка health-check (мок curl: совпал/не совпал IP)', () => {
-    // ensureTunnel логирует через log() (console.log + запись в ralph.log) — глушим
-    // оба побочных эффекта. Зависимости (probe/restart/sleepFn/push) инжектируем, так
-    // что ни реального curl, ни systemctl, ни сна тут нет — тест детерминирован.
-    const savedEnv = { ...process.env };
-    beforeEach(() => {
-        vi.spyOn(console, 'log').mockImplementation(() => {});
-        vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {});
-        process.env = {
-            ...savedEnv,
-            RALPH_TUNNEL_CHECK: '1',
-            RALPH_EXPECTED_EGRESS: '203.0.113.7',
-        };
-    });
-    afterEach(() => {
-        vi.restoreAllMocks();
-        process.env = { ...savedEnv };
-    });
-
-    it('проверка выключена → пропуск (true), probe даже не вызывается', () => {
-        delete process.env.RALPH_TUNNEL_CHECK;
-        const probe = vi.fn();
-        expect(ensureTunnel({}, { probe })).toBe(true);
-        expect(probe).not.toHaveBeenCalled();
-    });
-
-    it('включена, но нет ожидаемого egress → fail-open (true) с предупреждением, без probe', () => {
-        delete process.env.RALPH_EXPECTED_EGRESS;
-        delete process.env.SS_SERVER;
-        const probe = vi.fn();
-        expect(ensureTunnel({ tunnelCheck: { enabled: true } }, { probe })).toBe(true);
-        expect(probe).not.toHaveBeenCalled();
-    });
-
-    it('egress сразу совпал → здоров (true), без перезапуска', () => {
-        const probe = vi.fn().mockReturnValue('203.0.113.7');
-        const restart = vi.fn();
-        expect(ensureTunnel({}, { probe, restart })).toBe(true);
-        expect(probe).toHaveBeenCalledTimes(1);
-        expect(restart).not.toHaveBeenCalled();
-    });
-
-    it('ожидаемый egress с хвостовым CRLF/пробелом (ralph.env часто редактируют на Windows) → trim, сравнение всё равно проходит (ревью #98)', () => {
-        process.env.RALPH_EXPECTED_EGRESS = '203.0.113.7\r\n';
-        const probe = vi.fn().mockReturnValue('203.0.113.7');
-        expect(ensureTunnel({}, { probe })).toBe(true);
-    });
-
-    it('egress красный → перезапуск → повторно совпал → восстановлен (true)', () => {
-        const probe = vi
-            .fn()
-            .mockReturnValueOnce('198.51.100.2')
-            .mockReturnValueOnce('203.0.113.7');
-        const restart = vi.fn();
-        const sleepFn = vi.fn();
-        const push = vi.fn();
-        expect(ensureTunnel({}, { probe, restart, sleepFn, push })).toBe(true);
-        expect(restart).toHaveBeenCalledTimes(1);
-        expect(sleepFn).toHaveBeenCalledTimes(1);
-        expect(probe).toHaveBeenCalledTimes(2);
-        expect(push).not.toHaveBeenCalled(); // восстановился — человека не будим
-    });
-
-    it('egress красный и после перезапуска красный → false + пуш человеку', () => {
-        const probe = vi.fn().mockReturnValue('198.51.100.2'); // мимо прокси оба раза
-        const restart = vi.fn();
-        const sleepFn = vi.fn();
-        const push = vi.fn();
-        expect(ensureTunnel({}, { probe, restart, sleepFn, push })).toBe(false);
-        expect(restart).toHaveBeenCalledTimes(1);
-        expect(probe).toHaveBeenCalledTimes(2);
-        expect(push).toHaveBeenCalledTimes(1);
-        expect(push.mock.calls[0][0]).toMatch(/туннел/i);
-    });
-
-    it('пустой egress (curl упал) дважды → false + пуш', () => {
-        const probe = vi.fn().mockReturnValue('');
-        const push = vi.fn();
-        expect(ensureTunnel({}, { probe, restart: vi.fn(), sleepFn: vi.fn(), push })).toBe(false);
-        expect(push).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -703,528 +499,6 @@ describe('runClaude — 4-е событие (#88): API-лимит пушит у�
         expect(code).toBe(1);
         expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn).not.toHaveBeenCalled();
-    });
-});
-
-describe('probeEgress — фактический вызов curl (граница anti-RCE защиты, ревью #98)', () => {
-    // Как и spawnClaude (#67): execFileSync без shell — здесь проверяем ГРАНИЦУ, не
-    // только чистую сборку. execFn инжектируем явно (не vi.mock('node:child_process') —
-    // см. шапку файла), production-путь (execFileSync по умолчанию) не трогаем.
-    const savedEnv = { ...process.env };
-    beforeEach(() => {
-        // probeEgress читает HTTPS_PROXY/HTTP_PROXY НАПРЯМУЮ из process.env раньше
-        // cfg.tunnelCheck.proxyUrl (см. приоритет в самой функции) — если у машины,
-        // на которой гоняются тесты, реально настроен прокси (как оказалось на этой
-        // машине при первом прогоне — тест ловил боевой HTTPS_PROXY вместо тестового
-        // cfg.proxyUrl и падал), тест перестаёт быть детерминированным. Чистим оба
-        // перед каждым тестом этого блока, а не только сохраняем/восстанавливаем.
-        delete process.env.HTTPS_PROXY;
-        delete process.env.HTTP_PROXY;
-    });
-    afterEach(() => {
-        process.env = { ...savedEnv };
-    });
-
-    it('вызывает execFn с бинарём curl и proxy/ipUrl отдельными элементами argv, без -x/URL, склеенных шелл-строкой', () => {
-        const execFn = vi.fn().mockReturnValue('203.0.113.7\n');
-        const evilProxy = 'http://127.0.0.1:8118; echo pwned';
-        const cfg = { tunnelCheck: { proxyUrl: evilProxy, ipCheckUrl: 'https://api.ipify.org' } };
-
-        probeEgress(cfg, execFn);
-
-        expect(execFn).toHaveBeenCalledTimes(1);
-        const [bin, cmdArgs, opts] = execFn.mock.calls[0];
-        expect(bin).toBe('curl');
-        // Значение с ; целиком в ОДНОМ элементе argv — не раскрывается как команда,
-        // не разбивается по пробелу (в отличие от сборки через строку в execSync-шелле).
-        expect(cmdArgs).toContain(evilProxy);
-        expect(cmdArgs.filter((a) => a === evilProxy)).toHaveLength(1);
-        expect(cmdArgs).toContain('-4');
-        expect(opts.encoding).toBe('utf-8');
-    });
-
-    it('результат execFn обрезается (trim) от перевода строки, который curl добавляет в вывод', () => {
-        const execFn = vi.fn().mockReturnValue('203.0.113.7\n');
-        expect(probeEgress({}, execFn)).toBe('203.0.113.7');
-    });
-
-    it('execFn бросил (таймаут/мёртвый прокси) → пустая строка, не исключение', () => {
-        const execFn = vi.fn().mockImplementation(() => {
-            throw new Error('Command failed: curl');
-        });
-        expect(probeEgress({}, execFn)).toBe('');
-    });
-
-    it('proxy по умолчанию берётся из HTTPS_PROXY/HTTP_PROXY, иначе из tc.proxyUrl, иначе localhost:8118', () => {
-        delete process.env.HTTPS_PROXY;
-        delete process.env.HTTP_PROXY;
-        const execFn = vi.fn().mockReturnValue('1.2.3.4');
-        probeEgress({}, execFn);
-        expect(execFn.mock.calls[0][1]).toContain('http://127.0.0.1:8118');
-    });
-});
-
-describe('restartTunnel — фактический вызов systemctl (граница anti-RCE защиты, ревью #98)', () => {
-    it('разбивает restartCmd на бинарь + argv и вызывает execFn без шелла', () => {
-        const execFn = vi.fn().mockReturnValue('');
-        const cfg = {
-            tunnelCheck: {
-                restartCmd: 'systemctl restart shadowsocks-libev-local@frankfurt privoxy',
-            },
-        };
-
-        restartTunnel(cfg, execFn);
-
-        expect(execFn).toHaveBeenCalledWith('systemctl', [
-            'restart',
-            'shadowsocks-libev-local@frankfurt',
-            'privoxy',
-        ]);
-    });
-
-    it('без restartCmd в конфиге использует дефолт (systemctl restart ss-local+privoxy)', () => {
-        const execFn = vi.fn().mockReturnValue('');
-        restartTunnel({}, execFn);
-        expect(execFn).toHaveBeenCalledWith('systemctl', [
-            'restart',
-            'shadowsocks-libev-local@frankfurt',
-            'privoxy',
-        ]);
-    });
-
-    it('execFn бросил (systemctl упал) → не пробрасывает исключение (fail-open, финальная сверка egress решит)', () => {
-        vi.spyOn(console, 'log').mockImplementation(() => {});
-        vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {});
-        const execFn = vi.fn().mockImplementation(() => {
-            throw new Error('systemctl: unit not found');
-        });
-        expect(() => restartTunnel({}, execFn)).not.toThrow();
-        vi.restoreAllMocks();
-    });
-});
-
-describe('resolveWorktreePath — путь выделенного worktree раннера (#76)', () => {
-    const savedEnv = { ...process.env };
-    afterEach(() => {
-        process.env = { ...savedEnv };
-    });
-
-    it('по умолчанию — сосед репозитория "pixel-tanks-ralph", не внутри самого дерева', () => {
-        delete process.env.RALPH_WORKTREE_PATH;
-        expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/root/pixel-tanks-ralph');
-    });
-
-    it('cfg.runnerWorktreePath переопределяет дефолт (относительный резолвится от repoRoot)', () => {
-        delete process.env.RALPH_WORKTREE_PATH;
-        expect(
-            resolveWorktreePath({ runnerWorktreePath: '../custom-ralph' }, '/root/pixel-tanks'),
-        ).toBe('/root/custom-ralph');
-    });
-
-    it('RALPH_WORKTREE_PATH из env переопределяет дефолт, когда в конфиге поле не задано', () => {
-        process.env.RALPH_WORKTREE_PATH = '/tmp/ralph-worktree';
-        expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/tmp/ralph-worktree');
-    });
-
-    it('ОТНОСИТЕЛЬНЫЙ RALPH_WORKTREE_PATH резолвится от repoRoot, а не от cwd вызова (#SiaUv)', () => {
-        process.env.RALPH_WORKTREE_PATH = '../custom';
-        expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/root/custom');
-    });
-
-    it('cfg.runnerWorktreePath важнее env (явный конфиг не должен молча перебиваться)', () => {
-        process.env.RALPH_WORKTREE_PATH = '/tmp/from-env';
-        expect(
-            resolveWorktreePath({ runnerWorktreePath: '/tmp/from-config' }, '/root/pixel-tanks'),
-        ).toBe('/tmp/from-config');
-    });
-});
-
-describe('ensureRunnerWorktree — выделенный git worktree раннера, соседний с деревом человека (#76)', () => {
-    // repoRoot фиксируем явно: guard «путь не внутри репозитория» (#SiaUT) иначе бы
-    // сверялся с process.cwd() и зависел бы от того, откуда запущен vitest.
-    const REPO = '/root/pixel-tanks';
-    const WT = '/root/pixel-tanks-ralph';
-
-    it('уже зарегистрирован и папка на месте → переиспользуем, без add/fetch/npm ci', () => {
-        const shFn = vi
-            .fn()
-            .mockReturnValue(
-                'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n\n' +
-                    'worktree /root/pixel-tanks-ralph\nHEAD def456\ndetached\n',
-            );
-        const existsFn = vi.fn().mockReturnValue(true);
-        const logFn = vi.fn();
-        const installFn = vi.fn();
-        const addFn = vi.fn();
-        const refreshFn = vi.fn();
-        const result = ensureRunnerWorktree(WT, {
-            shFn,
-            existsFn,
-            logFn,
-            installFn,
-            addFn,
-            refreshFn,
-            repoRoot: REPO,
-        });
-        expect(result).toBe(WT);
-        expect(shFn).toHaveBeenCalledTimes(1); // только list, без add/npm ci
-        expect(addFn).not.toHaveBeenCalled();
-        expect(installFn).not.toHaveBeenCalled();
-        // Дерево переиспользуем, но не «как есть»: его переводят на свежий
-        // origin/main, иначе кодер-сессия читает ralph.md прошлого прогона.
-        expect(refreshFn).toHaveBeenCalledWith(WT, expect.anything());
-    });
-
-    it('#SiaUG: зарегистрирован, но папки на диске нет (rm -rf без git worktree remove) → fail с рецептом prune', () => {
-        const shFn = vi
-            .fn()
-            .mockReturnValue(
-                'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n\n' +
-                    'worktree /root/pixel-tanks-ralph\nHEAD def456\ndetached\n',
-            );
-        const existsFn = vi.fn().mockReturnValue(false); // папки нет
-        const failFn = vi.fn(() => {
-            throw new Error('stopped');
-        });
-        const installFn = vi.fn();
-        expect(() =>
-            ensureRunnerWorktree(WT, { shFn, existsFn, failFn, installFn, repoRoot: REPO }),
-        ).toThrow('stopped');
-        expect(failFn.mock.calls[0][0]).toMatch(/git worktree prune/);
-        expect(installFn).not.toHaveBeenCalled();
-    });
-
-    it('не зарегистрирован и путь свободен → git fetch origin main (argv) + add (argv, execFile) + npm ci', () => {
-        const shFn = vi
-            .fn()
-            .mockReturnValueOnce(
-                'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n',
-            )
-            .mockReturnValue('');
-        const runArgvFn = vi.fn();
-        const existsFn = vi.fn().mockReturnValue(false);
-        const installFn = vi.fn();
-        const addFn = vi.fn();
-        const markFn = vi.fn();
-        const logFn = vi.fn();
-        const result = ensureRunnerWorktree(WT, {
-            shFn,
-            runArgvFn,
-            existsFn,
-            installFn,
-            addFn,
-            markFn,
-            logFn,
-            repoRoot: REPO,
-        });
-        expect(result).toBe(WT);
-        // #252: база — свежий origin/main, а не текущий HEAD дерева человека (#499),
-        // мутация уходит через argv, не строкой через шелл.
-        expect(runArgvFn).toHaveBeenCalledWith('git', ['fetch', 'origin', 'main']);
-        // add идёт через argv-collaborator (execFile без shell) — путь одним аргументом (#SiaUP).
-        expect(addFn).toHaveBeenCalledWith(WT);
-        // #189: installFn получает путь И санированный env (второй аргумент).
-        expect(installFn).toHaveBeenCalledWith(WT, expect.anything());
-        expect(markFn).toHaveBeenCalledWith(WT); // маркер lock засеян
-    });
-
-    it('#SiaUT: путь ВНУТРИ репозитория → fail-closed до любых git-побочек', () => {
-        const shFn = vi.fn();
-        const failFn = vi.fn(() => {
-            throw new Error('stopped');
-        });
-        expect(() =>
-            ensureRunnerWorktree('/root/pixel-tanks/nested-ralph', {
-                shFn,
-                failFn,
-                repoRoot: REPO,
-            }),
-        ).toThrow('stopped');
-        expect(failFn.mock.calls[0][0]).toMatch(/внутри репозитория/);
-        expect(shFn).not.toHaveBeenCalled(); // даже git worktree list не звали
-    });
-
-    it('путь занят посторонним (не в git worktree list, но существует на диске) → fail-closed, не трогаем', () => {
-        const shFn = vi
-            .fn()
-            .mockReturnValue('worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n');
-        const existsFn = vi.fn().mockReturnValue(true);
-        const failFn = vi.fn(() => {
-            throw new Error('stopped');
-        });
-        const installFn = vi.fn();
-        expect(() =>
-            ensureRunnerWorktree(WT, { shFn, existsFn, failFn, installFn, repoRoot: REPO }),
-        ).toThrow('stopped');
-        expect(failFn).toHaveBeenCalledTimes(1);
-        // #SiaUJ: сообщение НЕ советует prune (тут папка есть, но не зарегистрирована).
-        expect(failFn.mock.calls[0][0]).toMatch(/посторонней папкой/);
-        expect(failFn.mock.calls[0][0]).not.toMatch(/prune/);
-        expect(installFn).not.toHaveBeenCalled();
-    });
-
-    it('git worktree list упал (не git-репо/gh недоступен) → fail-closed, add не вызывается', () => {
-        const shFn = vi.fn().mockImplementation(() => {
-            throw new Error('not a git repository');
-        });
-        const failFn = vi.fn(() => {
-            throw new Error('stopped');
-        });
-        const addFn = vi.fn();
-        expect(() => ensureRunnerWorktree(WT, { shFn, failFn, addFn, repoRoot: REPO })).toThrow(
-            'stopped',
-        );
-        expect(failFn.mock.calls[0][0]).toMatch(/git worktree list/);
-        expect(addFn).not.toHaveBeenCalled();
-    });
-
-    it('git worktree add упал → fail-closed, npm ci не запускается', () => {
-        const shFn = vi
-            .fn()
-            .mockReturnValueOnce(
-                'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n',
-            )
-            .mockReturnValue('');
-        const existsFn = vi.fn().mockReturnValue(false);
-        const runArgvFn = vi.fn();
-        const addFn = vi.fn(() => {
-            throw new Error('branch already checked out');
-        });
-        const failFn = vi.fn(() => {
-            throw new Error('stopped');
-        });
-        const installFn = vi.fn();
-        const logFn = vi.fn();
-        expect(() =>
-            ensureRunnerWorktree(WT, {
-                shFn,
-                runArgvFn,
-                existsFn,
-                addFn,
-                failFn,
-                installFn,
-                logFn,
-                repoRoot: REPO,
-            }),
-        ).toThrow('stopped');
-        expect(installFn).not.toHaveBeenCalled();
-    });
-
-    it('npm ci упал (испорченный package-lock/сеть) → fail-closed', () => {
-        const shFn = vi
-            .fn()
-            .mockReturnValueOnce(
-                'worktree /root/pixel-tanks\nHEAD abc123\nbranch refs/heads/main\n',
-            )
-            .mockReturnValue('');
-        const existsFn = vi.fn().mockReturnValue(false);
-        const runArgvFn = vi.fn();
-        const addFn = vi.fn();
-        const installFn = vi.fn(() => {
-            throw new Error('npm ci failed');
-        });
-        const failFn = vi.fn(() => {
-            throw new Error('stopped');
-        });
-        const logFn = vi.fn();
-        expect(() =>
-            ensureRunnerWorktree(WT, {
-                shFn,
-                runArgvFn,
-                existsFn,
-                addFn,
-                installFn,
-                failFn,
-                logFn,
-                repoRoot: REPO,
-            }),
-        ).toThrow('stopped');
-        expect(failFn.mock.calls[0][0]).toMatch(/npm ci/);
-    });
-
-    it('#189: npm ci в новом worktree идёт с санированным env (buildGateEnvFn), а не полным', () => {
-        const shFn = vi
-            .fn()
-            .mockReturnValueOnce('worktree /root/pixel-tanks\nHEAD abc\nbranch refs/heads/main\n')
-            .mockReturnValue('');
-        const existsFn = vi.fn().mockReturnValue(false);
-        const runArgvFn = vi.fn();
-        const installFn = vi.fn();
-        const addFn = vi.fn();
-        const markFn = vi.fn();
-        const SAN = { PATH: '/z' };
-        const buildGateEnvFn = vi.fn(() => SAN);
-        ensureRunnerWorktree(WT, {
-            shFn,
-            runArgvFn,
-            existsFn,
-            installFn,
-            addFn,
-            markFn,
-            logFn: () => {},
-            buildGateEnvFn,
-            repoRoot: REPO,
-        });
-        // installFn получает путь И санированный env вторым аргументом.
-        expect(installFn).toHaveBeenCalledWith(WT, SAN);
-    });
-
-    it('#189: buildGateEnvFn бросает (битый allowlist) → fail-closed, npm ci с полным env НЕ запущен', () => {
-        const shFn = vi
-            .fn()
-            .mockReturnValueOnce('worktree /root/pixel-tanks\nHEAD abc\nbranch refs/heads/main\n')
-            .mockReturnValue('');
-        const existsFn = vi.fn().mockReturnValue(false);
-        const runArgvFn = vi.fn();
-        const installFn = vi.fn();
-        const addFn = vi.fn();
-        const failFn = vi.fn(() => {
-            throw new Error('stopped');
-        });
-        const buildGateEnvFn = () => {
-            throw new Error('битый allowlist');
-        };
-        expect(() =>
-            ensureRunnerWorktree(WT, {
-                shFn,
-                runArgvFn,
-                existsFn,
-                installFn,
-                addFn,
-                failFn,
-                logFn: () => {},
-                buildGateEnvFn,
-                repoRoot: REPO,
-            }),
-        ).toThrow('stopped');
-        // Санировать нельзя → npm ci с секретами в env не запускаем.
-        expect(installFn).not.toHaveBeenCalled();
-    });
-});
-
-describe('runnerWorktreeReady — «дерево раннера уже поднято?» для read-only переезда DRY (#SiaT3)', () => {
-    const WT = '/root/pixel-tanks-ralph';
-    const listWith = 'worktree /root/pixel-tanks\n\nworktree /root/pixel-tanks-ralph\ndetached\n';
-
-    it('зарегистрирован И папка на месте → true (dry переедет читать state оттуда)', () => {
-        const shFn = vi.fn().mockReturnValue(listWith);
-        const existsFn = vi.fn().mockReturnValue(true);
-        expect(runnerWorktreeReady(WT, { shFn, existsFn })).toBe(true);
-    });
-
-    it('зарегистрирован, но папки нет (rm -rf) → false (dry не chdir в несуществующее)', () => {
-        const shFn = vi.fn().mockReturnValue(listWith);
-        const existsFn = vi.fn().mockReturnValue(false);
-        expect(runnerWorktreeReady(WT, { shFn, existsFn })).toBe(false);
-    });
-
-    it('не зарегистрирован → false', () => {
-        const shFn = vi.fn().mockReturnValue('worktree /root/pixel-tanks\n');
-        const existsFn = vi.fn().mockReturnValue(true);
-        expect(runnerWorktreeReady(WT, { shFn, existsFn })).toBe(false);
-    });
-
-    it('git worktree list упал → false (dry остаётся в текущем дереве, не падает)', () => {
-        const shFn = vi.fn(() => {
-            throw new Error('not a git repo');
-        });
-        expect(runnerWorktreeReady(WT, { shFn, existsFn: () => true })).toBe(false);
-    });
-});
-
-describe('syncDepsIfLockChanged — авто-npm ci при смене package-lock перед чеками (#SiaUX)', () => {
-    const HASH_OF = (s) => require('node:crypto').createHash('sha256').update(s).digest('hex');
-
-    it('lockHash: sha256 содержимого package-lock.json, null если файла нет', () => {
-        expect(lockHash('/x', () => 'LOCKDATA')).toBe(HASH_OF('LOCKDATA'));
-        expect(
-            lockHash('/x', () => {
-                throw new Error('ENOENT');
-            }),
-        ).toBeNull();
-    });
-
-    it('lock не менялся (маркер == хэш) → npm ci НЕ гоняется', () => {
-        const lock = 'LOCK-A';
-        const installFn = vi.fn();
-        syncDepsIfLockChanged({
-            logFn: () => {},
-            existsFn: () => true,
-            readFn: (p) => (String(p).endsWith('package-lock.json') ? lock : HASH_OF(lock)),
-            installFn,
-        });
-        expect(installFn).not.toHaveBeenCalled();
-    });
-
-    it('lock изменился (маркер != хэш) → npm ci гоняется и маркер перезаписывается', () => {
-        const installFn = vi.fn();
-        const writes = [];
-        syncDepsIfLockChanged({
-            logFn: () => {},
-            existsFn: () => true,
-            readFn: (p) =>
-                String(p).endsWith('package-lock.json') ? 'LOCK-NEW' : HASH_OF('LOCK-OLD'),
-            writeFn: (p, data) => writes.push([p, data]),
-            installFn,
-        });
-        expect(installFn).toHaveBeenCalledTimes(1);
-        // Маркер перезаписан новым хэшем — следующий гейт с тем же lock не переустановит.
-        expect(writes.some(([, data]) => data === HASH_OF('LOCK-NEW'))).toBe(true);
-    });
-
-    it('нет package-lock.json → no-op (сверять нечего, npm ci не гоняется)', () => {
-        const installFn = vi.fn();
-        syncDepsIfLockChanged({
-            logFn: () => {},
-            existsFn: () => true,
-            readFn: () => {
-                throw new Error('ENOENT');
-            },
-            installFn,
-        });
-        expect(installFn).not.toHaveBeenCalled();
-    });
-
-    it('маркера ещё нет (первый гейт после bootstrap) → prev=null, npm ci гоняется', () => {
-        const installFn = vi.fn();
-        syncDepsIfLockChanged({
-            logFn: () => {},
-            existsFn: () => false, // маркер-файла нет
-            readFn: (p) => (String(p).endsWith('package-lock.json') ? 'LOCK' : ''),
-            writeFn: () => {},
-            installFn,
-        });
-        expect(installFn).toHaveBeenCalledTimes(1);
-    });
-
-    it('#189: env (санированный, из checksGreen) прокидывается в installFn для npm ci', () => {
-        const installFn = vi.fn();
-        const SAN = { PATH: '/x' };
-        syncDepsIfLockChanged({
-            logFn: () => {},
-            existsFn: () => false,
-            readFn: (p) => (String(p).endsWith('package-lock.json') ? 'LOCK' : ''),
-            writeFn: () => {},
-            env: SAN,
-            installFn,
-        });
-        expect(installFn).toHaveBeenCalledWith(SAN);
-    });
-
-    it('#189: без env строит его сам через buildGateEnvFn (fail-closed самодостаточен)', () => {
-        const installFn = vi.fn();
-        const SAN = { PATH: '/y' };
-        const buildGateEnvFn = vi.fn(() => SAN);
-        syncDepsIfLockChanged({
-            logFn: () => {},
-            existsFn: () => false,
-            readFn: (p) => (String(p).endsWith('package-lock.json') ? 'LOCK' : ''),
-            writeFn: () => {},
-            buildGateEnvFn,
-            installFn,
-        });
-        expect(buildGateEnvFn).toHaveBeenCalled();
-        expect(installFn).toHaveBeenCalledWith(SAN);
     });
 });
 
@@ -1538,30 +812,6 @@ describe('preflight — валидация конфига/среды и подг
             preflight(validCfg(), okDeps({ loadStateFn: () => state, pushEventFn })),
         ).not.toThrow();
         expect(pushEventFn).not.toHaveBeenCalled();
-    });
-});
-
-describe('loadState — резолв state с диска (прямой тест, #99)', () => {
-    // Прямой тест экспортируемого loadState (а не только через preflight): валидный
-    // state возвращается как есть; state старой схемы (без milestone) зовёт инжектируемый
-    // failFn. Ветку «нет файла → defaultState()» тут не гоняем — defaultState читает
-    // глобальный config.phases[0], который в юнит-среде не инициализирован.
-    afterEach(() => vi.restoreAllMocks());
-
-    it('валидный state (с milestone) возвращается как есть', () => {
-        const state = { count: 5, milestone: 'M3', submitted: true, noProgress: 1 };
-        vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify(state));
-        expect(loadState()).toEqual(state);
-    });
-
-    it('state старой схемы (без milestone) → зовёт инжектированный failFn', () => {
-        vi.spyOn(fs, 'readFileSync').mockReturnValue(
-            JSON.stringify({ count: 3, phaseIndex: 0, submitted: false }),
-        );
-        const failFn = vi.fn();
-        loadState(failFn);
-        expect(failFn).toHaveBeenCalledTimes(1);
-        expect(failFn.mock.calls[0][0]).toMatch(/схем|phaseIndex/i);
     });
 });
 
@@ -3797,876 +3047,6 @@ describe('ветковая хореография в worktree раннера (#7
     });
 });
 
-// #THS8W: единые хелперы пост-мердж ожидания на уровень файла — обе секции
-// (waitForDeployRun #163 и критерии готовности #167) ими пользуются, дрейф копий
-// исключён. Детерминированные часы: nowFn читает clock, sleepFn (vi.fn — чтобы можно
-// было утверждать «sleep не понадобился») его двигает.
-const mkDeployClock = () => {
-    const c = { t: 0 };
-    return {
-        clock: c,
-        nowFn: () => c.t,
-        sleepFn: vi.fn((ms) => {
-            c.t += ms;
-        }),
-    };
-};
-// Конфиг с коротким таймаутом/поллом, чтобы фейковые часы упирались за пару шагов.
-const deployCfg = (o = {}) => ({
-    deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20, ...o },
-});
-
-// #252: git-хелперы гейта разделены на shFn (чтения) и runArgvFn (argv-мутации). Этот
-// рекордер пишет ОБА канала в один общий `cmds`, нормализуя runArgvFn в `${file} ${args}`,
-// чтобы ассерты на ПОРЯДОК команд остались осмысленными. Общий на phaseDiffFiles и
-// refreshRunnerWorktree — иначе правка формата записи требовала бы синхронных правок в двух.
-const mkCmdRecorders = (shImpl) => {
-    const cmds = [];
-    return {
-        cmds,
-        shFn: (c) => {
-            cmds.push(c);
-            return shImpl ? shImpl(c) : '';
-        },
-        runArgvFn: (file, args) => {
-            const cmd = `${file} ${args.join(' ')}`;
-            cmds.push(cmd);
-            return shImpl ? shImpl(cmd) : '';
-        },
-    };
-};
-
-describe('waitForDeployRun — ожидание итога deploy-workflow на смердженном sha (#163)', () => {
-    const SHA = 'a'.repeat(40);
-    const OTHER = 'b'.repeat(40);
-    const mkClock = mkDeployClock;
-    const cfg = deployCfg;
-
-    it('завершённый workflow на нужном sha → {status: completed, conclusion}', () => {
-        const { nowFn, sleepFn } = mkClock();
-        const ghJsonFn = vi.fn(() => [
-            { databaseId: 42, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
-        ]);
-        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
-        expect(out).toEqual({
-            status: 'completed',
-            conclusion: 'success',
-            sha: SHA,
-            url: 'u',
-            runId: 42,
-        });
-        // Досмотрен на первом же опросе — sleep не понадобился.
-        expect(sleepFn).not.toHaveBeenCalled();
-    });
-
-    it('поллит, пока workflow in_progress, и возвращает итог, когда завершится', () => {
-        const { nowFn, sleepFn } = mkClock();
-        const responses = [
-            [{ databaseId: 7, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' }],
-            [{ databaseId: 7, headSha: SHA, status: 'queued', conclusion: null, url: 'u' }],
-            [{ databaseId: 7, headSha: SHA, status: 'completed', conclusion: 'failure', url: 'u' }],
-        ];
-        let i = 0;
-        const ghJsonFn = vi.fn(() => responses[Math.min(i++, responses.length - 1)]);
-        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000 }), {
-            ghJsonFn,
-            sleepFn,
-            logFn: () => {},
-            nowFn,
-        });
-        expect(out.status).toBe('completed');
-        expect(out.conclusion).toBe('failure');
-        expect(ghJsonFn).toHaveBeenCalledTimes(3);
-    });
-
-    it('сетевой чих (ghJson бросает) не роняет ожидание — следующий опрос доводит до итога', () => {
-        const { nowFn, sleepFn } = mkClock();
-        let call = 0;
-        const ghJsonFn = vi.fn(() => {
-            call++;
-            if (call === 1) throw new Error('gh: connection reset');
-            return [
-                {
-                    databaseId: 9,
-                    headSha: SHA,
-                    status: 'completed',
-                    conclusion: 'success',
-                    url: 'u',
-                },
-            ];
-        });
-        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000 }), {
-            ghJsonFn,
-            sleepFn,
-            logFn: () => {},
-            nowFn,
-        });
-        // Чих не дал ложного красного — дождались зелёного на следующем опросе.
-        expect(out.status).toBe('completed');
-        expect(out.conclusion).toBe('success');
-        expect(ghJsonFn).toHaveBeenCalledTimes(2);
-    });
-
-    it('run на нужном sha так и не завершился за таймаут → status: timeout (не зелёный и не красный)', () => {
-        const { nowFn, sleepFn } = mkClock();
-        const ghJsonFn = vi.fn(() => [
-            { databaseId: 3, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' },
-        ]);
-        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
-        expect(out.status).toBe('timeout');
-        expect(out.conclusion).toBeNull();
-        expect(out.runId).toBe(3);
-    });
-
-    it('run на смердженном sha не появился за таймаут → status: not-found', () => {
-        const { nowFn, sleepFn } = mkClock();
-        // Есть чужие раны, но не на нашем sha — фильтр по headSha их игнорирует.
-        const ghJsonFn = vi.fn(() => [
-            { databaseId: 1, headSha: OTHER, status: 'completed', conclusion: 'success', url: 'u' },
-        ]);
-        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
-        expect(out.status).toBe('not-found');
-        expect(out.runId).toBeNull();
-    });
-
-    it('fail-closed: невалидный sha → бросает, а не «зелёный по умолчанию»', () => {
-        expect(() => waitForDeployRun('not-a-sha', cfg(), { ghJsonFn: () => [] })).toThrow();
-    });
-
-    it('workflow и параметры ожидания берутся из конфига (deployCheck)', () => {
-        const { nowFn, sleepFn } = mkClock();
-        const ghJsonFn = vi.fn(() => [
-            { databaseId: 5, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
-        ]);
-        waitForDeployRun(SHA, cfg({ workflow: 'release.yml' }), {
-            ghJsonFn,
-            sleepFn,
-            logFn: () => {},
-            nowFn,
-        });
-        expect(ghJsonFn.mock.calls[0][0]).toContain("--workflow 'release.yml'");
-    });
-});
-
-describe('checkProdHealth — HTTP-healthcheck главной страницы прода (#164)', () => {
-    const cfg = (o = {}) => ({
-        deployCheck: { healthUrl: 'https://pixeltanks.ru', healthRetryDelayMs: 1, ...o },
-    });
-
-    it('первая же попытка отдаёт 200 → {ok: true, status: 200}, без ретраев', () => {
-        const execFn = vi.fn(() => '200');
-        const sleepFn = vi.fn();
-        const out = checkProdHealth(cfg(), { execFn, sleepFn, logFn: () => {} });
-        expect(out).toEqual({ ok: true, status: 200, url: 'https://pixeltanks.ru' });
-        expect(execFn).toHaveBeenCalledTimes(1);
-        expect(sleepFn).not.toHaveBeenCalled();
-    });
-
-    it('флаки-запрос (первая попытка падает) не роняет проверку — вторая попытка доставляет 200', () => {
-        let call = 0;
-        const execFn = vi.fn(() => {
-            call++;
-            if (call === 1) throw new Error('curl: connection reset');
-            return '200';
-        });
-        const sleepFn = vi.fn();
-        const out = checkProdHealth(cfg({ healthRetries: 3 }), {
-            execFn,
-            sleepFn,
-            logFn: () => {},
-        });
-        expect(out).toEqual({ ok: true, status: 200, url: 'https://pixeltanks.ru' });
-        expect(execFn).toHaveBeenCalledTimes(2);
-        // Пауза выдержана между попытками — петля не забита busy-loop'ом.
-        expect(sleepFn).toHaveBeenCalledTimes(1);
-    });
-
-    it('исчерпание попыток на упорно красном коде → {ok: false, status}, не бросает', () => {
-        const execFn = vi.fn(() => '503');
-        const sleepFn = vi.fn();
-        const logs = [];
-        const out = checkProdHealth(cfg({ healthRetries: 3 }), {
-            execFn,
-            sleepFn,
-            logFn: (m) => logs.push(m),
-        });
-        expect(out).toEqual({ ok: false, status: 503, url: 'https://pixeltanks.ru' });
-        expect(execFn).toHaveBeenCalledTimes(3);
-        expect(logs.join('\n')).toMatch(/не вернул 200 после 3 попыток/);
-    });
-
-    it('исчерпание попыток на упорном сетевом сбое → {ok: false, status: 0}, не бросает', () => {
-        const execFn = vi.fn(() => {
-            throw new Error('curl: timeout');
-        });
-        const out = checkProdHealth(cfg({ healthRetries: 2 }), {
-            execFn,
-            sleepFn: () => {},
-            logFn: () => {},
-        });
-        expect(out).toEqual({ ok: false, status: 0, url: 'https://pixeltanks.ru' });
-    });
-
-    it('url и число попыток берутся из конфига (deployCheck)', () => {
-        const execFn = vi.fn(() => '200');
-        checkProdHealth(cfg({ healthUrl: 'https://staging.example.com', healthRetries: 1 }), {
-            execFn,
-            sleepFn: () => {},
-            logFn: () => {},
-        });
-        expect(execFn.mock.calls[0][1]).toContain('https://staging.example.com');
-    });
-
-    it('без конфига deployCheck использует прод-дефолт https://pixeltanks.ru', () => {
-        const execFn = vi.fn(() => '200');
-        checkProdHealth({}, { execFn, sleepFn: () => {}, logFn: () => {} });
-        expect(execFn.mock.calls[0][1]).toContain('https://pixeltanks.ru');
-    });
-});
-
-describe('probeHttpStatus — HTTP-код через curl (#164)', () => {
-    it('корректный числовой код от curl → возвращает его как число', () => {
-        const execFn = vi.fn(() => '200');
-        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(200);
-    });
-
-    it('curl бросает (таймаут/DNS) → 0, не пробрасывает исключение', () => {
-        const execFn = vi.fn(() => {
-            throw new Error('curl: (28) timeout');
-        });
-        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(0);
-    });
-
-    it('нечисловой вывод curl → 0 (fail-closed, не «сойдёт за живой»)', () => {
-        const execFn = vi.fn(() => '');
-        expect(probeHttpStatus('https://pixeltanks.ru', 10, execFn)).toBe(0);
-    });
-
-    it('только ЧТЕНИЕ: аргументы curl не содержат мутирующих флагов, url доходит как отдельный элемент argv', () => {
-        const execFn = vi.fn(() => '200');
-        probeHttpStatus('https://pixeltanks.ru', 10, execFn);
-        const [bin, args] = execFn.mock.calls[0];
-        expect(bin).toBe('curl');
-        expect(args).toContain('https://pixeltanks.ru');
-        expect(args).not.toContain('-X');
-        expect(args).not.toContain('POST');
-    });
-});
-
-describe('mergedShaOf — sha squash-мерджа PR (#163)', () => {
-    const SHA = 'c'.repeat(40);
-
-    it('возвращает oid mergeCommit', () => {
-        const ghJsonFn = vi.fn(() => ({ mergeCommit: { oid: SHA } }));
-        expect(mergedShaOf(12, { ghJsonFn })).toBe(SHA);
-        expect(ghJsonFn.mock.calls[0][0]).toContain("gh pr view '12'");
-    });
-
-    it('fail-closed: mergeCommit отсутствует/невалиден → бросает (после исчерпания ретраев)', () => {
-        expect(() =>
-            mergedShaOf(12, { ghJsonFn: () => ({ mergeCommit: null }), sleepFn: () => {} }),
-        ).toThrow();
-        expect(() =>
-            mergedShaOf(12, {
-                ghJsonFn: () => ({ mergeCommit: { oid: 'x' } }),
-                sleepFn: () => {},
-            }),
-        ).toThrow();
-    });
-
-    it('#TFO9B: транзиентный mergeCommit: null → ретрай, зелёный на следующей попытке', () => {
-        let call = 0;
-        const ghJsonFn = vi.fn(() => {
-            call++;
-            return call === 1 ? { mergeCommit: null } : { mergeCommit: { oid: SHA } };
-        });
-        const sleepFn = vi.fn();
-        expect(mergedShaOf(12, { ghJsonFn, sleepFn })).toBe(SHA);
-        expect(ghJsonFn).toHaveBeenCalledTimes(2);
-        expect(sleepFn).toHaveBeenCalledTimes(1); // пауза только между попытками
-    });
-
-    it('#TFO9B: устойчивый null исчерпывает ровно attempts попыток и бросает', () => {
-        const ghJsonFn = vi.fn(() => ({ mergeCommit: null }));
-        const sleepFn = vi.fn();
-        expect(() => mergedShaOf(12, { ghJsonFn, sleepFn, attempts: 3 })).toThrow();
-        expect(ghJsonFn).toHaveBeenCalledTimes(3);
-        expect(sleepFn).toHaveBeenCalledTimes(2); // паузы только МЕЖДУ попытками
-    });
-});
-
-describe('Пост-мердж проверка — только чтение, без мутаций (#166)', () => {
-    const SHA = 'd'.repeat(40);
-
-    it('waitForDeployRun зовёт ТОЛЬКО "gh run list" — read-глагол, без merge/cancel/rerun/delete/close', () => {
-        const ghJsonFn = vi.fn(() => [
-            { databaseId: 1, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
-        ]);
-        waitForDeployRun(
-            SHA,
-            { deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20 } },
-            { ghJsonFn, sleepFn: () => {}, logFn: () => {}, nowFn: () => 0 },
-        );
-        expect(ghJsonFn).toHaveBeenCalledTimes(1);
-        const cmd = ghJsonFn.mock.calls[0][0];
-        expect(cmd).toMatch(/^gh run list\b/);
-        expect(cmd).not.toMatch(/\b(cancel|rerun|delete|merge|close|revert)\b/);
-    });
-
-    it('mergedShaOf зовёт ТОЛЬКО "gh pr view" — read-глагол, без merge/close/edit', () => {
-        const ghJsonFn = vi.fn(() => ({ mergeCommit: { oid: SHA } }));
-        mergedShaOf(1, { ghJsonFn });
-        expect(ghJsonFn).toHaveBeenCalledTimes(1);
-        const cmd = ghJsonFn.mock.calls[0][0];
-        expect(cmd).toMatch(/^gh pr view\b/);
-        expect(cmd).not.toMatch(/\b(merge|close|edit|delete)\b/);
-    });
-
-    it('checkProdHealth зовёт curl только на чтение (GET) — без -X/-d/--data/--upload-file', () => {
-        const execFn = vi.fn(() => '200');
-        checkProdHealth(
-            { deployCheck: { healthUrl: 'https://pixeltanks.ru', healthRetries: 1 } },
-            { execFn, sleepFn: () => {}, logFn: () => {} },
-        );
-        expect(execFn).toHaveBeenCalledTimes(1);
-        const [bin, args] = execFn.mock.calls[0];
-        expect(bin).toBe('curl');
-        expect(args).not.toContain('-X');
-        expect(args).not.toContain('-d');
-        expect(args).not.toContain('--data');
-        expect(args).not.toContain('--upload-file');
-    });
-});
-
-describe('classifyDeployOutcome — итог деплоя зелёный/красный (#165)', () => {
-    it('workflow success + здоровый прод → зелёный (red=false)', () => {
-        const v = classifyDeployOutcome(
-            { status: 'completed', conclusion: 'success' },
-            { ok: true, status: 200 },
-        );
-        expect(v.red).toBe(false);
-    });
-
-    it('workflow success без healthcheck (health=null) → зелёный: до проверки не дошли, но workflow ок', () => {
-        // В коде health=null означает «workflow сам не зелёный, healthcheck не звали»;
-        // но если outcome ЗЕЛЁНЫЙ, а health не передан — это тоже зелёный (страховка).
-        const v = classifyDeployOutcome({ status: 'completed', conclusion: 'success' }, null);
-        expect(v.red).toBe(false);
-    });
-
-    it('workflow failure → красный, reason содержит conclusion', () => {
-        const v = classifyDeployOutcome({ status: 'completed', conclusion: 'failure' }, null);
-        expect(v.red).toBe(true);
-        expect(v.reason).toMatch(/failure/);
-    });
-
-    it('workflow timeout (не досмотрен) → красный: «не знаю» опаснее ложного «ок»', () => {
-        const v = classifyDeployOutcome({ status: 'timeout', conclusion: null }, null);
-        expect(v.red).toBe(true);
-        expect(v.reason).toMatch(/timeout/);
-    });
-
-    it('workflow not-found → красный', () => {
-        const v = classifyDeployOutcome({ status: 'not-found', conclusion: null }, null);
-        expect(v.red).toBe(true);
-        expect(v.reason).toMatch(/not-found/);
-    });
-
-    it('зелёный workflow, но прод не отвечает (health.ok=false) → красный, reason про прод', () => {
-        const v = classifyDeployOutcome(
-            { status: 'completed', conclusion: 'success' },
-            { ok: false, status: 502 },
-        );
-        expect(v.red).toBe(true);
-        expect(v.reason).toMatch(/прод не отвечает/);
-        expect(v.reason).toMatch(/502/);
-    });
-
-    it('outcome=null (аномалия) → красный, не падает', () => {
-        const v = classifyDeployOutcome(null, null);
-        expect(v.red).toBe(true);
-        expect(v.reason).toMatch(/unknown/);
-    });
-});
-
-describe('#167: пост-мердж проверка — критерии готовности (тайминг, ретраи, стоп+пуш)', () => {
-    const SHA = 'a'.repeat(40);
-    // #THS8W: те же файловые хелперы, что и у describe waitForDeployRun — единый вариант
-    // с полем clock, дубля больше нет.
-    const mkClock = mkDeployClock;
-    const cfg = deployCfg;
-
-    // --- Критерий: «зелёный деплой не задерживает петлю дольше таймаута» ---
-
-    it('зелёный workflow на первом же опросе → возврат сразу, часы не сдвинуты (петля не ждёт впустую)', () => {
-        const { clock, nowFn, sleepFn } = mkClock();
-        const ghJsonFn = vi.fn(() => [
-            { databaseId: 1, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
-        ]);
-        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
-        expect(out).toMatchObject({ status: 'completed', conclusion: 'success' });
-        // Зелёный найден на первом опросе — ни одного sleep, часы стоят на нуле.
-        expect(ghJsonFn).toHaveBeenCalledTimes(1);
-        expect(clock.t).toBe(0);
-    });
-
-    it('workflow тянется дольше таймаута → ожидание ограничено по времени (не вечный цикл, не ложный красный)', () => {
-        const { clock, nowFn, sleepFn } = mkClock();
-        // Всегда in_progress: без границы по времени это был бы бесконечный цикл.
-        const ghJsonFn = vi.fn(() => [
-            { databaseId: 2, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' },
-        ]);
-        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 100, pollIntervalMs: 20 }), {
-            ghJsonFn,
-            sleepFn,
-            logFn: () => {},
-            nowFn,
-        });
-        // Досрочно не сдался (timeout, не not-found), но и не завис.
-        expect(out.status).toBe('timeout');
-        expect(out.conclusion).toBeNull();
-        // Часы не ушли дальше таймаута больше чем на один интервал опроса.
-        expect(clock.t).toBeLessThanOrEqual(100 + 20);
-        // Число опросов конечно и соответствует бюджету таймаут/интервал.
-        expect(ghJsonFn.mock.calls.length).toBeLessThanOrEqual(Math.ceil(100 / 20) + 1);
-    });
-
-    // --- Критерий: «сетевой сбой при чтении статуса не стопит петлю без исчерпания ретраев» ---
-
-    it('gh падает на КАЖДОМ опросе → ожидание не роняет петлю, исчерпывает опросы до таймаута, возвращает not-found', () => {
-        const { clock, nowFn, sleepFn } = mkClock();
-        const ghJsonFn = vi.fn(() => {
-            throw new Error('gh: connection reset by peer');
-        });
-        // Не бросает наружу — устойчивый сетевой сбой не стопит петлю.
-        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 100, pollIntervalMs: 20 }), {
-            ghJsonFn,
-            sleepFn,
-            logFn: () => {},
-            nowFn,
-        });
-        // Итог не выдан за зелёный: run так и не увидели → not-found (стоп+пуш за #165).
-        expect(out.status).toBe('not-found');
-        expect(out.conclusion).toBeNull();
-        // Ретраи исчерпаны по таймауту, а не по первому сбою: опросов больше одного.
-        expect(ghJsonFn.mock.calls.length).toBeGreaterThan(1);
-        expect(clock.t).toBeLessThanOrEqual(100 + 20);
-    });
-
-    it('сетевой сбой сменяется живым ответом до таймаута → красный итог не выдуман, дожидаемся реального', () => {
-        const { nowFn, sleepFn } = mkClock();
-        const responses = [
-            () => {
-                throw new Error('gh: timeout');
-            },
-            () => {
-                throw new Error('gh: timeout');
-            },
-            () => [
-                {
-                    databaseId: 3,
-                    headSha: SHA,
-                    status: 'completed',
-                    conclusion: 'success',
-                    url: 'u',
-                },
-            ],
-        ];
-        let i = 0;
-        const ghJsonFn = vi.fn(() => responses[Math.min(i++, responses.length - 1)]());
-        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000, pollIntervalMs: 20 }), {
-            ghJsonFn,
-            sleepFn,
-            logFn: () => {},
-            nowFn,
-        });
-        expect(out).toMatchObject({ status: 'completed', conclusion: 'success' });
-        expect(ghJsonFn).toHaveBeenCalledTimes(3);
-    });
-
-    it('checkProdHealth: устойчивый сетевой сбой прода → исчерпывает ретраи, {ok:false}, не бросает и не зависает', () => {
-        const { clock, nowFn, sleepFn } = mkClock();
-        const execFn = vi.fn(() => {
-            throw new Error('curl: (28) connection timed out');
-        });
-        const out = checkProdHealth(
-            {
-                deployCheck: {
-                    healthUrl: 'https://pixeltanks.ru',
-                    healthRetries: 3,
-                    healthRetryDelayMs: 5,
-                },
-            },
-            { execFn, sleepFn, logFn: () => {}, nowFn },
-        );
-        // Не бросает наружу и честно сообщает «не здоров» (status 0 = сеть недоступна).
-        expect(out).toEqual({ ok: false, status: 0, url: 'https://pixeltanks.ru' });
-        // Ретраи исчерпаны полностью — ровно healthRetries попыток.
-        expect(execFn).toHaveBeenCalledTimes(3);
-        // Паузы между попытками выдержаны (не busy-loop), но конечны.
-        expect(clock.t).toBeGreaterThan(0);
-    });
-
-    // --- Критерий: «побочки — через DI, RALPH_NO_SIDE_EFFECTS=1, guardSideEffect» ---
-
-    it('пост-мердж проверка ничего не мутирует даже при МНОГИХ опросах — только read-глагол gh run list', () => {
-        const { nowFn, sleepFn } = mkClock();
-        const ghJsonFn = vi.fn(() => [
-            { databaseId: 4, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' },
-        ]);
-        waitForDeployRun(SHA, cfg({ timeoutMs: 100, pollIntervalMs: 20 }), {
-            ghJsonFn,
-            sleepFn,
-            logFn: () => {},
-            nowFn,
-        });
-        // На каждом из нескольких опросов — только чтение, ни одной мутации.
-        expect(ghJsonFn.mock.calls.length).toBeGreaterThan(1);
-        for (const [cmd] of ghJsonFn.mock.calls) {
-            expect(cmd).toMatch(/^gh run list\b/);
-            expect(cmd).not.toMatch(/\b(cancel|rerun|delete|merge|close|revert|edit)\b/);
-        }
-    });
-});
-
-describe('deepMerge — наследование общих полей профилем (#71)', () => {
-    it('вложенные объекты сливаются вглубь: профиль правит одну метку, блок сохраняется', () => {
-        const merged = deepMerge(
-            { modelRouting: { default: 'opus', labels: { low: 'haiku', high: 'opus' } } },
-            { modelRouting: { labels: { high: 'fable' } } },
-        );
-        expect(merged.modelRouting).toEqual({
-            default: 'opus',
-            labels: { low: 'haiku', high: 'fable' },
-        });
-    });
-
-    it('массивы заменяются целиком, а не дописываются', () => {
-        expect(deepMerge({ phases: ['A', 'B'] }, { phases: ['C'] }).phases).toEqual(['C']);
-    });
-
-    it('скаляр профиля перебивает объект общего блока (и наоборот) без слияния', () => {
-        expect(deepMerge({ x: { a: 1 } }, { x: 0 }).x).toBe(0);
-        expect(deepMerge({ x: 0 }, { x: { a: 1 } }).x).toEqual({ a: 1 });
-    });
-
-    it('не мутирует исходные объекты — общий блок переиспользуется между профилями', () => {
-        const common = { a: { x: 1 } };
-        deepMerge(common, { a: { x: 2 } });
-        expect(common.a.x).toBe(1);
-    });
-
-    it('null в профиле затирает значение (осознанное «выключить», не пропуск)', () => {
-        expect(
-            deepMerge({ tunnelCheck: { enabled: true } }, { tunnelCheck: null }).tunnelCheck,
-        ).toBe(null);
-    });
-
-    // Опасные ключи — стоп, а не тихая нейтрализация: легитимных полей с такими
-    // именами нет, значит это опечатка или чужая рука в конфиге раннера.
-    const boom = (m) => {
-        throw new Error(m);
-    };
-
-    it('ключ __proto__ в профиле → стоп (иначе подменил бы прототип результата)', () => {
-        // JSON.parse — как реальный конфиг: "__proto__" становится собственным ключом
-        const evil = JSON.parse('{"__proto__": {"active": false}, "maxTurns": 5}');
-        expect(() => deepMerge({ maxTurns: 200 }, evil, boom)).toThrow(/запрещённый ключ/);
-    });
-
-    it('опасный ключ на вложенном уровне тоже роняет мердж, с путём в сообщении', () => {
-        const nested = JSON.parse('{"modelRouting": {"__proto__": {"evil": 1}}}');
-        expect(() => deepMerge({ modelRouting: { labels: {} } }, nested, boom)).toThrow(
-            /common\.modelRouting/,
-        );
-    });
-
-    it('опасный ключ в общем блоке ловится так же, как в профиле', () => {
-        const base = JSON.parse('{"constructor": {"x": 1}}');
-        expect(() => deepMerge(base, {}, boom)).toThrow(/constructor/);
-    });
-
-    it('мягкий failFn (монитор) обрывает мердж, а не собирает полуфабрикат', () => {
-        const evil = JSON.parse('{"a": {"__proto__": {"x": 1}}, "b": 2}');
-        expect(deepMerge({ a: { y: 1 } }, evil, () => null)).toBe(null);
-    });
-});
-
-describe('findForbiddenKey — скан всей глубины конфига (ревью PR #127)', () => {
-    const boom = (m) => {
-        throw new Error(m);
-    };
-
-    // Объект по ключу, которого нет в common, копируется присваиванием без рекурсии
-    // мерджа — раньше его нутро не проверялось вовсе.
-    it('опасный ключ в блоке, которого нет в common → стоп с полным путём', () => {
-        const evil = JSON.parse('{"newBlock": {"deep": {"__proto__": {"x": 1}}}}');
-        expect(() => deepMerge({ a: 1 }, evil, boom)).toThrow(/common\.newBlock\.deep/);
-    });
-
-    it('опасный ключ в глубине общего блока тоже ловится', () => {
-        const base = JSON.parse('{"a": {"b": {"constructor": 1}}}');
-        expect(() => deepMerge(base, {}, boom)).toThrow(/constructor/);
-    });
-
-    it('массивы не считаются объектами для скана — легитимный конфиг проходит', () => {
-        expect(() => deepMerge({ phases: [{ milestone: 'M' }] }, {}, boom)).not.toThrow();
-    });
-});
-
-describe('resolveProfile — сборка итогового конфига из common + профиль (#71)', () => {
-    const raw = () => ({
-        defaultProfile: 'playground',
-        common: {
-            maxIterations: 10,
-            blockedHealAttempts: 3,
-            modelRouting: { labels: { high: 'opus' } },
-            phases: [{ milestone: 'M', branch: 'b' }],
-        },
-        profiles: { playground: {}, prod: { blockedHealAttempts: 0 } },
-    });
-    // failFn инжектируется — отказы проверяем как исключение, без process.exit.
-    const boom = (m) => {
-        throw new Error(m);
-    };
-
-    it('без имени берётся defaultProfile, общие поля наследуются', () => {
-        const cfg = resolveProfile(raw(), null, boom);
-        expect(cfg.profileName).toBe('playground');
-        expect(cfg.maxIterations).toBe(10);
-        expect(cfg.phases).toEqual([{ milestone: 'M', branch: 'b' }]);
-    });
-
-    it('пустой профиль playground не меняет общие значения (регресса нет)', () => {
-        const cfg = resolveProfile(raw(), 'playground', boom);
-        expect(cfg.blockedHealAttempts).toBe(3);
-    });
-
-    it('профиль переопределяет только свою дельту, остальное — из common', () => {
-        const cfg = resolveProfile(raw(), 'prod', boom);
-        expect(cfg.blockedHealAttempts).toBe(0);
-        expect(cfg.maxIterations).toBe(10);
-        expect(cfg.modelRouting.labels.high).toBe('opus');
-    });
-
-    it('явное имя важнее defaultProfile', () => {
-        expect(resolveProfile(raw(), 'prod', boom).profileName).toBe('prod');
-    });
-
-    it('резолв одного профиля не протекает в соседний (общий блок не мутируется)', () => {
-        const cfgRaw = raw();
-        resolveProfile(cfgRaw, 'prod', boom);
-        expect(resolveProfile(cfgRaw, 'playground', boom).blockedHealAttempts).toBe(3);
-    });
-
-    // Fail-closed: раннер с bypassPermissions не имеет права угадывать режим.
-    it('неизвестный профиль → стоп, в сообщении перечислены доступные', () => {
-        expect(() => resolveProfile(raw(), 'staging', boom)).toThrow(/staging.*playground, prod/s);
-    });
-
-    it('нет defaultProfile и профиль не задан → стоп, а не молчаливый playground', () => {
-        const cfg = raw();
-        delete cfg.defaultProfile;
-        expect(() => resolveProfile(cfg, null, boom)).toThrow(/defaultProfile/);
-    });
-
-    it('нет блока common → стоп', () => {
-        expect(() => resolveProfile({ profiles: { p: {} } }, 'p', boom)).toThrow(/common/);
-    });
-
-    it('нет блока profiles → стоп', () => {
-        expect(() => resolveProfile({ common: {} }, null, boom)).toThrow(/profiles/);
-    });
-
-    it('profiles пуст → стоп', () => {
-        expect(() => resolveProfile({ common: {}, profiles: {} }, null, boom)).toThrow(/пуст/);
-    });
-
-    it('профиль не объект (массив/строка) → стоп', () => {
-        expect(() => resolveProfile({ common: {}, profiles: { p: [] } }, 'p', boom)).toThrow(
-            /не объект/,
-        );
-    });
-
-    it('конфиг не объект (null/массив) → стоп', () => {
-        expect(() => resolveProfile(null, null, boom)).toThrow(/объект/);
-        expect(() => resolveProfile([], null, boom)).toThrow(/объект/);
-    });
-
-    it('имя профиля из прототипа (constructor/toString) не считается существующим', () => {
-        expect(() => resolveProfile(raw(), 'constructor', boom)).toThrow(/Неизвестный профиль/);
-    });
-
-    // Контракт монитора: failFn может НЕ бросать, а вернуть sentinel (null) —
-    // resolveProfile обязан вернуть его сразу, не продолжая работу с кривым raw.
-    it('с невыбрасывающим failFn возвращает его результат, а не падает дальше по коду', () => {
-        const softFail = () => null;
-        expect(resolveProfile(null, null, softFail)).toBe(null);
-        expect(resolveProfile({ common: {} }, null, softFail)).toBe(null);
-        expect(resolveProfile(raw(), 'staging', softFail)).toBe(null);
-    });
-
-    // #249: haltBeforeDeploy валидируется на старте (fail-closed, инвариант №1) —
-    // строгое `!== false` в цикле молча приняло бы строку/число/null за halt.
-    it('#249 haltBeforeDeploy в prod: boolean проходит (true/false), undefined = дефолт', () => {
-        const withHalt = (v) => ({
-            defaultProfile: 'prod',
-            common: { phases: [{ milestone: 'M', branch: 'b' }] },
-            profiles: { prod: v === undefined ? {} : { haltBeforeDeploy: v } },
-        });
-        expect(resolveProfile(withHalt(undefined), 'prod', boom).haltBeforeDeploy).toBeUndefined();
-        expect(resolveProfile(withHalt(true), 'prod', boom).haltBeforeDeploy).toBe(true);
-        expect(resolveProfile(withHalt(false), 'prod', boom).haltBeforeDeploy).toBe(false);
-    });
-
-    it('#249 haltBeforeDeploy не-boolean → стоп (строка "false"/число/null не считаются)', () => {
-        const withHalt = (v) => ({
-            defaultProfile: 'prod',
-            common: { phases: [{ milestone: 'M', branch: 'b' }] },
-            profiles: { prod: { haltBeforeDeploy: v } },
-        });
-        expect(() => resolveProfile(withHalt('false'), 'prod', boom)).toThrow(/ожидался boolean/);
-        expect(() => resolveProfile(withHalt(0), 'prod', boom)).toThrow(/ожидался boolean/);
-        expect(() => resolveProfile(withHalt(null), 'prod', boom)).toThrow(/ожидался boolean/);
-    });
-
-    it('#249 haltBeforeDeploy вне профиля prod → стоп (флаг там молча ничего не значит)', () => {
-        const cfg = {
-            defaultProfile: 'playground',
-            common: { phases: [{ milestone: 'M', branch: 'b' }] },
-            profiles: { playground: { haltBeforeDeploy: false }, prod: {} },
-        };
-        expect(() => resolveProfile(cfg, 'playground', boom)).toThrow(/только в профиле "prod"/);
-    });
-
-    it('#249 haltBeforeDeploy в common ловится на не-prod профиле (протекает из общего блока)', () => {
-        const cfg = {
-            defaultProfile: 'playground',
-            common: { phases: [{ milestone: 'M', branch: 'b' }], haltBeforeDeploy: true },
-            profiles: { playground: {}, prod: {} },
-        };
-        expect(() => resolveProfile(cfg, 'playground', boom)).toThrow(/только в профиле "prod"/);
-        // Тот же флаг в common на prod — валиден.
-        expect(resolveProfile(cfg, 'prod', boom).haltBeforeDeploy).toBe(true);
-    });
-});
-
-describe('parseProfileFlag — выбор профиля из argv (#72)', () => {
-    const boom = (m) => {
-        throw new Error(m);
-    };
-
-    it('--profile <name> отдаёт имя', () => {
-        expect(parseProfileFlag(['--profile', 'prod'], boom)).toBe('prod');
-    });
-
-    it('--profile=<name> отдаёт имя', () => {
-        expect(parseProfileFlag(['--profile=prod'], boom)).toBe('prod');
-    });
-
-    it('без флага → null: решать будет defaultProfile конфига', () => {
-        expect(parseProfileFlag(['--once', '--dry-run'], boom)).toBe(null);
-    });
-
-    it('имя не путается с соседними флагами', () => {
-        expect(parseProfileFlag(['--dry-run', '--profile', 'prod', '--once'], boom)).toBe('prod');
-    });
-
-    // Оборванная команда не должна тихо уводить в playground.
-    it('--profile без имени → стоп', () => {
-        expect(() => parseProfileFlag(['--profile'], boom)).toThrow(/требует имя/);
-    });
-
-    it('--profile перед другим флагом → стоп, а не имя "--once"', () => {
-        expect(() => parseProfileFlag(['--profile', '--once'], boom)).toThrow(/требует имя/);
-    });
-
-    it('--profile= с пустым значением → стоп', () => {
-        expect(() => parseProfileFlag(['--profile='], boom)).toThrow(/без имени/);
-    });
-
-    // Дубль с разными именами: «кто победит» нельзя решать порядком веток парсера —
-    // это тихий уход не в тот профиль. Только стоп.
-    it('дубль флага в разных формах → стоп', () => {
-        expect(() => parseProfileFlag(['--profile', 'prod', '--profile=playground'], boom)).toThrow(
-            /указан 2 раза/,
-        );
-    });
-
-    it('дубль флага в одной форме → стоп, даже с одинаковым именем', () => {
-        expect(() => parseProfileFlag(['--profile', 'prod', '--profile', 'prod'], boom)).toThrow(
-            /указан 2 раза/,
-        );
-    });
-
-    it('связка с резолвом: флаг важнее defaultProfile', () => {
-        const raw = {
-            defaultProfile: 'playground',
-            common: { maxTurns: 200 },
-            profiles: { playground: {}, prod: { maxTurns: 50 } },
-        };
-        const name = parseProfileFlag(['--profile', 'prod'], boom);
-        const cfg = resolveProfile(raw, name, boom);
-        expect(cfg.profileName).toBe('prod');
-        expect(cfg.maxTurns).toBe(50);
-    });
-
-    it('связка с резолвом: неизвестное имя из флага → стоп', () => {
-        const raw = { defaultProfile: 'playground', common: {}, profiles: { playground: {} } };
-        const name = parseProfileFlag(['--profile', 'staging'], boom);
-        expect(() => resolveProfile(raw, name, boom)).toThrow(/Неизвестный профиль/);
-    });
-});
-
-describe('боевой ralph.config.json — профили playground/prod (#73)', () => {
-    // Читаем НАСТОЯЩИЙ конфиг, а не синтетику: смысл issue в том, что прод-значения
-    // лежат в файле, а не в дефолтах кода, и что playground не съехал.
-    const raw = JSON.parse(fs.readFileSync('.claude/ralph/ralph.config.json', 'utf-8'));
-    const boom = (m) => {
-        throw new Error(m);
-    };
-
-    it('без флага резолвится playground', () => {
-        expect(resolveProfile(raw, null, boom).profileName).toBe('playground');
-    });
-
-    it('playground сохраняет прежнее поведение: крутилки равны дефолтам кода', () => {
-        const cfg = resolveProfile(raw, 'playground', boom);
-        // Ровно те значения, что стояли в `cfg.X ?? N` до переезда в конфиг.
-        expect(cfg.blockedHealAttempts).toBe(3);
-        expect(cfg.gateHealAttempts).toBe(2);
-        expect(cfg.apiLimitMaxWaits).toBe(3);
-    });
-
-    // #216: prod больше НЕ выключает разбор blocked (был blockedHealAttempts: 0) —
-    // блокер ревью, устранённый правками, снимается сам после чистого повторного ревью,
-    // а не ждёт человека. Значение наследуется из common (дефолт 3), профиль его не дублирует.
-    it('prod: blocked-разбор включён — наследует лимит из common (дефолт 3)', () => {
-        expect(resolveProfile(raw, 'prod', boom).blockedHealAttempts).toBe(3);
-    });
-
-    it('prod наследует всё остальное из common, не дублируя его', () => {
-        const pg = resolveProfile(raw, 'playground', boom);
-        const prod = resolveProfile(raw, 'prod', boom);
-        expect(prod.modelRouting).toEqual(pg.modelRouting);
-        expect(prod.review).toEqual(pg.review);
-        expect(prod.phases).toEqual(pg.phases);
-        expect(prod.authorAllowlist).toEqual(pg.authorAllowlist);
-        expect(prod.blockedHealAttempts).toEqual(pg.blockedHealAttempts);
-        // #256: единственная дельта prod теперь — haltBeforeDeploy: false (непрерывный
-        // prod, #249). Остальное отличие прода от playground по-прежнему держит код по
-        // profileName (толстый гейт, TG, пост-мердж проверка деплоя), а не конфиг.
-        expect(Object.keys(raw.profiles.prod)).toEqual(['haltBeforeDeploy']);
-        // Пиннится не только НАЛИЧИЕ ключа, но и ЗНАЧЕНИЕ: тихий флип на true (правкой
-        // руками или будущим мерджем) вернул бы prod в halt-режим — единственный смысл
-        // фазы #256 — и старт-валидация true пропустит как валидный конфиг. Резолв-
-        // ассерты краснеют на таком регрессе.
-        expect(resolveProfile(raw, 'prod', boom).haltBeforeDeploy).toBe(false);
-        // playground остаётся на дефолте (halt) — флаг не протёк через common.
-        expect(resolveProfile(raw, 'playground', boom).haltBeforeDeploy).toBeUndefined();
-    });
-});
-
 describe('processAlive — занят ли номер процесса (#74, #176)', () => {
     it('сигнал 0 прошёл → процесс жив', () => {
         expect(processAlive(1234, () => undefined)).toBe(true);
@@ -4740,309 +3120,6 @@ describe('isMonitorProcess — за pid действительно monitor.js (#
         expect(isMonitorProcess(0, readFn)).toBe(false);
         expect(isMonitorProcess(undefined, readFn)).toBe(false);
         expect(readFn).not.toHaveBeenCalled();
-    });
-});
-
-describe('isRalphProcess — за pid действительно наш ralph.js (#176)', () => {
-    it('в /proc/<pid>/cmdline есть путь ralph.js → это наш раннер', () => {
-        const readFn = vi.fn(() => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0');
-        expect(isRalphProcess(4242, readFn)).toBe(true);
-        expect(readFn).toHaveBeenCalledWith('/proc/4242/cmdline', 'utf-8');
-    });
-
-    // Строгая сверка по полному пути: раннер чужого проекта со своим ralph.js (имя
-    // родовое) не должен сойти за наш — как isRalphMonitorProcess vs isMonitorProcess.
-    it('чужой ralph.js по другому пути → false', () => {
-        expect(isRalphProcess(4242, () => 'node\0/opt/other/ralph.js\0')).toBe(false);
-    });
-
-    // ОС переиспользовала pid: живой процесс есть, но это не раннер.
-    it('чужой процесс под тем же pid (pid-reuse) → false', () => {
-        expect(isRalphProcess(4242, () => 'nginx\0-g\0daemon off;\0')).toBe(false);
-    });
-
-    it('процесса нет (чтение /proc упало) → false', () => {
-        expect(
-            isRalphProcess(4242, () => {
-                throw new Error('ENOENT');
-            }),
-        ).toBe(false);
-    });
-
-    it('пустой/нулевой pid → false без чтения /proc', () => {
-        const readFn = vi.fn();
-        expect(isRalphProcess(0, readFn)).toBe(false);
-        expect(isRalphProcess(undefined, readFn)).toBe(false);
-        expect(readFn).not.toHaveBeenCalled();
-    });
-});
-
-describe('lockAlive — держит ли лок живой раннер (#176)', () => {
-    const ralphCmdline = () => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0';
-
-    it('номер занят И cmdline — наш ralph.js → лок жив', () => {
-        expect(lockAlive(4242, { killFn: () => undefined, procReadFn: ralphCmdline })).toBe(true);
-    });
-
-    it('номер свободен (kill бросил ESRCH) → лок сирота, /proc не читаем', () => {
-        const procReadFn = vi.fn();
-        expect(
-            lockAlive(4242, {
-                killFn: () => {
-                    throw new Error('ESRCH');
-                },
-                procReadFn,
-            }),
-        ).toBe(false);
-        // kill(pid,0) отсёк первым — до cmdline-сверки не дошли.
-        expect(procReadFn).not.toHaveBeenCalled();
-    });
-
-    // Ключевой сценарий pid-reuse: номер занят, но за ним чужой процесс — не живой раннер,
-    // легитимный запуск не блокируется.
-    it('номер занят, но за ним чужой процесс → лок сирота (не живой раннер)', () => {
-        expect(
-            lockAlive(4242, {
-                killFn: () => undefined,
-                procReadFn: () => 'nginx\0-g\0daemon off;\0',
-            }),
-        ).toBe(false);
-    });
-
-    it('пустой/нулевой pid → мёртв', () => {
-        expect(lockAlive(0, { killFn: () => undefined, procReadFn: ralphCmdline })).toBe(false);
-        expect(lockAlive(NaN, { killFn: () => undefined, procReadFn: ralphCmdline })).toBe(false);
-    });
-});
-
-describe('writeLock — запись pid в лок-файл (#176)', () => {
-    it('пишет pid строкой по указанному пути', () => {
-        const writeFn = vi.fn();
-        writeLock(4242, { writeFn, lockPath: '.claude/ralph/ralph.lock' });
-        expect(writeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', '4242');
-    });
-
-    it('по умолчанию — pid текущего процесса', () => {
-        const writeFn = vi.fn();
-        writeLock(undefined, { writeFn });
-        expect(writeFn).toHaveBeenCalledWith(expect.any(String), String(process.pid));
-    });
-
-    // Предохранитель #138: боевой дефолт writeFn зовёт guardSideEffect — в тестах
-    // (RALPH_NO_SIDE_EFFECTS=1) забытый мок бросит, а не насорит настоящим ralph.lock.
-    it('боевой дефолт writeFn под guardSideEffect (#138)', () => {
-        expect(() => writeLock(4242, { lockPath: '.claude/ralph/ralph.lock' })).toThrow(
-            /RALPH_NO_SIDE_EFFECTS/,
-        );
-        // Вызов намеренный — журнал забираем сами, иначе общий afterEach уронит тест.
-        expect(ralph.sideEffectAttempts.splice(0)).toEqual([
-            'writeLock (.claude/ralph/ralph.lock)',
-        ]);
-    });
-});
-
-describe('removeLock — снятие лок-файла (#177)', () => {
-    it('зовёт removeFn по указанному пути', () => {
-        const removeFn = vi.fn();
-        removeLock({ lockPath: '.claude/ralph/ralph.lock', removeFn });
-        expect(removeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock');
-    });
-
-    // Предохранитель #138: боевой дефолт removeFn зовёт guardSideEffect — забытый мок
-    // в тесте бросит, а не снесёт настоящий ralph.lock живого прогона.
-    it('боевой дефолт removeFn под guardSideEffect (#138)', () => {
-        expect(() => removeLock({ lockPath: '.claude/ralph/ralph.lock' })).toThrow(
-            /RALPH_NO_SIDE_EFFECTS/,
-        );
-        expect(ralph.sideEffectAttempts.splice(0)).toEqual([
-            'removeLock (.claude/ralph/ralph.lock)',
-        ]);
-    });
-});
-
-describe('releaseLockIfOurs — снятие своего лока при выходе (#176)', () => {
-    it('файл держит наш pid → снимаем через removeFn по тому же пути', () => {
-        const removeFn = vi.fn();
-        releaseLockIfOurs('/abs/ralph.lock', { readFn: () => '777\n', removeFn, pid: 777 });
-        expect(removeFn).toHaveBeenCalledWith('/abs/ralph.lock');
-    });
-
-    it('файл держит ЧУЖОЙ pid (лок украли/переписали) → не трогаем', () => {
-        const removeFn = vi.fn();
-        releaseLockIfOurs('/abs/ralph.lock', { readFn: () => '4242', removeFn, pid: 777 });
-        expect(removeFn).not.toHaveBeenCalled();
-    });
-
-    it('файла нет / нечитаем → снимать нечего, removeFn не зовём', () => {
-        const removeFn = vi.fn();
-        releaseLockIfOurs('/abs/ralph.lock', {
-            readFn: () => {
-                throw new Error('ENOENT');
-            },
-            removeFn,
-            pid: 777,
-        });
-        expect(removeFn).not.toHaveBeenCalled();
-    });
-});
-
-describe('acquireLock — fail-closed взятие лока (#177)', () => {
-    const ralphCmdline = () => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0';
-    const enoent = () => {
-        const e = new Error('ENOENT: no such file');
-        e.code = 'ENOENT';
-        throw e;
-    };
-    // readFn читает ТОЛЬКО лок-файл, procReadFn — ТОЛЬКО /proc/<pid>/cmdline: раздельные
-    // контракты, тесту не надо мультиплексировать по пути. deps со всеми побочками
-    // замоканными — тест ничего не пишет и не роняет процесс.
-    const deps = (over = {}) => ({
-        lockPath: '.claude/ralph/ralph.lock',
-        pid: 777,
-        readFn: enoent,
-        procReadFn: ralphCmdline,
-        killFn: () => undefined,
-        removeFn: vi.fn(),
-        writeFn: vi.fn(),
-        logFn: vi.fn(),
-        failFn: vi.fn(),
-        ...over,
-    });
-
-    it('лока нет (ENOENT) → берём себе: пишем pid, стоп/удаление не зовём', () => {
-        const d = deps();
-        expect(acquireLock(d)).toBe(true);
-        expect(d.writeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', '777');
-        expect(d.failFn).not.toHaveBeenCalled();
-        expect(d.removeFn).not.toHaveBeenCalled();
-    });
-
-    it('живой раннер держит лок → отказ fail-closed, сообщение с pid и путём, без побочек', () => {
-        const d = deps({ readFn: () => '4242', procReadFn: ralphCmdline, killFn: () => undefined });
-        expect(acquireLock(d)).toBe(false);
-        expect(d.failFn).toHaveBeenCalledTimes(1);
-        const msg = d.failFn.mock.calls[0][0];
-        expect(msg).toContain('4242'); // pid держателя
-        expect(msg).toContain('.claude/ralph/ralph.lock'); // путь лок-файла
-        // Ни строчки в state/лог/git — лок не тронут.
-        expect(d.writeFn).not.toHaveBeenCalled();
-        expect(d.removeFn).not.toHaveBeenCalled();
-    });
-
-    it('осиротевший лок (процесс мёртв, kill → ESRCH) → снимаем, логируем, берём себе', () => {
-        const d = deps({
-            readFn: () => '4242',
-            procReadFn: ralphCmdline,
-            killFn: () => {
-                throw new Error('ESRCH');
-            },
-        });
-        expect(acquireLock(d)).toBe(true);
-        expect(d.logFn).toHaveBeenCalledTimes(1); // событие снятия сироты в лог
-        expect(d.logFn.mock.calls[0][0]).toContain('4242');
-        expect(d.removeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock');
-        expect(d.writeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', '777');
-        expect(d.failFn).not.toHaveBeenCalled();
-    });
-
-    // Ключевой сценарий pid-reuse: номер занят, но за ним ЧУЖОЙ процесс — не живой раннер.
-    it('осиротевший лок (pid-reuse, чужой cmdline) → снимаем и берём себе', () => {
-        const d = deps({
-            readFn: () => '4242',
-            procReadFn: () => 'nginx\0-g\0daemon off;\0',
-            killFn: () => undefined,
-        });
-        expect(acquireLock(d)).toBe(true);
-        expect(d.removeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock');
-        expect(d.writeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock', '777');
-        expect(d.failFn).not.toHaveBeenCalled();
-    });
-
-    // Атомарность взятия (#243-ревью): второй раннер, прошедший ту же проверку «лока нет»,
-    // на записи получает EEXIST от эксклюзивного writeLock — это ОТКАЗ, а не перезапись.
-    it('лок возник в момент взятия (writeFn бросил EEXIST) → отказ fail-closed', () => {
-        const eexist = () => {
-            const e = new Error('EEXIST: file already exists');
-            e.code = 'EEXIST';
-            throw e;
-        };
-        const d = deps({ writeFn: eexist });
-        expect(acquireLock(d)).toBe(false);
-        expect(d.failFn).toHaveBeenCalledTimes(1);
-        expect(d.failFn.mock.calls[0][0]).toContain('в момент взятия');
-        expect(d.failFn.mock.calls[0][0]).toContain('.claude/ralph/ralph.lock');
-    });
-
-    // То же на пути реклейма сироты: unlink прошёл, но лок пересоздал конкурент → EEXIST.
-    it('реклейм сироты: лок пересоздан между unlink и записью (EEXIST) → отказ', () => {
-        const eexist = () => {
-            const e = new Error('EEXIST');
-            e.code = 'EEXIST';
-            throw e;
-        };
-        const d = deps({
-            readFn: () => '4242',
-            killFn: () => {
-                throw new Error('ESRCH');
-            },
-            removeFn: vi.fn(),
-            writeFn: eexist,
-        });
-        expect(acquireLock(d)).toBe(false);
-        expect(d.removeFn).toHaveBeenCalledWith('.claude/ralph/ralph.lock');
-        expect(d.failFn).toHaveBeenCalledTimes(1);
-        expect(d.failFn.mock.calls[0][0]).toContain('в момент взятия');
-    });
-
-    it('нечитаемый лок-файл (не ENOENT) → стоп fail-closed, не «лока нет»', () => {
-        const d = deps({
-            readFn: () => {
-                const e = new Error('EACCES: permission denied');
-                e.code = 'EACCES';
-                throw e;
-            },
-        });
-        expect(acquireLock(d)).toBe(false);
-        expect(d.failFn).toHaveBeenCalledTimes(1);
-        expect(d.failFn.mock.calls[0][0]).toContain('нечитаем');
-        // fail-closed: не стартуем поверх — свой pid не пишем.
-        expect(d.writeFn).not.toHaveBeenCalled();
-    });
-
-    it('битое содержимое (мусор) → стоп fail-closed, не крадём как сироту', () => {
-        const d = deps({ readFn: () => 'мусор' });
-        expect(acquireLock(d)).toBe(false);
-        expect(d.failFn).toHaveBeenCalledTimes(1);
-        expect(d.failFn.mock.calls[0][0]).toContain('битый');
-        expect(d.writeFn).not.toHaveBeenCalled();
-        expect(d.removeFn).not.toHaveBeenCalled();
-    });
-
-    it('пустой лок-файл → стоп fail-closed (битый)', () => {
-        const d = deps({ readFn: () => '   \n' });
-        expect(acquireLock(d)).toBe(false);
-        expect(d.failFn).toHaveBeenCalledTimes(1);
-        expect(d.failFn.mock.calls[0][0]).toContain('битый');
-        expect(d.writeFn).not.toHaveBeenCalled();
-    });
-
-    it('отрицательный / нулевой pid в файле → стоп fail-closed (битый)', () => {
-        for (const bad of ['0', '-5']) {
-            const d = deps({ readFn: () => bad });
-            expect(acquireLock(d)).toBe(false);
-            expect(d.failFn).toHaveBeenCalledTimes(1);
-            expect(d.writeFn).not.toHaveBeenCalled();
-        }
-    });
-
-    // Побочки взятия лока запрещены до вердикта: при живом локе НИ writeFn, НИ removeFn.
-    // (взятие до любых побочек детальнее — #178; здесь проверяем, что сам acquireLock их
-    // не трогает на отказном пути.)
-    it('на любом отказном пути state/git не трогаются (writeFn/removeFn не зовутся)', () => {
-        const live = deps({ readFn: () => '4242', procReadFn: ralphCmdline });
-        acquireLock(live);
-        expect(live.writeFn).not.toHaveBeenCalled();
-        expect(live.removeFn).not.toHaveBeenCalled();
     });
 });
 
@@ -5404,6 +3481,7 @@ describe('processPpid — ppid процесса из /proc/<pid>/stat (#235)', (
 // #235-ревью: скан /proc (sweepOrphanMonitors) сверяет ПОЛНЫЙ путь MONITOR_PATH, не
 // родовое имя 'monitor.js' — иначе чужой monitor.js (pm2, чужой проект) попал бы в
 // уборку и был бы прибит SIGTERM'ом всей группе.
+
 describe('isRalphMonitorProcess — строгая сверка по полному пути MONITOR_PATH (#235)', () => {
     it('cmdline с полным путём .claude/ralph/monitor.js → наш монитор', () => {
         const readFn = () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0';
@@ -5733,6 +3811,7 @@ describe('ensureMonitorAlive — взаимный контроль раннер�
 //      вместо checksGreen, как в #77) и на всей последовательности git-команд
 //      закрепляем, что раннер НИКОГДА не занимает именованную ветку и не двигает
 //      ref человека — ходит строго детачем (PR-голова / origin/main).
+
 describe('Изоляция раннера в worktree — сценарии и мердж-инварианты (#79)', () => {
     // Любая git-команда, которая заняла бы именованную ветку или тронула бы дерево/
     // ref человека. Раннер в worktree-модели не имеет права ни на одну из них: main
@@ -6038,339 +4117,6 @@ describe('matchRiskPaths — попадание диффа в зону риск�
     });
 });
 
-describe('apiLimitWaitMs — сон до сброса окна лимита (#130)', () => {
-    const { apiLimitWaitMs } = ralph;
-    const MIN = 60 * 1000;
-
-    beforeEach(() => {
-        vi.useFakeTimers();
-        // Полдень: «resets 1pm» → ровно час, без переползания через полночь.
-        vi.setSystemTime(new Date(2026, 6, 21, 12, 0, 0));
-    });
-    afterEach(() => vi.useRealTimers());
-
-    it('к распарсенному времени сброса добавляет запас из конфига', () => {
-        expect(apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: 5 })).toBe(60 * MIN + 5 * MIN);
-    });
-
-    it('без ключа в конфиге запас — 5 минут (новый дефолт вместо 2)', () => {
-        expect(apiLimitWaitMs('resets 1pm', {})).toBe(60 * MIN + 5 * MIN);
-    });
-
-    it('когда время сброса не распарсилось — fallback-ожидание плюс тот же запас', () => {
-        expect(apiLimitWaitMs('лимит, но без времени', { apiLimitFallbackWaitMin: 30 })).toBe(
-            30 * MIN + 5 * MIN,
-        );
-    });
-
-    it('нулевой запас уважается и не подменяется дефолтом', () => {
-        expect(apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: 0 })).toBe(60 * MIN);
-    });
-});
-
-describe('pickReviewModel — эскалация ревью (#130)', () => {
-    const { pickReviewModel } = ralph;
-
-    const CFG = {
-        review: {
-            default: 'claude-opus-4-8',
-            escalated: 'claude-fable-5',
-            escalateOn: [],
-            escalateOnPaths: ['.github/workflows/**', '.claude/ralph/**'],
-        },
-    };
-    const deps = (over = {}) => ({
-        cfg: CFG,
-        logFn: () => {},
-        ghJsonFn: () => [],
-        shFn: () => '',
-        // #252: fetch внутри phaseDiffFiles теперь мутация через argv.
-        runArgvFn: () => '',
-        ...over,
-    });
-
-    it('дифф вне зон риска — ревьюит дефолтная модель', () => {
-        const model = pickReviewModel(
-            'Фаза X',
-            'feature/x',
-            deps({ shFn: () => 'src/app/page.tsx\nREADME.md' }),
-        );
-        expect(model).toBe('claude-opus-4-8');
-    });
-
-    it('дифф трогает деплой — эскалация на дорогую модель', () => {
-        const model = pickReviewModel(
-            'Фаза X',
-            'feature/x',
-            deps({ shFn: () => 'src/app/page.tsx\n.github/workflows/deploy.yml' }),
-        );
-        expect(model).toBe('claude-fable-5');
-    });
-
-    it('метка сложности сама по себе больше НЕ эскалирует', () => {
-        // Ровно та регрессия, ради которой заведён #130: complexity:expert
-        // описывает трудность написания, а не цену ошибки.
-        const model = pickReviewModel(
-            'Фаза X',
-            'feature/x',
-            deps({
-                ghJsonFn: () => [{ labels: [{ name: 'complexity:expert' }] }],
-                shFn: () => 'src/app/page.tsx',
-            }),
-        );
-        expect(model).toBe('claude-opus-4-8');
-    });
-
-    it('escalateOn всё ещё работает, если его осознанно заполнили', () => {
-        const cfg = { review: { ...CFG.review, escalateOn: ['complexity:expert'] } };
-        const model = pickReviewModel(
-            'Фаза X',
-            'feature/x',
-            deps({ cfg, ghJsonFn: () => [{ labels: [{ name: 'complexity:expert' }] }] }),
-        );
-        expect(model).toBe('claude-fable-5');
-    });
-
-    it('сбой git при получении диффа не роняет сдачу — ревью дефолтной моделью', () => {
-        const logs = [];
-        const model = pickReviewModel(
-            'Фаза X',
-            'feature/x',
-            deps({
-                logFn: (m) => logs.push(m),
-                shFn: () => {
-                    throw new Error('fatal: no upstream');
-                },
-            }),
-        );
-        expect(model).toBe('claude-opus-4-8');
-        expect(logs.join('\n')).toMatch(/дифф/i);
-    });
-
-    it('имя ветки со спецсимволами шелла не уходит в git — эскалации нет, есть предупреждение', () => {
-        // sh() исполняет СТРОКУ через шелл, поэтому ветка из конфига обязана быть
-        // провалидирована до подстановки: `$(...)`/`;` внутри имени иначе исполнятся.
-        const shCmds = [];
-        const logs = [];
-        const model = pickReviewModel(
-            'Фаза X',
-            'feature/x;$(id)',
-            deps({
-                logFn: (m) => logs.push(m),
-                shFn: (cmd) => {
-                    shCmds.push(cmd);
-                    return '.github/workflows/deploy.yml';
-                },
-            }),
-        );
-        expect(shCmds).toEqual([]);
-        expect(model).toBe('claude-opus-4-8');
-        expect(logs.join('\n')).toMatch(/ветк/i);
-    });
-
-    it('легаси-конфиг без блока review — прежнее поле reviewModel', () => {
-        expect(pickReviewModel('Фаза X', 'feature/x', deps({ cfg: { reviewModel: 'none' } }))).toBe(
-            'none',
-        );
-    });
-});
-
-describe('pickReviewFallbackModel — фолбэк ревью, дефолт review.default (#221)', () => {
-    const { pickReviewFallbackModel } = ralph;
-
-    it('review.fallback задан — возвращается как есть', () => {
-        const cfg = { review: { default: 'claude-opus-4-8', fallback: 'claude-fable-5' } };
-        expect(pickReviewFallbackModel(cfg)).toBe('claude-fable-5');
-    });
-
-    it('review.fallback не задан — дефолт на review.default (не остаётся без фолбэка)', () => {
-        const cfg = { review: { default: 'claude-opus-4-8' } };
-        expect(pickReviewFallbackModel(cfg)).toBe('claude-opus-4-8');
-    });
-
-    // #221-ревью (PR #241): явное 'none' возвращается КАК ЕСТЬ, не как null — иначе
-    // сигнал осознанного отказа терялся бы и планка reviewModelFloor подняла бы фолбэк до
-    // floor в повторном ревью (buildClaudeArgs строку 'none' всё равно гасит).
-    it('review.fallback = "none" — осознанный отказ, вернёт строку "none" (не null)', () => {
-        const cfg = { review: { default: 'claude-opus-4-8', fallback: 'none' } };
-        expect(pickReviewFallbackModel(cfg)).toBe('none');
-    });
-
-    it('блока review нет вовсе — null', () => {
-        expect(pickReviewFallbackModel({})).toBe(null);
-    });
-
-    it('review — не объект (легаси reviewModel) — null, а не исключение', () => {
-        expect(pickReviewFallbackModel({ reviewModel: 'claude-opus-4-8' })).toBe(null);
-    });
-});
-
-// #221: конфиг, где review.fallback слабее review.default, отвергается на старте
-// (assertKnownReviewModels вызывается внутри resolveProfile) — это и есть требуемый
-// issue негативный тест «fail-closed, а не тихая деградация в момент overload».
-describe('resolveProfile — review.fallback не может быть слабее review.default (#221)', () => {
-    const boom = (m) => {
-        throw new Error(m);
-    };
-    const rawWithReview = (review) => ({
-        defaultProfile: 'playground',
-        common: {
-            phases: [{ milestone: 'M', branch: 'b' }],
-            review,
-        },
-        profiles: { playground: {} },
-    });
-
-    it('review.fallback слабее review.default → стоп с внятным сообщением', () => {
-        expect(() =>
-            resolveProfile(
-                rawWithReview({
-                    default: 'claude-opus-4-8',
-                    fallback: 'claude-haiku-4-5-20251001',
-                }),
-                null,
-                boom,
-            ),
-        ).toThrow(/review\.fallback.*claude-haiku-4-5-20251001.*слабее.*review\.default/s);
-    });
-
-    it('review.fallback той же силы, что review.default — конфиг принимается', () => {
-        const cfg = resolveProfile(
-            rawWithReview({ default: 'claude-opus-4-8', fallback: 'claude-opus-4-8' }),
-            null,
-            boom,
-        );
-        expect(cfg.review.fallback).toBe('claude-opus-4-8');
-    });
-
-    it('review.fallback сильнее review.default — конфиг принимается', () => {
-        const cfg = resolveProfile(
-            rawWithReview({ default: 'claude-opus-4-8', fallback: 'claude-fable-5' }),
-            null,
-            boom,
-        );
-        expect(cfg.review.fallback).toBe('claude-fable-5');
-    });
-
-    it('незнакомая модель в review.fallback → стоп (тот же барьер #223, что для default/escalated)', () => {
-        expect(() =>
-            resolveProfile(
-                rawWithReview({ default: 'claude-opus-4-8', fallback: 'claude-mystery' }),
-                null,
-                boom,
-            ),
-        ).toThrow(/review\.fallback.*claude-mystery.*REVIEW_MODEL_STRENGTH/s);
-    });
-
-    it('review.fallback не задан — конфиг проходит валидацию как раньше', () => {
-        expect(() =>
-            resolveProfile(rawWithReview({ default: 'claude-opus-4-8' }), null, boom),
-        ).not.toThrow();
-    });
-});
-
-// ── #130: негативные входы и дефекты, найденные ревью PR #132 ────────────────
-// Все пять сценариев ниже прошли сквозь ЗЕЛЁНЫЙ прогон первой версии — тесты
-// проверяли только happy path. Каждый оказался реальным дефектом.
-
-describe('apiLimitWaitMs — мусор в конфиге не превращается в вечный сон (#132)', () => {
-    const { apiLimitWaitMs } = ralph;
-    const MIN = 60 * 1000;
-
-    beforeEach(() => {
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date(2026, 6, 21, 12, 0, 0));
-    });
-    afterEach(() => vi.useRealTimers());
-
-    // Atomics.wait(buf, 0, 0, NaN) спит БЕСКОНЕЧНО: NaN трактуется как +∞.
-    // Раннер вставал бы навсегда, молча, с записью «Жду NaN мин» в логе.
-    it.each([
-        ['строка', 'abc'],
-        ['null', null],
-        ['объект', {}],
-        ['отрицательное', -5],
-    ])('apiLimitGraceMin = %s → дефолтные 5 минут, не NaN', (_name, value) => {
-        const ms = apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: value });
-        expect(Number.isFinite(ms)).toBe(true);
-        expect(ms).toBe(60 * MIN + 5 * MIN);
-    });
-
-    it('мусорный apiLimitFallbackWaitMin тоже не даёт NaN', () => {
-        const ms = apiLimitWaitMs('лимит без времени', { apiLimitFallbackWaitMin: 'скоро' });
-        expect(Number.isFinite(ms)).toBe(true);
-        expect(ms).toBe(30 * MIN + 5 * MIN);
-    });
-});
-
-// #138: сам предохранитель. Его смысл — не дать забытому моку тихо уйти в реальный
-// шелл и в ralph.log живого прогона (так в лог фазы 4 попало
-// `git fetch origin main 'feature/m1'` — ветка из фикстуры этого файла).
-describe('предохранитель побочек в тестах: RALPH_NO_SIDE_EFFECTS (#138)', () => {
-    const { sh, log, sideEffectAttempts } = ralph;
-
-    it('переменная включена в окружении ralph-проекта vitest', () => {
-        // Если предохранитель выключат в vitest.config.ts, тесты ниже станут
-        // зелёными по ложной причине — фиксируем само условие.
-        expect(process.env.RALPH_NO_SIDE_EFFECTS).toBe('1');
-    });
-
-    it('sh() отказывается исполнять команду, называет её в ошибке и пишет в журнал', () => {
-        expect(() => sh('git fetch origin main')).toThrow(/RALPH_NO_SIDE_EFFECTS/);
-        expect(() => sh('git fetch origin main')).toThrow(/git fetch origin main/);
-        // Журнал — то, по чему общий afterEach ловит забытый мок даже когда вызов
-        // обёрнут в try/catch. Здесь sh() вызван НАМЕРЕННО, поэтому журнал забираем
-        // сами: иначе afterEach уронил бы этот же тест.
-        expect(sideEffectAttempts.splice(0)).toEqual([
-            'sh(git fetch origin main)',
-            'sh(git fetch origin main)',
-        ]);
-    });
-
-    it('проглоченный try/catch-ом вызов всё равно виден в журнале', () => {
-        // Ровно исходный сценарий #138: phaseDiffFiles ловит ошибку git и возвращает
-        // null, поэтому одного throw для покраснения теста не хватило бы.
-        // #252: fetch теперь мутация через shArgv — формат записи журнала другой
-        // (file+argv, а не строка через шелл).
-        const files = ralph.phaseDiffFiles('feature/m1', { logFn: () => {} });
-        expect(files).toBe(null);
-        expect(sideEffectAttempts.splice(0)).toEqual([
-            'shArgv(git fetch origin main feature/m1 --quiet)',
-        ]);
-    });
-
-    it('дефолтный installFn (настоящий npm ci) тоже под предохранителем', () => {
-        // Не только шелл: забытый installFn переустановил бы node_modules прямо во
-        // время прогона тестов. Расширение предохранителя по ревью PR #141.
-        expect(() =>
-            ralph.syncDepsIfLockChanged({
-                logFn: () => {},
-                existsFn: () => true,
-                readFn: (file) => (String(file).endsWith('.sha') ? 'старый-хэш' : 'lock'),
-                writeFn: () => {},
-            }),
-        ).toThrow(/RALPH_NO_SIDE_EFFECTS/);
-        expect(sideEffectAttempts.splice(0)).toEqual(['npm ci (syncDepsIfLockChanged)']);
-    });
-
-    it('дефолтный spawnFn (живая claude-сессия) тоже под предохранителем', () => {
-        // Однажды тест уже пробился до настоящего spawnSync и запустил claude —
-        // см. докблок spawnClaude. Теперь это громкая ошибка.
-        expect(() => ralph.spawnClaude(['-p', 'привет'], 1000)).toThrow(/RALPH_NO_SIDE_EFFECTS/);
-        expect(sideEffectAttempts.splice(0)).toEqual(['spawnClaude(claude)']);
-    });
-
-    it('log() пишет в консоль, но не трогает файл лога', () => {
-        const append = vi.spyOn(fs, 'appendFileSync');
-        const out = vi.spyOn(console, 'log').mockImplementation(() => {});
-        log('строка, которой не место в ralph.log');
-        expect(out).toHaveBeenCalled();
-        expect(append).not.toHaveBeenCalled();
-        out.mockRestore();
-        append.mockRestore();
-    });
-});
-
 describe('matchRiskPaths — кривой конфиг не роняет цикл сдачи (#132)', () => {
     const { matchRiskPaths } = ralph;
 
@@ -6441,205 +4187,6 @@ describe('phaseDiffFiles — какая именно git-команда уход
     });
 });
 
-describe('pickReviewModel — отсутствующая escalated-модель не отменяет ревью (#132)', () => {
-    const { pickReviewModel } = ralph;
-
-    // undefined из эскалации runLoop трактует как «ревью за супервизором» и
-    // пропускает ревью ЦЕЛИКОМ — fail-open ровно на самых опасных фазах.
-    it('зона риска при незаданном review.escalated — ревью дефолтной моделью, не undefined', () => {
-        const logs = [];
-        const model = pickReviewModel('Фаза X', 'feature/x', {
-            cfg: {
-                review: {
-                    default: 'claude-opus-4-8',
-                    escalateOnPaths: ['.github/workflows/**'],
-                },
-            },
-            logFn: (m) => logs.push(m),
-            shFn: () => '.github/workflows/deploy.yml',
-            runArgvFn: () => '',
-            ghJsonFn: () => [],
-        });
-        expect(model).toBe('claude-opus-4-8');
-        expect(model).toBeDefined();
-        expect(logs.join('\n')).toMatch(/escalated/i);
-    });
-
-    it('escalateOn строкой вместо массива не роняет выбор модели', () => {
-        expect(() =>
-            pickReviewModel('Фаза X', 'feature/x', {
-                cfg: {
-                    review: {
-                        default: 'claude-opus-4-8',
-                        escalated: 'claude-fable-5',
-                        escalateOn: 'complexity:expert',
-                    },
-                },
-                logFn: () => {},
-                shFn: () => '',
-                runArgvFn: () => '',
-                ghJsonFn: () => [],
-            }),
-        ).not.toThrow();
-    });
-});
-
-describe('#217: планка модели повторного ревью (reviewModelRank / strongerReviewModel)', () => {
-    const { reviewModelRank, strongerReviewModel } = ralph;
-
-    it('rank растёт по силе модели: haiku < sonnet < opus < fable', () => {
-        expect(reviewModelRank('claude-haiku-4-5-20251001')).toBeLessThan(
-            reviewModelRank('claude-sonnet-5'),
-        );
-        expect(reviewModelRank('claude-sonnet-5')).toBeLessThan(reviewModelRank('claude-opus-4-8'));
-        expect(reviewModelRank('claude-opus-4-8')).toBeLessThan(reviewModelRank('claude-fable-5'));
-    });
-
-    it('неизвестная/пустая модель → rank -1 (слабее любой известной)', () => {
-        expect(reviewModelRank('claude-unknown')).toBe(-1);
-        expect(reviewModelRank(undefined)).toBe(-1);
-        expect(reviewModelRank('none')).toBe(-1);
-    });
-
-    it('strongerReviewModel возвращает более сильную из двух', () => {
-        expect(strongerReviewModel('claude-opus-4-8', 'claude-haiku-4-5-20251001')).toBe(
-            'claude-opus-4-8',
-        );
-        expect(strongerReviewModel('claude-haiku-4-5-20251001', 'claude-fable-5')).toBe(
-            'claude-fable-5',
-        );
-    });
-
-    // Ядро барьера #217: слабый кандидат НЕ побеждает планку — эскалацию нельзя обойти
-    // удешевлением ревьюера (взять haiku после блока от fable).
-    it('слабая модель-кандидат не опускает планку ниже поставившей блок', () => {
-        expect(strongerReviewModel('claude-haiku-4-5-20251001', 'claude-fable-5')).toBe(
-            'claude-fable-5',
-        );
-        expect(strongerReviewModel('claude-fable-5', 'claude-haiku-4-5-20251001')).toBe(
-            'claude-fable-5',
-        );
-    });
-
-    it('null/none у аргумента игнорируется, обе пустые → null', () => {
-        expect(strongerReviewModel(null, 'claude-opus-4-8')).toBe('claude-opus-4-8');
-        expect(strongerReviewModel('claude-opus-4-8', 'none')).toBe('claude-opus-4-8');
-        expect(strongerReviewModel(null, undefined)).toBe(null);
-        expect(strongerReviewModel('none', null)).toBe(null);
-    });
-
-    it('известная модель всегда сильнее неизвестной строки', () => {
-        expect(strongerReviewModel('claude-haiku-4-5-20251001', 'claude-mystery')).toBe(
-            'claude-haiku-4-5-20251001',
-        );
-    });
-});
-
-describe('#217: removeBlockedLabel — снятие метки раннером (граница побочки, anti-injection)', () => {
-    const { removeBlockedLabel } = ralph;
-
-    it('находит открытый PR ветки и снимает label blocked через argv (#252)', () => {
-        const calls = [];
-        const argvCalls = [];
-        const shFn = (cmd) => {
-            calls.push(cmd);
-            if (cmd.includes('gh pr list')) return '42\n';
-            return '';
-        };
-        const runArgvFn = (file, args) => argvCalls.push([file, args]);
-        const logs = [];
-        removeBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m) => logs.push(m) });
-        expect(calls.some((c) => c.includes('gh pr list') && c.includes('feature/m1'))).toBe(true);
-        // #252: мутация уходит argv-массивом, не строкой через шелл — номер PR отдельным
-        // элементом, шелл-инъекция/argument-injection закрыты структурно.
-        expect(argvCalls).toContainEqual(['gh', ['pr', 'edit', '42', '--remove-label', 'blocked']]);
-        expect(logs.join('\n')).toMatch(/снял label blocked с PR #42/);
-    });
-
-    it('открытого PR нет → метку не снимает (только list, без edit)', () => {
-        const calls = [];
-        const shFn = (cmd) => {
-            calls.push(cmd);
-            return ''; // gh pr list вернул пусто
-        };
-        const runArgvFn = vi.fn();
-        removeBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: () => {} });
-        expect(runArgvFn).not.toHaveBeenCalled();
-    });
-
-    it('небезопасное имя ветки → отказ без единого вызова gh (anti-injection, инв. C3/7)', () => {
-        const shFn = vi.fn(() => '');
-        const runArgvFn = vi.fn();
-        removeBlockedLabel('feature/m1; rm -rf /', { shFn, runArgvFn, logFn: () => {} });
-        expect(shFn).not.toHaveBeenCalled();
-        expect(runArgvFn).not.toHaveBeenCalled();
-    });
-
-    it('сбой gh не роняет (fail-open): метка останется, гейт подберёт blocked', () => {
-        const shFn = () => {
-            throw new Error('gh boom');
-        };
-        const logs = [];
-        expect(() =>
-            removeBlockedLabel('feature/m1', { shFn, logFn: (m) => logs.push(m) }),
-        ).not.toThrow();
-        expect(logs.join('\n')).toMatch(/не снял метку/);
-    });
-
-    it('сбой argv-мутации не роняет (fail-open): метка останется, гейт подберёт blocked', () => {
-        const shFn = (cmd) => (cmd.includes('gh pr list') ? '42\n' : '');
-        const runArgvFn = () => {
-            throw new Error('gh edit boom');
-        };
-        const logs = [];
-        expect(() =>
-            removeBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m) => logs.push(m) }),
-        ).not.toThrow();
-        expect(logs.join('\n')).toMatch(/не снял метку/);
-    });
-});
-
-describe('#223: addBlockedLabel — возврат метки раннером (граница побочки, anti-injection, #252)', () => {
-    const { addBlockedLabel } = ralph;
-
-    it('находит открытый PR ветки и возвращает label blocked через argv', () => {
-        const shFn = (cmd) => (cmd.includes('gh pr list') ? '42\n' : '');
-        const argvCalls = [];
-        const runArgvFn = (file, args) => argvCalls.push([file, args]);
-        const logs = [];
-        addBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m) => logs.push(m) });
-        expect(argvCalls).toContainEqual(['gh', ['pr', 'edit', '42', '--add-label', 'blocked']]);
-        expect(logs.join('\n')).toMatch(/вернул label blocked на PR #42/);
-    });
-
-    it('открытого PR нет → метку не возвращает', () => {
-        const shFn = () => '';
-        const runArgvFn = vi.fn();
-        addBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: () => {} });
-        expect(runArgvFn).not.toHaveBeenCalled();
-    });
-
-    it('небезопасное имя ветки → отказ без единого вызова gh', () => {
-        const shFn = vi.fn(() => '');
-        const runArgvFn = vi.fn();
-        addBlockedLabel('feature/m1; rm -rf /', { shFn, runArgvFn, logFn: () => {} });
-        expect(shFn).not.toHaveBeenCalled();
-        expect(runArgvFn).not.toHaveBeenCalled();
-    });
-
-    it('сбой argv-мутации не роняет: только лог', () => {
-        const shFn = (cmd) => (cmd.includes('gh pr list') ? '42\n' : '');
-        const runArgvFn = () => {
-            throw new Error('gh edit boom');
-        };
-        const logs = [];
-        expect(() =>
-            addBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m) => logs.push(m) }),
-        ).not.toThrow();
-        expect(logs.join('\n')).toMatch(/не вернул метку/);
-    });
-});
-
 describe('globToRegExp — ветки конвертера, не покрытые первой версией (#132)', () => {
     const { globToRegExp } = ralph;
 
@@ -6661,6 +4208,7 @@ describe('globToRegExp — ветки конвертера, не покрыты�
 // источник правды; их полные негативные наборы (в т.ч. anti-injection round-trip shq
 // через живой /bin/sh) живут в ralph-util.test.ts. Здесь — только смоук ре-экспорта:
 // ralph.js отдаёт ровно тот же объект, а не свою копию (иначе дубль снова разъедется).
+
 describe('ре-экспорт утилит из ralph-util.ts (#232)', () => {
     const util = require('./ralph-util.ts');
 
@@ -6958,96 +4506,6 @@ describe('sliceWholeChars — обрезка не рубит суррогатн�
     });
 });
 
-// ── Автообновление worktree раннера перед стартом ────────────────────────────
-// Существующий worktree подхватывался КАК ЕСТЬ — на коммите прошлого прогона.
-// Симптом молчаливый: раннер здоров, но кодер-сессия внутри читает старые
-// ralph.md/ralph.js, то есть работает по отменённым правилам.
-
-describe('refreshRunnerWorktree — перевод дерева раннера на свежий origin/main', () => {
-    const { refreshRunnerWorktree, ensureRunnerWorktree } = ralph;
-
-    // #252: fetch/checkout — argv-мутации (runArgvFn), status --porcelain — чтение
-    // (shFn). Оба канала пишут в один общий `cmds` — см. mkCmdRecorders на уровне файла
-    // (общий с phaseDiffFiles, чтобы правка формата записи не расходилась в двух местах).
-    const mkRecorders = mkCmdRecorders;
-
-    it('чистое дерево: fetch затем detach на origin/main', () => {
-        const { cmds, shFn, runArgvFn } = mkRecorders();
-        const ok = refreshRunnerWorktree('/tmp/wt', { shFn, runArgvFn, logFn: () => {} });
-        expect(ok).toBe(true);
-        expect(cmds[0]).toContain('status --porcelain');
-        expect(cmds[1]).toContain('fetch origin main');
-        expect(cmds[2]).toContain('checkout --detach origin/main');
-    });
-
-    it('#252: fetch/checkout уходят раздельными элементами argv (worktreePath не в шелл-строке)', () => {
-        const argvCalls = [];
-        refreshRunnerWorktree('/tmp/wt', {
-            shFn: () => '',
-            runArgvFn: (file, args) => argvCalls.push([file, args]),
-            logFn: () => {},
-        });
-        expect(argvCalls).toContainEqual([
-            'git',
-            ['-C', '/tmp/wt', 'fetch', 'origin', 'main', '--quiet'],
-        ]);
-        expect(argvCalls).toContainEqual([
-            'git',
-            ['-C', '/tmp/wt', 'checkout', '--detach', 'origin/main', '--quiet'],
-        ]);
-    });
-
-    // Незакоммиченная работа прошлой сессии дороже свежести: checkout её снесёт.
-    it('грязное дерево не трогается, предупреждение в лог', () => {
-        const logs = [];
-        const argvCalls = [];
-        const ok = refreshRunnerWorktree('/tmp/wt', {
-            shFn: (c) => (c.includes('status') ? ' M src/a.ts' : ''),
-            runArgvFn: (file, args) => argvCalls.push([file, args]),
-            logFn: (m) => logs.push(m),
-        });
-        expect(ok).toBe(false);
-        expect(argvCalls).toEqual([]);
-        expect(logs.join('\n')).toMatch(/незакоммиченные/i);
-    });
-
-    it('сбой git не роняет запуск — false и запись в лог', () => {
-        const logs = [];
-        const ok = refreshRunnerWorktree('/tmp/wt', {
-            shFn: () => '',
-            runArgvFn: () => {
-                throw new Error('нет сети');
-            },
-            logFn: (m) => logs.push(m),
-        });
-        expect(ok).toBe(false);
-        expect(logs.join('\n')).toMatch(/обновить worktree/i);
-    });
-
-    it('путь worktree уходит в status --porcelain заквотированным, в argv-мутациях — отдельным элементом', () => {
-        const { cmds, shFn, runArgvFn } = mkRecorders();
-        refreshRunnerWorktree('/tmp/wt with space', { shFn, runArgvFn, logFn: () => {} });
-        expect(cmds[0]).toContain(`'/tmp/wt with space'`);
-        expect(cmds[1]).toContain('-C /tmp/wt with space fetch');
-        expect(cmds[2]).toContain('-C /tmp/wt with space checkout');
-    });
-
-    it('ensureRunnerWorktree зовёт обновление при подхвате существующего дерева', () => {
-        let refreshed = null;
-        ensureRunnerWorktree('/tmp/wt', {
-            shFn: () => 'worktree /tmp/wt\n',
-            logFn: () => {},
-            failFn: () => {},
-            existsFn: () => true,
-            refreshFn: (p) => {
-                refreshed = p;
-            },
-            repoRoot: '/repo',
-        });
-        expect(refreshed).toBe('/tmp/wt');
-    });
-});
-
 // #199: синк доски после мерджа фазы. Скрипт (scripts/project-sync.mjs) fail-closed и
 // краснеет на сомнительных данных — это его тесты. Здесь проверяется ровно обёртка:
 // она обязана быть best-effort, потому что косметика доски не имеет права ронять уже
@@ -7190,106 +4648,264 @@ describe('syncProjectBoard', () => {
     });
 });
 
-describe('recordReviewFindings (#252: argv)', () => {
-    const phase = { milestone: 'Наблюдаемость ralph · Фаза 6', branch: 'feature/x' };
+// ── Контракт «оркестратор + тонкий entry» (#365) ──────────────────────────────────────
+// Барьер от регрессии распила: вся логика петли живёт в orchestrator.ts (фабрика
+// createOrchestrator, собирающая остальные модули), а ralph.js — только entry (проверка
+// Node, парсинг CLI-флагов, запуск main(), ре-экспорт API). «Тонкость» entry и полнота
+// API проверяются детерминированно, а не на слово (принцип «барьеры важнее промптов»).
+// Здесь же зовём createOrchestrator НАПРЯМУЮ (не через ralph.js) — так проверяется сама
+// сборка фабрики, а не только то, что она долетает до готового ralph.js.
 
-    it('зовёт журнал-скрипт с номером PR и milestone через argv, логирует вывод', () => {
-        const argvCalls = [];
-        const logs = [];
-        ralph.recordReviewFindings(
-            phase,
-            235,
-            [],
-            (file, args) => {
-                argvCalls.push([file, args]);
-                return '{"pr":235}\n';
+import path from 'node:path';
+import { createOrchestrator } from './orchestrator.ts';
+
+// process.cwd(): vitest гоняет тесты из корня репо — путь стабилен.
+const RALPH_JS = path.join(process.cwd(), '.claude', 'ralph', 'ralph.js');
+
+// Боевые флаги по умолчанию — как у vitest-процесса без CLI-флагов раннера.
+const FLAGS_OFF = {
+    once: false,
+    dry: false,
+    reset: false,
+    resubmit: false,
+    deployResolved: false,
+};
+
+// Минимальные внешние JS-коллабораторы (мост из entry): фейки вместо
+// telegram-notifier/gate-env, чтобы сборка фабрики не тянула сеть/env.
+function buildRuntime(flags = FLAGS_OFF, argv = []) {
+    return createOrchestrator({
+        argv,
+        flags,
+        external: {
+            sendTelegramMessage: () => false,
+            telegramConfigFromEnv: () => ({ token: '', chatId: '' }),
+            buildSanitizedGateEnv: () => ({}),
+        },
+    });
+}
+
+describe('createOrchestrator: API-поверхность', () => {
+    // Поверхность module.exports ralph.js — контракт: на ней сидят тесты выше в этом
+    // файле, модульные тест-файлы и monitor.js (resolveProfile/parseProfileFlag/
+    // pushEvent/shq). Пропавший ключ = молча сломанный тест или монитор.
+    const REQUIRED_API = [
+        // config-слой
+        'resolveProfile',
+        'deepMerge',
+        'parseProfileFlag',
+        // монитор
+        'startMonitor',
+        'stopMonitor',
+        'adoptMonitor',
+        'processAlive',
+        'cmdlineIncludes',
+        'isMonitorProcess',
+        'isRalphMonitorProcess',
+        'listMonitorPids',
+        'processPpid',
+        'sweepOrphanMonitors',
+        'ensureMonitorAlive',
+        // lock/state
+        'isRalphProcess',
+        'lockAlive',
+        'writeLock',
+        'removeLock',
+        'releaseLockIfOurs',
+        'acquireLock',
+        'acquireRunnerLock',
+        'loadState',
+        'lockHash',
+        'syncDepsIfLockChanged',
+        // claude-сессия
+        'buildClaudeArgs',
+        'spawnClaude',
+        'runClaude',
+        // примитивы исполнения (#138)
+        'shq',
+        'sh',
+        'shArgv',
+        'log',
+        'sideEffectAttempts',
+        // milestones/доска
+        'closeCompletedMilestones',
+        'closeMilestoneByTitle',
+        'syncProjectBoard',
+        // ревью
+        'recordReviewFindings',
+        'pickReviewModel',
+        'pickReviewFallbackModel',
+        'reviewModelRank',
+        'strongerReviewModel',
+        'removeBlockedLabel',
+        'addBlockedLabel',
+        'phaseDiffFiles',
+        'reviewDiffContext',
+        'globToRegExp',
+        'matchRiskPaths',
+        'sliceWholeChars',
+        'formatExcerpt',
+        // api-limit
+        'parseResetWaitMs',
+        'apiLimitWaitMs',
+        'apiLimitMessage',
+        'minutesOrDefault',
+        'positiveIntOrDefault',
+        'API_LIMIT_RE',
+        // туннель/пуши
+        'tunnelHealthy',
+        'ensureTunnel',
+        'tunnelCheckEnabled',
+        'pushEvent',
+        'probeEgress',
+        'restartTunnel',
+        // worktree
+        'resolveWorktreePath',
+        'parseWorktreeList',
+        'refreshRunnerWorktree',
+        'runnerWorktreeReady',
+        'ensureRunnerWorktree',
+        // петля/гейт
+        'preflight',
+        'runLoop',
+        'ensureClean',
+        'parkOnOriginMain',
+        'safeBranch',
+        'gateChecksFor',
+        'checksGreen',
+        'findOpenPr',
+        'tryMergePhase',
+        'getLastRedCheck',
+        'getVerifiedHead',
+        'getLastGatePr',
+        // деплой-проверка
+        'deployPhasePlaceholder',
+        'mergedShaOf',
+        'deployWaitMessage',
+        'waitForDeployRun',
+        'probeHttpStatus',
+        'checkProdHealth',
+        'isWorkflowGreen',
+        'classifyDeployOutcome',
+        // entry-запуск
+        'main',
+    ];
+
+    it('возвращает все ключи прежнего module.exports ralph.js (плюс main)', () => {
+        const runtime = buildRuntime();
+        const missing = REQUIRED_API.filter((key) => runtime[key] === undefined);
+        expect(missing).toEqual([]);
+    });
+
+    it('сборка фабрики — чистая: не запускает петлю и не трогает процесс', () => {
+        // Если бы сборка дёргала git/gh/claude, боевые дефолты упали бы guardSideEffect
+        // (RALPH_NO_SIDE_EFFECTS=1) — общий afterEach сверяет журнал. Здесь достаточно,
+        // что фабрика собралась и вернула функции, не бросив.
+        const runtime = buildRuntime();
+        expect(typeof runtime.main).toBe('function');
+        expect(typeof runtime.runLoop).toBe('function');
+    });
+
+    it('ре-экспорт ralph.js отдаёт тот же контракт (import не запускает main)', async () => {
+        // import сам по себе — проверка «main не запущен»: запуск main() из тестового
+        // процесса упал бы на guardSideEffect/acquireLock или ушёл в process.exit.
+        const ralphModule = await import('./ralph.js');
+        const missing = REQUIRED_API.filter((key) => ralphModule.default[key] === undefined);
+        expect(missing).toEqual([]);
+    });
+});
+
+describe('createOrchestrator: флаги CLI', () => {
+    it('dry: acquireRunnerLock не берёт лок вовсе (C1 read-only)', () => {
+        const runtime = buildRuntime({ ...FLAGS_OFF, dry: true });
+        let called = 0;
+        // acquireLockFn не должен быть вызван: dry-прогон лок не проверяет и не пишет.
+        const ok = runtime.acquireRunnerLock({
+            acquireLockFn: () => {
+                called++;
+                return true;
             },
-            (m) => logs.push(m),
-        );
-        expect(argvCalls).toEqual([
-            [
-                'node',
-                ['scripts/review-findings-journal.mjs', '235', 'Наблюдаемость ralph · Фаза 6'],
-            ],
-        ]);
-        expect(logs[0]).toContain('{"pr":235}');
+        });
+        expect(ok).toBe(true);
+        expect(called).toBe(0);
     });
 
-    it('#237 прокидывает authorAllowlist отдельными элементами argv', () => {
-        const argvCalls = [];
-        ralph.recordReviewFindings(
-            phase,
-            235,
-            ['Pelmenya', 'other-user'],
-            (file, args) => {
-                argvCalls.push([file, args]);
-                return '';
+    it('без dry: acquireRunnerLock зовёт acquireLock', () => {
+        const runtime = buildRuntime();
+        let called = 0;
+        runtime.acquireRunnerLock({
+            acquireLockFn: () => {
+                called++;
+                return true;
             },
-            () => {},
-        );
-        expect(argvCalls[0]).toEqual([
-            'node',
-            [
-                'scripts/review-findings-journal.mjs',
-                '235',
-                'Наблюдаемость ralph · Фаза 6',
-                'Pelmenya',
-                'other-user',
-            ],
+        });
+        expect(called).toBe(1);
+    });
+
+    // #252/C1 (ревью #365): сам git fetch — мутация remote-ссылок, а --dry-run строго
+    // read-only. Живой --dry-run доходит до phaseDiffFiles (выбор ревью-модели), поэтому
+    // фетч в нём пропускается; дифф всё же считается по имеющимся origin-ссылкам.
+    it('dry: phaseDiffFiles не делает git fetch (C1 read-only)', () => {
+        const runtime = buildRuntime({ ...FLAGS_OFF, dry: true });
+        const runArgv = vi.fn(() => '');
+        const shFn = vi.fn(() => '');
+        runtime.phaseDiffFiles('feature/x', { runArgvFn: runArgv, shFn, logFn: () => {} });
+        expect(runArgv).not.toHaveBeenCalled();
+        expect(shFn).toHaveBeenCalled(); // дифф считается, фетч — нет
+    });
+
+    it('без dry: phaseDiffFiles фетчит перед диффом (свежие ссылки)', () => {
+        const runtime = buildRuntime({ ...FLAGS_OFF, dry: false });
+        const runArgv = vi.fn(() => '');
+        runtime.phaseDiffFiles('feature/x', {
+            runArgvFn: runArgv,
+            shFn: () => '',
+            logFn: () => {},
+        });
+        expect(runArgv).toHaveBeenCalledWith('git', [
+            'fetch',
+            'origin',
+            'main',
+            'feature/x',
+            '--quiet',
         ]);
     });
+});
 
-    it('#237 пустые/нестроковые авторы в allowlist отфильтрованы', () => {
-        const argvCalls = [];
-        ralph.recordReviewFindings(
-            phase,
-            235,
-            ['Pelmenya', '', '  ', null, 7],
-            (file, args) => {
-                argvCalls.push([file, args]);
-                return '';
-            },
-            () => {},
-        );
-        expect(argvCalls[0]).toEqual([
-            'node',
-            [
-                'scripts/review-findings-journal.mjs',
-                '235',
-                'Наблюдаемость ralph · Фаза 6',
-                'Pelmenya',
-            ],
-        ]);
+describe('ralph.js: тонкий entry (храповик распила #365)', () => {
+    const source = fs.readFileSync(RALPH_JS, 'utf-8');
+
+    it('entry короче 200 строк — монолит не возвращается', () => {
+        // До распила ralph.js держал 2990 строк. Порог с запасом на комментарии:
+        // рост выше — признак, что логика снова оседает в entry, а не в модулях.
+        expect(source.split('\n').length).toBeLessThan(200);
     });
 
-    it('не бросает, когда запись в журнал упала — фаза уже смерджена, ронять её нельзя', () => {
-        const logs = [];
-        expect(() =>
-            ralph.recordReviewFindings(
-                phase,
-                235,
-                [],
-                () => {
-                    throw new Error('gh api упал\nвторая строка');
-                },
-                (m) => logs.push(m),
-            ),
-        ).not.toThrow();
-        expect(logs[0]).toContain('gh api упал');
-        expect(logs[0]).not.toContain('вторая строка');
+    it('в entry нет петли и гейта — только парсинг флагов и запуск', () => {
+        // Маркеры монолитной логики, которых в тонком entry быть не должно.
+        expect(source).not.toMatch(/while \(true\)/);
+        expect(source).not.toMatch(/execSync|spawnSync\(/);
+        expect(source).not.toMatch(/tryMergePhase|checksGreen|runLoop\s*\(/);
     });
 
-    it('номер PR неизвестен (не положительное целое) — лог и выход, скрипт не зовётся', () => {
-        const argvCalls = [];
-        const logs = [];
-        ralph.recordReviewFindings(
-            phase,
-            null,
-            [],
-            (file, args) => argvCalls.push([file, args]),
-            (m) => logs.push(m),
-        );
-        expect(argvCalls).toEqual([]);
-        expect(logs[0]).toContain('PR неизвестен');
+    it('entry парсит все пять флагов режима и --profile', () => {
+        for (const flag of ['--once', '--dry-run', '--reset', '--resubmit', '--deploy-resolved']) {
+            expect(source).toContain(`'${flag}'`);
+        }
+        // --profile парсится в main() оркестратора из argv, entry обязан его передать.
+        expect(source).toMatch(/argv/);
+    });
+
+    // Ревью #365: неизвестный флаг иначе молча игнорировался бы — опечатка (`--dryrun`,
+    // кириллическая «у» в `--dry-run`) превратила бы намеренный read-only/HITL-запуск в
+    // живой AFK-прогон. Allowlist срабатывает ДО main() (лок не берётся) — spawn безопасен.
+    it('неизвестный флаг → entry падает с ненулевым кодом ДО старта петли', () => {
+        const { spawnSync } = require('node:child_process');
+        const res = spawnSync('node', [RALPH_JS, '--dryrun'], {
+            encoding: 'utf-8',
+            timeout: 15000,
+        });
+        expect(res.status).toBe(1);
+        expect(res.stderr).toMatch(/Неизвестный флаг "--dryrun"/);
     });
 });

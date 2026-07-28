@@ -1,0 +1,103 @@
+// Юнит-тесты примитивов исполнения раннера (exec.ts: sh / shArgv / log) — через
+// боевую поверхность ralph.js, как их видят вызывающие. Здесь проверяется не текст
+// реализации, а поведение границ: argv-вызовы не склеиваются в шелл-строку, а в
+// тестовом окружении (RALPH_NO_SIDE_EFFECTS=1) любая побочка громко падает через
+// guardSideEffect и оставляет след в журнале sideEffectAttempts (#138).
+// Сам примитив guardSideEffect покрыт отдельно — side-effect-guard.test.ts.
+import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+// @ts-expect-error — JS-entry раннера без деклараций типов: блоки перенесены из
+// ralph.test.js как есть и ходят через его ре-экспорт (#366).
+import ralph from './ralph.js';
+
+describe('#195: тесты изменённых вызовов гейта на argv (#193)', () => {
+    // #195: Критерий готовности (2) — побочки через DI, RALPH_NO_SIDE_EFFECTS=1,
+    // guardSideEffect: настоящая shArgv в тестовом окружении бросает И пишет в журнал.
+    //
+    // Критерий (1) — «значения с пробелами/спецсимволами не интерпретируются шеллом» —
+    // это ПОВЕДЕНИЕ argv-границ, а не текст реализации: проверяется ассертами на
+    // реальные argv-массивы в describe-блоках ниже (checksGreen — «git fetch/checkout
+    // раздельными элементами argv»; tryMergePhase — «номер PR и sha отдельными
+    // элементами»; parkOnOriginMain — `['git', ['checkout', '--detach', 'origin/main']]`).
+    // Прежние toString()-ассерты (`toContain('runArgvFn')`/`toContain('shArgv')`) убраны:
+    // они проверяли текст функции, а не поведение (rules/tests.md), и остались бы
+    // зелёными даже при откате мутации на строковый shFn — ровно ту регрессию, ради
+    // которой блок написан, они не ловили.
+
+    it('shArgv в тестовом окружении бросает через guardSideEffect и пишет попытку в журнал', () => {
+        // RALPH_NO_SIDE_EFFECTS=1 запрещает реальный execFileSync. Зовём НАСТОЯЩУЮ
+        // ralph.shArgv (не голый идентификатор — иначе ReferenceError замаскировал бы
+        // отсутствие вызова), сверяем и throw, и формат записи журнала #138 — иначе
+        // общий afterEach из test-setup.js уронил бы прогон на непустом sideEffectAttempts.
+        expect(() => ralph.shArgv('echo', ['hello'])).toThrow();
+        expect(ralph.sideEffectAttempts.splice(0)).toEqual(['shArgv(echo hello)']);
+    });
+});
+
+// #138: сам предохранитель. Его смысл — не дать забытому моку тихо уйти в реальный
+// шелл и в ralph.log живого прогона (так в лог фазы 4 попало
+// `git fetch origin main 'feature/m1'` — ветка из фикстуры этого файла).
+describe('предохранитель побочек в тестах: RALPH_NO_SIDE_EFFECTS (#138)', () => {
+    const { sh, log, sideEffectAttempts } = ralph;
+
+    it('переменная включена в окружении ralph-проекта vitest', () => {
+        // Если предохранитель выключат в vitest.config.ts, тесты ниже станут
+        // зелёными по ложной причине — фиксируем само условие.
+        expect(process.env.RALPH_NO_SIDE_EFFECTS).toBe('1');
+    });
+
+    it('sh() отказывается исполнять команду, называет её в ошибке и пишет в журнал', () => {
+        expect(() => sh('git fetch origin main')).toThrow(/RALPH_NO_SIDE_EFFECTS/);
+        expect(() => sh('git fetch origin main')).toThrow(/git fetch origin main/);
+        // Журнал — то, по чему общий afterEach ловит забытый мок даже когда вызов
+        // обёрнут в try/catch. Здесь sh() вызван НАМЕРЕННО, поэтому журнал забираем
+        // сами: иначе afterEach уронил бы этот же тест.
+        expect(sideEffectAttempts.splice(0)).toEqual([
+            'sh(git fetch origin main)',
+            'sh(git fetch origin main)',
+        ]);
+    });
+
+    it('проглоченный try/catch-ом вызов всё равно виден в журнале', () => {
+        // Ровно исходный сценарий #138: phaseDiffFiles ловит ошибку git и возвращает
+        // null, поэтому одного throw для покраснения теста не хватило бы.
+        // #252: fetch теперь мутация через shArgv — формат записи журнала другой
+        // (file+argv, а не строка через шелл).
+        const files = ralph.phaseDiffFiles('feature/m1', { logFn: () => {} });
+        expect(files).toBe(null);
+        expect(sideEffectAttempts.splice(0)).toEqual([
+            'shArgv(git fetch origin main feature/m1 --quiet)',
+        ]);
+    });
+
+    it('дефолтный installFn (настоящий npm ci) тоже под предохранителем', () => {
+        // Не только шелл: забытый installFn переустановил бы node_modules прямо во
+        // время прогона тестов. Расширение предохранителя по ревью PR #141.
+        expect(() =>
+            ralph.syncDepsIfLockChanged({
+                logFn: () => {},
+                existsFn: () => true,
+                readFn: (file: string) => (String(file).endsWith('.sha') ? 'старый-хэш' : 'lock'),
+                writeFn: () => {},
+            }),
+        ).toThrow(/RALPH_NO_SIDE_EFFECTS/);
+        expect(sideEffectAttempts.splice(0)).toEqual(['npm ci (syncDepsIfLockChanged)']);
+    });
+
+    it('дефолтный spawnFn (живая claude-сессия) тоже под предохранителем', () => {
+        // Однажды тест уже пробился до настоящего spawnSync и запустил claude —
+        // см. докблок spawnClaude. Теперь это громкая ошибка.
+        expect(() => ralph.spawnClaude(['-p', 'привет'], 1000)).toThrow(/RALPH_NO_SIDE_EFFECTS/);
+        expect(sideEffectAttempts.splice(0)).toEqual(['spawnClaude(claude)']);
+    });
+
+    it('log() пишет в консоль, но не трогает файл лога', () => {
+        const append = vi.spyOn(fs, 'appendFileSync');
+        const out = vi.spyOn(console, 'log').mockImplementation(() => {});
+        log('строка, которой не место в ralph.log');
+        expect(out).toHaveBeenCalled();
+        expect(append).not.toHaveBeenCalled();
+        out.mockRestore();
+        append.mockRestore();
+    });
+});

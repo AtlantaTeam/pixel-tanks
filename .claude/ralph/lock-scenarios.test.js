@@ -284,7 +284,12 @@ describe('крит. 1 (точка входа) — лок берётся ПЕРВ
     // конфига, создания worktree, chdir. Рефактор, протащивший побочку перед локом, покраснит
     // этот тест (структурный барьер сильнее комментария «лок первым» — бриф надёжности).
     it('в исходнике main() acquireRunnerLock() предшествует loadJson/ensureRunnerWorktree/chdir', () => {
-        const src = fs.readFileSync(fileURLToPath(new URL('./ralph.js', import.meta.url)), 'utf-8');
+        // #365: main() переехал из монолита ralph.js в orchestrator.ts — барьер сканирует
+        // новый дом; сам инвариант «лок первым» не изменился.
+        const src = fs.readFileSync(
+            fileURLToPath(new URL('./orchestrator.ts', import.meta.url)),
+            'utf-8',
+        );
         const mainStart = src.indexOf('function main()');
         expect(mainStart).toBeGreaterThan(-1);
         const body = src.slice(mainStart);
@@ -298,7 +303,9 @@ describe('крит. 1 (точка входа) — лок берётся ПЕРВ
             return m ? m.index : -1;
         };
         const lockIdx = codeLineIdx(/^\s*(?:if \(!)?acquireRunnerLock\(\)/m);
-        const configIdx = codeLineIdx(/^\s*const \w+ = loadJson\(CONFIG_PATH/m);
+        // Опциональный дженерик: в TS-оркестраторе строка стала loadJson<T>(CONFIG_PATH, …);
+        // ленивый .*? — тип бывает вложенным (Record<…> | null), [^>]* резался бы на первом >.
+        const configIdx = codeLineIdx(/^\s*const \w+ = loadJson(?:<.*?>)?\(CONFIG_PATH/m);
         const worktreeIdx = codeLineIdx(/^\s*ensureRunnerWorktree\(worktreePath\)/m);
         const chdirIdx = codeLineIdx(/^\s*process\.chdir\(worktreePath\)/m);
 

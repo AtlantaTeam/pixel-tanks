@@ -1,9 +1,12 @@
 // Юнит-тесты модуля детекции/ожидания API-лимита (#361). Здесь проверяется САМ модуль
-// api-limit.ts — чистые преобразования вход→выход, без ralph.js. Проход «через ре-экспорт
-// ralph.js» уже покрыт ralph.test.js (те же функции, но с боевым контекстом раннера);
-// тут — контракт extraction'а: модуль самодостаточен (цель фазы 2), а не «работает
-// только пока его зовёт ralph.js».
+// api-limit.ts — чистые преобразования вход→выход, без ralph.js: контракт extraction'а —
+// модуль самодостаточен (цель фазы 2), а не «работает только пока его зовёт ralph.js».
+// В конце файла — блок, перенесённый из ralph.test.js при её разнесении по модулям
+// (#366): он ходит через боевую поверхность ralph.js.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// @ts-expect-error — JS-entry раннера без деклараций типов: блок ниже перенесён из
+// ralph.test.js как есть и ходит через боевую поверхность ralph.js (#366).
+import ralph from './ralph.js';
 import {
     API_LIMIT_RE,
     parseResetWaitMs,
@@ -146,5 +149,35 @@ describe('apiLimitMessage — формат события паузы (контр
     it('attempt индексируется с 0, в сообщении — attempt+1', () => {
         const msg = apiLimitMessage(60_000, 2, 3);
         expect(msg).toMatch(/попытка 3\/3/);
+    });
+});
+
+describe('apiLimitWaitMs — мусор в конфиге не превращается в вечный сон (#132)', () => {
+    const { apiLimitWaitMs } = ralph;
+    const MIN = 60 * 1000;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 6, 21, 12, 0, 0));
+    });
+    afterEach(() => vi.useRealTimers());
+
+    // Atomics.wait(buf, 0, 0, NaN) спит БЕСКОНЕЧНО: NaN трактуется как +∞.
+    // Раннер вставал бы навсегда, молча, с записью «Жду NaN мин» в логе.
+    it.each([
+        ['строка', 'abc'],
+        ['null', null],
+        ['объект', {}],
+        ['отрицательное', -5],
+    ])('apiLimitGraceMin = %s → дефолтные 5 минут, не NaN', (_name, value) => {
+        const ms = apiLimitWaitMs('resets 1pm', { apiLimitGraceMin: value });
+        expect(Number.isFinite(ms)).toBe(true);
+        expect(ms).toBe(60 * MIN + 5 * MIN);
+    });
+
+    it('мусорный apiLimitFallbackWaitMin тоже не даёт NaN', () => {
+        const ms = apiLimitWaitMs('лимит без времени', { apiLimitFallbackWaitMin: 'скоро' });
+        expect(Number.isFinite(ms)).toBe(true);
+        expect(ms).toBe(30 * MIN + 5 * MIN);
     });
 });
