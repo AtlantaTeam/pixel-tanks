@@ -38,7 +38,6 @@ type GuardFn = (what: string) => void;
 // (реальные git worktree add / npm ci), чтобы забытый в тесте override не ушёл в живой
 // git/npm дерева, где идут тесты (как в state-lock.ts у installFn/writeLock).
 export type WorktreeEnv = {
-    defaultWorktreeDirname: string;
     sh: ShFn;
     shArgv: ShArgvFn;
     shq: ShqFn;
@@ -47,11 +46,23 @@ export type WorktreeEnv = {
     guardSideEffect: GuardFn;
     buildSanitizedGateEnv: () => NodeJS.ProcessEnv;
     writeLockMarker: (dir?: string) => void;
+    // #204: команда установки зависимостей из конфига (дефолт `npm ci`) — лениво, config
+    // присваивается в main() уже после сборки фабрики.
+    getInstallCmd: () => string;
 };
+
+// #204: имя соседнего дерева раннера больше НЕ прибито к проекту ('pixel-tanks-ralph').
+// Дефолт выводится из имени репозитория: `<basename(repoRoot)>-ralph` (для pixel-tanks —
+// то же `pixel-tanks-ralph`, регресса нет). Суффикс — общий, не проектный. Явный конфиг
+// (cfg.runnerWorktreeDirname / cfg.runnerWorktreePath) важнее дефолта.
+const RALPH_WORKTREE_SUFFIX = '-ralph';
+
+function defaultWorktreeDirnameFor(repoRoot: string): string {
+    return path.basename(repoRoot) + RALPH_WORKTREE_SUFFIX;
+}
 
 export function createWorktreeManager(env: WorktreeEnv) {
     const {
-        defaultWorktreeDirname: DEFAULT_WORKTREE_DIRNAME,
         sh,
         shArgv,
         shq,
@@ -60,6 +71,7 @@ export function createWorktreeManager(env: WorktreeEnv) {
         guardSideEffect,
         buildSanitizedGateEnv,
         writeLockMarker,
+        getInstallCmd,
     } = env;
 
     // ── Изоляция раннера в git worktree (#76) ────────────────────────────────
@@ -77,13 +89,14 @@ export function createWorktreeManager(env: WorktreeEnv) {
     // дефолт-сосед. repoRoot — параметр (не process.cwd() внутри resolve), чтобы функция
     // оставалась чистой и тестируемой без реального cwd.
     function resolveWorktreePath(
-        cfg: { runnerWorktreePath?: string } = {},
+        cfg: { runnerWorktreePath?: string; runnerWorktreeDirname?: string } = {},
         repoRoot: string = process.cwd(),
     ): string {
         const override = cfg.runnerWorktreePath || process.env.RALPH_WORKTREE_PATH;
-        return override
-            ? path.resolve(repoRoot, override)
-            : path.resolve(repoRoot, '..', DEFAULT_WORKTREE_DIRNAME);
+        if (override) return path.resolve(repoRoot, override);
+        // #204: имя дерева — из конфига или дефолт от имени репозитория, не строка проекта.
+        const dirname = cfg.runnerWorktreeDirname || defaultWorktreeDirnameFor(repoRoot);
+        return path.resolve(repoRoot, '..', dirname);
     }
 
     // `git worktree list --porcelain`: блоки разделены пустой строкой, первая строка
@@ -221,8 +234,9 @@ export function createWorktreeManager(env: WorktreeEnv) {
                 // Забытый installFn в тесте переустановил бы node_modules в дереве, где
                 // идут тесты (ревью PR #141) — тот же предохранитель #138, что у
                 // installFn в syncDepsIfLockChanged (state-lock.ts).
-                guardSideEffect('npm ci (ensureRunnerWorktree)');
-                return execSync('npm ci', { cwd: dir, stdio: 'inherit', env: gateEnv });
+                guardSideEffect('installCmd (ensureRunnerWorktree)');
+                // #204: команда установки из конфига (дефолт `npm ci`).
+                return execSync(getInstallCmd(), { cwd: dir, stdio: 'inherit', env: gateEnv });
             },
             markFn = writeLockMarker,
             repoRoot = process.cwd(),
@@ -250,8 +264,8 @@ export function createWorktreeManager(env: WorktreeEnv) {
         if (worktreePath === repoRoot || worktreePath.startsWith(repoRoot + path.sep)) {
             return failFn(
                 `Путь worktree раннера ${worktreePath} — внутри репозитория ${repoRoot}. ` +
-                    `Он должен быть СОСЕДОМ репозитория (дефолт ../${DEFAULT_WORKTREE_DIRNAME}); ` +
-                    `поправь runnerWorktreePath/RALPH_WORKTREE_PATH и перезапусти.`,
+                    `Он должен быть СОСЕДОМ репозитория (дефолт ../${defaultWorktreeDirnameFor(repoRoot)}); ` +
+                    `поправь runnerWorktreePath/RALPH_WORKTREE_PATH/runnerWorktreeDirname и перезапусти.`,
             );
         }
         let list = '';

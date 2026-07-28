@@ -4,6 +4,7 @@ import {
     isClosed,
     markDone,
     pickStale,
+    resolveBoard,
     resolveDone,
     runGh,
     syncBoard,
@@ -122,6 +123,71 @@ describe('resolveDone', () => {
 
     it('бросает, когда у Status нет опции Done, и называет доступные', () => {
         expect(() => resolveDone({ id: 'f', options: [todoOption] })).toThrow(/есть: Todo/);
+    });
+});
+
+describe('resolveBoard — адрес доски из env/конфига, fail-closed (#204)', () => {
+    // readFn(configPath, 'utf-8') — мок игнорирует путь, отдаёт синтетический ralph.config.json.
+    const readCfg = (board) => () => JSON.stringify({ common: board ? { board } : {} });
+
+    it('берёт owner/number из common.board конфига, когда env пуст', () => {
+        expect(resolveBoard({ env: {}, readFn: readCfg({ owner: 'AcmeOrg', number: 7 }) })).toEqual(
+            { owner: 'AcmeOrg', number: 7 },
+        );
+    });
+
+    it('env RALPH_BOARD_* важнее конфига (быстрый оверрайд под другой проект)', () => {
+        expect(
+            resolveBoard({
+                env: { RALPH_BOARD_OWNER: 'EnvOrg', RALPH_BOARD_NUMBER: '42' },
+                readFn: readCfg({ owner: 'CfgOrg', number: 1 }),
+            }),
+        ).toEqual({ owner: 'EnvOrg', number: 42 });
+    });
+
+    it('нет owner ни в env, ни в конфиге → throw (молча чужую доску не синкаем)', () => {
+        expect(() => resolveBoard({ env: {}, readFn: readCfg(null) })).toThrow(
+            /owner доски не задан/,
+        );
+    });
+
+    it('битый/отсутствующий конфиг + пустой env → throw', () => {
+        const boom = () => {
+            throw new Error('ENOENT');
+        };
+        expect(() => resolveBoard({ env: {}, readFn: boom })).toThrow(/owner доски не задан/);
+    });
+
+    it('#204-ревью: задан только RALPH_BOARD_OWNER (без number) → берём ОБЕ из конфига, не кентавр', () => {
+        // Полу-заданный env не смешивается с конфигом: owner из env + number из конфига дал
+        // бы адрес чужой доски. Обе env заданы → env; иначе обе из конфига.
+        expect(
+            resolveBoard({
+                env: { RALPH_BOARD_OWNER: 'TestOrg' },
+                readFn: readCfg({ owner: 'CfgOrg', number: 5 }),
+            }),
+        ).toEqual({ owner: 'CfgOrg', number: 5 });
+    });
+
+    it('#204-ревью: пустые строки в env трактуются как «не задано» одинаково (owner и number)', () => {
+        expect(
+            resolveBoard({
+                env: { RALPH_BOARD_OWNER: '', RALPH_BOARD_NUMBER: '' },
+                readFn: readCfg({ owner: 'CfgOrg', number: 9 }),
+            }),
+        ).toEqual({ owner: 'CfgOrg', number: 9 });
+    });
+
+    it('owner есть, но номер не целое > 0 → throw (fail-closed на кривом номере)', () => {
+        expect(() =>
+            resolveBoard({ env: {}, readFn: readCfg({ owner: 'AcmeOrg', number: 0 }) }),
+        ).toThrow(/номер доски/);
+        expect(() =>
+            resolveBoard({
+                env: { RALPH_BOARD_OWNER: 'A', RALPH_BOARD_NUMBER: 'abc' },
+                readFn: readCfg(null),
+            }),
+        ).toThrow(/номер доски/);
     });
 });
 

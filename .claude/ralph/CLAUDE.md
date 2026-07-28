@@ -119,7 +119,8 @@ RUNBOOK). Раннер сам поднимает detached-`monitor.js` (пане
 | `telegram-notifier.js`                | Отправка в TG, fail-open, anti-RCE argv, токен вне argv                                                                                                                                                                                 | Самостоятельный модуль (не require ralph.js — цикл); предохранитель и журнал — общие из `side-effect-guard.ts`                                                                        |
 | `ralph-util.ts`                       | Общие чистые утилиты без побочек (#232): `shq` (POSIX-квотирование), `positiveIntOrDefault`, `sleep`                                                                                                                                    | TS без билд-шага (type stripping Node 24, erasable-only); без записи на диск/сеть → guardSideEffect не нужен; `sleep` сам отсекает NaN/±∞/отрицательное                               |
 | `side-effect-guard.ts`                | Общий предохранитель #138 (`NO_SIDE_EFFECTS`/`sideEffectAttempts`/`guardSideEffect`) на все три потребителя                                                                                                                             | TS без билд-шага; один журнал на ralph.js/telegram-notifier.js/security-audit.mjs (кеш модуля Node отдаёт тот же массив); `hint` — параметр, у потребителей разные DI                 |
-| `ralph.md`                            | Промпт-контракт кодер-сессии (ветки, TDD, blocked, завершение)                                                                                                                                                                          | Читается сессией из worktree — правки действуют только после попадания в `origin/main`                                                                                                |
+| `ralph.md`                            | **Общий** промпт-контракт кодер-сессии (ветки, TDD, blocked, завершение) — переносимый                                                                                                                                                  | Читается сессией из worktree — правки действуют только после попадания в `origin/main`                                                                                                |
+| `ralph.project.md`                    | **Проектная** половина контракта (#204): UI-контроль, стек, тема — заменяется при переносе                                                                                                                                              | Читается сессией вместе с `ralph.md`; общий контракт при переносе берётся как есть, этот файл — свой                                                                                  |
 | `ralph.config.json`                   | Конфиг: `common` + дельты `profiles`, фазы, роутинг моделей, ревью                                                                                                                                                                      | Профиль не дублирует common; запрещённые ключи `__proto__`/…; во время прогона не трогать                                                                                             |
 | `scripts/security-audit.mjs`          | Детерминированный security-чек гейта: сверка advisory-id с baseline, `--omit=dev`                                                                                                                                                       | `looksBlind` (baseline непуст, находок ноль = ослеп → красный); политика ДО сверки                                                                                                    |
 | `scripts/baseline-policy.mjs`         | Права на изменение baseline (#207): апстрим-дрейф — авто + пуш; «сам притащил» (PR трогает deps) — красный; TTL записей 14/42 дня                                                                                                       | Опирается только на git-факты, которые агент не может подделать; рост severity = новая запись                                                                                         |
@@ -141,6 +142,20 @@ RUNBOOK). Раннер сам поднимает detached-`monitor.js` (пане
   `blockedHealAttempts`; API-лимит: `apiLimitMaxWaits/GraceMin/FallbackWaitMin`;
 - `deadman.*` — пороги тишины; `tunnelCheck.*`; `authorAllowlist`; `permissionMode`;
 - `runnerWorktreePath` (конфиг важнее env `RALPH_WORKTREE_PATH`);
+- `gate.checks`/`prodChecks`/`prodDropChecks` (#204) — состав чеков гейта парами
+  `[имя, команда]`, база + толстые прод-чеки + имена снимаемых в prod (дедуп
+  test↔coverage). Fail-fast порядок — на авторе конфига; форму валидирует
+  `resolveGateChecks` (gate.ts, fail-closed на пустом/битом списке);
+- `installCmd` (#204) — команда установки зависимостей (дефолт `npm ci`);
+- `board.owner`/`board.number` (#204) — доска Projects для `project-sync.mjs`
+  (env `RALPH_BOARD_OWNER`/`RALPH_BOARD_NUMBER` важнее; `resolveBoard` fail-closed);
+- `runnerWorktreeDirname` (#204) — имя соседнего дерева раннера (дефолт `<имя-репо>-ralph`);
+- `deployCheck.healthUrl` — URL пост-мердж healthcheck (#164, prod). Для профиля `prod`
+  **обязателен**: валидируется в preflight на старте (fail-closed, как `RALPH_TG_*`) — без
+  валидного http(s)-адреса раннер не запускается. Проверка не «пропускается»: при пустом/
+  кривом URL `checkProdHealth` возвращает `ok:false` с `reason:'config'`, что даёт КРАСНЫЙ
+  deploy block (различимый в пуше от «прод не отвечает»), а не тихий пропуск. Проектного
+  фолбэка в коде больше нет (#204);
 - `haltBeforeDeploy` (bool, #249) — только `profileName: 'prod'`. Дефолт (не задан
   либо `true`) = поведение #87: стоп после каждой смердженной фазы, следующая
   начинается новым запуском loop. `false` — непрерывный prod: на ЗЕЛЁНОМ пост-мердж
@@ -157,28 +172,43 @@ RUNBOOK). Раннер сам поднимает detached-`monitor.js` (пане
   правившая сам `ralph.js`, доедет до исполнения только после рестарта. Не баг
   (halt-дефолт и рестарт всё чинят), но при первом включении `false` держи в голове.
 
-Пока прибито к pixel-tanks (полный замер — в issue **#204**, там же задача вынести):
-`DEFAULT_WORKTREE_DIRNAME = 'pixel-tanks-ralph'`; списки `BASE_GATE_CHECKS` /
-`PROD_GATE_CHECKS` (npm-скрипты проекта); `npm ci` в `ensureRunnerWorktree` и
-`syncDepsIfLockChanged`; `DEFAULT_OWNER = 'AtlantaTeam'` и номер доски `1` в
-`project-sync.mjs`; проектная половина `ralph.md` (UI-скилл, тема, ссылки на CLAUDE.md).
-(Поиск PR фаз в `monitor.js` больше не прибит к проекту — `openPhasePRs` берёт ветку из
+Проектная специфика вынесена в конфиг (#204, фаза 4 «Конфиг-граница»): состав гейта,
+команда установки, доска, имя worktree, health-URL — всё в `ralph.config.json` (см. выше),
+код ядра проектных строк не содержит (`grep pixel-tanks|AtlantaTeam|game-next` по
+`ralph.js`/`monitor.js`/`telegram-notifier.js`/`project-sync.mjs` пуст вне комментариев).
+Промпт-контракт разделён: общий — `ralph.md`, проектный (UI-скилл, тема, стек) —
+`ralph.project.md`. Чек-лист переноса — `docs/ralph-mini-framework/porting-checklist.md`.
+(Поиск PR фаз в `monitor.js` тоже не прибит к проекту — `openPhasePRs` берёт ветку из
 конфига, #214.)
+
+Остаётся в коде осознанно (правила ядра, не проектная специфика): fail-fast порядок чеков
+как контракт (порядок задаёт автор конфига), суффикс `-ralph` имени worktree, дефолт
+`npm ci` установки, а также **пути вызова гейт-скриптов и пост-мердж команд**
+(`scripts/project-sync.mjs`, `scripts/review-findings-journal.mjs`, `security-audit.mjs`):
+они не уезжают в конфиг, потому что `scripts/` переносится в новый проект целиком (см.
+`porting-checklist.md` §2, «переносится как есть») — путь `scripts/*.mjs` стабилен между
+проектами и проектной специфики не несёт (grep-guard `core-purity.test.ts` сканирует их и
+зелёный). Конфигурируемо тут ЧТО эти скрипты запускают через `package.json`-скрипты
+(`gate.checks`), а не по какому пути лежит сам скрипт. #204-сабчек «пути гейт-скриптов в
+конфиг» закрыт этим решением, не переносом.
 
 ## Переносимость в другой проект
 
-Ориентир — issue #204: цель «скопировать `.claude/ralph/` + `scripts/` и заполнить один
-конфиг». До её закрытия перенос требует правок кода — не изобретай своё, стыкуйся с #204.
+Ориентир — issue #204 (закрыт фазой 4): цель «скопировать `.claude/ralph/` + `scripts/` и
+заполнить один конфиг» механически достигнута. Пошаговый чек-лист заполнения —
+`docs/ralph-mini-framework/porting-checklist.md`.
 
-**Переносится как есть:** вся хореография `ralph.js` (профили, worktree-изоляция, цикл
-сдачи, гейт, self-heal, breaker'ы, API-лимит), `deadman.js`, `telegram-notifier.js`,
-предохранитель #138, `baseline-policy.mjs` (правила не знают про проект).
+**Переносится как есть:** вся хореография `ralph.js`/`orchestrator.ts` (профили,
+worktree-изоляция, цикл сдачи, гейт, self-heal, breaker'ы, API-лимит), `deadman.js`,
+`telegram-notifier.js`, предохранитель #138, `baseline-policy.mjs` (правила не знают
+про проект).
 
-**Заменить руками (имена — по коду):** `DEFAULT_WORKTREE_DIRNAME` (ralph.js);
-`BASE_GATE_CHECKS`/`PROD_GATE_CHECKS` — команды чеков под стек проекта, сохранив
-fail-fast порядок; `installFn`/`syncDepsIfLockChanged` — если стек не npm;
-`DEFAULT_OWNER`/`DEFAULT_NUMBER` (project-sync.mjs); шапка monitor.js;
-проектные абзацы `ralph.md`; baseline `security-audit.baseline.json` (начать с пустого);
+**Заполнить в конфиге (`ralph.config.json`), НЕ в коде (#204):** состав гейта
+(`gate.checks`/`prodChecks`/`prodDropChecks`, сохранив fail-fast порядок); команда
+установки (`installCmd`, для не-npm стека — своя); доска (`board.owner`/`number` или env
+`RALPH_BOARD_*`); имя worktree (`runnerWorktreeDirname`, иначе дефолт `<имя-репо>-ralph`);
+health-URL (`deployCheck.healthUrl`). **Заменить файлами:** проектный `ralph.project.md`
+(общий `ralph.md` — как есть); baseline `security-audit.baseline.json` (начать с пустого);
 `tunnelCheck`/`provision/` — специфика VDS-в-РФ, в другом окружении просто выключить.
 
 **Обязательная внешняя инфраструктура** (без неё петля слепа или молчит):

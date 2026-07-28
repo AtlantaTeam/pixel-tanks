@@ -1,0 +1,185 @@
+// #367: guard-тест «ядро ralph без проектной специфики». Цель переносимости (#204) —
+// перенести автономный раннер в другой репозиторий = скопировать `.claude/ralph/` +
+// `scripts/` и заполнить ОДИН конфиг, без правок кода. Значит проектные строки (имя репо,
+// владельца доски, домен прода, фичи вроде game-next) живут ТОЛЬКО в `ralph.config.json`
+// и в поясняющих комментариях-примерах — но не в исполняемом коде ядра. Этот тест
+// вмораживает границу: вернётся специфика в код — сьют покраснеет, а не «однажды заметим».
+//
+// Барьер, а не абзац в промпт (инвариант №5): grep как часть сьюта ловит регресс
+// детерминированно, независимо от внимательности ревьюера.
+import { describe, expect, it } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
+// `__dirname` (не import.meta): tsconfig ралфа компилит в CommonJS-режиме nodenext, где
+// import.meta запрещён (TS1470). Отсчёт от файла, а не от cwd, — устойчив к месту запуска.
+const REPO_ROOT = resolve(__dirname, '../..'); // .claude/ralph → корень репозитория
+
+// Проектная специфика pixel-tanks: имя репозитория/домена, владелец доски, фича game-next
+// (#204 замерял именно этот набор). Одинаковый паттерн для юнит-проверок стриппера и для
+// живого скана — единственный источник правды, чтобы они не разъехались.
+const SPECIFICS = /pixel-tanks|pixeltanks|AtlantaTeam|game-next/;
+
+const CODE_EXT = /\.(js|ts|mjs)$/;
+// Из скана исключаем: тесты (сами держат паттерн в проверках), общую тест-инфру
+// предохранителя #138 и `test-helpers`. Сканируем только код ядра (CODE_EXT = js/ts/mjs).
+// .json/.log/.md — данные/конфиг/доки. .sh (deploy-remote.sh/backup-db.sh) НЕ сканируем не
+// потому что «не код» — это исполняемые скрипты с проектной специфики (домен, VDS), — а
+// потому что это деплой-обвязка ВНЕ переносимого ядра раннера: при переносе она заменяется
+// под своё окружение, а не копируется как есть (#367-ревью).
+const EXCLUDE = /\.test\.(js|ts|mjs)$|^test-setup\.js$|^test-helpers\.(js|mjs)$/;
+
+// Модули ядра одного уровня директории (без рекурсии): в `.claude/ralph/` подпапка
+// `provision/` — специфика VDS-в-РФ (bash + README), в другом окружении просто
+// выключается и к переносимости кода отношения не имеет. `ralph.config.json` — это
+// ИМЕННО место, где проектные строки жить обязаны, поэтому в скан не попадает (JSON, не код).
+function coreFiles(relDir: string): string[] {
+    return readdirSync(join(REPO_ROOT, relDir), { withFileTypes: true })
+        .filter((e) => e.isFile() && CODE_EXT.test(e.name) && !EXCLUDE.test(e.name))
+        .map((e) => join(relDir, e.name))
+        .sort();
+}
+
+const CORE = [...coreFiles('.claude/ralph'), ...coreFiles('scripts')];
+
+// Вырезание блочных комментариев /* … */ ПОСИМВОЛЬНО, с учётом строковых литералов
+// (#367-ревью). Наивный regex `/\/\*[\s\S]*?\*\//` не знает про строки: глоб-строка в коде
+// ('src/**/*.ts' содержит и `/*`, и `*/`) заставила бы его вырезать кусок строки, а при
+// двух таких литералах на разных строках — ВСЁ между ними, включая реальную специфику, и
+// тест бы промолчал (латентный false-negative барьера). Сканер идёт по символам: внутри
+// строкового литерала ('…' / "…" / `…`) маркеры комментариев НЕ маркеры (копируем как есть,
+// так специфика в СТРОКЕ кода по-прежнему ловится); блочный /* … */ вне строк вырезаем
+// целиком (в т.ч. многострочный); строчный // … оставляем нетронутым (его уберёт построчный
+// фильтр ниже, если строка — комментарий целиком). Хвостовые `// …` не трогаем намеренно:
+// наивный срез по первому `//` съел бы `//` внутри URL-строки ('https://pixeltanks.ru') и
+// пропустил бы реальную специфику (false-negative хуже редкого false-positive на стиле
+// «код; // pixel-tanks»). Регэкспы литералов сканер не парсит — за рамками ревью и не хуже
+// прежнего regex-подхода.
+function stripBlockComments(src: string): string {
+    let out = '';
+    let i = 0;
+    const n = src.length;
+    while (i < n) {
+        const c = src[i];
+        const c2 = src[i + 1];
+        // Строковый литерал — копируем целиком, экранирование учитываем, маркеры внутри
+        // комментариями не считаем.
+        if (c === "'" || c === '"' || c === '`') {
+            out += c;
+            i++;
+            while (i < n) {
+                if (src[i] === '\\') {
+                    out += src[i] + (src[i + 1] ?? '');
+                    i += 2;
+                    continue;
+                }
+                out += src[i];
+                if (src[i] === c) {
+                    i++;
+                    break;
+                }
+                i++;
+            }
+            continue;
+        }
+        // Строчный комментарий // … — оставляем как есть до конца строки (построчный фильтр
+        // ниже уберёт строки-целиком-комментарии; хвостовые сохраняются осознанно).
+        if (c === '/' && c2 === '/') {
+            while (i < n && src[i] !== '\n') {
+                out += src[i];
+                i++;
+            }
+            continue;
+        }
+        // Блочный комментарий /* … */ — вырезаем целиком (в т.ч. многострочный).
+        if (c === '/' && c2 === '*') {
+            i += 2;
+            while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+            i += 2; // пропускаем закрывающие */
+            continue;
+        }
+        out += c;
+        i++;
+    }
+    return out;
+}
+
+// Убираем комментарии, чтобы отличить проектную строку в КОДЕ (нарушение переносимости)
+// от поясняющего комментария-примера («был 'AtlantaTeam'/1» — это норма и часть истории).
+// Блочные /* … */ вырезает stripBlockComments (с учётом строк), затем выкидываем строки-
+// целиком-комментарии (`^\s*//`, `^\s*\*` — продолжение блочного, `^\s*/\*`).
+function stripComments(src: string): string {
+    return stripBlockComments(src)
+        .split('\n')
+        .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+        .join('\n');
+}
+
+function specificsInCode(src: string): Array<[number, string]> {
+    return stripComments(src)
+        .split('\n')
+        .map((line, i) => [i + 1, line] as [number, string])
+        .filter(([, line]) => SPECIFICS.test(line));
+}
+
+describe('stripComments — граница «код vs комментарий-пример»', () => {
+    it('ловит проектную строку в исполняемом коде', () => {
+        const bad = "const worktree = 'pixel-tanks-ralph';\n";
+        expect(SPECIFICS.test(stripComments(bad))).toBe(true);
+    });
+
+    it('игнорирует однострочный поясняющий комментарий-пример', () => {
+        const ok = "// был 'AtlantaTeam'/1, теперь из конфига\nconst owner = cfg.owner;\n";
+        expect(SPECIFICS.test(stripComments(ok))).toBe(false);
+    });
+
+    it('игнорирует многострочный блочный комментарий с примером', () => {
+        const ok = "/*\n * дефолт был 'pixel-tanks-ralph'\n */\nreturn base + '-ralph';\n";
+        expect(SPECIFICS.test(stripComments(ok))).toBe(false);
+    });
+
+    it('НЕ съедает URL-строку в коде из-за `//` внутри неё', () => {
+        // Регресс-охрана самого стриппера: домен в КОДЕ (не в конфиге) обязан ловиться,
+        // несмотря на `//` внутри 'https://…'.
+        const bad = "const url = 'https://pixeltanks.ru';\n";
+        expect(SPECIFICS.test(stripComments(bad))).toBe(true);
+    });
+
+    it('#367-ревью: глоб-строка с `/*` и `*/` не сбивает вырезание блочных комментариев', () => {
+        // Строка-глоб содержит и `/*`, и `*/` — наивный regex вырезал бы её кусок, а при
+        // двух таких литералах — всё между ними. Сканер видит их как СТРОКУ, не комментарий:
+        // специфика в реальном коде между глоб-строками обязана уцелеть и пойматься.
+        const src =
+            "const glob = 'src/**/*.ts';\nconst repo = 'pixel-tanks';\nconst g2 = 'lib/**/*.js';\n";
+        expect(SPECIFICS.test(stripComments(src))).toBe(true);
+    });
+
+    it('#367-ревью: специфика ВНУТРИ строкового литерала ловится (строка = код)', () => {
+        const bad = "const owner = 'AtlantaTeam';\n";
+        expect(SPECIFICS.test(stripComments(bad))).toBe(true);
+    });
+});
+
+describe('набор сканируемых модулей ядра', () => {
+    // Пустой it.each([]) был бы «зелёным» вхолостую — фиксируем, что скан реально видит
+    // ядро, а не молча ничего (сломанный путь/фильтр).
+    it('непуст и включает ключевые модули', () => {
+        expect(CORE.length).toBeGreaterThan(10);
+        expect(CORE).toContain(join('.claude/ralph', 'ralph.js'));
+        expect(CORE).toContain(join('.claude/ralph', 'orchestrator.ts'));
+        expect(CORE).toContain(join('.claude/ralph', 'monitor.js'));
+        expect(CORE).toContain(join('.claude/ralph', 'telegram-notifier.js'));
+        expect(CORE).toContain(join('scripts', 'project-sync.mjs'));
+    });
+});
+
+describe('ядро ralph свободно от проектной специфики (#204/#367)', () => {
+    it.each(CORE)('%s — без pixel-tanks/AtlantaTeam/game-next в коде', (rel) => {
+        const hits = specificsInCode(readFileSync(join(REPO_ROOT, rel), 'utf-8'));
+        const detail = hits.map(([n, line]) => `\n  ${n}: ${line.trim()}`).join('');
+        expect(
+            hits,
+            `Проектная специфика в коде ${rel} — вынеси в ralph.config.json:${detail}`,
+        ).toEqual([]);
+    });
+});

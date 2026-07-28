@@ -8,10 +8,12 @@
 // Что собрано здесь: последовательность шагов гейта (checksGreen + состав чеков), логика
 // перехода в blocked/hold (tryMergePhase), детерминированные помощники blocked-метки
 // (removeBlockedLabel/addBlockedLabel — «переход в blocked» разбора #217/#223) и проверка
-// «фаза уже смерджена» (phaseMerged/mergedPhasePr). Состав шагов (BASE/PROD_GATE_CHECKS)
-// ПОКА остаётся хардкодом здесь — в конфиг он уедет в фазе 4 (#204), критерий #362 это
-// прямо фиксирует. Санация env чеков живёт в отдельном gate-env.js (#188) и приходит
-// сюда инжектируемым buildSanitizedGateEnv — этот модуль её только зовёт.
+// «фаза уже смерджена» (phaseMerged/mergedPhasePr). Состав шагов приезжает из конфига
+// (ralph.config.json → gate.checks/prodChecks/prodDropChecks, #204 фаза 4): ядро знает
+// только КОНТРАКТ (fail-fast порядок, дедуп base↔prod), конкретные npm-скрипты проекта —
+// в конфиге. resolveGateChecks валидирует форму fail-closed. Санация env чеков живёт в
+// отдельном gate-env.js (#188) и приходит сюда инжектируемым buildSanitizedGateEnv —
+// этот модуль её только зовёт.
 //
 // TS-модуль без билд-шага: исполняется нативным type stripping Node 24 (erasable-only
 // синтаксис — только аннотации типов, ни enum, ни namespace, ни parameter properties).
@@ -31,6 +33,8 @@ type ShFn = (cmd: string, opts?: ExecOpts) => string;
 type ShArgvFn = (file: string, args: string[], opts?: ExecOpts) => string;
 type ShqFn = (value: unknown) => string;
 type LogFn = (msg: string) => void;
+// fail() боевой уходит в process.exit(1); тестовый может бросить/вернуть — потому unknown.
+type FailFn = (msg: string) => unknown;
 type GhJsonFn = <T = unknown>(cmd: string, attempts?: number) => T;
 type SafeBranchFn = (branch: string, opts?: { logFn?: LogFn; where?: string }) => boolean;
 type SleepFn = (ms: number) => void;
@@ -49,8 +53,26 @@ type SyncDepsFn = (opts?: { env?: NodeJS.ProcessEnv }) => void;
 // чеках (fetch/HEAD/detach): такие причины кодом не лечатся.
 type RedCheck = { name: string; cmd: string; excerpt: string };
 
-// Пара [имя, команда] шага гейта. Состав пока хардкод (в конфиг — фаза 4).
+// Пара [имя, команда] шага гейта. Состав приезжает из ralph.config.json (#204, фаза 4):
+// ядро гейта не знает конкретных npm-скриптов проекта — только форму «список пар».
 type GateCheck = [string, string];
+
+// Блок `gate` из ralph.config.json (после resolveProfile). Ядро читает его лениво через
+// getConfig — конфиг присваивается в main() уже после сборки фабрики. Формы валидирует
+// resolveGateChecks (fail-closed): неверная схема тут — не «дефолт как у нас», а стоп.
+type GateConfigRaw = {
+    gate?: {
+        checks?: unknown;
+        prodChecks?: unknown;
+        prodDropChecks?: unknown;
+    };
+};
+
+// Разобранный и провалидированный состав гейта. base — всем профилям; prodChecks —
+// добавка prod; prodDrop — имена базовых чеков, которые prod снимает (дедуп test↔coverage,
+// #80): раньше это был хардкод `name !== 'test'`, теперь — конфиг, чтобы не-npm стек не
+// правил код ради своей пары «тест ⊂ покрытие».
+type ResolvedGateChecks = { base: GateCheck[]; prodChecks: GateCheck[]; prodDrop: string[] };
 
 // Контекст ralph.js, захватываемый фабрикой один раз. sh/shArgv/shq/log/ghJson — те же
 // module-level коллабораторы, что использует остальной раннер. safeBranch/findOpenPr/
@@ -65,6 +87,7 @@ export type GateEnv = {
     shArgv: ShArgvFn;
     shq: ShqFn;
     log: LogFn;
+    fail: FailFn;
     ghJson: GhJsonFn;
     safeBranch: SafeBranchFn;
     findOpenPr: FindOpenPrFn;
@@ -79,7 +102,114 @@ export type GateEnv = {
     SHA40_RE: RegExp;
     PR_NUMBER_RE: RegExp;
     runnerTreeFixHint: string;
+    // #204 (фаза 4): ленивый доступ к конфигу — состав чеков гейта живёт в
+    // ralph.config.json (gate.checks/prodChecks/prodDropChecks), а не в этом модуле.
+    // Ленивый, потому что config присваивается в main() уже после сборки фабрики
+    // (тот же приём, что getConfig в deploy-check.ts).
+    getConfig: () => GateConfigRaw;
 };
+
+// Проверка «пара [строка, непустая строка]» — одна на checks и prodChecks.
+function isGateCheckPair(v: unknown): v is GateCheck {
+    return (
+        Array.isArray(v) &&
+        v.length === 2 &&
+        typeof v[0] === 'string' &&
+        v[0].length > 0 &&
+        typeof v[1] === 'string' &&
+        v[1].length > 0
+    );
+}
+
+// Разбор и ВАЛИДАЦИЯ блока `gate` из конфига (#204, фаза 4). Fail-closed: пустой список
+// базовых чеков, битая пара [имя, команда], нестроковый prodDropChecks — это стоп с
+// внятным сообщением, а НЕ «подставлю дефолтный набор как у pixel-tanks». Молчаливый
+// дефолт вернул бы ровно ту проектную привязку, ради выноса которой затевалась фаза:
+// чужой проект с забытым/кривым `gate` тихо гонял бы наши npm-скрипты. Чистая функция
+// (без побочек) — зовётся и на старте (ранний отказ), и из gateChecksFor (рантайм).
+export function resolveGateChecks(
+    cfg: GateConfigRaw | undefined,
+    failFn: (msg: string) => unknown,
+): ResolvedGateChecks {
+    const gate = cfg && cfg.gate;
+    if (!gate || typeof gate !== 'object') {
+        failFn(
+            'ralph.config.json: нет блока "gate" — состав чеков гейта задаётся конфигом (#204).',
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    const rawChecks = gate.checks;
+    if (!Array.isArray(rawChecks) || rawChecks.length === 0) {
+        failFn(
+            'ralph.config.json: gate.checks пуст или не массив — базовый набор чеков гейта обязателен ' +
+                '(пара [имя, команда]). Пустой гейт смерджил бы фазу без единой проверки.',
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    const bad = rawChecks.find((c) => !isGateCheckPair(c));
+    if (bad !== undefined) {
+        failFn(
+            `ralph.config.json: gate.checks содержит некорректный шаг ${JSON.stringify(bad)} — ` +
+                `ожидалась пара [имя, команда] из двух непустых строк.`,
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    const rawProd = gate.prodChecks ?? [];
+    if (!Array.isArray(rawProd)) {
+        failFn('ralph.config.json: gate.prodChecks должен быть массивом пар [имя, команда].');
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    const badProd = rawProd.find((c) => !isGateCheckPair(c));
+    if (badProd !== undefined) {
+        failFn(
+            `ralph.config.json: gate.prodChecks содержит некорректный шаг ${JSON.stringify(badProd)} — ` +
+                `ожидалась пара [имя, команда] из двух непустых строк.`,
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    const rawDrop = gate.prodDropChecks ?? [];
+    if (!Array.isArray(rawDrop) || rawDrop.some((n) => typeof n !== 'string')) {
+        failFn('ralph.config.json: gate.prodDropChecks должен быть массивом имён чеков (строк).');
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    // Дубли имён внутри набора (#204-ревью): чек с тем же именем исполнится дважды, а
+    // атрибуция красного по имени станет неоднозначной (два `test` — какой упал?). Отвергаем
+    // на старте, а не гоняем один чек по два раза.
+    const checkNames = (rawChecks as GateCheck[]).map(([name]) => name);
+    const prodNames = (rawProd as GateCheck[]).map(([name]) => name);
+    const dupCheck = checkNames.find((n, i) => checkNames.indexOf(n) !== i);
+    if (dupCheck !== undefined) {
+        failFn(
+            `ralph.config.json: gate.checks содержит дублирующееся имя чека "${dupCheck}" — ` +
+                `имена чеков обязаны быть уникальны (иначе двойной прогон и неоднозначная атрибуция красного).`,
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    const dupProd = prodNames.find((n, i) => prodNames.indexOf(n) !== i);
+    if (dupProd !== undefined) {
+        failFn(
+            `ralph.config.json: gate.prodChecks содержит дублирующееся имя чека "${dupProd}" — имена обязаны быть уникальны.`,
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    // prodDropChecks обязан ссылаться на имя ИЗ базового набора (#204-ревью): опечатка
+    // (`tests` вместо `test`) иначе молча ничего не снимет — в prod поедут и `test`, и
+    // `coverage`, лишние минуты на каждом прогоне гейта, и никто не заметит (класс «гейт
+    // толще, чем задумано, молча»). Fail-closed здесь же, а не тихий no-op.
+    const unknownDrop = (rawDrop as string[]).find((n) => !checkNames.includes(n));
+    if (unknownDrop !== undefined) {
+        failFn(
+            `ralph.config.json: gate.prodDropChecks ссылается на "${unknownDrop}", которого нет ` +
+                `среди gate.checks (${checkNames.join(', ') || 'пусто'}) — опечатка молча ничего бы не сняла.`,
+        );
+        return { base: [], prodChecks: [], prodDrop: [] };
+    }
+    return {
+        base: rawChecks as GateCheck[],
+        prodChecks: rawProd as GateCheck[],
+        prodDrop: rawDrop as string[],
+    };
+}
 
 export function createGateRunner(env: GateEnv) {
     const {
@@ -87,6 +217,7 @@ export function createGateRunner(env: GateEnv) {
         shArgv,
         shq,
         log,
+        fail,
         ghJson,
         safeBranch,
         findOpenPr,
@@ -101,6 +232,7 @@ export function createGateRunner(env: GateEnv) {
         SHA40_RE,
         PR_NUMBER_RE,
         runnerTreeFixHint: RUNNER_TREE_FIX_HINT,
+        getConfig,
     } = env;
 
     // ── State гейта (замыкание фабрики) ──────────────────────────────────────
@@ -208,111 +340,39 @@ export function createGateRunner(env: GateEnv) {
         setBlockedLabel(branch, 'add', opts);
     }
 
-    // ── Состав шагов гейта (пока хардкод; в конфиг — фаза 4, #204) ────────────
+    // ── Состав шагов гейта: из конфига (#204, фаза 4) ─────────────────────────
+    //
+    // Раньше BASE/PROD_GATE_CHECKS были хардкодом здесь и прибивали ядро к npm-скриптам
+    // pixel-tanks. Теперь состав живёт в ralph.config.json (gate.checks/prodChecks/
+    // prodDropChecks) — ядро знает только КОНТРАКТ, не конкретные команды. Что осталось в
+    // коде (потому что это правила ядра, а не проектная специфика):
+    //
+    // - Fail-fast порядок «дешёвый → дорогой» — ОТВЕТСТВЕННОСТЬ автора конфига: список
+    //   исполняется как есть, красный первого чека отменяет мердж, не оплатив следующих.
+    //   Секундные проверки (канарейка секретов, `vitest list`, `git grep`) должны идти
+    //   раньше минутных (build) и очень дорогих (e2e). Пояснение к конкретному порядку
+    //   pixel-tanks — рядом со списком в ralph.config.json и в docs/ralph-mini-framework/.
+    // - Дедуп base↔prod через prodDropChecks (#80): в prod проект снимает базовый `test`
+    //   в пользу `coverage` (тот же `vitest run` + инструментация — строгое надмножество,
+    //   двойной прогон = лишние минуты). Раньше это был хардкод `name !== 'test'`; теперь
+    //   имена снимаемых чеков задаёт конфиг — не-npm стек без этой пары просто оставляет
+    //   prodDropChecks пустым. Атрибуция красного не теряется: упавший тест красит coverage
+    //   тем же ненулевым кодом.
+    // - Селектор ТОЛЬКО собирает список — fail-closed сохранён в checksGreen: падение любого
+    //   чека по-прежнему отменяет мердж. Неизвестный/пустой профиль → только база (безопасный
+    //   дефолт, лишний прогон никогда не мягче нужного).
 
-    const BASE_GATE_CHECKS: GateCheck[] = [
-        // #190 (Изоляция ralph · Фаза 4): канарейка секретов — обязательный красный чек,
-        // а не ручное измерение фазы 3 (#184). Проверяет ФАКТ, а не веру: раз чеки гейта
-        // исполняются с санированным env (#188/#189), канарейка не должна находить секреты
-        // петли (GH_TOKEN, CLAUDE_*, RALPH_TG_*) в env; файловый канал (~/.claude,
-        // /root/ralph.env) остаётся открытым СОЗНАТЕЛЬНО — задокументированный остаточный
-        // риск #192, вердикт (scripts/secret-canary-gate.mjs) на нём не краснит. Стоит
-        // ПЕРВОЙ: дешевле любого другого чека (только fs.readFileSync, без vitest/npm), а
-        // находка секрета важнее любой другой причины красного.
-        ['security:canary', 'npm run security:canary'],
-        // #156: храповик числа тестов — красит гейт, когда число собранных unit-тестов упало
-        // ниже эталона (scripts/test-count.baseline.json). Закрывает класс «гейт зелёный при
-        // ослабшей проверке» (кто-то удалил тесты, покрытие формально держится) — порог
-        // coverage (#82) этого не ловит. Выключенные (.only/.skip) храповик НЕ ловит: vitest
-        // list считает и пропущенные тесты, их детект — отдельные чеки test:only-detect (#160)
-        // и test:skip-detect (#161). Стоит ПЕРВЫМ: `vitest list` (сбор без прогона) секундный,
-        // а следом идут минутный build и полный `test` — fail-fast от дешёвого к дорогому,
-        // красный храповик отменяет мердж, не оплатив их.
-        ['test:ratchet', 'npm run test:ratchet'],
-        // #160: it.only/describe.only в unit-тестах красит гейт — аналог forbidOnly Playwright
-        // (playwright.config.ts, CI=1), которого у vitest нативно тоже хватает (флаг
-        // --allowOnly=false, см. scripts/test-only-detect.mjs). Секундный (`vitest list`, сбор
-        // без прогона, как и test:ratchet) — стоит вторым, сразу после храповика, до дорогих
-        // build/test.
-        //
-        // ОСОЗНАННАЯ цена (ревью PR #230): это ВТОРОЙ прогон `vitest list --no-isolate` в гейте
-        // (первый — внутри test:ratchet, #156), т.е. трансформ ~50 файлов app дважды, ~6с × 2 на
-        // каждый прогон гейта и каждую итерацию heal-цикла. Чеки независимы по замыслу (храповик
-        // считает число, only-детект проверяет --allowOnly), и держать их отдельными пунктами
-        // вывода дороже объединения в один скрипт-обёртку, но яснее: красный называет ровно свою
-        // причину. Объединение (собрать список раз, прогнать обе проверки) — оптимизация на потом,
-        // если ~6с станут заметны; сегодня fail-fast порядок важнее секунд.
-        ['test:only-detect', 'npm run test:only-detect'],
-        // #161: it.skip/describe.skip в unit-тестах красит гейт — режим (а) (research.md,
-        // #159): красный на ЛЮБОЙ новый skip вне точечных исключений с обоснованием
-        // (scripts/skip-baseline.json). В отличие от .only, у vitest нет флага «запретить
-        // .skip» — решение целиком на `git grep` (scripts/test-skip-detect.mjs), секундный,
-        // стоит третьим, сразу после only-детекта, до дорогих build/test.
-        ['test:skip-detect', 'npm run test:skip-detect'],
-        // M1: build обязателен — ошибки next build (границы server/client, RSC-нюансы)
-        // не ловятся ни tsc, ни vitest; без него в main мог уехать несобираемый код.
-        ['build', 'npm run build'],
-        ['lint', 'npm run lint'],
-        ['lint:fsd', 'npm run lint:fsd'],
-        ['typecheck', 'npm run typecheck'],
-        // #232: ядро раннера (.claude/ralph/*.ts) — отдельный tsconfig под нативный type
-        // stripping Node 24 (erasable-only синтаксис, nodenext-резолюция), а не под Next.js
-        // (dom-либы, bundler-резолюция) из корневого typecheck — тот .ts-файлы ядра формально
-        // видит по глобу **/*.ts, но не той конфигурацией, которой их реально исполняет
-        // Node. Секундный (маленький модуль) — стоит рядом с typecheck, до дорогого test.
-        ['typecheck:ralph', 'npm run typecheck:ralph'],
-        ['test', 'npm run test --silent'],
-    ];
-
-    // «Толстые» чеки прод-профиля (#80) — дороже и медленнее базовых, поэтому в playground
-    // их не гоняем. Каждый доведён своим Issue фазы 4: e2e headless на сервере (#81),
-    // coverage-порог (#82), детерминированный security-скан (#83). Здесь фиксируется СОСТАВ
-    // (какие чеки добавляет prod).
-    //
-    // e2e (#81): `CI=1` — не косметика, а сам смысл «headless на сервере, детерминированно».
-    // Playwright читает CI и переключается в гейт-режим: forbidOnly (случайный `.only` не
-    // протащит подмножество как зелёный гейт), reuseExistingServer=false (свой свежий dev-
-    // сервер на известном порту, а не какой-то чужой процесс), retries=2 (гасит браузерный
-    // джиттер, не трогая детерминизм физики — сид фиксирован в самих спеках). Репортёр в
-    // playwright.config сделан независимо неблокирующим (open:never): html-репортёр по
-    // умолчанию на падении поднимает сервер отчёта и ВИСИТ — тогда «красный e2e» превратился
-    // бы в «зависший гейт», а не в красный. Падение → ненулевой код → checksGreen fail-closed.
-    //
-    // security (#83, #140): `npm run security:audit` (scripts/security-audit.mjs), НЕ голый
-    // `npm audit --audit-level=high`. Presence-гейт (любая high закрашивает гейт) на
-    // сегодняшнем дереве Payload 3 (бета) вечно красный: undici — транзитивная зависимость
-    // самого payload, без фикса апстрима не чинится без --force (риск сломать беку). Скрипт
-    // вместо этого сверяет находки `npm audit --json --omit=dev` со списком известных
-    // advisory-id (scripts/security-audit.baseline.json) и краснеет, когда появился id вне
-    // списка. Числовой порог (#83, high>10 при долге 8) это заменило: он пропускал одну-две
-    // НОВЫЕ high молча и позволял находкам отрасти обратно после починки апстримом. Это
-    // ДОБАВКА к LLM-ревью безопасности (review-промпт в tryMergePhase), не замена — оба
-    // гейта независимы.
-    //
-    // Порядок — fail-fast (дешёвый → дорогой): security (секунды) → coverage (юнит-прогон) →
-    // e2e (минуты, браузер). Красный дешёвого чека отменяет мердж, не оплатив дорогой e2e.
-    const PROD_GATE_CHECKS: GateCheck[] = [
-        ['security', 'npm run security:audit'],
-        ['coverage', 'npm run test:coverage'],
-        ['e2e', 'CI=1 npm run test:e2e'],
-    ];
-
-    // Состав гейта по активному профилю (#80). База — всем; prod дополняет толстыми чеками.
-    // Селектор ТОЛЬКО собирает список — fail-closed сохранён в checksGreen: падение любого
-    // чека (хоть базового, хоть прод-) по-прежнему отменяет мердж. Неизвестный/пустой профиль
-    // → только база: безопасный дефолт, лишний прогон никогда не мягче нужного.
-    //
-    // Дедуп test↔coverage (#80): в prod базовый `test` (`vitest run`) снимается — прод-чек
-    // `coverage` (`vitest run --coverage`) это тот же прогон плюс инструментация, строгое
-    // надмножество. Гонять оба = лишние минуты на 300+ тестах в и без того тяжёлом гейте.
-    // Атрибуция красного не теряется: упавший тест красит coverage тем же ненулевым кодом,
-    // а excerpt в redCheck покажет, тест это или непокрытие порога.
-    function gateChecksFor(profileName?: string): GateCheck[] {
+    // cfg — параметр с дефолтом getConfig() (как cfg у deploy-check): в проде и в runLoop
+    // прокидывают активный конфиг явно, тесты состава передают синтетический. Дефолт нужен
+    // для checksGreen (её вызывают без cfg) — тогда берётся фабричный config, уже присвоенный
+    // main().
+    function gateChecksFor(profileName?: string, cfg: GateConfigRaw = getConfig()): GateCheck[] {
+        const { base, prodChecks, prodDrop } = resolveGateChecks(cfg, fail);
         if (profileName === 'prod') {
-            const base = BASE_GATE_CHECKS.filter(([name]) => name !== 'test');
-            return [...base, ...PROD_GATE_CHECKS];
+            const kept = base.filter(([name]) => !prodDrop.includes(name));
+            return [...kept, ...prodChecks];
         }
-        return [...BASE_GATE_CHECKS];
+        return [...base];
     }
 
     // ── Прогон чеков на PR-голове (#77) ──────────────────────────────────────
@@ -334,9 +394,11 @@ export function createGateRunner(env: GateEnv) {
             // env-санация чеков (#189): строит окружение по allowlist один раз на прогон
             // гейта. DI — для теста fail-closed; в проде — buildSanitizedGateEnv.
             buildGateEnvFn = buildSanitizedGateEnv,
-            // Состав гейта (#80): по умолчанию база (playground). tryMergePhase прокидывает
-            // сюда список по активному профилю; для prod он длиннее на толстые чеки.
-            checks = BASE_GATE_CHECKS,
+            // Состав гейта (#80): по умолчанию база (playground) из конфига. tryMergePhase
+            // прокидывает сюда список по активному профилю; для prod он длиннее на толстые
+            // чеки. Дефолт вычисляется лениво (#204) — конфиг присваивается в main() уже
+            // после сборки фабрики; в проде checksGreen всегда зовут с явным `checks`.
+            checks = gateChecksFor(),
         }: {
             shFn?: ShFn;
             runArgvFn?: ShArgvFn;
@@ -354,6 +416,19 @@ export function createGateRunner(env: GateEnv) {
         // старый sha не должен доехать до --match-head-commit, если этот раунд упал до чеков.
         lastRedCheck = null;
         lastVerifiedHead = null;
+        // #204-ревью: пустой список чеков не имеет права привести к мерджу. Цикл ниже с
+        // пустым `checks` не сделал бы ни одной итерации, lastVerifiedHead записался бы и
+        // фаза уехала в main без единой проверки. Сегодня этот путь прикрыт тем, что боевой
+        // fail в resolveGateChecks делает process.exit(1), но сигнатура FailFn допускает
+        // возвращающийся fail (тест/иной потребитель) — тогда gateChecksFor() отдаёт []. По
+        // инварианту №5 (барьеры важнее промптов) дешёвая страховка в самой точке исполнения.
+        if (checks.length === 0) {
+            logFn(
+                `⛔ Гейт мерджа: список чеков пуст — мердж без единой проверки отменён (gate.checks в конфиге).`,
+            );
+            parkFn();
+            return false;
+        }
         // #135: валидация ДО git — это путь к авто-мерджу в main (= автодеплой прода),
         // и он единственный оставался без проверки имени ветки.
         if (!safeBranch(branch, { logFn, where: 'гейт мерджа' })) {
@@ -662,8 +737,6 @@ export function createGateRunner(env: GateEnv) {
     }
 
     return {
-        BASE_GATE_CHECKS,
-        PROD_GATE_CHECKS,
         gateChecksFor,
         checksGreen,
         tryMergePhase,

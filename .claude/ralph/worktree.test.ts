@@ -17,7 +17,6 @@ import ralph from './ralph.js';
 // теста, а не тихим проходом через боевой sh/log.
 function makeEnv(over: Partial<WorktreeEnv> = {}): WorktreeEnv {
     return {
-        defaultWorktreeDirname: 'pixel-tanks-ralph',
         sh: () => {
             throw new Error('sh не подменён в тесте');
         },
@@ -32,6 +31,8 @@ function makeEnv(over: Partial<WorktreeEnv> = {}): WorktreeEnv {
         guardSideEffect: () => {},
         buildSanitizedGateEnv: () => ({ PATH: '/x' }),
         writeLockMarker: () => {},
+        // #204: команда установки — из конфига (дефолт `npm ci`).
+        getInstallCmd: () => 'npm ci',
         ...over,
     };
 }
@@ -45,9 +46,18 @@ describe('resolveWorktreePath — путь выделенного worktree ра�
         delete process.env.RALPH_WORKTREE_PATH;
     });
 
-    it('дефолт: сосед репозитория по defaultWorktreeDirname', () => {
+    it('дефолт: сосед репозитория, имя выведено из basename(repoRoot) + "-ralph" (#204)', () => {
         const { resolveWorktreePath } = createWorktreeManager(makeEnv());
         expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/root/pixel-tanks-ralph');
+        // Портируемость: другое имя репо → другое имя дерева, без правки кода.
+        expect(resolveWorktreePath({}, '/srv/acme-app')).toBe('/srv/acme-app-ralph');
+    });
+
+    it('#204: cfg.runnerWorktreeDirname важнее выведенного дефолта', () => {
+        const { resolveWorktreePath } = createWorktreeManager(makeEnv());
+        expect(
+            resolveWorktreePath({ runnerWorktreeDirname: 'custom-tree' }, '/root/pixel-tanks'),
+        ).toBe('/root/custom-tree');
     });
 
     it('cfg.runnerWorktreePath — относительный, резолвится от repoRoot', () => {

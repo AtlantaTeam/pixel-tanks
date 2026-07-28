@@ -9,6 +9,31 @@
         "model": "claude-opus-4-8",
         "fallbackModel": "claude-opus-4-8",
         "permissionMode": "bypassPermissions",
+        "installCmd": "npm ci",
+        "board": {
+            "owner": "AtlantaTeam",
+            "number": 1
+        },
+        "gate": {
+            "checks": [
+                ["security:canary", "npm run security:canary"],
+                ["test:ratchet", "npm run test:ratchet"],
+                ["test:only-detect", "npm run test:only-detect"],
+                ["test:skip-detect", "npm run test:skip-detect"],
+                ["build", "npm run build"],
+                ["lint", "npm run lint"],
+                ["lint:fsd", "npm run lint:fsd"],
+                ["typecheck", "npm run typecheck"],
+                ["typecheck:ralph", "npm run typecheck:ralph"],
+                ["test", "npm run test --silent"]
+            ],
+            "prodChecks": [
+                ["security", "npm run security:audit"],
+                ["coverage", "npm run test:coverage"],
+                ["e2e", "CI=1 npm run test:e2e"]
+            ],
+            "prodDropChecks": ["test"]
+        },
         "blockedHealAttempts": 3,
         "gateHealAttempts": 2,
         "apiLimitMaxWaits": 3,

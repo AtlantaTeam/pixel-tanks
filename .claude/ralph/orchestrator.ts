@@ -27,7 +27,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 
 // #232: общие чистые утилиты и предохранитель #138 — те же модули, что были у ralph.js.
-import { shq, positiveIntOrDefault, sleep } from './ralph-util.ts';
+import { shq, positiveIntOrDefault, sleep, resolveInstallCmd } from './ralph-util.ts';
 import {
     sideEffectAttempts,
     guardSideEffect as sharedGuardSideEffect,
@@ -39,7 +39,7 @@ import type { RalphState } from './state-lock.ts';
 import { createTunnelCheck } from './tunnel-check.ts';
 import { createWorktreeManager } from './worktree.ts';
 import { createReviewModule } from './review.ts';
-import { createGateRunner } from './gate.ts';
+import { createGateRunner, resolveGateChecks } from './gate.ts';
 import { createDeployCheckModule } from './deploy-check.ts';
 import {
     API_LIMIT_RE,
@@ -77,8 +77,6 @@ const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
 // Гейт сверяет с ним lock PR-головы и переустанавливает зависимости при расхождении
 // (#SiaUX): фаза, добавившая зависимость, иначе гарантированно красила бы ночной гейт.
 const LOCK_MARKER_PATH = path.join(CLAUDE_DIR, 'ralph', '.deps-lock.sha');
-
-const DEFAULT_WORKTREE_DIRNAME = 'pixel-tanks-ralph';
 
 // ── Типы контрактов ──────────────────────────────────────────────────────────
 // Фаза в форме, которую хранит config.phases.
@@ -119,6 +117,14 @@ export type RalphConfig = {
     claudeTimeoutMs?: number;
     haltBeforeDeploy?: boolean;
     runnerWorktreePath?: string;
+    // #204 (фаза 4): проектная специфика, вынесенная из кода ядра в конфиг.
+    // installCmd — команда установки зависимостей (дефолт `npm ci`); runnerWorktreeDirname —
+    // имя соседнего дерева раннера (дефолт — `<имя-репо>-ralph`); board — доска Projects
+    // для project-sync.mjs; gate — состав чеков (валидируется resolveGateChecks).
+    installCmd?: string;
+    runnerWorktreeDirname?: string;
+    board?: { owner?: string; number?: number };
+    gate?: { checks?: unknown; prodChecks?: unknown; prodDropChecks?: unknown };
     tunnelCheck?: {
         enabled?: boolean;
         proxyUrl?: string;
@@ -352,9 +358,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
     });
 
     // #360 (фаза 2): изоляция раннера в выделенный git worktree (#76) — worktree.ts.
-    // Резолв пути (сосед репозитория `../pixel-tanks-ralph`), парсинг `git worktree list`,
-    // DRY-читаемость (#SiaT3), обновление на свежий origin/main (#252) и идемпотентное
-    // создание/переиспользование дерева с `npm ci`. Фабрика захватывает контекст
+    // Резолв пути (сосед репозитория `../<имя-репо>-ralph` — #204), парсинг `git worktree
+    // list`, DRY-читаемость (#SiaT3), обновление на свежий origin/main (#252) и идемпотентное
+    // создание/переиспользование дерева с установкой зависимостей. Фабрика захватывает контекст
     // (sh/shArgv/shq/log/fail, санированный env для npm ci, маркер lock-хэша из
     // state-lock.ts) один раз; возвращённые функции сохраняют DI.
     const {
@@ -364,7 +370,6 @@ export function createOrchestrator(env: OrchestratorEnv) {
         refreshRunnerWorktree,
         ensureRunnerWorktree,
     } = createWorktreeManager({
-        defaultWorktreeDirname: DEFAULT_WORKTREE_DIRNAME,
         sh,
         shArgv,
         shq,
@@ -373,6 +378,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         guardSideEffect,
         buildSanitizedGateEnv,
         writeLockMarker,
+        // #204: команда установки из конфига (дефолт `npm ci`); имя дерева резолвится
+        // от repoRoot внутри resolveWorktreePath (конфиг важнее дефолта).
+        getInstallCmd: () => resolveInstallCmd(config),
     });
 
     /**
@@ -1105,15 +1113,17 @@ export function createOrchestrator(env: OrchestratorEnv) {
     const SHA40_RE = /^[0-9a-f]{40}$/;
 
     // #362 (фаза 3): исполнение гейта мерджа фазы — последовательность шагов (checksGreen +
-    // состав BASE/PROD_GATE_CHECKS + gateChecksFor), логика перехода в blocked/hold
-    // (tryMergePhase) и детерминированные помощники метки blocked (removeBlockedLabel/
-    // addBlockedLabel разбора #217/#223), а также проверка «фаза уже смерджена»
-    // (phaseMerged/mergedPhasePr) — gate.ts. Фабрика захватывает контекст оркестратора
-    // (sh/shArgv/shq/log/ghJson, хореографию findOpenPr/ensureClean/park/обновление дерева,
-    // санацию env чеков, sleep, DRY, regex'ы) один раз; возвращённые функции сохраняют
-    // показательную DI. Состав шагов ПОКА хардкод в модуле (в конфиг — фаза 4, #204).
-    // Module-level state гейта (lastRedCheck/lastVerifiedHead/lastGatePr) живёт в замыкании
-    // фабрики и читается наружу геттерами (getLastRedCheck/getVerifiedHead/getLastGatePr).
+    // состав чеков через gateChecksFor), логика перехода в blocked/hold (tryMergePhase) и
+    // детерминированные помощники метки blocked (removeBlockedLabel/addBlockedLabel разбора
+    // #217/#223), а также проверка «фаза уже смерджена» (phaseMerged/mergedPhasePr) — gate.ts.
+    // Фабрика захватывает контекст оркестратора (sh/shArgv/shq/log/ghJson, хореографию
+    // findOpenPr/ensureClean/park/обновление дерева, санацию env чеков, sleep, DRY, regex'ы)
+    // один раз; возвращённые функции сохраняют показательную DI. Состав шагов приезжает из
+    // конфига (ralph.config.json → gate.checks/prodChecks/prodDropChecks, #204 фаза 4): ядро
+    // знает только КОНТРАКТ (fail-fast порядок, дедуп base↔prod), конкретные npm-скрипты — в
+    // конфиге; форму валидирует resolveGateChecks (fail-closed). Module-level state гейта
+    // (lastRedCheck/lastVerifiedHead/lastGatePr) живёт в замыкании фабрики и читается наружу
+    // геттерами (getLastRedCheck/getVerifiedHead/getLastGatePr).
     const {
         gateChecksFor,
         checksGreen,
@@ -1130,6 +1140,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         shArgv,
         shq,
         log,
+        fail,
         ghJson,
         safeBranch,
         findOpenPr,
@@ -1144,6 +1155,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
         SHA40_RE,
         PR_NUMBER_RE,
         runnerTreeFixHint: RUNNER_TREE_FIX_HINT,
+        // #204: состав чеков — из конфига (лениво, config присваивается в main()).
+        getConfig: () => config,
     });
 
     // #364 (фаза 3): деплой-проверка фазы — плейсхолдер маркера деплоя
@@ -1276,6 +1289,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 'ralph.config.json: authorAllowlist пуст или отсутствует. Публичный репо + bypassPermissions = инъекция инструкций через чужие issues. Укажи gh-логины доверенных авторов.',
             );
 
+        // #204-ревью: состав чеков гейта валидируем ЗДЕСЬ, на старте (ранний отказ), а не
+        // только когда фаза доедет до цикла сдачи через часы работы. resolveGateChecks —
+        // чистая функция (без побочек), ровно для этого и экспортирована; иначе битый/
+        // забытый блок `gate` в конфиге всплыл бы только в tryMergePhase, спустя сожжённые
+        // кодер-сессии — особенно больно свежему порту с кривым конфигом (инвариант №1:
+        // authorAllowlist/TG/review-модели/haltBeforeDeploy тоже валидируются на старте).
+        resolveGateChecks(cfg, failFn);
+
         // Фаза 5 (#85–88): в prod пуш-события (release/blocked/breaker/rate-limit) —
         // единственный канал «раннер зовёт человека». Пустые RALPH_TG_* деградируют молча
         // (fail-open sendTelegramMessage лишь пишет warn-строку в лог), и о пропущенном
@@ -1303,6 +1324,18 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 failFn(
                     'Профиль prod: RALPH_TG_CHAT_ID не похож на chat_id (ожидается целое число, для групп — со знаком минус). ' +
                         'Проверь значение в ralph.env.',
+                );
+            // #204-ревью: в prod пост-мердж healthcheck (#164) обязателен — без валидного
+            // deployCheck.healthUrl каждая смердженная фаза давала бы КРАСНЫЙ deploy block
+            // (checkProdHealth → ok:false) и требовала бы --deploy-resolved, а трек стопорился
+            // бы после первого же мерджа. Валидируем на старте (fail-closed, той же монетой,
+            // что RALPH_TG_* выше), а не на первом мердже спустя часы.
+            const healthUrl = cfg.deployCheck && cfg.deployCheck.healthUrl;
+            if (typeof healthUrl !== 'string' || !/^https?:\/\//.test(healthUrl))
+                failFn(
+                    'Профиль prod: deployCheck.healthUrl не задан или не http(s)-адрес — пост-мердж ' +
+                        'healthcheck (#164) в prod обязателен, иначе каждая смердженная фаза даёт красный ' +
+                        'блок деплоя. Заполни deployCheck.healthUrl в ralph.config.json.',
                 );
         }
 
@@ -2118,7 +2151,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // в prod «весь набор» включает толстые чеки (см. gate-heal ниже). С #216
                     // prod разбор blocked включён, так что чини-сессия гоняет именно толстый
                     // набор — хардкод базовых 5 тут прямо соврал бы.
-                    const bGateCmdList = gateChecksFor(cfg.profileName)
+                    const bGateCmdList = gateChecksFor(cfg.profileName, cfg)
                         .map(([, cmd]) => cmd)
                         .join(', ');
                     // #217: чини-сессия ЧИНИТ, но label blocked НЕ снимает — снятие за
@@ -2287,7 +2320,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // 5: в prod «весь набор» включает толстые (e2e/coverage/security), и heal
                     // по хардкоду перегнал бы после фикса только базу — упавший толстый чек
                     // остался бы непроверенным и сжёг ещё одну итерацию + цикл ревью.
-                    const gateCmdList = gateChecksFor(cfg.profileName)
+                    const gateCmdList = gateChecksFor(cfg.profileName, cfg)
                         .map(([, cmd]) => cmd)
                         .join(', ');
                     const healCode = runClaudeFn(
@@ -2850,12 +2883,33 @@ export function createOrchestrator(env: OrchestratorEnv) {
         });
     }
 
+    // #204: тест-хук. Часть функций (gateChecksFor, tryMergePhase→gateChecksFor) читают
+    // ФАБРИЧНЫЙ config, который в проде присваивает main(), а юнит-тесты её не запускают.
+    // Раньше состав гейта был хардкодом и от config не зависел; после переезда в конфиг
+    // тестам нужен способ засеять фабричный config боевым/синтетическим, не гоняя main()
+    // (с её preflight/loop/process.exit). Только для тестов; в бою config ставит main().
+    //
+    // #204-ревью: структурный предохранитель, а не имя-предупреждение (инвариант №5). Хук
+    // на боевой API-поверхности (module.exports ralph.js) мог бы подменить фабричный config
+    // В ОБХОД resolveProfile (вся валидация — запрещённые ключи, haltBeforeDeploy, review-
+    // модели — мимо) и подорвать инвариант «config захватывается один раз в main()». В
+    // vitest-проекте ralph RALPH_NO_SIDE_EFFECTS=1 стоит всегда (#138), так что тесты
+    // проходят; вызов в бою (без флага) — громкая ошибка, а не тихая подмена.
+    function setConfigForTests(cfg: RalphConfig): void {
+        if (process.env.RALPH_NO_SIDE_EFFECTS !== '1')
+            throw new Error(
+                'setConfigForTests — только под тестовым предохранителем #138 (RALPH_NO_SIDE_EFFECTS=1). В бою config захватывается один раз в main().',
+            );
+        config = cfg;
+    }
+
     // ── API-поверхность ──────────────────────────────────────────────────────
     // Ровно прежний module.exports ralph.js (#69 и далее) плюс main: на этой поверхности
     // сидят orchestrator.test.js, сценарные тесты и monitor.js (resolveProfile/parseProfileFlag/
     // pushEvent/shq). Пропавший ключ = молча сломанный тест или монитор — контракт
     // закреплён orchestrator.test.js (REQUIRED_API).
     return {
+        setConfigForTests,
         resolveProfile,
         deepMerge,
         parseProfileFlag,

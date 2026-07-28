@@ -26,6 +26,16 @@ export function positiveIntOrDefault(value: unknown, dflt: number): number {
     return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : dflt;
 }
 
+// #204-ревью: единый резолвер команды установки зависимостей. Дефолт `npm ci` жил в трёх
+// местах (state-lock installFn + лог-строка, orchestrator getInstallCmd) — при смене дефолта
+// их пришлось бы вспоминать все, а разъехавшись, лог сказал бы одно, а исполнилось другое.
+// Пробельная строка трактуется как «не задано» (иначе installCmd: "  " запустил бы пустую
+// команду) — тот же дух, что positiveIntOrDefault: кривое значение → дефолт, не тихая беда.
+export function resolveInstallCmd(cfg?: { installCmd?: string } | null): string {
+    const cmd = cfg && cfg.installCmd;
+    return typeof cmd === 'string' && cmd.trim() ? cmd : 'npm ci';
+}
+
 // Синхронный sleep: раннер и телеграм-ретраи — синхронный код (execSync-хореография),
 // event loop свободен, поэтому Atomics.wait — корректный способ подождать без busy-loop.
 // Валидация ms на правильном слое (#232): Atomics.wait трактует NaN-таймаут как +∞ —

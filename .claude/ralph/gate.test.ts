@@ -14,6 +14,24 @@ import { createGateRunner } from './gate.ts';
 const SHA = 'a'.repeat(40);
 const OTHER_SHA = 'b'.repeat(40);
 
+// Синтетический gate-конфиг для тестов состава (#204): не боевой список pixel-tanks, а
+// репрезентативная форма — база с дедупным `test`, prod-добавки, prodDropChecks.
+const SYNTH_GATE = {
+    gate: {
+        checks: [
+            ['build', 'npm run build'],
+            ['lint', 'npm run lint'],
+            ['test', 'npm run test'],
+        ],
+        prodChecks: [
+            ['security', 'npm run security:audit'],
+            ['coverage', 'npm run test:coverage'],
+            ['e2e', 'CI=1 npm run test:e2e'],
+        ],
+        prodDropChecks: ['test'],
+    },
+};
+
 // Синтетический env: заглушки-коллабораторы, которые молча падают, если функция под
 // тестом зовёт побочку без явного override, — забытый override становится громкой
 // ошибкой теста, а не тихим проходом через боевой sh/gh.
@@ -27,6 +45,10 @@ function makeEnv(over: Partial<GateEnv> = {}): GateEnv {
         },
         shq: (v: unknown) => `'${String(v).replace(/'/g, `'\\''`)}'`,
         log: () => {},
+        fail: (msg: string) => {
+            throw new Error(msg);
+        },
+        getConfig: () => SYNTH_GATE,
         ghJson: () => {
             throw new Error('ghJson не подменён в тесте');
         },
@@ -47,8 +69,8 @@ function makeEnv(over: Partial<GateEnv> = {}): GateEnv {
     };
 }
 
-describe('gateChecksFor — состав шагов по профилю (#80)', () => {
-    it('дефолт (playground): только базовый набор, включая test', () => {
+describe('gateChecksFor — состав шагов по профилю (#80), состав из конфига (#204)', () => {
+    it('дефолт (playground): только базовый набор из конфига, включая test', () => {
         const { gateChecksFor } = createGateRunner(makeEnv());
         const names = gateChecksFor().map(([n]) => n);
         expect(names).toContain('test');
@@ -56,7 +78,7 @@ describe('gateChecksFor — состав шагов по профилю (#80)', 
         expect(names).not.toContain('coverage');
     });
 
-    it('prod: базовый `test` снят (дедуп с coverage), добавлены толстые чеки', () => {
+    it('prod: базовый `test` снят по prodDropChecks, добавлены толстые чеки', () => {
         const { gateChecksFor } = createGateRunner(makeEnv());
         const names = gateChecksFor('prod').map(([n]) => n);
         expect(names).not.toContain('test');
@@ -65,11 +87,74 @@ describe('gateChecksFor — состав шагов по профилю (#80)', 
         expect(names).toContain('build');
     });
 
-    it('возвращает КОПИЮ, не ссылку на BASE_GATE_CHECKS (мутация не течёт)', () => {
-        const { gateChecksFor, BASE_GATE_CHECKS } = createGateRunner(makeEnv());
+    it('возвращает КОПИЮ: мутация результата не течёт в следующий вызов', () => {
+        const { gateChecksFor } = createGateRunner(makeEnv());
+        const baseLen = gateChecksFor().length;
         const list = gateChecksFor();
         list.push(['x', 'echo x']);
-        expect(gateChecksFor().length).toBe(BASE_GATE_CHECKS.length);
+        expect(gateChecksFor().length).toBe(baseLen);
+    });
+
+    it('#204: неизвестный/пустой профиль → только база (безопасный дефолт)', () => {
+        const { gateChecksFor } = createGateRunner(makeEnv());
+        const base = gateChecksFor().map(([n]) => n);
+        expect(gateChecksFor('marsian').map(([n]) => n)).toEqual(base);
+        expect(gateChecksFor(undefined).map(([n]) => n)).toEqual(base);
+    });
+
+    it('#204: gate.prodDropChecks пуст → prod ничего не снимает из базы', () => {
+        const cfg = {
+            gate: { ...SYNTH_GATE.gate, prodDropChecks: [] },
+        };
+        const { gateChecksFor } = createGateRunner(makeEnv({ getConfig: () => cfg }));
+        expect(gateChecksFor('prod').map(([n]) => n)).toContain('test');
+    });
+});
+
+describe('resolveGateChecks — fail-closed на битой схеме gate (#204)', () => {
+    it('нет блока gate → fail с внятным сообщением', () => {
+        const { gateChecksFor } = createGateRunner(makeEnv({ getConfig: () => ({}) }));
+        expect(() => gateChecksFor()).toThrow(/нет блока "gate"/);
+    });
+
+    it('gate.checks пуст → fail (пустой гейт смерджил бы фазу без проверок)', () => {
+        const cfg = { gate: { checks: [] } };
+        const { gateChecksFor } = createGateRunner(makeEnv({ getConfig: () => cfg }));
+        expect(() => gateChecksFor()).toThrow(/gate\.checks пуст/);
+    });
+
+    it('gate.checks — не массив → fail', () => {
+        const cfg = { gate: { checks: 'npm run build' } };
+        const { gateChecksFor } = createGateRunner(makeEnv({ getConfig: () => cfg }));
+        expect(() => gateChecksFor()).toThrow(/gate\.checks пуст или не массив/);
+    });
+
+    it('битая пара [имя, команда] в checks → fail', () => {
+        const cfg = { gate: { checks: [['build']] } };
+        const { gateChecksFor } = createGateRunner(makeEnv({ getConfig: () => cfg }));
+        expect(() => gateChecksFor()).toThrow(/некорректный шаг/);
+    });
+
+    it('пустая команда в паре → fail', () => {
+        const cfg = { gate: { checks: [['build', '']] } };
+        const { gateChecksFor } = createGateRunner(makeEnv({ getConfig: () => cfg }));
+        expect(() => gateChecksFor()).toThrow(/некорректный шаг/);
+    });
+
+    it('битая пара в prodChecks → fail только на prod-составе', () => {
+        const cfg = {
+            gate: { checks: [['build', 'npm run build']], prodChecks: [['e2e', 42]] },
+        };
+        const { gateChecksFor } = createGateRunner(makeEnv({ getConfig: () => cfg }));
+        expect(() => gateChecksFor('prod')).toThrow(/gate\.prodChecks содержит некорректный шаг/);
+    });
+
+    it('prodDropChecks с нестроковым элементом → fail', () => {
+        const cfg = {
+            gate: { checks: [['build', 'npm run build']], prodDropChecks: [1] },
+        };
+        const { gateChecksFor } = createGateRunner(makeEnv({ getConfig: () => cfg }));
+        expect(() => gateChecksFor()).toThrow(/gate\.prodDropChecks должен быть массивом/);
     });
 });
 

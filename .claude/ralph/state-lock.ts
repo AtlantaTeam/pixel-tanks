@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import { resolveInstallCmd } from './ralph-util.ts';
 
 // Формат ralph.state.json — контракт, этим рефактором НЕ меняется (критерий #359).
 // milestone === null означает «все фазы пройдены» (см. phaseIndexOf/advancePhase в
@@ -61,7 +62,9 @@ export type StateLockEnv = {
     lockMarkerPath: string;
     ralphPath: string;
     dry: boolean;
-    getConfig: () => { phases: Array<{ milestone: string }> };
+    // #204: installCmd — команда установки зависимостей из конфига (дефолт `npm ci`).
+    // Читается лениво из того же getConfig, что и phases (config ставится в main()).
+    getConfig: () => { phases: Array<{ milestone: string }>; installCmd?: string };
     log: LogFn;
     fail: FailFn;
     guardSideEffect: (what: string) => void;
@@ -187,10 +190,16 @@ export function createStateLock(env: StateLockEnv) {
         env: gateEnv,
         buildGateEnvFn = buildSanitizedGateEnv,
         installFn = (resolvedEnv: NodeJS.ProcessEnv) => {
-            // Забытый installFn в тесте запустил бы настоящий npm ci в дереве, где идут
+            // Забытый installFn в тесте запустил бы настоящую установку в дереве, где идут
             // тесты, — переустановка node_modules посреди прогона (ревью PR #141).
-            guardSideEffect('npm ci (syncDepsIfLockChanged)');
-            return execSync('npm ci', { stdio: 'inherit', env: resolvedEnv });
+            guardSideEffect('installCmd (syncDepsIfLockChanged)');
+            // #204: команда из конфига (дефолт `npm ci`) — не-npm стек ставит своё, не правя
+            // код. Единый резолвер resolveInstallCmd (ralph-util) — тот же, что в логе ниже и
+            // в orchestrator.getInstallCmd: дефолт не разъедется между «сказано» и «сделано».
+            return execSync(resolveInstallCmd(getConfig()), {
+                stdio: 'inherit',
+                env: resolvedEnv,
+            });
         },
     }: {
         logFn?: LogFn;
@@ -209,7 +218,7 @@ export function createStateLock(env: StateLockEnv) {
         } catch {}
         if (prev === current) return;
         logFn(
-            '📦 package-lock.json PR-головы отличается от установленного — npm ci перед чеками...',
+            `📦 package-lock.json PR-головы отличается от установленного — ${resolveInstallCmd(getConfig())} перед чеками...`,
         );
         // env из checksGreen (уже санирован), иначе строим сам — fail-closed при битом allowlist.
         installFn(gateEnv ?? buildGateEnvFn());
