@@ -1,7 +1,7 @@
 'use client';
 
 import type { KeyboardEvent, OptionHTMLAttributes, ReactNode } from 'react';
-import { Children, isValidElement, useEffect, useId, useRef, useState } from 'react';
+import { Children, Fragment, isValidElement, useEffect, useId, useRef, useState } from 'react';
 import { clsx } from 'clsx';
 import { Icon } from '../icon';
 
@@ -22,23 +22,47 @@ function nodeToText(node: ReactNode): string {
 }
 
 /** `children` — те же `<option>`, что и у нативного `<select>` (совместимость вызовов
- *  game-controls/витрины без переписывания): парсим их в модель попапа, а не рендерим. */
-function readOptions(children: ReactNode): TSelectOption[] {
-    const options: TSelectOption[] = [];
-
+ *  game-controls/витрины без переписывания): парсим их в модель попапа, а не рендерим.
+ *
+ *  Считаем ТОЛЬКО прямые `<option>` (и `<option>` внутри Fragment'ов — их `Children.forEach`
+ *  не разворачивает сам). Любой другой узел (текст, компонент-обёртка вроде `<Foo/>`) молча
+ *  игнорируется, а не превращается в пустую фиктивную опцию: тихий мусор в модели прячет
+ *  ошибку до визуальной проверки. Компоненты не исполняются — оборачивать `<option>` в свой
+ *  компонент нельзя, инлайнить `map(...)` прямо в `<Select>`. */
+function collectOptions(children: ReactNode, options: TSelectOption[]): void {
     Children.forEach(children, (child) => {
-        if (!isValidElement<OptionHTMLAttributes<HTMLOptionElement>>(child)) return;
-        const { value, children: content, disabled } = child.props;
+        if (!isValidElement(child)) return;
+        if (child.type === Fragment) {
+            const { children: nested } = child.props as { children?: ReactNode };
+            collectOptions(nested, options);
+            return;
+        }
+        if (child.type !== 'option') return;
+        const {
+            value,
+            children: content,
+            disabled,
+        } = child.props as OptionHTMLAttributes<HTMLOptionElement>;
         options.push({
             value: String(value ?? ''),
             label: nodeToText(content) || String(value ?? ''),
             disabled: Boolean(disabled),
         });
     });
+}
 
+function readOptions(children: ReactNode): TSelectOption[] {
+    const options: TSelectOption[] = [];
+    collectOptions(children, options);
     return options;
 }
 
+/** ВНИМАНИЕ: контракт УЖЕ, чем у прежнего нативного `<select>`. Тип НЕ расширяет
+ *  `SelectHTMLAttributes<HTMLSelectElement>` — компонент больше не form-control: нет `name`,
+ *  `required`, участия в submit `<form>`, `onBlur`/`onFocus` и произвольного проброса
+ *  `aria-*`/`data-*`. Для текущего HUD (форм нет) этого достаточно. Понадобится этот селект в
+ *  форме (профиль/настройки) — добавлять недостающие поля сюда явно, а не рассчитывать на
+ *  сквозной проброс атрибутов. */
 type TSelectProps = {
     id?: string;
     label?: string;
@@ -122,12 +146,19 @@ export function Select({
         if (returnFocus) triggerRef.current?.focus();
     };
 
-    const selectActive = () => {
-        const option = options[activeIndex];
+    const chooseOption = (option: TSelectOption | undefined) => {
         if (!option || option.disabled) return;
+        // Значение не изменилось — не дёргаем `onValueChange` (нативный `<select>` тоже не
+        // эмитит `change` на выборе уже выбранного), просто закрываем список.
+        if (option.value === selectedValue) {
+            closeListbox(true);
+            return;
+        }
         commit(option.value);
         closeListbox(true);
     };
+
+    const selectActive = () => chooseOption(options[activeIndex]);
 
     const stepActive = (delta: 1 | -1) => {
         if (options.length === 0) return;
@@ -153,7 +184,10 @@ export function Select({
         }
     };
 
-    const onTypeahead = (key: string) => {
+    // Type-ahead и на открытом попапе (двигаем активный пункт), и на закрытом триггере
+    // (сразу меняем значение — как нативный `<select>`: набрал букву на свёрнутом контроле,
+    // выбор сменился без открытия). `target` решает, куда применить найденный индекс.
+    const onTypeahead = (key: string, target: 'active' | 'value') => {
         if (options.length === 0) return;
         if (key.length !== 1 || !/[a-zа-яё0-9]/i.test(key)) return;
         clearTimeout(typeaheadTimerRef.current);
@@ -163,12 +197,14 @@ export function Select({
             typeaheadRef.current = '';
         }, 500);
 
-        const startFrom = (activeIndex + 1) % options.length;
+        const from = target === 'active' ? activeIndex : selectedIndex;
+        const startFrom = (from + 1 + options.length) % options.length;
         for (let step = 0; step < options.length; step++) {
             const index = (startFrom + step) % options.length;
             const option = options[index];
             if (!option.disabled && option.label.toLowerCase().startsWith(query)) {
-                setActiveIndex(index);
+                if (target === 'active') setActiveIndex(index);
+                else if (option.value !== selectedValue) commit(option.value);
                 return;
             }
         }
@@ -199,7 +235,11 @@ export function Select({
         if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
             openListbox();
+            return;
         }
+        // Буква на закрытом триггере меняет значение, не открывая список (паритет с нативным
+        // `<select>`). Не-печатные клавиши (Tab/Shift/…) `onTypeahead` отсекает сам.
+        onTypeahead(e.key, 'value');
     };
 
     const onListboxKeyDown = (e: KeyboardEvent<HTMLUListElement>) => {
@@ -236,7 +276,7 @@ export function Select({
                 closeListbox(true);
                 break;
             default:
-                onTypeahead(e.key);
+                onTypeahead(e.key, 'active');
         }
     };
 
@@ -259,7 +299,9 @@ export function Select({
                 data-option-count={options.length}
                 aria-haspopup="listbox"
                 aria-expanded={open}
-                aria-controls={listboxId}
+                // Только когда открыт: `<ul id={listboxId}>` рендерится лишь в open-состоянии,
+                // а ссылка на несуществующий элемент — повод для ругани части скринридеров.
+                aria-controls={open ? listboxId : undefined}
                 // APG select-only combobox: имя триггера = подпись + текущее значение.
                 // Кнопка ссылается сама на себя (`selectId`), чтобы её текст-значение попал
                 // в accessible name (иначе SR объявит только подпись, теряя выбор — регрессия).
@@ -305,11 +347,7 @@ export function Select({
                             aria-selected={option.value === selectedValue}
                             aria-disabled={option.disabled || undefined}
                             onMouseEnter={() => !option.disabled && setActiveIndex(index)}
-                            onClick={() => {
-                                if (option.disabled) return;
-                                commit(option.value);
-                                closeListbox(true);
-                            }}
+                            onClick={() => chooseOption(option)}
                             className={clsx(
                                 'px-2 py-1.5 font-ui text-[10px]',
                                 option.disabled

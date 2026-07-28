@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { weaponCount } from './helpers';
 
 // Полный бой пальцем на телефоне: жест «оттяни и отпусти» (слингшот) ведёт бой
 // с ботом от старта до конца на 375px в портрете и ландшафте (touch-эмуляция).
@@ -76,15 +77,6 @@ async function dispatchDragGesture(page: Page, shot: TShot): Promise<void> {
         },
         { shot, pixelsPerPowerUnit: PIXELS_PER_POWER_UNIT },
     );
-}
-
-/** Сколько снарядов осталось у игрока — по числу опций в селекте оружия HUD.
- *  Селект оружия — кастомный попап (не нативный `<select>`), опции в DOM живут
- *  только раскрытыми; читаем состав из `data-option-count` триггера — он актуален
- *  и в закрытом состоянии, поэтому счётчик не требует открывать список. */
-async function weaponCount(page: Page): Promise<number> {
-    const raw = await page.locator('#weapon-select').getAttribute('data-option-count');
-    return raw === null ? 0 : Number(raw);
 }
 
 /**

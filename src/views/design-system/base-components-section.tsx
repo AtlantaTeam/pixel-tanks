@@ -4,24 +4,22 @@ import { Button, Dialog, Icon, Panel, Select } from '@/shared/ui';
 const VARIANTS: TButtonVariant[] = ['primary', 'accent', 'ghost', 'danger'];
 const SIZES: TButtonSize[] = ['sm', 'md', 'icon'];
 
-/** Один набор опций на все срезы Select ниже — чтобы правки не расходились по копиям. */
+/** Один набор опций на все срезы Select ниже — чтобы правки не расходились по копиям.
+ *  Инлайним `DIFFICULTY_OPTIONS.map(...)` прямо в каждый `<Select>`: `Select` парсит
+ *  `children` через `Children.forEach` и НЕ исполняет компоненты — обёртка-компонент
+ *  вокруг `<option>` схлопнулась бы в одну пустую фантомную опцию (мишень визрегрессии
+ *  показывала бы сломанные срезы). Массив `Children.forEach` разворачивает корректно. */
 const DIFFICULTY_OPTIONS = [
     { value: 'easy', label: 'Лёгкая' },
     { value: 'normal', label: 'Обычная' },
     { value: 'hard', label: 'Тяжёлая' },
 ];
 
-function DifficultyOptions() {
-    return (
-        <>
-            {DIFFICULTY_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                    {o.label}
-                </option>
-            ))}
-        </>
-    );
-}
+const difficultyOptions = DIFFICULTY_OPTIONS.map((o) => (
+    <option key={o.value} value={o.value}>
+        {o.label}
+    </option>
+));
 
 function buttonLabel(variant: TButtonVariant, size: TButtonSize) {
     // Витрина — статичный превью-срез, иконка чисто декоративна (кнопка ничего не
@@ -74,13 +72,13 @@ export function BaseComponentsSection() {
                         <div className="flex flex-col items-center gap-2">
                             <span className="font-ui text-caption text-text-muted">закрыт</span>
                             <Select id="ds-select-closed" label="Сложность">
-                                <DifficultyOptions />
+                                {difficultyOptions}
                             </Select>
                         </div>
                         <div className="flex flex-col items-center gap-2">
                             <span className="font-ui text-caption text-text-muted">выбран</span>
                             <Select id="ds-select-selected" label="Сложность" value="hard">
-                                <DifficultyOptions />
+                                {difficultyOptions}
                             </Select>
                         </div>
                         <div className="flex flex-col items-center gap-2">
@@ -90,7 +88,7 @@ export function BaseComponentsSection() {
                                 label="Сложность"
                                 className="shadow-[var(--ring-focus)]"
                             >
-                                <DifficultyOptions />
+                                {difficultyOptions}
                             </Select>
                         </div>
                         <div className="flex flex-col items-center gap-2">
@@ -103,7 +101,7 @@ export function BaseComponentsSection() {
                                 value=""
                                 placeholder="Выберите…"
                             >
-                                <DifficultyOptions />
+                                {difficultyOptions}
                             </Select>
                         </div>
                         <div className="flex flex-col items-center gap-2">

@@ -252,4 +252,124 @@ describe('Select', () => {
 
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     });
+
+    it('Home/End прыгают на первую и последнюю доступную опцию', async () => {
+        const user = userEvent.setup();
+        const onValueChange = vi.fn();
+        renderWeaponSelect({ value: '2', onValueChange });
+
+        const trigger = screen.getByRole('button', { name: /Оружие/ });
+        trigger.focus();
+        await user.keyboard('{ArrowDown}');
+
+        await user.keyboard('{End}');
+        await user.keyboard('{Enter}');
+        expect(onValueChange).toHaveBeenLastCalledWith('3');
+
+        await user.click(trigger);
+        await user.keyboard('{Home}');
+        await user.keyboard('{Enter}');
+        expect(onValueChange).toHaveBeenLastCalledWith('1');
+    });
+
+    it('закрывается кликом вне корня без выбора', async () => {
+        const user = userEvent.setup();
+        const onValueChange = vi.fn();
+        render(
+            <div>
+                <Select id="weapon" label="Оружие" value="1" onValueChange={onValueChange}>
+                    <option value="1">Снаряд</option>
+                    <option value="2">Мощный</option>
+                </Select>
+                <button type="button">снаружи</button>
+            </div>,
+        );
+
+        await user.click(screen.getByRole('button', { name: /Оружие/ }));
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+
+        await user.click(screen.getByRole('button', { name: 'снаружи' }));
+
+        expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+        expect(onValueChange).not.toHaveBeenCalled();
+    });
+
+    it('наведение мышью делает опцию активной для выбора с клавиатуры', async () => {
+        const user = userEvent.setup();
+        const onValueChange = vi.fn();
+        renderWeaponSelect({ value: '1', onValueChange });
+
+        await user.click(screen.getByRole('button', { name: /Оружие/ }));
+        await user.hover(screen.getByRole('option', { name: 'Кластер' }));
+        await user.keyboard('{Enter}');
+
+        expect(onValueChange).toHaveBeenCalledWith('3');
+    });
+
+    it('defaultOpen раскрывает попап, но не крадёт фокус при монтировании', () => {
+        renderWeaponSelect({ value: '1', defaultOpen: true });
+
+        // Список раскрыт (статичный срез витрины), но фокус НЕ уведён на него — иначе
+        // монтирование витрины дёргало бы фокус страницы.
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+        expect(screen.getByRole('listbox')).not.toHaveFocus();
+    });
+
+    it('разворачивает опции внутри Fragment (Children.forEach его не разворачивает сам)', () => {
+        render(
+            <Select id="weapon" label="Оружие" value="2">
+                <>
+                    <option value="1">Снаряд</option>
+                    <option value="2">Мощный</option>
+                </>
+            </Select>,
+        );
+
+        const trigger = screen.getByRole('button', { name: /Оружие/ });
+        expect(trigger).toHaveAttribute('data-option-count', '2');
+        expect(trigger).toHaveTextContent('Мощный');
+    });
+
+    it('молча игнорирует не-option children, не создавая фиктивную пустую опцию', () => {
+        function WeaponOption() {
+            return <option value="99">Обёртка</option>;
+        }
+        render(
+            <Select id="weapon" label="Оружие" value="1">
+                {'просто текст'}
+                <WeaponOption />
+                <option value="1">Снаряд</option>
+            </Select>,
+        );
+
+        // Компонент не исполняется, текст — не опция: в модели только реальный <option>.
+        expect(screen.getByRole('button', { name: /Оружие/ })).toHaveAttribute(
+            'data-option-count',
+            '1',
+        );
+    });
+
+    it('type-ahead на закрытом триггере меняет значение, не открывая список', async () => {
+        const user = userEvent.setup();
+        const onValueChange = vi.fn();
+        renderWeaponSelect({ value: '1', onValueChange });
+
+        screen.getByRole('button', { name: /Оружие/ }).focus();
+        await user.keyboard('к'); // Кластер
+
+        expect(onValueChange).toHaveBeenCalledWith('3');
+        expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    });
+
+    it('не зовёт onValueChange при выборе уже выбранной опции', async () => {
+        const user = userEvent.setup();
+        const onValueChange = vi.fn();
+        renderWeaponSelect({ value: '2', onValueChange });
+
+        await user.click(screen.getByRole('button', { name: /Оружие/ }));
+        await user.click(screen.getByRole('option', { name: 'Мощный' }));
+
+        expect(onValueChange).not.toHaveBeenCalled();
+        expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    });
 });

@@ -29,7 +29,10 @@ export function GamePage({ seed }: TGamePageProps = {}) {
                 }}
                 className="fixed z-40 flex min-h-11 min-w-11 items-center justify-center rounded-sm bg-panel-raised text-text-muted opacity-50 transition-all hover:text-primary hover:opacity-100 focus-visible:ring-2 focus-visible:ring-primary"
             >
-                <Icon name="settings" size={16} />
+                {/* `eye` (смотреть/витрина), а не `settings`-шестерёнка: ссылка ведёт в
+                    каталог-витрину компонентов, а не в настройки — иконка не должна врать
+                    зрячему (для SR она декоративна, `aria-hidden`; смысл несёт aria-label). */}
+                <Icon name="eye" size={16} />
             </Link>
         </main>
     );
