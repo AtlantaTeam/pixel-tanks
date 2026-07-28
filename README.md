@@ -53,6 +53,8 @@ npm run dev                  # → http://localhost:3050
 
 Живая игра — **[pixeltanks.ru](https://pixeltanks.ru)**. Деплой автоматический: каждый push в `main` запускает [`deploy.yml`](.github/workflows/deploy.yml), который собирает и катит на VDS. Прод-БД (SQLite) бэкапится по systemd-таймеру.
 
+Витрина дизайн-системы — наш живой мини-сторибук: **[pixeltanks.ru/design-system](https://pixeltanks.ru/design-system)**. Все переиспользуемые компоненты `shared/ui` со всеми состояниями; он же — мишень визуальной регрессии.
+
 Детали инфраструктуры, отката и восстановления — в [`docs/deploy/`](docs/deploy/).
 
 Игра в активном переносе со старого стека: часть возможностей ещё в работе, см. роадмап ниже.
@@ -63,7 +65,7 @@ npm run dev                  # → http://localhost:3050
 - **Canvas-движок** — детерминированная физика (seed → одинаковый бой), `requestAnimationFrame` с delta time, offscreen-слои террейна
 - **FSD 2.1** — слои `app → views → widgets → features → entities → shared`, валидируется Steiger
 - **Payload CMS 3 + SQLite/Postgres** — юзеры, очки, лидерборд, Drizzle под капотом
-- **Своя UI-тема** — Pixelify Sans + JetBrains Mono, NES-рамки, кастомная dark-палитра с faction-темами (витрина `/design-system`)
+- **Своя UI-тема** — Pixelify Sans + JetBrains Mono, NES-рамки, кастомная dark-палитра с faction-темами (витрина [`/design-system`](https://pixeltanks.ru/design-system))
 - **Vitest + Playwright** — unit-тесты физики и e2e игровой петли
 
 ## 🗺️ Роадмап
