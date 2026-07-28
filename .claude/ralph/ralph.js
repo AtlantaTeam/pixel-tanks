@@ -71,7 +71,6 @@
 
 const { execSync, execFileSync, spawnSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
-const crypto = require('node:crypto');
 const path = require('node:path');
 
 // #232: ядро подключает TS-модули (ralph-util.ts, side-effect-guard.ts и др.) напрямую,
@@ -201,6 +200,44 @@ function fail(msg) {
 // #232: сама shq (и positiveIntOrDefault/sleep ниже) вынесена в общий util-модуль —
 // копия жила и здесь, и в telegram-notifier.js, правка в одной не доезжала до другой.
 const { shq, positiveIntOrDefault, sleep } = require('./ralph-util.ts');
+
+// #359 (трек «Фреймворк ralph», фаза 2): работа с тремя файлами раннера —
+// ralph.state.json (state фазы), ralph.lock (файл-лок #176/#177/#178) и .deps-lock.sha
+// (маркер npm ci #SiaUX) — вынесена в state-lock.ts. Фабрика захватывает контекст ralph.js
+// один раз (пути, DRY, ленивый config, общий предохранитель #138, process-примитивы
+// processAlive/cmdlineIncludes, которые остаются здесь — их делит и монитор). Возвращённые
+// функции сохраняют DI: сценарные (lock-scenarios.test.js) и юнит-тесты (ralph.test.js)
+// зовут их через ре-экспорт из module.exports как раньше. loadJson/log/fail/guardSideEffect/
+// processAlive/cmdlineIncludes — function-объявления (hoisted), доступны здесь до их текста.
+const { createStateLock } = require('./state-lock.ts');
+const {
+    defaultState,
+    loadState,
+    saveState,
+    lockHash,
+    writeLockMarker,
+    syncDepsIfLockChanged,
+    isRalphProcess,
+    lockAlive,
+    writeLock,
+    removeLock,
+    releaseLockIfOurs,
+    acquireLock,
+} = createStateLock({
+    statePath: STATE_PATH,
+    lockPath: LOCK_PATH,
+    lockMarkerPath: LOCK_MARKER_PATH,
+    ralphPath: RALPH_PATH,
+    dry: DRY,
+    getConfig: () => config,
+    log,
+    fail,
+    guardSideEffect,
+    loadJson,
+    processAlive,
+    cmdlineIncludes,
+    buildSanitizedGateEnv,
+});
 
 // env (#189): по умолчанию дочерний процесс наследует полный env раннера — так гонятся
 // git-команды хореографии гейта, которым нужны секреты (GH_TOKEN для fetch). Но команды
@@ -398,16 +435,8 @@ function resolveProfile(raw, name, failFn = fail) {
     return { ...merged, profileName: wanted };
 }
 
-function saveState(state) {
-    // C1: --dry-run обязан быть строго read-only. Guard ЗДЕСЬ, в единственной точке
-    // записи, а не у каждого вызова — невозможно забыть обернуть новый вызов в !DRY
-    // (именно так dry-run и начал когда-то двигать phaseIndex).
-    if (DRY) return;
-    // Тот же guard, что у sh(): забытый saveStateFn в тесте перезаписал бы state
-    // ЖИВОГО прогона — гейт мерджа гоняет npm run test прямо в worktree раннера.
-    guardSideEffect(`saveState(${STATE_PATH})`);
-    fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
-}
+// saveState/loadState/defaultState вынесены в state-lock.ts (#359) — см. createStateLock
+// выше. Читаются как const из деструктуризации.
 
 // ── Детекция API-лимита (идея из frankbria/ralph-claude-code) ────────────────
 // Claude CLI при упирании в 5-часовое окно / usage limit пишет об этом в вывод и
@@ -787,64 +816,8 @@ function ensureRunnerWorktree(
     return worktreePath;
 }
 
-// Хэш package-lock.json в дереве dir (sha256 содержимого) или null, если файла нет.
-// Чистая обёртка над fs — вынесена, чтобы гейт и bootstrap считали хэш одинаково.
-function lockHash(dir = '.', readFn = fs.readFileSync) {
-    try {
-        return crypto
-            .createHash('sha256')
-            .update(readFn(path.join(dir, 'package-lock.json')))
-            .digest('hex');
-    } catch {
-        return null;
-    }
-}
-
-// Записывает текущий хэш lock как маркер «под эти зависимости уже прогнан npm ci».
-function writeLockMarker(dir = '.', { readFn = fs.readFileSync, writeFn = fs.writeFileSync } = {}) {
-    const h = lockHash(dir, readFn);
-    if (!h) return;
-    try {
-        writeFn(path.join(dir, LOCK_MARKER_PATH), h);
-    } catch {}
-}
-
-// Гейт детачится на PR-голову ТОЧНОГО коммита, который уедет в main — а её lock мог
-// добавить зависимость (node_modules дерева раннера при этом старые). Сверяем хэш lock
-// с маркером последнего npm ci и при расхождении переустанавливаем ДО чеков (#SiaUX):
-// иначе фаза-с-новой-зависимостью гарантированно красила бы ночной гейт на «module not
-// found», а README честно, но против цели AFK-прогона, отсылал бы чинить руками.
-function syncDepsIfLockChanged({
-    logFn = log,
-    existsFn = fs.existsSync,
-    readFn = fs.readFileSync,
-    writeFn = fs.writeFileSync,
-    // env (#189): санированное окружение для `npm ci`. checksGreen прокидывает сюда уже
-    // построенный env (один allowlist-load на прогон гейта); при прямом вызове дефолт
-    // строит его сам через buildGateEnvFn. installFn исполняет lifecycle-скрипты
-    // зависимостей — код с чужих слов, ему секреты петли видеть нельзя. Разрешённый env
-    // приходит в installFn аргументом — так подмена видна в тестах через spy.
-    env,
-    buildGateEnvFn = buildSanitizedGateEnv,
-    installFn = (resolvedEnv) => {
-        // Забытый installFn в тесте запустил бы настоящий npm ci в дереве, где идут
-        // тесты, — переустановка node_modules посреди прогона (ревью PR #141).
-        guardSideEffect('npm ci (syncDepsIfLockChanged)');
-        return execSync('npm ci', { stdio: 'inherit', env: resolvedEnv });
-    },
-} = {}) {
-    const current = lockHash('.', readFn);
-    if (!current) return; // нет package-lock.json — сверять нечего
-    let prev = null;
-    try {
-        if (existsFn(LOCK_MARKER_PATH)) prev = readFn(LOCK_MARKER_PATH, 'utf-8').trim();
-    } catch {}
-    if (prev === current) return;
-    logFn('📦 package-lock.json PR-головы отличается от установленного — npm ci перед чеками...');
-    // env из checksGreen (уже санирован), иначе строим сам — fail-closed при битом allowlist.
-    installFn(env ?? buildGateEnvFn());
-    writeLockMarker('.', { readFn, writeFn });
-}
+// lockHash/writeLockMarker/syncDepsIfLockChanged (маркер .deps-lock.sha, #SiaUX) вынесены
+// в state-lock.ts (#359) — см. createStateLock выше. Читаются как const из деструктуризации.
 
 // Сколько спать после маркера лимита: время до сброса окна (или fallback, если
 // время не распарсилось) плюс запас config.apiLimitGraceMin.
@@ -2488,43 +2461,10 @@ function classifyDeployOutcome(outcome, health) {
 //               могло заново повесить blocked, который человек только что снял).
 //               Полный повтор цикла сдачи — только явным флагом --resubmit.
 
-function defaultState() {
-    return {
-        count: 0,
-        milestone: config.phases[0].milestone,
-        submitted: false,
-        noProgress: 0,
-        gateHeals: 0,
-        blockedHeals: 0,
-        // #217: планка модели повторного ревью (сильнейшая модель, поставившая блок в
-        // этой фазе) и модель последнего проведённого ревью — из них считается floor.
-        reviewModelFloor: null,
-        lastReviewModel: null,
-        // #223: раннер снял label blocked, но повторное ревью ещё не дало вердикта.
-        // Флаг переживает рестарт → гейт вернёт метку, если сессия ревью погибла.
-        reReviewPending: false,
-        // #165: красный/недосмотренный пост-мердж деплой прошлой фазы. Пока не null —
-        // барьер в preflight не даёт строить следующую фазу поверх недоехавшего до
-        // прода main; снимает только человек флагом --deploy-resolved (см. preflight).
-        // advancePhase его НЕ обнуляет: блок ставится уже ПОСЛЕ advancePhase и обязан
-        // пережить и переход фазы, и рестарт.
-        deployBlock: null,
-    };
-}
-
-// failFn инжектируется (дефолт — module-level fail): preflight пробрасывает свой
-// failFn, чтобы юнит-тест ловил fail старой схемы через исключение, а не process.exit.
-function loadState(failFn = fail) {
-    const s = loadJson(STATE_PATH, null);
-    if (!s) return defaultState();
-    if (s.milestone === undefined) {
-        failFn(
-            `${STATE_PATH} старой схемы (phaseIndex). Раннер адресует фазы по имени milestone. ` +
-                `Запусти --reset (вернёт на первую фазу конфига) или пропиши руками: { count, milestone: <имя фазы>, submitted: false }.`,
-        );
-    }
-    return s;
-}
+// defaultState/loadState вынесены в state-lock.ts (#359) — см. createStateLock выше.
+// defaultState читает config.phases[0] лениво (через getConfig), loadState — через
+// инжектированный loadJson (тот же fs, что и здесь: спай fs.readFileSync в тестах виден).
+// Читаются как const из деструктуризации.
 
 // Резолв фазы по имени. Имя не найдено = state и конфиг разъехались — это fail,
 // а не «начнём с нулевой» (M7): молчаливый дефолт снова строил бы фазы не по порядку.
@@ -3640,198 +3580,13 @@ function isRalphMonitorProcess(pid, readFn = fs.readFileSync) {
     return cmdlineIncludes(pid, MONITOR_PATH, readFn);
 }
 
-// --- Файл-лок от двойного запуска (#176) ----------------------------------
-// Второй раннер на том же состоянии стартовать не должен. Механику живости берём один
-// в один у монитора (adoptMonitor/isMonitorProcess): kill(pid, 0) отвечает лишь «номер
-// занят», а ОС переиспользует номера — после смерти раннера его pid мог достаться чужому
-// процессу. Поэтому «жив» = номер занят И за ним стоит именно наш ralph.js по cmdline.
-// Linux-only (/proc), как весь раннер.
-
-// Сверка «за этим pid именно наш ralph.js» — по пути RALPH_PATH в cmdline. Тот же приём,
-// что isRalphMonitorProcess. ВНИМАНИЕ: RALPH_PATH относительный и уникальности проекта не
-// гарантирует (см. коммент у объявления RALPH_PATH) — для лока это лишь ложный отказ при
-// pid-reuse (fail-closed), не снос чужого процесса. Переиспользованный pid (чужой процесс
-// под тем же номером) → подстроки нет → false, лок считается сиротой.
-function isRalphProcess(pid, readFn = fs.readFileSync) {
-    return cmdlineIncludes(pid, RALPH_PATH, readFn);
-}
-
-// Держит ли лок ЖИВОЙ раннер: номер занят (kill 0) И cmdline подтверждает ralph.js.
-// Обе проверки обязательны и в этом порядке — kill(pid, 0) на мёртвом pid бросит
-// (ESRCH → false) и до чтения /proc не дойдём; на переиспользованном номере kill
-// пройдёт, но cmdline-сверка отсечёт чужой процесс. Так pid-reuse не сойдёт за живой
-// раннер и не заблокирует легитимный запуск. procReadFn читает ТОЛЬКО /proc/<pid>/cmdline
-// (отдельный от чтения лок-файла контракт — в acquireLock это разные dep'ы).
-function lockAlive(pid, { killFn = process.kill, procReadFn = fs.readFileSync } = {}) {
-    return processAlive(pid, killFn) && isRalphProcess(pid, procReadFn);
-}
-
-// Пишет pid текущего процесса в лок-файл ЭКСКЛЮЗИВНО (flag 'wx'): создаёт файл, только
-// если его ещё нет, иначе бросает EEXIST. Это закрывает гонку check-then-act в acquireLock
-// (см. там) — второй одновременно стартующий раннер, прошедший ту же проверку «лока нет»,
-// на записи получит EEXIST и не перезапишет победителя. Побочка — под предохранителем
-// #138: забытый writeFn в тесте иначе насорил бы настоящим ralph.lock в дереве тестов.
-function writeLock(pid = process.pid, { writeFn, lockPath = LOCK_PATH } = {}) {
-    const doWrite =
-        writeFn ||
-        ((p, data) => {
-            guardSideEffect(`writeLock (${p})`);
-            return fs.writeFileSync(p, data, { flag: 'wx' });
-        });
-    doWrite(lockPath, String(pid));
-}
-
-// Снимает лок-файл (осиротевший лок при взятии, свой лок при выходе). Побочка — под
-// предохранителем #138. ENOENT при удалении не ошибка: лок уже снят (гонка, ручная
-// чистка) — цель «файла нет» достигнута, а не «удаление провалилось».
-function removeLock({ lockPath = LOCK_PATH, removeFn } = {}) {
-    const doRemove =
-        removeFn ||
-        ((p) => {
-            guardSideEffect(`removeLock (${p})`);
-            try {
-                fs.unlinkSync(p);
-            } catch (e) {
-                if (!e || e.code !== 'ENOENT') throw e;
-            }
-        });
-    doRemove(lockPath);
-}
-
-// Снятие СВОЕГО лока при штатном выходе (exit-хендлер main()). Без него каждый рестарт
-// шёл бы через путь «🔓 осиротевший лок»: шум в логе + событие перестаёт быть сигналом
-// РЕАЛЬНОГО kill -9, а устаревший файл расширяет окно pid-reuse (номер достанется grep/
-// tail/vim по ralph.js → ложный «живой раннер» и отказ старта). Две оговорки: (1) снимаем
-// ТОЛЬКО если файл ещё держит наш pid — если лок в странной гонке украли/переписали,
-// слепой unlink снёс бы чужой; (2) путь передаётся АБСОЛЮТНЫЙ, зафиксированный ДО chdir в
-// worktree, — относительный LOCK_PATH после chdir указал бы внутрь дерева раннера (тот же
-// прецедент, что репойнт logTarget, #SiaUB). Свои побочки — через DI под #138.
-function releaseLockIfOurs(
-    lockPath,
-    { readFn = fs.readFileSync, removeFn, pid = process.pid } = {},
-) {
-    let held;
-    try {
-        held = Number(String(readFn(lockPath, 'utf-8')).trim());
-    } catch {
-        return; // нет файла / нечитаем — снимать нечего
-    }
-    if (held !== pid) return; // лок уже не наш — чужой не трогаем
-    removeLock({ lockPath, removeFn });
-}
-
-// --- Взятие лока: fail-closed решение (#177) -------------------------------
-// Единственная точка решения «стартовать или отказать» по лок-файлу. Четыре исхода:
-//
-//   нет файла (ENOENT)                  → лок свободен: пишем свой pid, стартуем.
-//   живой раннер (kill 0 + cmdline)     → ОТКАЗ fail-closed, сообщение с pid и путём.
-//   сирота (pid мёртв / чужой cmdline)  → снимаем лок, событие в лог, берём себе.
-//   нечитаем / битый pid                → СТОП fail-closed (не «лока нет»).
-//
-// Читаем файл здесь напрямую и парсим со СТРОГОЙ валидацией: «нет файла», «нет прав» и
-// «битый pid» для #177 — три разных исхода (ENOENT — норм-путь, EACCES/битое содержимое —
-// fail-closed стоп по образцу scripts/security-audit.mjs). lockAlive — примитив живости;
-// acquireLock — слой политики над ним.
-//
-// Взятие лока АТОМАРНО: и на пути «нет файла», и на пути реклейма сироты запись идёт через
-// writeLock (flag 'wx' — эксклюзивное создание). Между нашим чтением и записью второй
-// одновременно стартующий раннер мог пройти ту же проверку и записать свой pid — тогда наш
-// 'wx' бросит EEXIST, и это ОТКАЗ (лок только что появился), а не молчаливая перезапись
-// победителя гонки. Иначе неатомарный check-then-act пропустил бы оба процесса — ровно та
-// гонка за state/ветки/мердж, ради запрета которой лок существует.
-//
-// Все побочки — через DI (#138): чтение лок-файла (readFn) и /proc (procReadFn) РАЗДЕЛЕНЫ
-// (у каждого свой контракт, тестам не надо мультиплексировать по пути), плюс удаление,
-// запись, kill, лог, стоп. failFn по умолчанию — fail() (process.exit(1)); в бою после
-// него исполнение не продолжается, return в тестах нужен мок-failFn, который не роняет
-// процесс.
-function acquireLock({
-    lockPath = LOCK_PATH,
-    pid = process.pid,
-    readFn = fs.readFileSync,
-    procReadFn = fs.readFileSync,
-    killFn = process.kill,
-    removeFn,
-    writeFn,
-    logFn = log,
-    failFn = fail,
-} = {}) {
-    // Эксклюзивная запись своего pid: writeLock идёт через flag 'wx', поэтому если лок УСПЕЛ
-    // появиться между проверкой и записью (гонка двух стартов) — EEXIST → fail-closed отказ.
-    const claim = () => {
-        try {
-            writeLock(pid, { writeFn, lockPath });
-            return true;
-        } catch (e) {
-            if (e && e.code === 'EEXIST') {
-                failFn(
-                    `Лок ${lockPath} возник в момент взятия — другой раннер стартовал ` +
-                        `одновременно. Второй запуск на том же состоянии запрещён.`,
-                );
-                return false;
-            }
-            throw e;
-        }
-    };
-
-    let raw;
-    try {
-        raw = readFn(lockPath, 'utf-8');
-    } catch (e) {
-        // Файла нет — лок свободен, это норм-путь. Только ENOENT: любую другую ошибку
-        // чтения (нет прав, битый inode) трактовать как «лока нет» = тихо стартовать
-        // поверх возможного живого раннера, ровно то, что fail-closed запрещает.
-        if (e && e.code === 'ENOENT') {
-            return claim();
-        }
-        failFn(
-            `Лок-файл ${lockPath} нечитаем (${String(e?.code ?? e?.message ?? e)}) — ` +
-                `не берусь решать, жив ли другой раннер. Разберись руками и перезапусти.`,
-        );
-        return false;
-    }
-
-    const trimmed = String(raw).trim();
-    const heldPid = Number(trimmed);
-    // Битое содержимое: пусто или не положительное целое. Не «пропустим проверку» и не
-    // «считаем сиротой и крадём» — стоп fail-closed. Осознанная цена: усечённый при
-    // падении лок требует ручной чистки, но гонка двух раннеров дороже (deadman заметит
-    // «не стартовал»).
-    if (!trimmed || !Number.isInteger(heldPid) || heldPid <= 0) {
-        failFn(
-            `Лок-файл ${lockPath} битый (содержимое ${JSON.stringify(trimmed)}) — ` +
-                `не берусь решать, жив ли другой раннер. Разберись руками и перезапусти.`,
-        );
-        return false;
-    }
-
-    if (lockAlive(heldPid, { killFn, procReadFn })) {
-        // Живой раннер держит лок — отказ. Сообщение обязано назвать pid и путь (кто
-        // держит и где), критерий #177.
-        failFn(
-            `Другой раннер уже держит лок: pid ${heldPid}, файл ${lockPath}. ` +
-                `Второй запуск на том же состоянии запрещён — гонка за state/ветки/мердж.`,
-        );
-        return false;
-    }
-
-    // Сирота: pid мёртв (kill 0 → ESRCH) или за ним чужой процесс (pid-reuse, cmdline не
-    // наш ralph.js). Снимаем лок и берём себе — без ручной чистки после kill -9 / OOM.
-    // ВНИМАНИЕ (#178): это событие уходит через log() ДО репойнта logTarget на worktree (он
-    // в main() ПОСЛЕ загрузки конфига, а лок — самый первый шаг, впереди конфига по
-    // построению). Поэтому строка «🔓» ляжет в ralph.log ДЕРЕВА ЧЕЛОВЕКА, а монитор тейлит
-    // только worktree-лог — на панели этого события НЕ будет. Ищи его в ralph.log клона
-    // запуска, не в monitor.out. Изменить порядок нельзя: лок обязан быть до побочек.
-    logFn(
-        `🔓 Осиротевший лок pid ${heldPid} (процесс мёртв или не наш ralph.js) — ` +
-            `снимаю ${lockPath} и стартую.`,
-    );
-    removeLock({ lockPath, removeFn });
-    // Реклейм тоже через эксклюзивную запись: между unlink и созданием второй процесс мог
-    // снять ту же сироту и взять лок — тогда наш claim() получит EEXIST, а не перезапишет
-    // победителя гонки за реклейм.
-    return claim();
-}
+// --- Файл-лок от двойного запуска (#176/#177/#178) ------------------------
+// isRalphProcess/lockAlive/writeLock/removeLock/releaseLockIfOurs/acquireLock вынесены в
+// state-lock.ts (#359) — см. createStateLock выше. Механику живости берут один в один у
+// монитора (processAlive/cmdlineIncludes остаются здесь — их делит и монитор): kill(pid, 0)
+// отвечает лишь «номер занят», а ОС переиспользует номера, поэтому «жив» = номер занят И за
+// ним стоит именно наш ralph.js по cmdline (RALPH_PATH). Все шесть функций читаются как const
+// из деструктуризации и ре-экспортируются через module.exports как раньше.
 
 // PID-файл монитора один на все профили. Читаем его в одном месте: и adoptMonitor
 // (подхват сироты на старте), и ensureMonitorAlive (переподнятие между итерациями)
