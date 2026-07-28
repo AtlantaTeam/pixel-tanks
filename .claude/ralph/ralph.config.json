@@ -95,6 +95,10 @@
             {
                 "milestone": "Баг-фиксы ralph · Экран боя и легаси UI",
                 "branch": "feature/bugfix-endgame-legacy"
+            },
+            {
+                "milestone": "Баг-фиксы ralph · Дизайн-система: Select и вход на витрину",
+                "branch": "feature/bugfix-ds-select-nav"
             }
         ]
     },
