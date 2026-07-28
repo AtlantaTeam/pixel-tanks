@@ -39,7 +39,7 @@
 
 ## Технологический стек
 
-**Основа:** Next.js 16 + React 19 + TypeScript 5 + Tailwind 4 + своя UI-библиотека `shared/ui` (игровая тема: шрифты **Pixelify Sans** (display) + **JetBrains Mono** (UI/HUD), self-hosted из `public/fonts`; NES-рамки `pixel-border`; кастомная dark-палитра + faction-темы через `[data-faction]` — токены в `globals.css`, витрина `/design-system`).
+**Основа:** Next.js 16 + React 19 + TypeScript 5 + Tailwind 4 + своя UI-библиотека `shared/ui` (игровая тема: шрифты **DotGothic16** (display) + **JetBrains Mono** (UI/HUD), self-hosted из `public/fonts`; NES-рамки `pixel-border`; кастомная dark-палитра + faction-темы через `[data-faction]` — токены в `globals.css`, витрина `/design-system`).
 
 **Данные:** TanStack Query (server state) + Zustand (client state) + React Hook Form + Zod (валидация).
 

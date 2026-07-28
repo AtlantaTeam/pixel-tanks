@@ -65,7 +65,7 @@ npm run dev                  # → http://localhost:3050
 - **Canvas-движок** — детерминированная физика (seed → одинаковый бой), `requestAnimationFrame` с delta time, offscreen-слои террейна
 - **FSD 2.1** — слои `app → views → widgets → features → entities → shared`, валидируется Steiger
 - **Payload CMS 3 + SQLite/Postgres** — юзеры, очки, лидерборд, Drizzle под капотом
-- **Своя UI-тема** — Pixelify Sans + JetBrains Mono, NES-рамки, кастомная dark-палитра с faction-темами (витрина [`/design-system`](https://pixeltanks.ru/design-system))
+- **Своя UI-тема** — DotGothic16 + JetBrains Mono, NES-рамки, кастомная dark-палитра с faction-темами (витрина [`/design-system`](https://pixeltanks.ru/design-system))
 - **Vitest + Playwright** — unit-тесты физики и e2e игровой петли
 
 ## 🗺️ Роадмап
