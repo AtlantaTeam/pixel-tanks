@@ -1,10 +1,13 @@
-// Юнит-тесты модуля гейта (#362). Здесь проверяется САМА фабрика createGateRunner — что
-// она собирает рабочие функции из синтетического env, независимо от ralph.js. Проход
-// «через ре-экспорт ralph.js» уже покрыт ralph.test.js / blocked-scenarios.test.js /
-// hold-scenarios.test.js (те же функции, но с боевым контекстом раннера); тут — контракт
-// extraction'а: модуль самодостаточен и переносим (цель фазы 3), а не «работает только
-// пока его зовёт ralph.js».
+// Юнит-тесты модуля гейта (#362). Основная часть проверяет САМУ фабрику createGateRunner —
+// что она собирает рабочие функции из синтетического env, независимо от ralph.js: контракт
+// extraction'а — модуль самодостаточен и переносим (цель фазы 3), а не «работает только
+// пока его зовёт ralph.js». Проход «через ре-экспорт ralph.js» с боевым контекстом раннера —
+// в orchestrator.test.js / blocked-scenarios.test.js / hold-scenarios.test.js и в блоке в
+// конце этого файла, перенесённом из ralph.test.js при её разнесении по модулям (#366).
 import { describe, it, expect, vi } from 'vitest';
+// @ts-expect-error — JS-entry раннера без деклараций типов; блок в конце файла перенесён
+// из ralph.test.js как есть и ходит через его ре-экспорт (#366).
+import ralph from './ralph.js';
 import type { GateEnv } from './gate.ts';
 import { createGateRunner } from './gate.ts';
 
@@ -338,5 +341,51 @@ describe('removeBlockedLabel / addBlockedLabel — детерминирован�
         const sh = vi.fn(() => '42');
         g.removeBlockedLabel('bad branch', { shFn: sh, runArgvFn: () => '' });
         expect(sh).not.toHaveBeenCalled();
+    });
+});
+
+// #366: fail-open переходы метки blocked — сценарии, которых нет в фабричных тестах выше.
+// Косметика метки не имеет права ронять цикл сдачи: не сняли — гейт подберёт blocked,
+// не вернули — блок останется снятым, но петля продолжит работать, а не упадёт.
+describe('removeBlockedLabel / addBlockedLabel — сбой gh не роняет петлю (#217/#223)', () => {
+    const { removeBlockedLabel, addBlockedLabel } = ralph;
+
+    it('сбой gh не роняет (fail-open): метка останется, гейт подберёт blocked', () => {
+        const shFn = () => {
+            throw new Error('gh boom');
+        };
+        const logs: string[] = [];
+        expect(() =>
+            removeBlockedLabel('feature/m1', { shFn, logFn: (m: string) => logs.push(m) }),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/не снял метку/);
+    });
+
+    it('сбой argv-мутации не роняет (fail-open): метка останется, гейт подберёт blocked', () => {
+        const shFn = (cmd: string) => (cmd.includes('gh pr list') ? '42\n' : '');
+        const runArgvFn = () => {
+            throw new Error('gh edit boom');
+        };
+        const logs: string[] = [];
+        expect(() =>
+            removeBlockedLabel('feature/m1', {
+                shFn,
+                runArgvFn,
+                logFn: (m: string) => logs.push(m),
+            }),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/не снял метку/);
+    });
+
+    it('addBlockedLabel: сбой argv-мутации не роняет — только лог', () => {
+        const shFn = (cmd: string) => (cmd.includes('gh pr list') ? '42\n' : '');
+        const runArgvFn = () => {
+            throw new Error('gh edit boom');
+        };
+        const logs: string[] = [];
+        expect(() =>
+            addBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m: string) => logs.push(m) }),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/не вернул метку/);
     });
 });

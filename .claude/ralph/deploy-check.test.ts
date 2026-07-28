@@ -1,11 +1,19 @@
-// Юнит-тесты модуля деплой-проверки (#364). Здесь проверяется САМА фабрика
+// Юнит-тесты модуля деплой-проверки (#364). Основная часть проверяет САМУ фабрику
 // createDeployCheckModule — что она собирает рабочие функции из синтетического env,
-// независимо от ralph.js. Проход «через ре-экспорт ralph.js» уже покрыт ralph.test.js (те же
-// функции, но с боевым контекстом раннера); тут — контракт extraction'а: модуль
-// самодостаточен и переносим (цель фазы 3), а не «работает только пока его зовёт ralph.js».
+// независимо от ralph.js: контракт extraction'а — модуль самодостаточен и переносим
+// (цель фазы 3), а не «работает только пока его зовёт ralph.js».
+//
+// В конце файла — блоки, перенесённые из ralph.test.js при её разнесении по модулям
+// (#366): критерии готовности пост-мердж проверки (#166/#167) с боевым контекстом
+// раннера — тайминг, ретраи и «только чтение» на всей последовательности опросов.
 import { describe, it, expect, vi } from 'vitest';
 import type { DeployCheckEnv } from './deploy-check.ts';
 import { createDeployCheckModule } from './deploy-check.ts';
+// @ts-expect-error — JS-entry раннера без деклараций типов; блоки в конце файла
+// перенесены из ralph.test.js как есть и ходят через его ре-экспорт (#366).
+import ralph from './ralph.js';
+
+const { waitForDeployRun, mergedShaOf, checkProdHealth } = ralph;
 
 const SHA40_RE = /^[0-9a-f]{40}$/;
 const shq = (v: unknown) => `'${String(v).replace(/'/g, `'\\''`)}'`;
@@ -449,5 +457,238 @@ describe('classifyDeployOutcome — итог деплоя зелёный/кра�
         const v = classifyDeployOutcome(null, null);
         expect(v.red).toBe(true);
         expect(v.reason).toContain('unknown');
+    });
+});
+
+// #THS8W: единые хелперы пост-мердж ожидания на уровень файла — обе секции
+// (waitForDeployRun #163 и критерии готовности #167) ими пользуются, дрейф копий
+// исключён. Детерминированные часы: nowFn читает clock, sleepFn (vi.fn — чтобы можно
+// было утверждать «sleep не понадобился») его двигает.
+const mkDeployClock = () => {
+    const c = { t: 0 };
+    return {
+        clock: c,
+        nowFn: () => c.t,
+        sleepFn: vi.fn((ms) => {
+            c.t += ms;
+        }),
+    };
+};
+// Конфиг с коротким таймаутом/поллом, чтобы фейковые часы упирались за пару шагов.
+const deployCfg = (o = {}) => ({
+    deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20, ...o },
+});
+
+describe('Пост-мердж проверка — только чтение, без мутаций (#166)', () => {
+    const SHA = 'd'.repeat(40);
+
+    it('waitForDeployRun зовёт ТОЛЬКО "gh run list" — read-глагол, без merge/cancel/rerun/delete/close', () => {
+        // Параметр cmd объявлен явно (а не проигнорирован) — иначе mock.calls в .ts-файле
+        // типизируется пустым кортежем и ассерт на текст команды не скомпилируется.
+        const ghJsonFn = vi.fn((_cmd: string) => [
+            { databaseId: 1, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        waitForDeployRun(
+            SHA,
+            { deployCheck: { workflow: 'deploy.yml', timeoutMs: 100, pollIntervalMs: 20 } },
+            { ghJsonFn, sleepFn: () => {}, logFn: () => {}, nowFn: () => 0 },
+        );
+        expect(ghJsonFn).toHaveBeenCalledTimes(1);
+        const cmd = ghJsonFn.mock.calls[0][0];
+        expect(cmd).toMatch(/^gh run list\b/);
+        expect(cmd).not.toMatch(/\b(cancel|rerun|delete|merge|close|revert)\b/);
+    });
+
+    it('mergedShaOf зовёт ТОЛЬКО "gh pr view" — read-глагол, без merge/close/edit', () => {
+        const ghJsonFn = vi.fn((_cmd: string) => ({ mergeCommit: { oid: SHA } }));
+        mergedShaOf(1, { ghJsonFn });
+        expect(ghJsonFn).toHaveBeenCalledTimes(1);
+        const cmd = ghJsonFn.mock.calls[0][0];
+        expect(cmd).toMatch(/^gh pr view\b/);
+        expect(cmd).not.toMatch(/\b(merge|close|edit|delete)\b/);
+    });
+
+    it('checkProdHealth зовёт curl только на чтение (GET) — без -X/-d/--data/--upload-file', () => {
+        const execFn = vi.fn((_bin: string, _args: string[]) => '200');
+        checkProdHealth(
+            { deployCheck: { healthUrl: 'https://pixeltanks.ru', healthRetries: 1 } },
+            { execFn, sleepFn: () => {}, logFn: () => {} },
+        );
+        expect(execFn).toHaveBeenCalledTimes(1);
+        const [bin, args] = execFn.mock.calls[0];
+        expect(bin).toBe('curl');
+        expect(args).not.toContain('-X');
+        expect(args).not.toContain('-d');
+        expect(args).not.toContain('--data');
+        expect(args).not.toContain('--upload-file');
+    });
+});
+
+describe('#167: пост-мердж проверка — критерии готовности (тайминг, ретраи, стоп+пуш)', () => {
+    const SHA = 'a'.repeat(40);
+    // #THS8W: те же файловые хелперы, что и у describe waitForDeployRun — единый вариант
+    // с полем clock, дубля больше нет.
+    const mkClock = mkDeployClock;
+    const cfg = deployCfg;
+
+    // --- Критерий: «зелёный деплой не задерживает петлю дольше таймаута» ---
+
+    it('зелёный workflow на первом же опросе → возврат сразу, часы не сдвинуты (петля не ждёт впустую)', () => {
+        const { clock, nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 1, headSha: SHA, status: 'completed', conclusion: 'success', url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg(), { ghJsonFn, sleepFn, logFn: () => {}, nowFn });
+        expect(out).toMatchObject({ status: 'completed', conclusion: 'success' });
+        // Зелёный найден на первом опросе — ни одного sleep, часы стоят на нуле.
+        expect(ghJsonFn).toHaveBeenCalledTimes(1);
+        expect(clock.t).toBe(0);
+    });
+
+    it('workflow тянется дольше таймаута → ожидание ограничено по времени (не вечный цикл, не ложный красный)', () => {
+        const { clock, nowFn, sleepFn } = mkClock();
+        // Всегда in_progress: без границы по времени это был бы бесконечный цикл.
+        const ghJsonFn = vi.fn(() => [
+            { databaseId: 2, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' },
+        ]);
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 100, pollIntervalMs: 20 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        // Досрочно не сдался (timeout, не not-found), но и не завис.
+        expect(out.status).toBe('timeout');
+        expect(out.conclusion).toBeNull();
+        // Часы не ушли дальше таймаута больше чем на один интервал опроса.
+        expect(clock.t).toBeLessThanOrEqual(100 + 20);
+        // Число опросов конечно и соответствует бюджету таймаут/интервал.
+        expect(ghJsonFn.mock.calls.length).toBeLessThanOrEqual(Math.ceil(100 / 20) + 1);
+    });
+
+    // --- Критерий: «сетевой сбой при чтении статуса не стопит петлю без исчерпания ретраев» ---
+
+    it('gh падает на КАЖДОМ опросе → ожидание не роняет петлю, исчерпывает опросы до таймаута, возвращает not-found', () => {
+        const { clock, nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn(() => {
+            throw new Error('gh: connection reset by peer');
+        });
+        // Не бросает наружу — устойчивый сетевой сбой не стопит петлю.
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 100, pollIntervalMs: 20 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        // Итог не выдан за зелёный: run так и не увидели → not-found (стоп+пуш за #165).
+        expect(out.status).toBe('not-found');
+        expect(out.conclusion).toBeNull();
+        // Ретраи исчерпаны по таймауту, а не по первому сбою: опросов больше одного.
+        expect(ghJsonFn.mock.calls.length).toBeGreaterThan(1);
+        expect(clock.t).toBeLessThanOrEqual(100 + 20);
+    });
+
+    it('сетевой сбой сменяется живым ответом до таймаута → красный итог не выдуман, дожидаемся реального', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const responses = [
+            () => {
+                throw new Error('gh: timeout');
+            },
+            () => {
+                throw new Error('gh: timeout');
+            },
+            () => [
+                {
+                    databaseId: 3,
+                    headSha: SHA,
+                    status: 'completed',
+                    conclusion: 'success',
+                    url: 'u',
+                },
+            ],
+        ];
+        let i = 0;
+        const ghJsonFn = vi.fn(() => responses[Math.min(i++, responses.length - 1)]());
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000, pollIntervalMs: 20 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        expect(out).toMatchObject({ status: 'completed', conclusion: 'success' });
+        expect(ghJsonFn).toHaveBeenCalledTimes(3);
+    });
+
+    it('checkProdHealth: устойчивый сетевой сбой прода → исчерпывает ретраи, {ok:false}, не бросает и не зависает', () => {
+        const { clock, nowFn, sleepFn } = mkClock();
+        const execFn = vi.fn(() => {
+            throw new Error('curl: (28) connection timed out');
+        });
+        const out = checkProdHealth(
+            {
+                deployCheck: {
+                    healthUrl: 'https://pixeltanks.ru',
+                    healthRetries: 3,
+                    healthRetryDelayMs: 5,
+                },
+            },
+            { execFn, sleepFn, logFn: () => {}, nowFn },
+        );
+        // Не бросает наружу и честно сообщает «не здоров» (status 0 = сеть недоступна).
+        expect(out).toEqual({ ok: false, status: 0, url: 'https://pixeltanks.ru' });
+        // Ретраи исчерпаны полностью — ровно healthRetries попыток.
+        expect(execFn).toHaveBeenCalledTimes(3);
+        // Паузы между попытками выдержаны (не busy-loop), но конечны.
+        expect(clock.t).toBeGreaterThan(0);
+    });
+
+    // --- Критерий: «побочки — через DI, RALPH_NO_SIDE_EFFECTS=1, guardSideEffect» ---
+
+    it('пост-мердж проверка ничего не мутирует даже при МНОГИХ опросах — только read-глагол gh run list', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const ghJsonFn = vi.fn((_cmd: string) => [
+            { databaseId: 4, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' },
+        ]);
+        waitForDeployRun(SHA, cfg({ timeoutMs: 100, pollIntervalMs: 20 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        // На каждом из нескольких опросов — только чтение, ни одной мутации.
+        expect(ghJsonFn.mock.calls.length).toBeGreaterThan(1);
+        for (const [cmd] of ghJsonFn.mock.calls) {
+            expect(cmd).toMatch(/^gh run list\b/);
+            expect(cmd).not.toMatch(/\b(cancel|rerun|delete|merge|close|revert|edit)\b/);
+        }
+    });
+});
+
+// #366: сценарий waitForDeployRun, которого нет ни в фабричных тестах выше, ни в блоке
+// #167: переход in_progress → queued → completed с КРАСНЫМ conclusion. Важен именно
+// красный итог после поллинга: «досмотрели до конца» и «увидели зелёный» — разные вещи.
+describe('waitForDeployRun — поллинг до завершения с красным итогом (#163)', () => {
+    const SHA = 'a'.repeat(40);
+    const mkClock = mkDeployClock;
+    const cfg = deployCfg;
+
+    it('поллит, пока workflow in_progress, и возвращает итог, когда завершится', () => {
+        const { nowFn, sleepFn } = mkClock();
+        const responses = [
+            [{ databaseId: 7, headSha: SHA, status: 'in_progress', conclusion: null, url: 'u' }],
+            [{ databaseId: 7, headSha: SHA, status: 'queued', conclusion: null, url: 'u' }],
+            [{ databaseId: 7, headSha: SHA, status: 'completed', conclusion: 'failure', url: 'u' }],
+        ];
+        let i = 0;
+        const ghJsonFn = vi.fn(() => responses[Math.min(i++, responses.length - 1)]);
+        const out = waitForDeployRun(SHA, cfg({ timeoutMs: 1000 }), {
+            ghJsonFn,
+            sleepFn,
+            logFn: () => {},
+            nowFn,
+        });
+        expect(out.status).toBe('completed');
+        expect(out.conclusion).toBe('failure');
+        expect(ghJsonFn).toHaveBeenCalledTimes(3);
     });
 });

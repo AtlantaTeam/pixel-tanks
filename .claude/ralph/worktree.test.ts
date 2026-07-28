@@ -1,12 +1,16 @@
-// Юнит-тесты модуля worktree-менеджмента (#360). Здесь проверяется САМА фабрика
+// Юнит-тесты модуля worktree-менеджмента (#360). Основная часть проверяет САМУ фабрику
 // createWorktreeManager — что она собирает рабочие функции из синтетического env,
-// независимо от ralph.js. Проход «через ре-экспорт ralph.js» уже покрыт ralph.test.js
-// и lock-scenarios.test.js (те же функции, но с боевым контекстом раннера); тут —
-// контракт extraction'а: модуль самодостаточен и переносим (цель фазы 2), а не
-// «работает только пока его зовёт ralph.js».
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// независимо от ralph.js: контракт extraction'а — модуль самодостаточен и переносим
+// (цель фазы 2), а не «работает только пока его зовёт ralph.js». Проход «через
+// ре-экспорт ralph.js» с боевым контекстом раннера — в lock-scenarios.test.js и в
+// блоках в конце этого файла, перенесённых из ralph.test.js при её разнесении по
+// модульным тест-файлам (#366).
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WorktreeEnv } from './worktree.ts';
 import { createWorktreeManager } from './worktree.ts';
+// @ts-expect-error — JS-entry раннера без деклараций типов; блоки в конце файла
+// перенесены из ralph.test.js как есть и ходят через его ре-экспорт (#366).
+import ralph from './ralph.js';
 
 // Синтетический env: заглушки-коллабораторы, которые молча падают, если функция под
 // тестом их зовёт без явного override, — чтобы забытый override был громкой ошибкой
@@ -35,8 +39,8 @@ function makeEnv(over: Partial<WorktreeEnv> = {}): WorktreeEnv {
 describe('resolveWorktreePath — путь выделенного worktree раннера (#76)', () => {
     // RALPH_WORKTREE_PATH — боевая env-переменная раннера (на VDS в ralph.env). Если она
     // задана в окружении прогона, override перебил бы дефолт/относительный резолв и тесты
-    // ниже легли бы ложно. Чистим перед каждым (как родитель в ralph.test.js); тесты,
-    // которые сами её ставят, восстанавливают своё значение в finally.
+    // ниже легли бы ложно. Чистим перед каждым; тесты, которые сами её ставят,
+    // восстанавливают своё значение в finally.
     beforeEach(() => {
         delete process.env.RALPH_WORKTREE_PATH;
     });
@@ -357,5 +361,47 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
             }),
         ).toThrow(/npm ci/);
         expect(markFn).not.toHaveBeenCalled();
+    });
+});
+
+// #366: сценарии, которых нет в фабричных тестах выше. Ходят через ре-экспорт ralph.js —
+// то есть с боевыми дефолтами резолва пути (env + repoRoot) и боевой раскладкой
+// коллабораторов ensureRunnerWorktree.
+describe('resolveWorktreePath — относительный путь из env (#SiaUv)', () => {
+    const savedEnv = { ...process.env };
+    afterEach(() => {
+        process.env = { ...savedEnv };
+    });
+
+    const { resolveWorktreePath } = ralph;
+
+    it('ОТНОСИТЕЛЬНЫЙ RALPH_WORKTREE_PATH резолвится от repoRoot, а не от cwd вызова', () => {
+        process.env.RALPH_WORKTREE_PATH = '../custom';
+        expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/root/custom');
+    });
+});
+
+describe('ensureRunnerWorktree — сбой чтения списка worktree (#76)', () => {
+    // repoRoot фиксируем явно: guard «путь не внутри репозитория» (#SiaUT) иначе бы
+    // сверялся с process.cwd() и зависел бы от того, откуда запущен vitest.
+    const REPO = '/root/pixel-tanks';
+    const WT = '/root/pixel-tanks-ralph';
+    const { ensureRunnerWorktree } = ralph;
+
+    it('git worktree list упал (не git-репо/gh недоступен) → fail-closed, add не вызывается', () => {
+        const shFn = vi.fn().mockImplementation(() => {
+            throw new Error('not a git repository');
+        });
+        // Параметр msg объявлен явно (а не проигнорирован) — иначе mock.calls в .ts-файле
+        // типизируется пустым кортежем и ассерт на текст сообщения не скомпилируется.
+        const failFn = vi.fn((_msg: string) => {
+            throw new Error('stopped');
+        });
+        const addFn = vi.fn();
+        expect(() => ensureRunnerWorktree(WT, { shFn, failFn, addFn, repoRoot: REPO })).toThrow(
+            'stopped',
+        );
+        expect(failFn.mock.calls[0][0]).toMatch(/git worktree list/);
+        expect(addFn).not.toHaveBeenCalled();
     });
 });

@@ -1,17 +1,23 @@
-// Юнит-тесты модуля ревью (#363). Здесь проверяется САМА фабрика createReviewModule — что
-// она собирает рабочие функции из синтетического env, независимо от ralph.js. Проход
-// «через ре-экспорт ralph.js» уже покрыт ralph.test.js (те же функции, но с боевым
-// контекстом раннера); тут — контракт extraction'а: модуль самодостаточен и переносим
+// Юнит-тесты модуля ревью (#363). Основная часть проверяет САМУ фабрику
+// createReviewModule — что она собирает рабочие функции из синтетического env,
+// независимо от ralph.js: контракт extraction'а — модуль самодостаточен и переносим
 // (цель фазы 3), а не «работает только пока его зовёт ralph.js».
+//
+// В конце файла — блоки, перенесённые из ralph.test.js при её разнесении по модулям
+// (#366): они ходят через боевую поверхность ralph.js и покрывают сценарии, которых
+// фабричные тесты не видят.
 //
 // matchRiskPaths/phaseDiffFiles инжектируются заглушками: pickReviewModel лишь ДЕЛЕГИРУЕТ
 // им сопоставление зоны риска и сбор диффа, поэтому здесь тестируется его проводка
 // (эскалирует, когда matchRiskPaths вернул хит), а не сам глоб-матчинг — тот покрыт своим
-// describe в ralph.test.js.
+// describe в orchestrator.test.js.
 import { describe, it, expect, vi } from 'vitest';
 import type { ReviewEnv } from './review.ts';
 import { createReviewModule } from './review.ts';
 import { shq } from './ralph-util.ts';
+// @ts-expect-error — JS-entry раннера без деклараций типов; блоки в конце файла
+// перенесены из ralph.test.js как есть и ходят через его ре-экспорт (#366).
+import ralph from './ralph.js';
 
 // Синтетический env: побочки (ghJson/sh/shArgv/fail) по умолчанию громко падают, если
 // функция под тестом дёрнет их без явного override — забытый override становится ошибкой
@@ -360,5 +366,110 @@ describe('recordReviewFindings — best-effort вызов журнала нах�
         );
         expect(() => recordReviewFindings({ milestone: 'M1' }, 42)).not.toThrow();
         expect(logs.join('\n')).toMatch(/не смог записать находки/i);
+    });
+});
+
+describe('pickReviewModel — отсутствующая escalated-модель не отменяет ревью (#132)', () => {
+    const { pickReviewModel } = ralph;
+
+    // undefined из эскалации runLoop трактует как «ревью за супервизором» и
+    // пропускает ревью ЦЕЛИКОМ — fail-open ровно на самых опасных фазах.
+    it('зона риска при незаданном review.escalated — ревью дефолтной моделью, не undefined', () => {
+        const logs: string[] = [];
+        const model = pickReviewModel('Фаза X', 'feature/x', {
+            cfg: {
+                review: {
+                    default: 'claude-opus-4-8',
+                    escalateOnPaths: ['.github/workflows/**'],
+                },
+            },
+            logFn: (m: string) => logs.push(m),
+            shFn: () => '.github/workflows/deploy.yml',
+            runArgvFn: () => '',
+            ghJsonFn: () => [],
+        });
+        expect(model).toBe('claude-opus-4-8');
+        expect(model).toBeDefined();
+        expect(logs.join('\n')).toMatch(/escalated/i);
+    });
+
+    it('escalateOn строкой вместо массива не роняет выбор модели', () => {
+        expect(() =>
+            pickReviewModel('Фаза X', 'feature/x', {
+                cfg: {
+                    review: {
+                        default: 'claude-opus-4-8',
+                        escalated: 'claude-fable-5',
+                        escalateOn: 'complexity:expert',
+                    },
+                },
+                logFn: () => {},
+                shFn: () => '',
+                runArgvFn: () => '',
+                ghJsonFn: () => [],
+            }),
+        ).not.toThrow();
+    });
+});
+
+// #366: сценарии pickReviewModel, которые фабричные тесты выше не видят, — устойчивость
+// к сбою сбора диффа и anti-injection по имени ветки (инвариант C3/7). Перенесены из
+// ralph.test.js вместе со своими фикстурами (CFG/deps), ходят через ре-экспорт ralph.js.
+describe('pickReviewModel — сбой диффа и небезопасная ветка (#130)', () => {
+    const { pickReviewModel } = ralph;
+
+    const CFG = {
+        review: {
+            default: 'claude-opus-4-8',
+            escalated: 'claude-fable-5',
+            escalateOn: [],
+            escalateOnPaths: ['.github/workflows/**', '.claude/ralph/**'],
+        },
+    };
+    const deps = (over = {}) => ({
+        cfg: CFG,
+        logFn: () => {},
+        ghJsonFn: () => [],
+        shFn: () => '',
+        // #252: fetch внутри phaseDiffFiles теперь мутация через argv.
+        runArgvFn: () => '',
+        ...over,
+    });
+
+    it('сбой git при получении диффа не роняет сдачу — ревью дефолтной моделью', () => {
+        const logs: string[] = [];
+        const model = pickReviewModel(
+            'Фаза X',
+            'feature/x',
+            deps({
+                logFn: (m: string) => logs.push(m),
+                shFn: () => {
+                    throw new Error('fatal: no upstream');
+                },
+            }),
+        );
+        expect(model).toBe('claude-opus-4-8');
+        expect(logs.join('\n')).toMatch(/дифф/i);
+    });
+
+    it('имя ветки со спецсимволами шелла не уходит в git — эскалации нет, есть предупреждение', () => {
+        // sh() исполняет СТРОКУ через шелл, поэтому ветка из конфига обязана быть
+        // провалидирована до подстановки: `$(...)`/`;` внутри имени иначе исполнятся.
+        const shCmds: string[] = [];
+        const logs: string[] = [];
+        const model = pickReviewModel(
+            'Фаза X',
+            'feature/x;$(id)',
+            deps({
+                logFn: (m: string) => logs.push(m),
+                shFn: (cmd: string) => {
+                    shCmds.push(cmd);
+                    return '.github/workflows/deploy.yml';
+                },
+            }),
+        );
+        expect(shCmds).toEqual([]);
+        expect(model).toBe('claude-opus-4-8');
+        expect(logs.join('\n')).toMatch(/ветк/i);
     });
 });

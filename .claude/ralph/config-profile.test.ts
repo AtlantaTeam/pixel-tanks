@@ -1,0 +1,415 @@
+// Юнит-тесты слоя конфига/профилей (config-profile.ts) — через боевую поверхность
+// ralph.js, как их видят вызывающие: deepMerge (наследование common → профиль,
+// с барьером против prototype pollution), findForbiddenKey (скан всей глубины),
+// resolveProfile (сборка итогового конфига + fail-closed валидация) и
+// parseProfileFlag (выбор профиля из argv). Отдельно закреплён боевой
+// ralph.config.json: playground/prod обязаны собираться и различаться по риску.
+import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+// @ts-expect-error — JS-entry раннера без деклараций типов: блоки перенесены из
+// ralph.test.js как есть и ходят через его ре-экспорт (#366).
+import ralph from './ralph.js';
+
+const { deepMerge, resolveProfile, parseProfileFlag } = ralph;
+
+describe('deepMerge — наследование общих полей профилем (#71)', () => {
+    it('вложенные объекты сливаются вглубь: профиль правит одну метку, блок сохраняется', () => {
+        const merged = deepMerge(
+            { modelRouting: { default: 'opus', labels: { low: 'haiku', high: 'opus' } } },
+            { modelRouting: { labels: { high: 'fable' } } },
+        );
+        expect(merged.modelRouting).toEqual({
+            default: 'opus',
+            labels: { low: 'haiku', high: 'fable' },
+        });
+    });
+
+    it('массивы заменяются целиком, а не дописываются', () => {
+        expect(deepMerge({ phases: ['A', 'B'] }, { phases: ['C'] }).phases).toEqual(['C']);
+    });
+
+    it('скаляр профиля перебивает объект общего блока (и наоборот) без слияния', () => {
+        expect(deepMerge({ x: { a: 1 } }, { x: 0 }).x).toBe(0);
+        expect(deepMerge({ x: 0 }, { x: { a: 1 } }).x).toEqual({ a: 1 });
+    });
+
+    it('не мутирует исходные объекты — общий блок переиспользуется между профилями', () => {
+        const common = { a: { x: 1 } };
+        deepMerge(common, { a: { x: 2 } });
+        expect(common.a.x).toBe(1);
+    });
+
+    it('null в профиле затирает значение (осознанное «выключить», не пропуск)', () => {
+        expect(
+            deepMerge({ tunnelCheck: { enabled: true } }, { tunnelCheck: null }).tunnelCheck,
+        ).toBe(null);
+    });
+
+    // Опасные ключи — стоп, а не тихая нейтрализация: легитимных полей с такими
+    // именами нет, значит это опечатка или чужая рука в конфиге раннера.
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+
+    it('ключ __proto__ в профиле → стоп (иначе подменил бы прототип результата)', () => {
+        // JSON.parse — как реальный конфиг: "__proto__" становится собственным ключом
+        const evil = JSON.parse('{"__proto__": {"active": false}, "maxTurns": 5}');
+        expect(() => deepMerge({ maxTurns: 200 }, evil, boom)).toThrow(/запрещённый ключ/);
+    });
+
+    it('опасный ключ на вложенном уровне тоже роняет мердж, с путём в сообщении', () => {
+        const nested = JSON.parse('{"modelRouting": {"__proto__": {"evil": 1}}}');
+        expect(() => deepMerge({ modelRouting: { labels: {} } }, nested, boom)).toThrow(
+            /common\.modelRouting/,
+        );
+    });
+
+    it('опасный ключ в общем блоке ловится так же, как в профиле', () => {
+        const base = JSON.parse('{"constructor": {"x": 1}}');
+        expect(() => deepMerge(base, {}, boom)).toThrow(/constructor/);
+    });
+
+    it('мягкий failFn (монитор) обрывает мердж, а не собирает полуфабрикат', () => {
+        const evil = JSON.parse('{"a": {"__proto__": {"x": 1}}, "b": 2}');
+        expect(deepMerge({ a: { y: 1 } }, evil, () => null)).toBe(null);
+    });
+});
+
+describe('findForbiddenKey — скан всей глубины конфига (ревью PR #127)', () => {
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+
+    // Объект по ключу, которого нет в common, копируется присваиванием без рекурсии
+    // мерджа — раньше его нутро не проверялось вовсе.
+    it('опасный ключ в блоке, которого нет в common → стоп с полным путём', () => {
+        const evil = JSON.parse('{"newBlock": {"deep": {"__proto__": {"x": 1}}}}');
+        expect(() => deepMerge({ a: 1 }, evil, boom)).toThrow(/common\.newBlock\.deep/);
+    });
+
+    it('опасный ключ в глубине общего блока тоже ловится', () => {
+        const base = JSON.parse('{"a": {"b": {"constructor": 1}}}');
+        expect(() => deepMerge(base, {}, boom)).toThrow(/constructor/);
+    });
+
+    it('массивы не считаются объектами для скана — легитимный конфиг проходит', () => {
+        expect(() => deepMerge({ phases: [{ milestone: 'M' }] }, {}, boom)).not.toThrow();
+    });
+});
+
+describe('resolveProfile — сборка итогового конфига из common + профиль (#71)', () => {
+    const raw = () => ({
+        defaultProfile: 'playground',
+        common: {
+            maxIterations: 10,
+            blockedHealAttempts: 3,
+            modelRouting: { labels: { high: 'opus' } },
+            phases: [{ milestone: 'M', branch: 'b' }],
+        },
+        profiles: { playground: {}, prod: { blockedHealAttempts: 0 } },
+    });
+    // failFn инжектируется — отказы проверяем как исключение, без process.exit.
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+
+    it('без имени берётся defaultProfile, общие поля наследуются', () => {
+        const cfg = resolveProfile(raw(), null, boom);
+        expect(cfg.profileName).toBe('playground');
+        expect(cfg.maxIterations).toBe(10);
+        expect(cfg.phases).toEqual([{ milestone: 'M', branch: 'b' }]);
+    });
+
+    it('пустой профиль playground не меняет общие значения (регресса нет)', () => {
+        const cfg = resolveProfile(raw(), 'playground', boom);
+        expect(cfg.blockedHealAttempts).toBe(3);
+    });
+
+    it('профиль переопределяет только свою дельту, остальное — из common', () => {
+        const cfg = resolveProfile(raw(), 'prod', boom);
+        expect(cfg.blockedHealAttempts).toBe(0);
+        expect(cfg.maxIterations).toBe(10);
+        expect(cfg.modelRouting.labels.high).toBe('opus');
+    });
+
+    it('явное имя важнее defaultProfile', () => {
+        expect(resolveProfile(raw(), 'prod', boom).profileName).toBe('prod');
+    });
+
+    it('резолв одного профиля не протекает в соседний (общий блок не мутируется)', () => {
+        const cfgRaw = raw();
+        resolveProfile(cfgRaw, 'prod', boom);
+        expect(resolveProfile(cfgRaw, 'playground', boom).blockedHealAttempts).toBe(3);
+    });
+
+    // Fail-closed: раннер с bypassPermissions не имеет права угадывать режим.
+    it('неизвестный профиль → стоп, в сообщении перечислены доступные', () => {
+        expect(() => resolveProfile(raw(), 'staging', boom)).toThrow(/staging.*playground, prod/s);
+    });
+
+    it('нет defaultProfile и профиль не задан → стоп, а не молчаливый playground', () => {
+        const cfg: Record<string, unknown> = raw();
+        delete cfg.defaultProfile;
+        expect(() => resolveProfile(cfg, null, boom)).toThrow(/defaultProfile/);
+    });
+
+    it('нет блока common → стоп', () => {
+        expect(() => resolveProfile({ profiles: { p: {} } }, 'p', boom)).toThrow(/common/);
+    });
+
+    it('нет блока profiles → стоп', () => {
+        expect(() => resolveProfile({ common: {} }, null, boom)).toThrow(/profiles/);
+    });
+
+    it('profiles пуст → стоп', () => {
+        expect(() => resolveProfile({ common: {}, profiles: {} }, null, boom)).toThrow(/пуст/);
+    });
+
+    it('профиль не объект (массив/строка) → стоп', () => {
+        expect(() => resolveProfile({ common: {}, profiles: { p: [] } }, 'p', boom)).toThrow(
+            /не объект/,
+        );
+    });
+
+    it('конфиг не объект (null/массив) → стоп', () => {
+        expect(() => resolveProfile(null, null, boom)).toThrow(/объект/);
+        expect(() => resolveProfile([], null, boom)).toThrow(/объект/);
+    });
+
+    it('имя профиля из прототипа (constructor/toString) не считается существующим', () => {
+        expect(() => resolveProfile(raw(), 'constructor', boom)).toThrow(/Неизвестный профиль/);
+    });
+
+    // Контракт монитора: failFn может НЕ бросать, а вернуть sentinel (null) —
+    // resolveProfile обязан вернуть его сразу, не продолжая работу с кривым raw.
+    it('с невыбрасывающим failFn возвращает его результат, а не падает дальше по коду', () => {
+        const softFail = () => null;
+        expect(resolveProfile(null, null, softFail)).toBe(null);
+        expect(resolveProfile({ common: {} }, null, softFail)).toBe(null);
+        expect(resolveProfile(raw(), 'staging', softFail)).toBe(null);
+    });
+
+    // #249: haltBeforeDeploy валидируется на старте (fail-closed, инвариант №1) —
+    // строгое `!== false` в цикле молча приняло бы строку/число/null за halt.
+    it('#249 haltBeforeDeploy в prod: boolean проходит (true/false), undefined = дефолт', () => {
+        const withHalt = (v: unknown) => ({
+            defaultProfile: 'prod',
+            common: { phases: [{ milestone: 'M', branch: 'b' }] },
+            profiles: { prod: v === undefined ? {} : { haltBeforeDeploy: v } },
+        });
+        expect(resolveProfile(withHalt(undefined), 'prod', boom).haltBeforeDeploy).toBeUndefined();
+        expect(resolveProfile(withHalt(true), 'prod', boom).haltBeforeDeploy).toBe(true);
+        expect(resolveProfile(withHalt(false), 'prod', boom).haltBeforeDeploy).toBe(false);
+    });
+
+    it('#249 haltBeforeDeploy не-boolean → стоп (строка "false"/число/null не считаются)', () => {
+        const withHalt = (v: unknown) => ({
+            defaultProfile: 'prod',
+            common: { phases: [{ milestone: 'M', branch: 'b' }] },
+            profiles: { prod: { haltBeforeDeploy: v } },
+        });
+        expect(() => resolveProfile(withHalt('false'), 'prod', boom)).toThrow(/ожидался boolean/);
+        expect(() => resolveProfile(withHalt(0), 'prod', boom)).toThrow(/ожидался boolean/);
+        expect(() => resolveProfile(withHalt(null), 'prod', boom)).toThrow(/ожидался boolean/);
+    });
+
+    it('#249 haltBeforeDeploy вне профиля prod → стоп (флаг там молча ничего не значит)', () => {
+        const cfg = {
+            defaultProfile: 'playground',
+            common: { phases: [{ milestone: 'M', branch: 'b' }] },
+            profiles: { playground: { haltBeforeDeploy: false }, prod: {} },
+        };
+        expect(() => resolveProfile(cfg, 'playground', boom)).toThrow(/только в профиле "prod"/);
+    });
+
+    it('#249 haltBeforeDeploy в common ловится на не-prod профиле (протекает из общего блока)', () => {
+        const cfg = {
+            defaultProfile: 'playground',
+            common: { phases: [{ milestone: 'M', branch: 'b' }], haltBeforeDeploy: true },
+            profiles: { playground: {}, prod: {} },
+        };
+        expect(() => resolveProfile(cfg, 'playground', boom)).toThrow(/только в профиле "prod"/);
+        // Тот же флаг в common на prod — валиден.
+        expect(resolveProfile(cfg, 'prod', boom).haltBeforeDeploy).toBe(true);
+    });
+});
+
+describe('parseProfileFlag — выбор профиля из argv (#72)', () => {
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+
+    it('--profile <name> отдаёт имя', () => {
+        expect(parseProfileFlag(['--profile', 'prod'], boom)).toBe('prod');
+    });
+
+    it('--profile=<name> отдаёт имя', () => {
+        expect(parseProfileFlag(['--profile=prod'], boom)).toBe('prod');
+    });
+
+    it('без флага → null: решать будет defaultProfile конфига', () => {
+        expect(parseProfileFlag(['--once', '--dry-run'], boom)).toBe(null);
+    });
+
+    it('имя не путается с соседними флагами', () => {
+        expect(parseProfileFlag(['--dry-run', '--profile', 'prod', '--once'], boom)).toBe('prod');
+    });
+
+    // Оборванная команда не должна тихо уводить в playground.
+    it('--profile без имени → стоп', () => {
+        expect(() => parseProfileFlag(['--profile'], boom)).toThrow(/требует имя/);
+    });
+
+    it('--profile перед другим флагом → стоп, а не имя "--once"', () => {
+        expect(() => parseProfileFlag(['--profile', '--once'], boom)).toThrow(/требует имя/);
+    });
+
+    it('--profile= с пустым значением → стоп', () => {
+        expect(() => parseProfileFlag(['--profile='], boom)).toThrow(/без имени/);
+    });
+
+    // Дубль с разными именами: «кто победит» нельзя решать порядком веток парсера —
+    // это тихий уход не в тот профиль. Только стоп.
+    it('дубль флага в разных формах → стоп', () => {
+        expect(() => parseProfileFlag(['--profile', 'prod', '--profile=playground'], boom)).toThrow(
+            /указан 2 раза/,
+        );
+    });
+
+    it('дубль флага в одной форме → стоп, даже с одинаковым именем', () => {
+        expect(() => parseProfileFlag(['--profile', 'prod', '--profile', 'prod'], boom)).toThrow(
+            /указан 2 раза/,
+        );
+    });
+
+    it('связка с резолвом: флаг важнее defaultProfile', () => {
+        const raw = {
+            defaultProfile: 'playground',
+            common: { maxTurns: 200 },
+            profiles: { playground: {}, prod: { maxTurns: 50 } },
+        };
+        const name = parseProfileFlag(['--profile', 'prod'], boom);
+        const cfg = resolveProfile(raw, name, boom);
+        expect(cfg.profileName).toBe('prod');
+        expect(cfg.maxTurns).toBe(50);
+    });
+
+    it('связка с резолвом: неизвестное имя из флага → стоп', () => {
+        const raw = { defaultProfile: 'playground', common: {}, profiles: { playground: {} } };
+        const name = parseProfileFlag(['--profile', 'staging'], boom);
+        expect(() => resolveProfile(raw, name, boom)).toThrow(/Неизвестный профиль/);
+    });
+});
+
+describe('боевой ralph.config.json — профили playground/prod (#73)', () => {
+    // Читаем НАСТОЯЩИЙ конфиг, а не синтетику: смысл issue в том, что прод-значения
+    // лежат в файле, а не в дефолтах кода, и что playground не съехал.
+    const raw = JSON.parse(fs.readFileSync('.claude/ralph/ralph.config.json', 'utf-8'));
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+
+    it('без флага резолвится playground', () => {
+        expect(resolveProfile(raw, null, boom).profileName).toBe('playground');
+    });
+
+    it('playground сохраняет прежнее поведение: крутилки равны дефолтам кода', () => {
+        const cfg = resolveProfile(raw, 'playground', boom);
+        // Ровно те значения, что стояли в `cfg.X ?? N` до переезда в конфиг.
+        expect(cfg.blockedHealAttempts).toBe(3);
+        expect(cfg.gateHealAttempts).toBe(2);
+        expect(cfg.apiLimitMaxWaits).toBe(3);
+    });
+
+    // #216: prod больше НЕ выключает разбор blocked (был blockedHealAttempts: 0) —
+    // блокер ревью, устранённый правками, снимается сам после чистого повторного ревью,
+    // а не ждёт человека. Значение наследуется из common (дефолт 3), профиль его не дублирует.
+    it('prod: blocked-разбор включён — наследует лимит из common (дефолт 3)', () => {
+        expect(resolveProfile(raw, 'prod', boom).blockedHealAttempts).toBe(3);
+    });
+
+    it('prod наследует всё остальное из common, не дублируя его', () => {
+        const pg = resolveProfile(raw, 'playground', boom);
+        const prod = resolveProfile(raw, 'prod', boom);
+        expect(prod.modelRouting).toEqual(pg.modelRouting);
+        expect(prod.review).toEqual(pg.review);
+        expect(prod.phases).toEqual(pg.phases);
+        expect(prod.authorAllowlist).toEqual(pg.authorAllowlist);
+        expect(prod.blockedHealAttempts).toEqual(pg.blockedHealAttempts);
+        // #256: единственная дельта prod теперь — haltBeforeDeploy: false (непрерывный
+        // prod, #249). Остальное отличие прода от playground по-прежнему держит код по
+        // profileName (толстый гейт, TG, пост-мердж проверка деплоя), а не конфиг.
+        expect(Object.keys(raw.profiles.prod)).toEqual(['haltBeforeDeploy']);
+        // Пиннится не только НАЛИЧИЕ ключа, но и ЗНАЧЕНИЕ: тихий флип на true (правкой
+        // руками или будущим мерджем) вернул бы prod в halt-режим — единственный смысл
+        // фазы #256 — и старт-валидация true пропустит как валидный конфиг. Резолв-
+        // ассерты краснеют на таком регрессе.
+        expect(resolveProfile(raw, 'prod', boom).haltBeforeDeploy).toBe(false);
+        // playground остаётся на дефолте (halt) — флаг не протёк через common.
+        expect(resolveProfile(raw, 'playground', boom).haltBeforeDeploy).toBeUndefined();
+    });
+});
+
+// #221: конфиг, где review.fallback слабее review.default, отвергается на старте
+// (assertKnownReviewModels вызывается внутри resolveProfile) — это и есть требуемый
+// issue негативный тест «fail-closed, а не тихая деградация в момент overload».
+describe('resolveProfile — review.fallback не может быть слабее review.default (#221)', () => {
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+    const rawWithReview = (review: unknown) => ({
+        defaultProfile: 'playground',
+        common: {
+            phases: [{ milestone: 'M', branch: 'b' }],
+            review,
+        },
+        profiles: { playground: {} },
+    });
+
+    it('review.fallback слабее review.default → стоп с внятным сообщением', () => {
+        expect(() =>
+            resolveProfile(
+                rawWithReview({
+                    default: 'claude-opus-4-8',
+                    fallback: 'claude-haiku-4-5-20251001',
+                }),
+                null,
+                boom,
+            ),
+        ).toThrow(/review\.fallback.*claude-haiku-4-5-20251001.*слабее.*review\.default/s);
+    });
+
+    it('review.fallback той же силы, что review.default — конфиг принимается', () => {
+        const cfg = resolveProfile(
+            rawWithReview({ default: 'claude-opus-4-8', fallback: 'claude-opus-4-8' }),
+            null,
+            boom,
+        );
+        expect(cfg.review.fallback).toBe('claude-opus-4-8');
+    });
+
+    it('review.fallback сильнее review.default — конфиг принимается', () => {
+        const cfg = resolveProfile(
+            rawWithReview({ default: 'claude-opus-4-8', fallback: 'claude-fable-5' }),
+            null,
+            boom,
+        );
+        expect(cfg.review.fallback).toBe('claude-fable-5');
+    });
+
+    it('незнакомая модель в review.fallback → стоп (тот же барьер #223, что для default/escalated)', () => {
+        expect(() =>
+            resolveProfile(
+                rawWithReview({ default: 'claude-opus-4-8', fallback: 'claude-mystery' }),
+                null,
+                boom,
+            ),
+        ).toThrow(/review\.fallback.*claude-mystery.*REVIEW_MODEL_STRENGTH/s);
+    });
+
+    it('review.fallback не задан — конфиг проходит валидацию как раньше', () => {
+        expect(() =>
+            resolveProfile(rawWithReview({ default: 'claude-opus-4-8' }), null, boom),
+        ).not.toThrow();
+    });
+});
