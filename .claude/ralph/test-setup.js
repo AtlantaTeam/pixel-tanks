@@ -8,24 +8,16 @@
 // обёрнута в try/catch, чтобы одна git-ошибка не роняла ночной прогон, — значит,
 // одного исключения для покраснения теста мало, и журнал сверяем отдельно.
 //
-// telegram-notifier.js (#85) — самостоятельный модуль (не require('./ralph.js'),
-// иначе циклическая зависимость с #86), поэтому у него свой журнал попыток. Сверяем
-// оба в одном afterEach, а не заводим второй setupFiles — предохранитель один на
-// весь проект "ralph".
-//
-// security-audit.mjs (#239) — третий журнал: savePushedKeys пишет дедуп-стор пуша
-// вне git, забытый мок в тесте молча создал бы/перезаписал реальный файл на диске.
+// telegram-notifier.js (#85) и security-audit.mjs (#239) — самостоятельные потребители
+// (telegram-notifier.js не может require('./ralph.js') — циклическая зависимость с #86).
+// #145: журнал попыток теперь один — side-effect-guard.ts, общий на все три модуля.
+// sideEffectAttempts здесь берём напрямую из него (а не из ralph.js/telegram-notifier.js/
+// security-audit.mjs — они лишь ре-экспортируют тот же массив), сверяем одним afterEach.
 import { afterEach, expect } from 'vitest';
-import ralph from './ralph.js';
-import telegramNotifier from './telegram-notifier.js';
-import { sideEffectAttempts as securityAuditSideEffectAttempts } from '../../scripts/security-audit.mjs';
+import { sideEffectAttempts } from './side-effect-guard.ts';
 
 afterEach(() => {
-    const attempts = [
-        ...ralph.sideEffectAttempts.splice(0),
-        ...telegramNotifier.sideEffectAttempts.splice(0),
-        ...securityAuditSideEffectAttempts.splice(0),
-    ];
+    const attempts = sideEffectAttempts.splice(0);
     expect(
         attempts,
         `Тест дошёл до боевой побочки: ${attempts.join(' | ')}\n` +

@@ -143,22 +143,23 @@ let config;
 // снова невидима. Поэтому каждая попытка ещё и записывается в журнал, а общий
 // afterEach в тестах валит тест, если журнал не пуст. Журнал наполняется ТОЛЬКО под
 // предохранителем: в бою массив всегда пуст и не растёт.
-const NO_SIDE_EFFECTS = process.env.RALPH_NO_SIDE_EFFECTS === '1';
-const sideEffectAttempts = [];
+//
+// #145: сам предохранитель вынесен в side-effect-guard.ts — общий модуль на ralph.js,
+// telegram-notifier.js и security-audit.mjs (раньше три независимые копии с тремя
+// журналами, сверяемыми вручную в test-setup.js). hint параметризован там же —
+// подсказка про DI-коллабораторов ralph.js остаётся здесь, рядом с местом использования.
+const {
+    NO_SIDE_EFFECTS,
+    sideEffectAttempts,
+    guardSideEffect: sharedGuardSideEffect,
+} = require('./side-effect-guard.ts');
 
-// Один вход для всех боевых дефолтов, а не только для sh(). Ревью PR #141 показало,
-// что защищать один канал мало: тест, забывший подменить, например, saveStateFn или
-// installFn, перезаписал бы ralph.state.json (фазовый указатель ЖИВОГО прогона — гейт
-// гоняет npm run test прямо в worktree раннера) или запустил бы настоящий npm ci.
-// Последствия хуже мусора в логе, а предохранитель их не видел.
+const SIDE_EFFECT_HINT =
+    'Тест дошёл до боевого дефолта. Подмени зависимость в deps теста ' +
+    '(shFn, saveStateFn, installFn, spawnFn, …).';
+
 function guardSideEffect(what) {
-    if (!NO_SIDE_EFFECTS) return;
-    sideEffectAttempts.push(what);
-    throw new Error(
-        `${what} — побочка в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1).\n` +
-            `Тест дошёл до боевого дефолта. Подмени зависимость в deps теста ` +
-            `(shFn, saveStateFn, installFn, spawnFn, …).`,
-    );
+    sharedGuardSideEffect(what, SIDE_EFFECT_HINT);
 }
 
 function log(msg) {

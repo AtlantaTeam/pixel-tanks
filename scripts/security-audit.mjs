@@ -11,6 +11,7 @@ import {
     evaluateBaselineChange,
     mergePushedKeys,
 } from './baseline-policy.mjs';
+import * as sideEffectGuard from '../.claude/ralph/side-effect-guard.ts';
 
 // telegram-notifier.js — CommonJS-модуль раннера (#85), самостоятельный: он не тянет
 // ralph.js и уже носит собственный guardSideEffect, поэтому в тестах побочка не улетит.
@@ -236,14 +237,14 @@ const PUSH_DEDUP_PATH = path.join(
     '.claude/ralph/security-baseline-push.json',
 );
 
-const NO_SIDE_EFFECTS = process.env.RALPH_NO_SIDE_EFFECTS === '1';
-export const sideEffectAttempts = [];
+// #145: предохранитель (NO_SIDE_EFFECTS/sideEffectAttempts/guardSideEffect) вынесен в
+// side-effect-guard.ts — общий модуль на ralph.js/telegram-notifier.js/security-audit.mjs,
+// журнал один на все три, test-setup.js сверяет его одним afterEach вместо трёх.
+export const { sideEffectAttempts } = sideEffectGuard;
 function guardSideEffect(what) {
-    if (!NO_SIDE_EFFECTS) return;
-    sideEffectAttempts.push(what);
-    throw new Error(
-        `${what} — побочка в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1).\n` +
-            `Тест дошёл до боевого дефолта — подмени writeFn у savePushedKeys.`,
+    sideEffectGuard.guardSideEffect(
+        what,
+        'Тест дошёл до боевого дефолта — подмени writeFn у savePushedKeys.',
     );
 }
 
