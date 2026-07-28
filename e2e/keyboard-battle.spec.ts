@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { weaponCount } from './helpers';
 
 // Полный бой одной клавиатурой: стрелки настраивают угол/мощность, Enter/Space
 // стреляют — без единого клика мыши бой с ботом идёт от старта до конца. Плюс
@@ -10,11 +11,6 @@ const SEED = 42;
 
 const PLAYER_WEAPONS = 5; // WEAPONS_AMOUNT=10, поровну между танками
 const PIXELS_PER_POWER_UNIT = 8; // DRAG_AIM_DEFAULTS.pixelsPerPowerUnit
-
-/** Сколько снарядов осталось у игрока — по числу опций в селекте оружия HUD. */
-async function weaponCount(page: Page): Promise<number> {
-    return page.locator('#weapon-select option').count();
-}
 
 /**
  * Повторяет `action` (нажатие клавиши / клик / тач-жест), пока у игрока не станет

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { weaponCount } from './helpers';
 
 // Полный бой пальцем на телефоне: жест «оттяни и отпусти» (слингшот) ведёт бой
 // с ботом от старта до конца на 375px в портрете и ландшафте (touch-эмуляция).
@@ -76,11 +77,6 @@ async function dispatchDragGesture(page: Page, shot: TShot): Promise<void> {
         },
         { shot, pixelsPerPowerUnit: PIXELS_PER_POWER_UNIT },
     );
-}
-
-/** Сколько снарядов осталось у игрока — по числу опций в селекте оружия HUD. */
-async function weaponCount(page: Page): Promise<number> {
-    return page.locator('#weapon-select option').count();
 }
 
 /**

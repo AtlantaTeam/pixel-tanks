@@ -16,4 +16,26 @@ describe('GamePage', () => {
 
         expect(main).toHaveClass('safe-area-inset');
     });
+
+    it('includes a link to design-system page', () => {
+        const { getByRole } = render(<GamePage seed="42" />);
+        const link = getByRole('link', { name: /витрина|showcase/i });
+
+        expect(link).toBeInTheDocument();
+        expect(link).toHaveAttribute('href', '/design-system');
+    });
+
+    it('design-system link has accessible aria-label', () => {
+        const { getByRole } = render(<GamePage seed="42" />);
+        const link = getByRole('link', { name: /витрина|showcase/i });
+
+        expect(link).toHaveAccessibleName(/витрина|showcase/i);
+    });
+
+    it('design-system link has minimum touch target size', () => {
+        const { getByRole } = render(<GamePage seed="42" />);
+        const link = getByRole('link', { name: /витрина|showcase/i });
+
+        expect(link).toHaveClass('min-h-11', 'min-w-11');
+    });
 });

@@ -4,6 +4,23 @@ import { Button, Dialog, Icon, Panel, Select } from '@/shared/ui';
 const VARIANTS: TButtonVariant[] = ['primary', 'accent', 'ghost', 'danger'];
 const SIZES: TButtonSize[] = ['sm', 'md', 'icon'];
 
+/** Один набор опций на все срезы Select ниже — чтобы правки не расходились по копиям.
+ *  Инлайним `DIFFICULTY_OPTIONS.map(...)` прямо в каждый `<Select>`: `Select` парсит
+ *  `children` через `Children.forEach` и НЕ исполняет компоненты — обёртка-компонент
+ *  вокруг `<option>` схлопнулась бы в одну пустую фантомную опцию (мишень визрегрессии
+ *  показывала бы сломанные срезы). Массив `Children.forEach` разворачивает корректно. */
+const DIFFICULTY_OPTIONS = [
+    { value: 'easy', label: 'Лёгкая' },
+    { value: 'normal', label: 'Обычная' },
+    { value: 'hard', label: 'Тяжёлая' },
+];
+
+const difficultyOptions = DIFFICULTY_OPTIONS.map((o) => (
+    <option key={o.value} value={o.value}>
+        {o.label}
+    </option>
+));
+
 function buttonLabel(variant: TButtonVariant, size: TButtonSize) {
     // Витрина — статичный превью-срез, иконка чисто декоративна (кнопка ничего не
     // делает): без aria-label, чтобы не озвучивать техническое имя варианта.
@@ -51,12 +68,65 @@ export function BaseComponentsSection() {
 
                 <div className="flex flex-col gap-3">
                     <h3 className="font-ui text-hud text-text uppercase">Select</h3>
-                    <Panel className="flex items-center justify-center">
-                        <Select id="ds-difficulty" label="Сложность">
-                            <option value="easy">Лёгкая</option>
-                            <option value="normal">Обычная</option>
-                            <option value="hard">Тяжёлая</option>
-                        </Select>
+                    <Panel className="grid grid-cols-2 place-items-center gap-4 py-8">
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">закрыт</span>
+                            <Select id="ds-select-closed" label="Сложность">
+                                {difficultyOptions}
+                            </Select>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">выбран</span>
+                            <Select id="ds-select-selected" label="Сложность" value="hard">
+                                {difficultyOptions}
+                            </Select>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">focus</span>
+                            <Select
+                                id="ds-select-focus"
+                                label="Сложность"
+                                className="shadow-[var(--ring-focus)]"
+                            >
+                                {difficultyOptions}
+                            </Select>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                placeholder
+                            </span>
+                            <Select
+                                id="ds-select-placeholder"
+                                label="Сложность"
+                                value=""
+                                placeholder="Выберите…"
+                            >
+                                {difficultyOptions}
+                            </Select>
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">disabled</span>
+                            <Select id="ds-select-disabled" label="Сложность" disabled>
+                                <option value="easy">Лёгкая</option>
+                            </Select>
+                        </div>
+                        <div className="col-span-2 flex flex-col items-center gap-2">
+                            <span className="font-ui text-caption text-text-muted">
+                                открыт (одна опция disabled)
+                            </span>
+                            <Select
+                                id="ds-select-open"
+                                label="Сложность"
+                                value="normal"
+                                defaultOpen
+                            >
+                                <option value="easy">Лёгкая</option>
+                                <option value="normal">Обычная</option>
+                                <option value="hard" disabled>
+                                    Тяжёлая
+                                </option>
+                            </Select>
+                        </div>
                     </Panel>
                 </div>
             </section>

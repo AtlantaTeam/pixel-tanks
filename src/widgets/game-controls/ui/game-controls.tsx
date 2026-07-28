@@ -77,8 +77,8 @@ export function GameControls() {
                         label="Оружие"
                         className="w-36"
                         value={selectedWeapon?.id ?? ''}
-                        onChange={(e) => {
-                            const next = weapons.find((w) => w.id === Number(e.target.value));
+                        onValueChange={(value) => {
+                            const next = weapons.find((w) => w.id === Number(value));
                             if (next) selectWeapon(next);
                         }}
                     >

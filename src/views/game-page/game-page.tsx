@@ -1,5 +1,7 @@
+import Link from 'next/link';
 import { GameCanvas } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
+import { Icon } from '@/shared/ui';
 import { GameControls } from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
 
@@ -18,6 +20,20 @@ export function GamePage({ seed }: TGamePageProps = {}) {
                 <GameControls />
             </div>
             <GameOverDialog seed={seed} />
+            <Link
+                href="/design-system"
+                aria-label="Витрина компонентов"
+                style={{
+                    top: 'max(1rem, env(safe-area-inset-top))',
+                    right: 'max(1rem, env(safe-area-inset-right))',
+                }}
+                className="fixed z-40 flex min-h-11 min-w-11 items-center justify-center rounded-sm bg-panel-raised text-text-muted opacity-50 transition-all hover:text-primary hover:opacity-100 focus-visible:ring-2 focus-visible:ring-primary"
+            >
+                {/* `eye` (смотреть/витрина), а не `settings`-шестерёнка: ссылка ведёт в
+                    каталог-витрину компонентов, а не в настройки — иконка не должна врать
+                    зрячему (для SR она декоративна, `aria-hidden`; смысл несёт aria-label). */}
+                <Icon name="eye" size={16} />
+            </Link>
         </main>
     );
 }
