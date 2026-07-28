@@ -3407,7 +3407,7 @@ describe('ветковая хореография в worktree раннера (#7
     describe('gateChecksFor — состав гейта по профилю (#80)', () => {
         const names = (checks) => checks.map(([name]) => name);
 
-        it('playground = ровно базовые 9 чеков, без толстых; канарейка, храповик, only- и skip-детект первыми (#190, #156, #160, #161)', () => {
+        it('playground = ровно базовые 10 чеков, без толстых; канарейка, храповик, only- и skip-детект первыми (#190, #156, #160, #161)', () => {
             expect(names(gateChecksFor('playground'))).toEqual([
                 'security:canary',
                 'test:ratchet',
@@ -3417,6 +3417,7 @@ describe('ветковая хореография в worktree раннера (#7
                 'lint',
                 'lint:fsd',
                 'typecheck',
+                'typecheck:ralph',
                 'test',
             ]);
         });
@@ -3431,6 +3432,7 @@ describe('ветковая хореография в worktree раннера (#7
                 'lint',
                 'lint:fsd',
                 'typecheck',
+                'typecheck:ralph',
                 'security',
                 'coverage',
                 'e2e',

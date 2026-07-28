@@ -9,6 +9,7 @@
         "lint": "eslint",
         "lint:fsd": "steiger ./src",
         "typecheck": "tsc --noEmit",
+        "typecheck:ralph": "tsc -p .claude/ralph/tsconfig.json",
         "test": "vitest run",
         "test:watch": "vitest",
         "test:coverage": "vitest run --coverage",

@@ -39,18 +39,12 @@ const TELEGRAM_MAX_TEXT = 4096;
 const TELEGRAM_DEFAULT_ATTEMPTS = 3;
 const TELEGRAM_RETRY_BASE_MS = 5000;
 
-// Синхронный sleep для паузы между попытками — тот же Atomics.wait-приём, что и
-// `sleep()` в ralph.js (event loop свободен, раннер синхронный). Не заведён под
-// guardSideEffect: как и sleepFn в ralph.js, это DI ради скорости тестов, а не
+// #232: sleep/positiveIntOrDefault вынесены в общий util-модуль без побочек (копия
+// жила и здесь, и в ralph.js — правка в одной не доезжала до другой, ревью PR #231);
+// не требует ralph.js, тот же приём, что и side-effect-guard.ts ниже. Не заведены под
+// guardSideEffect: как и sleepFn в ralph.js, sleep — DI ради скорости тестов, а не
 // граница anti-RCE — забытый мок делает тест медленным, а не боевым.
-function realSleep(ms) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-function positiveIntOrDefault(value, fallback) {
-    const n = Number(value);
-    return Number.isInteger(n) && n > 0 ? n : fallback;
-}
+const { positiveIntOrDefault, sleep: realSleep } = require('./ralph-util.ts');
 
 // Тот же предохранитель, что #138 в ralph.js (см. комментарий там), но модуль
 // самостоятельный: require('./ralph.js') отсюда создал бы циклическую зависимость,

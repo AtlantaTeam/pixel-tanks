@@ -178,24 +178,14 @@ function fail(msg) {
 
 // #133: sh() исполняет СТРОКУ через /bin/sh, поэтому любое значение, попадающее
 // в неё, обязано быть заквотировано (14 мест; ещё две — remoteHead и
-// --match-head-commit — идут голыми, но там строгий SHA40_RE-фильтр). Раньше значения подставлялись голыми либо в
-// двойных кавычках — а внутри двойных кавычек `$( )`, обратные кавычки и `\`
-// раскрываются шеллом. Источники не гипотетические: milestone и branch приходят
-// из конфига, номера PR и заголовки — из ответов gh, то есть с публичного
-// GitHub, где заголовок issue пишет кто угодно.
+// --match-head-commit — идут голыми, но там строгий SHA40_RE-фильтр). Стратегически
+// правильнее вообще уйти от шелла на execFileSync с argv — так уже сделано для claude
+// (см. buildClaudeArgs, #66/#67). Здесь это отдельный крупный рефактор всех вызовов
+// sh(); квотирование закрывает дыру сейчас.
 //
-// Одинарные кавычки в POSIX sh не интерпретируют ВООБЩЕ ничего, поэтому
-// достаточно закрыть-экранировать-открыть на каждой одинарной кавычке внутри
-// значения: don't → 'don'\''t'. Это снимает весь класс разом, в отличие от
-// валидации по списку разрешённых символов — та отсекала бы легальные milestone
-// с кириллицей, скобками и «·».
-//
-// Стратегически правильнее вообще уйти от шелла на execFileSync с argv — так уже
-// сделано для claude (см. buildClaudeArgs, #66/#67). Здесь это отдельный крупный
-// рефактор всех вызовов sh(); квотирование закрывает дыру сейчас.
-function shq(value) {
-    return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
+// #232: сама shq (и positiveIntOrDefault/sleep ниже) вынесена в общий util-модуль —
+// копия жила и здесь, и в telegram-notifier.js, правка в одной не доезжала до другой.
+const { shq, positiveIntOrDefault, sleep } = require('./ralph-util.ts');
 
 // env (#189): по умолчанию дочерний процесс наследует полный env раннера — так гонятся
 // git-команды хореографии гейта, которым нужны секреты (GH_TOKEN для fetch). Но команды
@@ -238,12 +228,6 @@ function shArgv(file, args, { env } = {}) {
         ...EXEC_OPTS,
         ...(env ? { env } : {}),
     }).trim();
-}
-
-// Синхронный sleep: раннер — синхронный скрипт (execSync-хореография), event loop
-// свободен, поэтому Atomics.wait — корректный способ подождать без busy-loop.
-function sleep(ms) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 // M3: все ЧТЕНИЯ через gh — с ретраями и backoff. AFK-прогон идёт часами без
@@ -860,13 +844,6 @@ function syncDepsIfLockChanged({
 // числом, а тихое приведение прячет опечатку вместо того, чтобы её проявить.
 function minutesOrDefault(value, dflt) {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : dflt;
-}
-
-// То же для бюджета ходов, но строго > 0: maxTurns: 0 — не «без ограничения», а
-// сессия, которой не дали сделать ни хода. Прежний `||` молча ронял такое
-// значение на кодерские 200, что противоречило аргументации PR про `??`.
-function positiveIntOrDefault(value, dflt) {
-    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : dflt;
 }
 
 function apiLimitWaitMs(output, cfg) {
@@ -1679,6 +1656,12 @@ const BASE_GATE_CHECKS = [
     ['lint', 'npm run lint'],
     ['lint:fsd', 'npm run lint:fsd'],
     ['typecheck', 'npm run typecheck'],
+    // #232: ядро раннера (.claude/ralph/*.ts) — отдельный tsconfig под нативный type
+    // stripping Node 24 (erasable-only синтаксис, nodenext-резолюция), а не под Next.js
+    // (dom-либы, bundler-резолюция) из корневого typecheck — тот .ts-файлы ядра формально
+    // видит по глобу **/*.ts, но не той конфигурацией, которой их реально исполняет
+    // Node. Секундный (маленький модуль) — стоит рядом с typecheck, до дорогого test.
+    ['typecheck:ralph', 'npm run typecheck:ralph'],
     ['test', 'npm run test --silent'],
 ];
 
