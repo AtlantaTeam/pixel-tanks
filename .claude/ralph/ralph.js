@@ -607,214 +607,33 @@ function ensureTunnel(
     return false;
 }
 
-// ── Изоляция раннера в git worktree (#76) ────────────────────────────────────
-// Раннер работает в ВЫДЕЛЕННОМ дереве, соседнем с рабочим деревом человека: без
-// этого git-хореография гейта (checkout ветки фазы/main) утаскивала бы за собой
-// и дерево человека — правки/коммиты вручную посреди AFK-прогона рвали ensureClean
-// (см. docs/ralph-prod-mode/prd.md, feedback-ralph-shared-worktree). Путь — СОСЕД
-// репозитория (`../pixel-tanks-ralph`), не поддиректория внутри него: иначе он
-// либо игнорится .gitignore-правилами родителя, либо норовит закоммититься как
-// вложенный git-репозиторий.
+// #360 (трек «Фреймворк ralph», фаза 2): изоляция раннера в выделенный git worktree
+// (#76) — резолв пути (сосед репозитория `../pixel-tanks-ralph`), парсинг `git worktree
+// list`, DRY-читаемость (#SiaT3), обновление на свежий origin/main (#252) и идемпотентное
+// создание/переиспользование дерева с `npm ci` — вынесены в worktree.ts. Фабрика
+// захватывает контекст ralph.js (sh/shArgv/shq/log/fail, санированный env для npm ci,
+// маркер lock-хэша из state-lock.ts) один раз; возвращённые функции сохраняют DI и
+// читаются здесь как const из деструктуризации — тесты (ralph.test.js,
+// lock-scenarios.test.js) зовут их через тот же ре-экспорт из module.exports, что раньше.
 const DEFAULT_WORKTREE_DIRNAME = 'pixel-tanks-ralph';
 
-// cfg.runnerWorktreePath (явный конфиг) важнее RALPH_WORKTREE_PATH (env) — молчаливая
-// перебивка явной настройки переменной окружения была бы тем же тихим сдвигом режима,
-// от которого fail-closed уже защищает профили (см. resolveProfile). Both отсутствуют →
-// дефолт-сосед. repoRoot — параметр (не process.cwd() внутри resolve), чтобы функция
-// оставалась чистой и тестируемой без реального cwd.
-function resolveWorktreePath(cfg = {}, repoRoot = process.cwd()) {
-    const override = cfg.runnerWorktreePath || process.env.RALPH_WORKTREE_PATH;
-    return override
-        ? path.resolve(repoRoot, override)
-        : path.resolve(repoRoot, '..', DEFAULT_WORKTREE_DIRNAME);
-}
-
-// `git worktree list --porcelain`: блоки разделены пустой строкой, первая строка
-// блока — "worktree <абсолютный путь>". Достаточно собрать все такие строки.
-function parseWorktreeList(raw) {
-    return raw
-        .split('\n')
-        .filter((l) => l.startsWith('worktree '))
-        .map((l) => l.slice('worktree '.length).trim());
-}
-
-// Дерево раннера УЖЕ поднято (зарегистрировано И папка на месте)? Для DRY: только тогда
-// dry-run переезжает читать state/лог оттуда — ничего не создавая и не чиня (#SiaT3).
-function runnerWorktreeReady(worktreePath, { shFn = sh, existsFn = fs.existsSync } = {}) {
-    let list = '';
-    try {
-        list = shFn('git worktree list --porcelain');
-    } catch {
-        return false;
-    }
-    return parseWorktreeList(list).includes(worktreePath) && existsFn(worktreePath);
-}
-
-/**
- * Гарантирует существование выделенного worktree раннера. Идемпотентно: уже
- * зарегистрированный worktree переиспользуется без побочных эффектов (M2-стиль —
- * не пересоздаём то, что уже есть).
- *
- * Fail-closed (тот же принцип, что во всём файле — C1/M2): если путь ЗАНЯТ чем-то,
- * что не зарегистрировано как worktree этого репозитория (чужая папка, мусор от
- * ручного `rm -rf` вместо `git worktree remove`), НЕ трогаем и НЕ угадываем —
- * останавливаем раннер, разбор за человеком.
- *
- * Свежий worktree создаётся `--detach` (детач, не ветка): на этом шаге раннер ещё
- * не знает, какая ветка фазы понадобится, а `main` почти всегда уже занят деревом
- * человека — git не даёт одну и ту же ветку в двух worktree одновременно.
- * Ветку фазы дальше занимают кодер-сессии в этом дереве; git-хелперы гейта (#77)
- * работают строго детачем (PR-голова / origin/main), именованных веток не занимая.
- *
- * `npm ci` сразу после создания: `git worktree add` линкует только git-отслеживаемые
- * файлы, `node_modules` (в .gitignore) в новом дереве нет — без установки первый же
- * чек гейта упал бы на отсутствующих зависимостях.
- */
-// Обновление УЖЕ существующего worktree на свежий origin/main.
-//
-// Без этого раннер подхватывал дерево в том состоянии, в каком его оставил прошлый
-// прогон, — на коммите, который мог устареть на несколько мерджей. Симптом
-// неочевидный: раннер работает и выглядит здоровым, но кодер-сессия внутри читает
-// СТАРЫЕ .claude/ralph/ralph.md и ralph.js, то есть работает по отменённым правилам.
-// Ручной шаг «обновить перед запуском» держать в голове нельзя — забудется молча.
-//
-// Грязное дерево не трогаем: там может лежать незакоммиченная работа прошлой
-// сессии, и checkout её снесёт. Молча пропустить тоже нельзя — пишем в лог, а
-// остановит цикл дальше ensureClean с внятным сообщением (fail-closed уже есть).
-// #252: сами мутации (fetch/checkout) — через argv (shArgv), не строкой через шелл;
-// чтение (git status --porcelain) остаётся на shFn — не мутация. worktreePath уходит
-// отдельным элементом argv в -C, а не в шелл-строку через shq.
-function refreshRunnerWorktree(worktreePath, { shFn = sh, runArgvFn = shArgv, logFn = log } = {}) {
-    let dirty = '';
-    try {
-        dirty = shFn(`git -C ${shq(worktreePath)} status --porcelain`);
-    } catch (e) {
-        logFn(`⚠ Не смог проверить чистоту worktree раннера: ${e.message} — обновление пропущено.`);
-        return false;
-    }
-    if (dirty) {
-        logFn(
-            `⚠ В worktree раннера есть незакоммиченные правки — на свежий origin/main НЕ перевожу ` +
-                `(снесло бы работу). Разбери руками: ${worktreePath}`,
-        );
-        return false;
-    }
-    try {
-        runArgvFn('git', ['-C', worktreePath, 'fetch', 'origin', 'main', '--quiet']);
-        runArgvFn('git', ['-C', worktreePath, 'checkout', '--detach', 'origin/main', '--quiet']);
-    } catch (e) {
-        logFn(`⚠ Не смог обновить worktree раннера на origin/main: ${e.message}`);
-        return false;
-    }
-    logFn('🌳 Worktree раннера переведён на свежий origin/main.');
-    return true;
-}
-
-function ensureRunnerWorktree(
-    worktreePath,
-    {
-        shFn = sh,
-        // #252: git fetch перед первым созданием worktree — мутация, через argv.
-        runArgvFn = shArgv,
-        logFn = log,
-        failFn = fail,
-        existsFn = fs.existsSync,
-        refreshFn = refreshRunnerWorktree,
-        // Путь в argv (execFile без shell), а не в шелл-строку: пробел/спецсимвол из
-        // cfg.runnerWorktreePath/RALPH_WORKTREE_PATH не разваливает команду на аргументы
-        // и не доезжает до шелла (та же гигиена, что spawnClaude/probeEgress) (#SiaUP).
-        addFn = (p) =>
-            execFileSync('git', ['worktree', 'add', '--detach', p, 'origin/main'], {
-                stdio: 'inherit',
-            }),
-        // env (#189): `npm ci` исполняет lifecycle-скрипты зависимостей — код с чужих
-        // слов. Санируем окружение по allowlist, чтобы скомпрометированная зависимость
-        // не нашла в env секретов петли (GH_TOKEN, CLAUDE_*, RALPH_TG_*). buildGateEnvFn —
-        // DI для тестов; в проде строит env из gate-env-allowlist.json. Санированный env
-        // приходит в installFn аргументом — так подмена видна в тестах через spy.
-        buildGateEnvFn = buildSanitizedGateEnv,
-        installFn = (dir, env) => execSync('npm ci', { cwd: dir, stdio: 'inherit', env }),
-        markFn = writeLockMarker,
-        repoRoot = process.cwd(),
-    } = {},
-) {
-    // #SiaUT: путь ВНУТРИ репозитория — ошибка (дефолт-сосед при запуске не из корня,
-    // или кривой cfg/env-override): вложенное дерево игнорится .gitignore родителя либо
-    // норовит закоммититься как sub-repo. Останавливаемся до любых git-побочек.
-    if (worktreePath === repoRoot || worktreePath.startsWith(repoRoot + path.sep)) {
-        return failFn(
-            `Путь worktree раннера ${worktreePath} — внутри репозитория ${repoRoot}. ` +
-                `Он должен быть СОСЕДОМ репозитория (дефолт ../pixel-tanks-ralph); ` +
-                `поправь runnerWorktreePath/RALPH_WORKTREE_PATH и перезапусти.`,
-        );
-    }
-    let list = '';
-    try {
-        list = shFn('git worktree list --porcelain');
-    } catch (e) {
-        return failFn(`git worktree list упал: ${e.message}`);
-    }
-    if (parseWorktreeList(list).includes(worktreePath)) {
-        // #SiaUG: обратный к следующей ветке случай — путь ЗАРЕГИСТРИРОВАН, но папки нет
-        // (итог ручного `rm -rf` без `git worktree remove`: list отдаёт путь до prune).
-        // Без этой проверки main() свалился бы на process.chdir с голым ENOENT. Здесь
-        // prune как раз к месту — он чистит регистрации без папок.
-        if (!existsFn(worktreePath)) {
-            return failFn(
-                `${worktreePath} зарегистрирован как git worktree, но папки на диске нет — ` +
-                    `похоже, ручной rm -rf вместо "git worktree remove". Почисти реестр: ` +
-                    `"git worktree prune" — и перезапусти.`,
-            );
-        }
-        logFn(`🌳 Worktree раннера уже поднят: ${worktreePath}`);
-        refreshFn(worktreePath, { shFn, runArgvFn, logFn });
-        return worktreePath;
-    }
-    if (existsFn(worktreePath)) {
-        // #SiaUJ: здесь папка ЕСТЬ, но не зарегистрирована — prune тут не поможет (он
-        // чистит противоположное). Fail-closed: путь занят посторонней папкой.
-        return failFn(
-            `${worktreePath} существует, но не зарегистрирован как git worktree этого репозитория — ` +
-                `путь занят посторонней папкой. Перенеси или удали её и перезапусти.`,
-        );
-    }
-    logFn(`🌳 Создаю выделенный worktree раннера: ${worktreePath}`);
-    // База — свежий origin/main, а не текущий HEAD дерева человека (#499): тот в момент
-    // первого запуска может стоять где угодно (древняя ветка, детач посреди ручной
-    // археологии), и npm ci ниже поставил бы зависимости случайного коммита.
-    try {
-        runArgvFn('git', ['fetch', 'origin', 'main']);
-    } catch (e) {
-        return failFn(`git fetch origin main перед созданием worktree упал: ${e.message}`);
-    }
-    try {
-        addFn(worktreePath);
-    } catch (e) {
-        return failFn(`git worktree add ${worktreePath} упал: ${e.message}`);
-    }
-    logFn('📦 npm ci в новом worktree (git worktree add не копирует node_modules)...');
-    // Санацию env считаем ОТДЕЛЬНЫМ шагом с собственной атрибуцией (как в checksGreen):
-    // битый allowlist → санировать нельзя → fail-closed, но это не «npm ci упал» (он даже
-    // не стартовал), а «санация не удалась» — иначе диагностика врёт про несуществующий сбой.
-    let gateEnv;
-    try {
-        gateEnv = buildGateEnvFn();
-    } catch (e) {
-        return failFn(
-            `санация env для npm ci не удалась (allowlist не читается): ${e.message} — ` +
-                `чеки без allowlist не запускаем (fail-closed)`,
-        );
-    }
-    try {
-        installFn(worktreePath, gateEnv);
-    } catch (e) {
-        return failFn(`npm ci в ${worktreePath} упал: ${e.message}`);
-    }
-    // Засеваем маркер хэша lock: первый гейт на PR-голове с тем же lock не будет
-    // гонять npm ci заново (#SiaUX). Best-effort — маркер лишь оптимизация.
-    markFn(worktreePath);
-    return worktreePath;
-}
+const { createWorktreeManager } = require('./worktree.ts');
+const {
+    resolveWorktreePath,
+    parseWorktreeList,
+    runnerWorktreeReady,
+    refreshRunnerWorktree,
+    ensureRunnerWorktree,
+} = createWorktreeManager({
+    defaultWorktreeDirname: DEFAULT_WORKTREE_DIRNAME,
+    sh,
+    shArgv,
+    shq,
+    log,
+    fail,
+    buildSanitizedGateEnv,
+    writeLockMarker,
+});
 
 // lockHash/writeLockMarker/syncDepsIfLockChanged (маркер .deps-lock.sha, #SiaUX) вынесены
 // в state-lock.ts (#359) — см. createStateLock выше. Читаются как const из деструктуризации.
@@ -4054,7 +3873,9 @@ if (require.main === module) main();
 // common + профиль. failFn инжектируется, поэтому отказы тестируются без process.exit.
 // resolveWorktreePath/parseWorktreeList/ensureRunnerWorktree (#76) — изоляция раннера
 // в выделенный git worktree, соседний с деревом человека; побочки (git/npm/fs/log/fail)
-// инжектируются, как и везде выше, поэтому тестируются без реального git/npm.
+// инжектируются, как и везде выше, поэтому тестируются без реального git/npm. Сами функции
+// вынесены в worktree.ts (#360) — см. createWorktreeManager выше, читаются как const из
+// деструктуризации.
 // parkOnOriginMain/checksGreen/tryMergePhase (#77) — ветковая хореография гейта в
 // worktree-модели: только detached checkout (PR-голова / origin/main), именованные
 // ветки не занимаются; побочки (sh/gh/log/park/sleep) и dry — инжектируемые.
