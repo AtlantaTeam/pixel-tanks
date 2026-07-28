@@ -1,47 +1,46 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('GamePage - Design System Link', () => {
-    const viewports = [
-        { name: 'mobile-portrait', width: 390, height: 667 },
-        { name: 'mobile-landscape', width: 667, height: 390 },
-        { name: 'tablet', width: 768, height: 1024 },
-        { name: 'desktop', width: 1280, height: 800 },
-    ];
+const VIEWPORTS = [
+    { name: 'mobile-portrait', width: 390, height: 667 },
+    { name: 'mobile-landscape', width: 667, height: 390 },
+    { name: 'tablet', width: 768, height: 1024 },
+    { name: 'desktop', width: 1280, height: 800 },
+];
 
-    viewports.forEach(({ name, width, height }) => {
-        test(`link is visible and accessible on ${name}`, async ({ browser }) => {
-            const context = await browser.newContext({
-                viewport: { width, height },
+for (const viewport of VIEWPORTS) {
+    test.describe(`GamePage — ссылка на витрину · ${viewport.name}`, () => {
+        test.use({ viewport: { width: viewport.width, height: viewport.height } });
+
+        test('видима, доступна и держит 44px touch target внутри вьюпорта', async ({ page }) => {
+            // Слушатель консоли — ДО навигации, иначе ошибки этапа загрузки теряются.
+            const consoleErrors: string[] = [];
+            page.on('console', (msg) => {
+                if (msg.type() === 'error') consoleErrors.push(msg.text());
             });
-            const page = await context.newPage();
+            page.on('pageerror', (err) => consoleErrors.push(String(err)));
 
-            await page.goto('http://localhost:3050/game');
+            // Относительный путь — подтягивает baseURL из playwright.config (в CI это порт 3051).
+            await page.goto('/game?seed=42');
 
-            // Screenshot
-            await page.screenshot({
-                path: `screenshots/game-page-${name}.png`,
-            });
-
-            // Check link exists
             const link = page.getByRole('link', { name: /витрина|showcase/i });
             await expect(link).toBeVisible();
-
-            // Check aria-label
             await expect(link).toHaveAccessibleName(/витрина|showcase/i);
 
-            // Check console for errors
-            const messages: string[] = [];
-            page.on('console', (msg) => {
-                if (msg.type() === 'error') {
-                    messages.push(msg.text());
-                }
-            });
+            // Геометрия: ссылка — валидный touch target (≥44px) и не уезжает за край вьюпорта.
+            const box = await link.boundingBox();
+            expect(box).not.toBeNull();
+            if (box) {
+                expect(box.width).toBeGreaterThanOrEqual(44);
+                expect(box.height).toBeGreaterThanOrEqual(44);
+                expect(box.x).toBeGreaterThanOrEqual(0);
+                expect(box.y).toBeGreaterThanOrEqual(0);
+                expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+                expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+            }
 
-            // Wait for any errors
-            await page.waitForTimeout(500);
-            expect(messages.length).toBe(0);
+            await page.screenshot({ path: `screenshots/game-page-${viewport.name}.png` });
 
-            await context.close();
+            expect(consoleErrors).toEqual([]);
         });
     });
-});
+}

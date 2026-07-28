@@ -44,9 +44,14 @@ type TSelectProps = {
     label?: string;
     value?: string | number;
     defaultValue?: string | number;
-    onChange?: (event: { target: { value: string } }) => void;
+    /** Не DOM-событие, а честная сигнатура «выбрано значение» — попап не эмитит нативный
+     *  `ChangeEvent` (нет `currentTarget` и прочих полей), поэтому имя без `on…Change`-обмана. */
+    onValueChange?: (value: string) => void;
     disabled?: boolean;
     className?: string;
+    /** Текст в триггере, когда значение пустое/несматченное (нет выбранной опции) —
+     *  у кастомного попапа нет нативного фолбэка `<select>` на первую опцию. */
+    placeholder?: string;
     children: ReactNode;
     /** Открыть попап сразу при монтировании — статичный срез «открытого» состояния
      *  для витрины `/design-system` (design-system-showcase.md), как `Dialog`
@@ -64,9 +69,10 @@ export function Select({
     label,
     value,
     defaultValue,
-    onChange,
+    onValueChange,
     disabled = false,
     className,
+    placeholder,
     children,
     defaultOpen = false,
 }: TSelectProps) {
@@ -98,12 +104,16 @@ export function Select({
 
     const commit = (nextValue: string) => {
         if (!isControlled) setInternalValue(nextValue);
-        onChange?.({ target: { value: nextValue } });
+        onValueChange?.(nextValue);
     };
 
     const openListbox = () => {
         if (disabled || options.length === 0) return;
-        setActiveIndex(selectedIndex >= 0 ? selectedIndex : options.findIndex((o) => !o.disabled));
+        const firstEnabled = options.findIndex((o) => !o.disabled);
+        // Все опции disabled и ничего не выбрано — открывать нечего (нет пункта, на
+        // который можно встать активным). Нативный `<select>` в этом кейсе тоже не даёт выбор.
+        if (selectedIndex < 0 && firstEnabled < 0) return;
+        setActiveIndex(selectedIndex >= 0 ? selectedIndex : firstEnabled);
         setOpen(true);
     };
 
@@ -144,6 +154,7 @@ export function Select({
     };
 
     const onTypeahead = (key: string) => {
+        if (options.length === 0) return;
         if (key.length !== 1 || !/[a-zа-яё0-9]/i.test(key)) return;
         clearTimeout(typeaheadTimerRef.current);
         typeaheadRef.current += key.toLowerCase();
@@ -220,7 +231,9 @@ export function Select({
                 closeListbox(true);
                 break;
             case 'Tab':
-                closeListbox(false);
+                // Вернуть фокус на триггер, а не бросать его на исчезающем `<ul>`:
+                // Tab тогда детерминированно уходит с триггера на следующий элемент.
+                closeListbox(true);
                 break;
             default:
                 onTypeahead(e.key);
@@ -242,7 +255,10 @@ export function Select({
                 aria-haspopup="listbox"
                 aria-expanded={open}
                 aria-controls={listboxId}
-                aria-labelledby={label ? labelId : undefined}
+                // APG select-only combobox: имя триггера = подпись + текущее значение.
+                // Кнопка ссылается сама на себя (`selectId`), чтобы её текст-значение попал
+                // в accessible name (иначе SR объявит только подпись, теряя выбор — регрессия).
+                aria-labelledby={[label ? labelId : null, selectId].filter(Boolean).join(' ')}
                 onClick={() => (open ? closeListbox(false) : openListbox())}
                 onKeyDown={onTriggerKeyDown}
                 className={clsx(
@@ -254,7 +270,9 @@ export function Select({
                     className,
                 )}
             >
-                <span className="truncate">{selectedOption?.label ?? ''}</span>
+                <span className={clsx('truncate', !selectedOption && 'text-text-dim')}>
+                    {selectedOption?.label ?? placeholder ?? ''}
+                </span>
                 <Icon
                     name="arrow-d"
                     size={12}

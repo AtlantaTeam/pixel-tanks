@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { GameCanvas } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
+import { Icon } from '@/shared/ui';
 import { GameControls } from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
 
@@ -26,9 +27,9 @@ export function GamePage({ seed }: TGamePageProps = {}) {
                     top: 'max(1rem, env(safe-area-inset-top))',
                     right: 'max(1rem, env(safe-area-inset-right))',
                 }}
-                className="fixed min-h-11 min-w-11 flex items-center justify-center rounded-sm bg-panel-raised text-text-muted opacity-50 transition-all hover:opacity-100 hover:text-primary focus-visible:ring-2 focus-visible:ring-primary"
+                className="fixed z-40 flex min-h-11 min-w-11 items-center justify-center rounded-sm bg-panel-raised text-text-muted opacity-50 transition-all hover:text-primary hover:opacity-100 focus-visible:ring-2 focus-visible:ring-primary"
             >
-                ◆
+                <Icon name="settings" size={16} />
             </Link>
         </main>
     );
