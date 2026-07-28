@@ -99,6 +99,30 @@
             {
                 "milestone": "Баг-фиксы ralph · Дизайн-система: Select и вход на витрину",
                 "branch": "feature/bugfix-ds-select-nav"
+            },
+            {
+                "milestone": "Фреймворк ralph · Фаза 1: TS-фундамент — util и side-effect-guard",
+                "branch": "feature/ralph-fw-1-ts-foundation"
+            },
+            {
+                "milestone": "Фреймворк ralph · Фаза 2: argv-изоляция и инфраструктурные модули",
+                "branch": "feature/ralph-fw-2-argv-infra"
+            },
+            {
+                "milestone": "Фреймворк ralph · Фаза 3: Процессные модули и entry",
+                "branch": "feature/ralph-fw-3-process-modules"
+            },
+            {
+                "milestone": "Фреймворк ralph · Фаза 4: Конфиг-граница",
+                "branch": "feature/ralph-fw-4-config-boundary"
+            },
+            {
+                "milestone": "Фреймворк ralph · Фаза 5: Интерфейсы адаптеров и переносимость",
+                "branch": "feature/ralph-fw-5-adapters"
+            },
+            {
+                "milestone": "Фреймворк ralph · Фаза 6: Агент-рантаймы Kimi и OpenAI + AGENTS.md",
+                "branch": "feature/ralph-fw-6-runtimes"
             }
         ]
     },
