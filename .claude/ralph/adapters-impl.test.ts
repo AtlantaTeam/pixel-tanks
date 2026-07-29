@@ -16,6 +16,7 @@ import {
     buildAdapters,
     createClaudeRuntime,
     createKimiRuntime,
+    createOpenAIRuntime,
     createGithubActionsDeploy,
     createGithubTaskSource,
     createNpmGate,
@@ -167,6 +168,13 @@ describe('мапперы гейта / нотификатора / рантайм�
     it('createKimiRuntime раскладывает run (#373 — тот же контракт, что Claude)', () => {
         const run = vi.fn(() => ({ code: 0, output: 'diff' }));
         const r: CoderRuntimeAdapter = createKimiRuntime({ run });
+        expect(r.run('промпт', { maxTurns: 10 })).toEqual({ code: 0, output: 'diff' });
+        expect(run).toHaveBeenCalledWith('промпт', { maxTurns: 10 });
+    });
+
+    it('createOpenAIRuntime раскладывает run (#374 — тот же контракт, что Claude)', () => {
+        const run = vi.fn(() => ({ code: 0, output: 'diff' }));
+        const r: CoderRuntimeAdapter = createOpenAIRuntime({ run });
         expect(r.run('промпт', { maxTurns: 10 })).toEqual({ code: 0, output: 'diff' });
         expect(run).toHaveBeenCalledWith('промпт', { maxTurns: 10 });
     });

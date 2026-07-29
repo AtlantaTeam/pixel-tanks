@@ -204,6 +204,20 @@ export function createKimiRuntime(fns: KimiRuntimeFns): CoderRuntimeAdapter {
     return { run: fns.run };
 }
 
+// Рантайм OpenAI (#374, фаза 6): ТОТ ЖЕ контракт CoderRuntimeAdapter, что и Claude/Kimi —
+// форма метода идентична (`run(prompt, options) → {code, output}`). OpenAI-специфика (ОТДЕЛЬНЫЙ
+// бинарь `codex exec`, обязательная модель OpenAI, песочница, ключ из env `OPENAI_API_KEY`)
+// живёт ВНУТРИ боевой функции `runOpenAIOnce` (orchestrator.ts), а не в маппере: маппер лишь
+// раскладывает её по имени метода интерфейса. Отдельный конструктор — ради читаемого ключа
+// `openai` в реестре и явности намерения; Claude-путь он не трогает (research: маршрут (б)).
+export type OpenAIRuntimeFns = {
+    run: (prompt: string, options: RunOptions) => RunResult;
+};
+
+export function createOpenAIRuntime(fns: OpenAIRuntimeFns): CoderRuntimeAdapter {
+    return { run: fns.run };
+}
+
 // ── Сборка набора швов по выбору из конфига (fail-closed) ─────────────────────
 // registries: реестр доступных реализаций по швам — { taskSource: { github: … }, … }.
 // Реализаций пока по одной на шов (текущий проект); фаза 6 добавит ключи в coderRuntime.

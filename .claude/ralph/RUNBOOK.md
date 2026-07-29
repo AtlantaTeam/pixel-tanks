@@ -120,6 +120,53 @@ node .claude/ralph/ralph.js --profile playground --once --dry-run   # прово
 распознает, обойдётся как с обычным ненулевым завершением. Для смоука приемлемо;
 провайдер-осведомлённый маркер — отдельная задача, не в скоупе фазы 6.
 
+## Альтернативный рантайм кодер-сессии — OpenAI (#374, фаза 6)
+
+В отличие от Kimi (тот же `claude` + endpoint Moonshot), рантайм **OpenAI** — **отдельный
+первопартийный бинарь `codex exec`** рядом с Claude, не поверх (research: маршрут (б) —
+API OpenAI не Anthropic-совместим, а транслирующий прокси нарушил бы fail-closed тихой
+мистрансляцией). Claude-путь при этом не меняется; contract шва тот же — `{code, output}`,
+вывод склеивается stdout+stderr и сканируется оркестратором.
+
+**Предпосылка:** установлен и авторизован **Codex CLI** (`codex`) — как `claude` для
+Claude-пути. Ключ — только из env.
+
+**Включить (в `ralph.config.json` профиля или `common`):**
+
+```jsonc
+"adapters": { "coderRuntime": "openai" },
+"openaiRuntime": {
+    "model": "gpt-5-codex"                     // ОБЯЗАТЕЛЕН — имя модели OpenAI
+    // "sandboxMode": "danger-full-access"     // дефолт; уже́: workspace-write / read-only
+    // "authTokenEnv": "OPENAI_API_KEY"         // дефолт; имя env-переменной с ключом
+}
+```
+
+**Ключ — только из env** (инвариант №11): в env-файле раннера
+`export OPENAI_API_KEY=sk-…`. В argv он не попадает (не светится в `/proc/*/cmdline`) —
+codex читает его из окружения процесса. Аппрув фиксирован `never` (non-interactive AFK:
+`codex exec` при запросе аппрува падает); песочница `danger-full-access` штатна, т.к.
+раннер крутится в изолированном worktree (инвариант №3), и нужна для git/npm.
+
+**Смоук вручную** (детерминированная проверка проводки — в `orchestrator.test.js`, блок
+«OpenAI-рантайм»; ниже — живой прогон против OpenAI):
+
+```bash
+export OPENAI_API_KEY=sk-…                        # ключ OpenAI
+# в конфиге: adapters.coderRuntime=openai, openaiRuntime.model=gpt-5-codex
+node .claude/ralph/ralph.js --profile playground --once --dry-run   # проводка без спавна
+# затем без --dry-run на тестовой фазе — codex-сессия стартует и выдаёт дифф
+```
+
+**Известные ограничения смоука** (research §«Границы»):
+
+- маркер API-лимита `API_LIMIT_RE` провайдер-специфичен (Claude) — при лимите OpenAI
+  даст другой текст, цикл ожидания его не распознает (как и для Kimi);
+- у Codex нет аналога `--fallback-model`/`--max-turns` (Claude-семантика) — в argv их не
+  тащим (research, риск #3); фолбэк-политика — honest-стоп/повторная итерация.
+
+Оба ограничения — вне скоупа фазы 6, кандидаты в отдельные задачи.
+
 ## Красный пост-мердж деплой (#163–#167, prod)
 
 С фазы 5 наблюдаемости раннер после мерджа prod-фазы **дожидается итога deploy-workflow**

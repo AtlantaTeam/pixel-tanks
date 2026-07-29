@@ -58,6 +58,7 @@ import {
     buildAdapters,
     createClaudeRuntime,
     createKimiRuntime,
+    createOpenAIRuntime,
     createGithubActionsDeploy,
     createGithubTaskSource,
     createNpmGate,
@@ -183,6 +184,28 @@ export type RalphConfig = {
         model?: string;
         authTokenEnv?: string;
         fallbackModel?: string | null;
+    };
+    // #374 (фаза 6): рантайм OpenAI — ОТДЕЛЬНЫЙ бинарь `codex exec` (research: маршрут (б),
+    // `docs/ralph-mini-framework/research.md`). API OpenAI не Anthropic-совместим нативно, а
+    // транслирующий прокси нарушил бы fail-closed (тихая мистрансляция) — поэтому не `claude`,
+    // а первопартийный Codex CLI рядом с Claude, не поверх. Читается ТОЛЬКО когда выбран
+    // `adapters.coderRuntime: 'openai'`; при дефолте (claude) ни на что не влияет.
+    //   model — имя модели OpenAI (напр. `gpt-5-codex`); ОБЯЗАТЕЛЕН (детерминизм и паритет с
+    //           Kimi: не полагаемся на скрытый дефолт codex — инвариант №1, без тихого выбора).
+    //   sandboxMode — режим песочницы codex (`-s`): `danger-full-access` (дефолт — раннер
+    //           крутится в изолированном worktree, инвариант №3, полный доступ там штатен и
+    //           нужен для git/npm) либо более узкий `workspace-write`/`read-only`.
+    //   authTokenEnv — имя env-переменной с ключом OpenAI (дефолт `OPENAI_API_KEY`). Сам КЛЮЧ —
+    //           только из env (инвариант №11), в конфиг/argv не попадает; codex читает его из
+    //           `OPENAI_API_KEY` окружения процесса.
+    //   Fallback-модели у Codex в argv НЕТ (research, риск #3: `--fallback-model` — Claude-флаг,
+    //           в чужой CLI не тащим); политика фолбэка — honest-стоп/повторная итерация.
+    //   Аппрув фиксирован `never` (non-interactive AFK: при запросе аппрува `codex exec` падает;
+    //           делать его конфигурируемым — footgun, способный подвесить петлю → не конфиг).
+    openaiRuntime?: {
+        model?: string;
+        sandboxMode?: string;
+        authTokenEnv?: string;
     };
     tunnelCheck?: {
         enabled?: boolean;
@@ -728,6 +751,141 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // процесса (buildKimiSpawnEnv), НЕ в argv (иначе виден в /proc/*/cmdline).
         const env = buildKimiSpawnEnv(baseUrl, token as string, process.env);
         return spawnClaude(cmdArgs, timeout, spawnFn, env);
+    }
+
+    // ── Рантайм OpenAI (#374, фаза 6) ────────────────────────────────────────
+    // OpenAI = ОТДЕЛЬНЫЙ первопартийный бинарь `codex exec` (research: маршрут (б)), а НЕ
+    // тот же `claude`: API OpenAI не Anthropic-совместим, транслирующий прокси нарушил бы
+    // fail-closed. Адаптер рядом с Claude, не поверх — Claude-путь (buildClaudeArgs/
+    // spawnClaude/runClaudeOnce) байт-в-байт не тронут. Общий контракт шва тот же:
+    // {code, output}; вывод склеивается stdout+stderr и сканируется на маркер API-лимита
+    // оркестратором (codex по умолчанию: прогресс в stderr, финал в stdout — оба текст).
+    const CODEX_DEFAULT_SANDBOX = 'danger-full-access';
+    const OPENAI_DEFAULT_TOKEN_ENV = 'OPENAI_API_KEY';
+    // Аппрув в non-interactive AFK фиксирован: `codex exec` при запросе аппрува немедленно
+    // падает, поэтому «не спрашивать» — единственный рабочий режим (research §permission).
+    const CODEX_APPROVAL = 'never';
+
+    // Построение argv для `codex exec` (чистая функция, как buildClaudeArgs). Промпт —
+    // ПОЗИЦИОННЫЙ, идёт последним ПОСЛЕ `--`: разделитель останавливает разбор флагов, так
+    // что промпт, начинающийся с `-`, не будет истолкован как флаг (тот же класс защиты, что
+    // ведущий `-` в SAFE_BRANCH_RE, инвариант №7). Аргументы — массивом (spawn без shell),
+    // спецсимволы промпта проходят дословно одним элементом (anti-RCE, как у Claude-пути).
+    // maxTurns у Codex аналога не имеет (это Claude-бюджет ходов) — в argv не тащим (research,
+    // риск #3: чужой CLI на неизвестный флаг упал бы). fallback-model — тоже Claude-only, нет.
+    function buildCodexArgs(
+        prompt: string,
+        { model, sandboxMode }: { model?: string; sandboxMode: string },
+    ): string[] {
+        const cmdArgs = ['exec', '-a', CODEX_APPROVAL, '-s', sandboxMode];
+        if (model) cmdArgs.push('-m', model);
+        cmdArgs.push('--', prompt);
+        return cmdArgs;
+    }
+
+    // Тонкая обвязка над spawnSync для бинаря `codex` — сиблинг spawnClaude, НЕ рефактор его
+    // тела: критерий #374 «Claude-путь не изменился» важнее устранения ~15 строк дублирования,
+    // поэтому Claude-spawn остаётся дословно прежним, а Codex-путь живёт рядом. spawnFn —
+    // инжектируемая точка вызова (как у spawnClaude); guardSideEffect делает забытый мок
+    // громким (иначе юнит запустил бы живой `codex`).
+    function spawnCodex(
+        cmdArgs: string[],
+        timeoutMs: number,
+        spawnFn: typeof spawnSync = spawnSync,
+        env?: NodeJS.ProcessEnv,
+    ): { code: number; output: string } {
+        if (spawnFn === spawnSync) guardSideEffect('spawnCodex(codex)');
+        const res = spawnFn('codex', cmdArgs, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: false,
+            timeout: timeoutMs,
+            encoding: 'utf-8',
+            maxBuffer: 64 * 1024 * 1024,
+            ...(env ? { env } : {}),
+        });
+        const output = `${res.stdout || ''}\n${res.stderr || ''}`;
+        if (res.stdout) process.stdout.write(res.stdout);
+        if (res.stderr) process.stderr.write(res.stderr);
+        if (res.signal) {
+            log(`⚠ codex убит по сигналу ${res.signal} (таймаут ${timeoutMs}мс?)`);
+            return { code: 1, output };
+        }
+        return { code: res.status ?? 1, output };
+    }
+
+    // Окружение для spawn OpenAI-сессии: базовое env раннера + ключ OpenAI под именем,
+    // которое ждёт codex — `OPENAI_API_KEY` (независимо от того, из какой env-переменной
+    // резолвился ключ через authTokenEnv). Секрет уходит ТОЛЬКО окружением, НЕ в argv
+    // (инвариант №11: иначе виден в /proc/*/cmdline). Чистая функция — тестируема без spawn.
+    function buildOpenAISpawnEnv(token: string, baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+        return {
+            ...baseEnv,
+            OPENAI_API_KEY: token,
+        };
+    }
+
+    // Резолв параметров OpenAI-рантайма из конфига + env (fail-closed, инвариант №1) —
+    // форма как resolveKimiRuntime, с ИНЖЕКТИРУЕМЫМ failFn (тест видит стоп через
+    // throwingFail, не через боевой process.exit). requireToken=false (dry-run): секрет при
+    // read-only не нужен, но кривой model ловится и в dry. Fallback у Codex нет (риск #3),
+    // поэтому в возврате его тоже нет — в отличие от Kimi.
+    function resolveOpenAIRuntime(
+        openaiCfg: RalphConfig['openaiRuntime'],
+        envSource: NodeJS.ProcessEnv,
+        failFn: (msg: string) => never,
+        opts: { requireToken?: boolean } = {},
+    ): { model: string; sandboxMode: string; token: string | null } {
+        const requireToken = opts.requireToken ?? true;
+        const openai = openaiCfg ?? {};
+        const model = openai.model;
+        if (typeof model !== 'string' || model.trim() === '') {
+            failFn(
+                "adapters.coderRuntime='openai' требует openaiRuntime.model — имя модели OpenAI " +
+                    "(напр. 'gpt-5-codex'). Полагаться на скрытый дефолт codex недопустимо " +
+                    '(тихий выбор модели, инвариант №1).',
+            );
+        }
+        const sandboxMode =
+            typeof openai.sandboxMode === 'string' && openai.sandboxMode.trim() !== ''
+                ? openai.sandboxMode
+                : CODEX_DEFAULT_SANDBOX;
+        const tokenEnv =
+            typeof openai.authTokenEnv === 'string' && openai.authTokenEnv.trim() !== ''
+                ? openai.authTokenEnv
+                : OPENAI_DEFAULT_TOKEN_ENV;
+        const token = envSource[tokenEnv] || null;
+        if (requireToken && !token) {
+            failFn(
+                `adapters.coderRuntime='openai' требует ключ OpenAI в env ${tokenEnv} — ` +
+                    'секреты только из env (инвариант №11), не из конфига/argv.',
+            );
+        }
+        return { model: model as string, sandboxMode, token };
+    }
+
+    // Одна OpenAI-сессия. Форма и роль как у runClaudeOnce/runKimiOnce: {code, output}, DRY
+    // возвращает рано, timeout тот же. spawnFn — инжектируемая точка для тестов без живого
+    // процесса. Модель — из openaiRuntime.model (НЕ из opts.model: до #376 modelRouting отдаёт
+    // claude-имена — их codex не поймёт). maxTurns у Codex аналога не имеет — не прокидываем.
+    function runOpenAIOnce(
+        prompt: string,
+        _opts: ClaudeOpts,
+        spawnFn: typeof spawnSync = spawnSync,
+    ): { code: number; output: string } {
+        const { model, sandboxMode, token } = resolveOpenAIRuntime(
+            config.openaiRuntime,
+            process.env,
+            fail,
+            { requireToken: !DRY },
+        );
+        const cmdArgs = buildCodexArgs(prompt, { model, sandboxMode });
+        log(`▶ openai (codex exec) "${prompt.slice(0, 80)}…" -m ${model} -s ${sandboxMode}`);
+        if (DRY) return { code: 0, output: '' };
+        const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
+        // token гарантированно не-null при !DRY (requireToken выше). Секрет — только в env
+        // процесса (buildOpenAISpawnEnv), НЕ в argv (иначе виден в /proc/*/cmdline).
+        const env = buildOpenAISpawnEnv(token as string, process.env);
+        return spawnCodex(cmdArgs, timeout, spawnFn, env);
     }
 
     // ── Issues ───────────────────────────────────────────────────────────────
@@ -1443,6 +1601,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // runKimiOnce). Ключ выбирается конфигом (`adapters.coderRuntime: 'kimi'`);
             // дефолт остаётся `claude` (ADAPTER_DEFAULTS) — Claude-путь не меняется.
             kimi: createKimiRuntime({ run: runKimiOnce }),
+            // #374 (фаза 6): OpenAI через ОТДЕЛЬНЫЙ `codex exec` (не поверх claude). Ключ
+            // выбирается конфигом (`adapters.coderRuntime: 'openai'`); дефолт остаётся
+            // `claude` (ADAPTER_DEFAULTS) — Claude-путь не меняется.
+            openai: createOpenAIRuntime({ run: runOpenAIOnce }),
         },
     };
 
@@ -3252,6 +3414,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
         runKimiOnce,
         buildKimiSpawnEnv,
         resolveKimiRuntime,
+        // #374 (фаза 6): рантайм OpenAI (отдельный `codex exec`). Экспорт — для смоук-теста
+        // рантайма и юнитов чистых хелперов (argv/env/резолв, fail-closed).
+        runOpenAIOnce,
+        buildCodexArgs,
+        buildOpenAISpawnEnv,
+        resolveOpenAIRuntime,
+        spawnCodex,
         tunnelHealthy,
         ensureTunnel,
         tunnelCheckEnabled,

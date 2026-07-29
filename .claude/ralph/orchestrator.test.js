@@ -462,6 +462,279 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
     });
 });
 
+// #374 (фаза 6): рантайм OpenAI — ОТДЕЛЬНЫЙ бинарь `codex exec` (не поверх claude), выбор
+// конфигом (adapters.coderRuntime: 'openai'). Смоук + юниты чистых хелперов. Claude-путь не
+// меняется: дефолт coderRuntime остаётся claude, его сценарии выше зелёные.
+describe('OpenAI-рантайм (#374) — codex exec, отдельный бинарь', () => {
+    // Боевой fail уходит в process.exit; в тестах инжектируем бросающий, чтобы увидеть стоп.
+    const throwingFail = (msg) => {
+        throw new Error(msg);
+    };
+
+    describe('buildCodexArgs — построение argv для `codex exec` (чистая функция)', () => {
+        const { buildCodexArgs } = ralph;
+
+        it('exec + аппрув never + песочница + модель + `--` перед промптом', () => {
+            const argv = buildCodexArgs('задача', {
+                model: 'gpt-5-codex',
+                sandboxMode: 'danger-full-access',
+            });
+            expect(argv).toEqual([
+                'exec',
+                '-a',
+                'never',
+                '-s',
+                'danger-full-access',
+                '-m',
+                'gpt-5-codex',
+                '--',
+                'задача',
+            ]);
+        });
+
+        it('промпт — последний позиционный элемент, ПОСЛЕ `--` (не истолкуется как флаг)', () => {
+            // Промпт, начинающийся с дефиса, — ровно тот класс, ради которого стоит `--`:
+            // без разделителя codex принял бы его за неизвестный флаг и упал.
+            const argv = buildCodexArgs('-rf уничтожить', {
+                model: 'gpt-5-codex',
+                sandboxMode: 'workspace-write',
+            });
+            const sep = argv.indexOf('--');
+            expect(sep).toBeGreaterThan(-1);
+            expect(argv[sep + 1]).toBe('-rf уничтожить');
+            expect(argv[argv.length - 1]).toBe('-rf уничтожить');
+        });
+
+        it('без модели пара -m не добавляется (резолв всё равно её требует — fail-closed выше)', () => {
+            const argv = buildCodexArgs('x', { sandboxMode: 'read-only' });
+            expect(argv).not.toContain('-m');
+        });
+
+        it('НЕ содержит Claude-специфичных флагов --max-turns/--fallback-model (риск #3)', () => {
+            const argv = buildCodexArgs('x', {
+                model: 'gpt-5-codex',
+                sandboxMode: 'danger-full-access',
+            });
+            expect(argv).not.toContain('--max-turns');
+            expect(argv).not.toContain('--fallback-model');
+        });
+
+        it('anti-RCE: спецсимволы промпта проходят ОДНИМ дословным элементом argv', () => {
+            const evil = 'вывод: `rm -rf /` и $(whoami) и "кавычки" ; echo pwned';
+            const argv = buildCodexArgs(evil, {
+                model: 'gpt-5-codex',
+                sandboxMode: 'danger-full-access',
+            });
+            expect(argv[argv.length - 1]).toBe(evil);
+        });
+    });
+
+    describe('buildOpenAISpawnEnv — окружение процесса codex (чистая функция)', () => {
+        const { buildOpenAISpawnEnv } = ralph;
+
+        it('кладёт ключ под OPENAI_API_KEY, наследуя базовое env', () => {
+            const env = buildOpenAISpawnEnv('sk-openai', { PATH: '/usr/bin', HOME: '/root' });
+            expect(env.OPENAI_API_KEY).toBe('sk-openai');
+            expect(env.PATH).toBe('/usr/bin');
+            expect(env.HOME).toBe('/root');
+        });
+
+        it('ключ codex ждёт именно в OPENAI_API_KEY, даже если резолвился из другой env-переменной', () => {
+            // authTokenEnv может быть кастомным (MY_OPENAI_KEY), но codex читает OPENAI_API_KEY —
+            // маппинг делает именно этот хелпер.
+            const env = buildOpenAISpawnEnv('sk-from-custom', { MY_OPENAI_KEY: 'sk-from-custom' });
+            expect(env.OPENAI_API_KEY).toBe('sk-from-custom');
+        });
+
+        it('не мутирует переданное базовое env', () => {
+            const base = { PATH: '/usr/bin' };
+            buildOpenAISpawnEnv('t', base);
+            expect('OPENAI_API_KEY' in base).toBe(false);
+        });
+    });
+
+    describe('resolveOpenAIRuntime — резолв параметров из конфига + env (fail-closed)', () => {
+        const { resolveOpenAIRuntime } = ralph;
+
+        it('дефолты: песочница danger-full-access и env OPENAI_API_KEY', () => {
+            const r = resolveOpenAIRuntime(
+                { model: 'gpt-5-codex' },
+                { OPENAI_API_KEY: 'sk-openai' },
+                throwingFail,
+            );
+            expect(r.model).toBe('gpt-5-codex');
+            expect(r.sandboxMode).toBe('danger-full-access');
+            expect(r.token).toBe('sk-openai');
+        });
+
+        it('переопределение sandboxMode/authTokenEnv из конфига', () => {
+            const r = resolveOpenAIRuntime(
+                {
+                    model: 'gpt-5-codex',
+                    sandboxMode: 'workspace-write',
+                    authTokenEnv: 'MY_OPENAI_KEY',
+                },
+                { MY_OPENAI_KEY: 'sk-custom' },
+                throwingFail,
+            );
+            expect(r.sandboxMode).toBe('workspace-write');
+            expect(r.token).toBe('sk-custom');
+        });
+
+        it('отсутствующая/пустая модель → fail (скрытый дефолт codex недопустим, инвариант №1)', () => {
+            expect(() => resolveOpenAIRuntime({}, { OPENAI_API_KEY: 'x' }, throwingFail)).toThrow(
+                /openaiRuntime\.model/,
+            );
+            expect(() =>
+                resolveOpenAIRuntime({ model: '   ' }, { OPENAI_API_KEY: 'x' }, throwingFail),
+            ).toThrow(/openaiRuntime\.model/);
+        });
+
+        it('отсутствующий ключ OpenAI в env → fail (секреты только из env, инвариант №11)', () => {
+            expect(() => resolveOpenAIRuntime({ model: 'gpt-5-codex' }, {}, throwingFail)).toThrow(
+                /OPENAI_API_KEY/,
+            );
+        });
+
+        it('requireToken:false (dry) — без ключа не падает, token=null, но кривая модель всё равно fail', () => {
+            const r = resolveOpenAIRuntime({ model: 'gpt-5-codex' }, {}, throwingFail, {
+                requireToken: false,
+            });
+            expect(r.token).toBe(null);
+            expect(() =>
+                resolveOpenAIRuntime({}, {}, throwingFail, { requireToken: false }),
+            ).toThrow(/openaiRuntime\.model/);
+        });
+    });
+
+    describe('spawnCodex — фактический вызов spawn-функции (граница anti-RCE защиты)', () => {
+        let spawnFn;
+        beforeEach(() => {
+            spawnFn = vi.fn();
+            vi.spyOn(console, 'log').mockImplementation(() => {});
+            vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {});
+            vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+            vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        });
+        afterEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        it('вызывает spawnFn с бинарём codex, shell:false и тем argv-массивом, что построил buildCodexArgs', () => {
+            spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+            const argv = ralph.buildCodexArgs('задача', {
+                model: 'gpt-5-codex',
+                sandboxMode: 'danger-full-access',
+            });
+            ralph.spawnCodex(argv, 60_000, spawnFn);
+            expect(spawnFn).toHaveBeenCalledTimes(1);
+            const [bin, calledArgs, opts] = spawnFn.mock.calls[0];
+            expect(bin).toBe('codex');
+            expect(calledArgs).toBe(argv);
+            expect(opts.shell).toBe(false);
+            expect(opts.timeout).toBe(60_000);
+        });
+
+        it('ненулевой exit-код процесса пробрасывается как code; вывод — stdout+stderr', () => {
+            spawnFn.mockReturnValue({ status: 2, stdout: '', stderr: 'boom', signal: null });
+            expect(ralph.spawnCodex(['exec'], 1000, spawnFn)).toEqual({
+                code: 2,
+                output: '\nboom',
+            });
+        });
+
+        it('процесс убит по сигналу (таймаут) → code:1, не бросает исключение', () => {
+            spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: 'SIGTERM' });
+            expect(ralph.spawnCodex(['exec'], 1000, spawnFn).code).toBe(1);
+        });
+
+        it('с env-аргументом опции spawn несут ровно этот env; без него — ключа env нет', () => {
+            spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+            const env = { PATH: '/usr/bin', OPENAI_API_KEY: 'sk-x' };
+            ralph.spawnCodex(['exec'], 1000, spawnFn, env);
+            expect(spawnFn.mock.calls[0][2].env).toBe(env);
+            spawnFn.mockClear();
+            ralph.spawnCodex(['exec'], 1000, spawnFn);
+            expect('env' in spawnFn.mock.calls[0][2]).toBe(false);
+        });
+    });
+
+    describe('runOpenAIOnce — смоук: кодер-сессия стартует и выдаёт дифф', () => {
+        let runtime;
+        const savedToken = process.env.OPENAI_API_KEY;
+
+        beforeEach(() => {
+            vi.spyOn(console, 'log').mockImplementation(() => {});
+            vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {});
+            vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+            vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+            runtime = buildRuntime();
+            runtime.setConfigForTests({
+                ...REAL_CONFIG,
+                permissionMode: 'bypassPermissions',
+                openaiRuntime: { model: 'gpt-5-codex' },
+            });
+            process.env.OPENAI_API_KEY = 'sk-openai-smoke';
+        });
+        afterEach(() => {
+            vi.restoreAllMocks();
+            if (savedToken === undefined) delete process.env.OPENAI_API_KEY;
+            else process.env.OPENAI_API_KEY = savedToken;
+        });
+
+        it('спавнит `codex` с моделью OpenAI и ключом в env, возвращает дифф, ключ НЕ в argv', () => {
+            const spawnFn = vi.fn(() => ({
+                status: 0,
+                stdout: 'diff --git a/f b/f\n+добавлено',
+                stderr: '',
+                signal: null,
+            }));
+
+            const res = runtime.runOpenAIOnce('тестовая задача', { maxTurns: 5 }, spawnFn);
+
+            expect(res).toEqual({ code: 0, output: 'diff --git a/f b/f\n+добавлено\n' });
+            expect(spawnFn).toHaveBeenCalledTimes(1);
+            const [bin, argv, opts] = spawnFn.mock.calls[0];
+            expect(bin).toBe('codex');
+            // Модель — OpenAI из openaiRuntime.model, а НЕ claude-модель из modelRouting.
+            expect(argv).toContain('-m');
+            expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex');
+            expect(argv).toContain('exec');
+            // Ключ ушёл env'ом, не в argv (иначе виден в /proc/*/cmdline).
+            expect(argv.join(' ')).not.toContain('sk-openai-smoke');
+            expect(opts.shell).toBe(false);
+            expect(opts.env.OPENAI_API_KEY).toBe('sk-openai-smoke');
+        });
+
+        it('НЕ тащит Claude-флаги --max-turns/--fallback-model в codex argv (риск #3)', () => {
+            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn);
+            const [, argv] = spawnFn.mock.calls[0];
+            expect(argv).not.toContain('--max-turns');
+            expect(argv).not.toContain('--fallback-model');
+        });
+
+        it('выбор coderRuntime:openai в конфиге даёт OpenAI-адаптер из реестра', () => {
+            const openaiRuntime = buildRuntime();
+            const adapters = openaiRuntime.buildAdapters(
+                {
+                    taskSource: { github: { x: 1 } },
+                    gate: { npm: { x: 1 } },
+                    notifier: { telegram: { x: 1 } },
+                    deployCheck: { 'github-actions': { x: 1 } },
+                    coderRuntime: {
+                        claude: { run: () => ({ code: 0, output: 'claude' }) },
+                        openai: { run: () => ({ code: 0, output: 'openai' }) },
+                    },
+                },
+                openaiRuntime.resolveAdapterSelection({ coderRuntime: 'openai' }, throwingFail),
+                throwingFail,
+            );
+            expect(adapters.coderRuntime.run('p', { maxTurns: 1 }).output).toBe('openai');
+        });
+    });
+});
+
 describe('formatExcerpt — хвост вывода упавшего чека для heal-промпта', () => {
     it('сплющивает переводы строк, табы и повторные пробелы в один пробел', () => {
         expect(formatExcerpt('a\n\nb\t\tc   d')).toBe('a b c d');
