@@ -34,16 +34,14 @@ export function extractSyncBlocks(markdown) {
     return blocks;
 }
 
-// Сверка блоков source (CLAUDE.md) → target (AGENTS.md). Fail-closed: пустой source
-// (ни одного маркера) — это не «сверять нечего», а признак того, что маркеры потерялись
-// (снесены правкой, опечатка в разметке) — проверка бы молча ничего не сторожила.
-export function diffSyncBlocks(
-    sourceMarkdown,
-    targetMarkdown,
+// Сверка УЖЕ РАЗОБРАННЫХ блоков source (CLAUDE.md) → target (AGENTS.md). Вынесена из
+// diffSyncBlocks, чтобы вызывающий (runAgentsMdDriftCheck), которому нужен ещё и счётчик
+// блоков, парсил каждый файл РОВНО ОДИН раз, а не гонял regex повторно ради размера.
+function diffParsedBlocks(
+    source,
+    target,
     { sourceName = 'CLAUDE.md', targetName = 'AGENTS.md' } = {},
 ) {
-    const source = extractSyncBlocks(sourceMarkdown);
-    const target = extractSyncBlocks(targetMarkdown);
     const problems = [];
 
     if (source.size === 0) {
@@ -73,6 +71,17 @@ export function diffSyncBlocks(
     return problems;
 }
 
+// Публичная обёртка: парсит оба markdown и сверяет. Fail-closed на пустом source и на
+// дубле ключа (throw из extractSyncBlocks) — контракт как раньше; тонкая проводка над
+// diffParsedBlocks.
+export function diffSyncBlocks(sourceMarkdown, targetMarkdown, opts = {}) {
+    return diffParsedBlocks(
+        extractSyncBlocks(sourceMarkdown),
+        extractSyncBlocks(targetMarkdown),
+        opts,
+    );
+}
+
 // Сборка чека в одну тестируемую функцию (аналог runOnlyDetectCheck): любая ошибка
 // (нечитаемый файл, дубль ключа) превращается в { ok: false }, а не падает наружу.
 export function runAgentsMdDriftCheck({
@@ -93,18 +102,23 @@ export function runAgentsMdDriftCheck({
         return { ok: false, message: `не смог прочитать ${agentsPath}: ${e.message}` };
     }
 
-    let problems;
+    // Парсим КАЖДЫЙ файл ровно один раз: карты нужны и для сверки, и для счётчика блоков
+    // в сообщении об успехе (раньше extractSyncBlocks(claudeSrc) гонялся повторно ради size).
+    let claudeBlocks;
+    let agentsBlocks;
     try {
-        problems = diffSyncBlocks(claudeSrc, agentsSrc);
+        claudeBlocks = extractSyncBlocks(claudeSrc);
+        agentsBlocks = extractSyncBlocks(agentsSrc);
     } catch (e) {
         return { ok: false, message: e.message };
     }
+    const problems = diffParsedBlocks(claudeBlocks, agentsBlocks);
     if (problems.length > 0) {
         return { ok: false, message: problems.join('; ') };
     }
     return {
         ok: true,
-        message: `AGENTS.md синхронизирован с CLAUDE.md (${extractSyncBlocks(claudeSrc).size} блоков)`,
+        message: `AGENTS.md синхронизирован с CLAUDE.md (${claudeBlocks.size} блоков)`,
     };
 }
 

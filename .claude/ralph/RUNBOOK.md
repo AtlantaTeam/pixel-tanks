@@ -145,7 +145,7 @@ Claude.
 "adapters": { "coderRuntime": "openai" },
 "openaiRuntime": {
     "model": "gpt-5-codex"                     // ОБЯЗАТЕЛЕН — имя модели OpenAI
-    // "sandboxMode": "danger-full-access"     // дефолт; уже́: workspace-write / read-only
+    // "sandboxMode": "danger-full-access"     // дефолт; более узкие: workspace-write / read-only
     // "authTokenEnv": "OPENAI_API_KEY"         // дефолт; имя env-переменной с ключом
 }
 ```

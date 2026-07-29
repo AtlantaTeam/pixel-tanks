@@ -421,6 +421,103 @@ describe('#376 modelRouting провайдер-осведомлён — fail-clo
         ).toThrow(/healEscalation должен быть объектом/);
     });
 
+    // Ревью-thread: частично заданный healEscalation в рантайме — тихий no-op (эскалация
+    // никогда не сработает). Требуем ОБА поля, раз секция задана (инвариант №1).
+    it('healEscalation задан без afterAttempts → стоп (частичная секция = тихий no-op)', () => {
+        expect(() =>
+            resolveProfile(
+                withRouting({ healEscalation: { route: 'claude-opus-4-8' } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/afterAttempts отсутствует/);
+    });
+
+    it('healEscalation задан без route → стоп (эскалации не на что переключаться)', () => {
+        expect(() =>
+            resolveProfile(
+                withRouting({ healEscalation: { afterAttempts: 2 } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/route отсутствует/);
+    });
+
+    // Ревью-thread: apiLimitFallback, резолвящийся в тот же провайдер, что статический
+    // coderRuntime (claude по дефолту) — гарантированный no-op (runClaude пропускает
+    // same-provider фолбэк). Молчаливый no-op-конфиг хуже честного отказа.
+    it('apiLimitFallback с тем же провайдером, что статический coderRuntime → стоп (no-op)', () => {
+        // Голая строка → провайдер = статический (claude) = провайдер прогона → no-op.
+        expect(() =>
+            resolveProfile(
+                withRouting({ apiLimitFallback: 'claude-opus-4-8' }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/ТОТ ЖЕ.*провайдер/s);
+        // Явный provider, совпавший со статическим — тот же no-op.
+        expect(() =>
+            resolveProfile(
+                withRouting({ apiLimitFallback: { provider: 'claude', model: 'claude-opus-4-8' } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/ТОТ ЖЕ.*провайдер/s);
+    });
+
+    // Ревью-blocker: статический не-claude рантайм + безпровайдерная запись роутинга =
+    // claude-имя молча уехало бы на чужой endpoint. Требуем provider явно в каждой записи.
+    describe('статический coderRuntime ≠ claude требует явного provider в записях', () => {
+        const withAdapters = (routing: unknown, coderRuntime: string) => ({
+            defaultProfile: 'playground',
+            common: {
+                phases: [{ milestone: 'M', branch: 'b' }],
+                adapters: { coderRuntime },
+                modelRouting: routing,
+            },
+            profiles: { playground: {} },
+        });
+
+        it('голая строка-модель в labels → стоп', () => {
+            expect(() =>
+                resolveProfile(
+                    withAdapters({ labels: { 'complexity:low': 'claude-haiku-4-5' } }, 'kimi'),
+                    'playground',
+                    boom,
+                ),
+            ).toThrow(/голая строка-модель.*≠ 'claude'/s);
+        });
+
+        it('объект без provider → стоп', () => {
+            expect(() =>
+                resolveProfile(
+                    withAdapters({ default: { model: 'kimi-k2-0711-preview' } }, 'kimi'),
+                    'playground',
+                    boom,
+                ),
+            ).toThrow(/provider обязателен.*≠ 'claude'/s);
+        });
+
+        it('все записи с явным provider → проходит', () => {
+            const cfg = resolveProfile(
+                withAdapters(
+                    {
+                        labels: {
+                            'complexity:low': { provider: 'kimi', model: 'kimi-k2-0711-preview' },
+                        },
+                    },
+                    'kimi',
+                ),
+                'playground',
+                boom,
+            );
+            expect(cfg.modelRouting.labels['complexity:low']).toEqual({
+                provider: 'kimi',
+                model: 'kimi-k2-0711-preview',
+            });
+        });
+    });
+
     it('modelRouting не задан вовсе → resolveProfile не спотыкается', () => {
         const cfg = resolveProfile(
             {

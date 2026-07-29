@@ -321,6 +321,19 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
             expect('ANTHROPIC_API_KEY' in env).toBe(false);
         });
 
+        it('вычищает секреты ЧУЖИХ провайдеров/каналов (OpenAI, Telegram-бот), GH_TOKEN оставляет', () => {
+            // Hardening (ревью-thread): промпт-инъекция в Kimi-сессии не должна одной командой
+            // `env` эксфильтровать ключи, которые Kimi не принадлежат. GH_TOKEN нужен git/gh.
+            const env = buildKimiSpawnEnv('u', 't', {
+                OPENAI_API_KEY: 'sk-openai',
+                RALPH_TG_BOT_TOKEN: 'tg-secret',
+                GH_TOKEN: 'gh-secret',
+            });
+            expect('OPENAI_API_KEY' in env).toBe(false);
+            expect('RALPH_TG_BOT_TOKEN' in env).toBe(false);
+            expect(env.GH_TOKEN).toBe('gh-secret');
+        });
+
         it('не мутирует переданное базовое env', () => {
             const base = { CLAUDE_CODE_OAUTH_TOKEN: 'x', PATH: '/usr/bin' };
             buildKimiSpawnEnv('u', 't', base);
@@ -440,25 +453,6 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv).not.toContain('--fallback-model');
         });
-
-        it('выбор coderRuntime:kimi в конфиге даёт Kimi-адаптер из реестра', () => {
-            const kimiRuntime = buildRuntime();
-            const adapters = kimiRuntime.buildAdapters(
-                {
-                    taskSource: { github: { x: 1 } },
-                    gate: { npm: { x: 1 } },
-                    notifier: { telegram: { x: 1 } },
-                    deployCheck: { 'github-actions': { x: 1 } },
-                    coderRuntime: {
-                        claude: { run: () => ({ code: 0, output: 'claude' }) },
-                        kimi: { run: () => ({ code: 0, output: 'kimi' }) },
-                    },
-                },
-                kimiRuntime.resolveAdapterSelection({ coderRuntime: 'kimi' }, throwingFail),
-                throwingFail,
-            );
-            expect(adapters.coderRuntime.run('p', { maxTurns: 1 }).output).toBe('kimi');
-        });
     });
 });
 
@@ -550,6 +544,27 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             const base = { PATH: '/usr/bin' };
             buildOpenAISpawnEnv('t', base);
             expect('OPENAI_API_KEY' in base).toBe(false);
+        });
+
+        it('вычищает секреты ЧУЖИХ провайдеров/каналов, GH_TOKEN оставляет (hardening)', () => {
+            // Ревью-thread: песочница codex по дефолту danger-full-access + C3-инъекции через
+            // тело issue → секреты чужих провайдеров не должны уезжать в env codex. GH_TOKEN
+            // нужен кодер-сессии для git/gh (та же экспозиция, что у Claude-пути).
+            const env = buildOpenAISpawnEnv('sk-openai', {
+                CLAUDE_CODE_OAUTH_TOKEN: 'oauth-claude',
+                ANTHROPIC_API_KEY: 'anthropic-key',
+                ANTHROPIC_AUTH_TOKEN: 'anthropic-auth',
+                RALPH_KIMI_AUTH_TOKEN: 'sk-moon',
+                RALPH_TG_BOT_TOKEN: 'tg-secret',
+                GH_TOKEN: 'gh-secret',
+            });
+            expect(env.OPENAI_API_KEY).toBe('sk-openai');
+            expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false);
+            expect('ANTHROPIC_API_KEY' in env).toBe(false);
+            expect('ANTHROPIC_AUTH_TOKEN' in env).toBe(false);
+            expect('RALPH_KIMI_AUTH_TOKEN' in env).toBe(false);
+            expect('RALPH_TG_BOT_TOKEN' in env).toBe(false);
+            expect(env.GH_TOKEN).toBe('gh-secret');
         });
     });
 
@@ -713,25 +728,47 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             expect(argv).not.toContain('--max-turns');
             expect(argv).not.toContain('--fallback-model');
         });
+    });
+});
 
-        it('выбор coderRuntime:openai в конфиге даёт OpenAI-адаптер из реестра', () => {
-            const openaiRuntime = buildRuntime();
-            const adapters = openaiRuntime.buildAdapters(
-                {
-                    taskSource: { github: { x: 1 } },
-                    gate: { npm: { x: 1 } },
-                    notifier: { telegram: { x: 1 } },
-                    deployCheck: { 'github-actions': { x: 1 } },
-                    coderRuntime: {
-                        claude: { run: () => ({ code: 0, output: 'claude' }) },
-                        openai: { run: () => ({ code: 0, output: 'openai' }) },
-                    },
-                },
-                openaiRuntime.resolveAdapterSelection({ coderRuntime: 'openai' }, throwingFail),
-                throwingFail,
-            );
-            expect(adapters.coderRuntime.run('p', { maxTurns: 1 }).output).toBe('openai');
-        });
+// #373/#374 (фаза 6): выбор coderRuntime через config.adapters собирает нужный адаптер из
+// реестра. Тесты про buildAdapters/resolveAdapterSelection — отдельным блоком (не внутри
+// runKimiOnce/runOpenAIOnce-смоуков): к спавну кодер-сессии они не относятся и не должны
+// наследовать его beforeEach со спаями/env.
+describe('buildAdapters — выбор coderRuntime из config.adapters (#373/#374)', () => {
+    const throwingFail = (msg) => {
+        throw new Error(msg);
+    };
+    const fakeRegistries = () => ({
+        taskSource: { github: { x: 1 } },
+        gate: { npm: { x: 1 } },
+        notifier: { telegram: { x: 1 } },
+        deployCheck: { 'github-actions': { x: 1 } },
+        coderRuntime: {
+            claude: { run: () => ({ code: 0, output: 'claude' }) },
+            kimi: { run: () => ({ code: 0, output: 'kimi' }) },
+            openai: { run: () => ({ code: 0, output: 'openai' }) },
+        },
+    });
+
+    it('coderRuntime:kimi в конфиге даёт Kimi-адаптер из реестра', () => {
+        const runtime = buildRuntime();
+        const adapters = runtime.buildAdapters(
+            fakeRegistries(),
+            runtime.resolveAdapterSelection({ coderRuntime: 'kimi' }, throwingFail),
+            throwingFail,
+        );
+        expect(adapters.coderRuntime.run('p', { maxTurns: 1 }).output).toBe('kimi');
+    });
+
+    it('coderRuntime:openai в конфиге даёт OpenAI-адаптер из реестра', () => {
+        const runtime = buildRuntime();
+        const adapters = runtime.buildAdapters(
+            fakeRegistries(),
+            runtime.resolveAdapterSelection({ coderRuntime: 'openai' }, throwingFail),
+            throwingFail,
+        );
+        expect(adapters.coderRuntime.run('p', { maxTurns: 1 }).output).toBe('openai');
     });
 });
 
@@ -912,6 +949,100 @@ describe('runClaude — #376 доп.скоуп: кросс-провайдерн�
         expect(runClaudeOnceFn).toHaveBeenCalledTimes(2);
         expect(pushEventFn).toHaveBeenCalledTimes(1);
         expect(sleepFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('фолбэк упал НЕ по лимиту (бинарь не установлен / ключ невалиден / misconfig) → к ожиданию, чужой ненулевой код НЕ отдаётся как итог', () => {
+        // Регрессия ревью-thread: раньше `if (!fbLimitHit) return fb.code` отдавал ЛЮБОЙ
+        // ненулевой код фолбэка (127 = codex не найден) как итог итерации, отменяя цикл
+        // ожидания. API_LIMIT_RE матчит лишь формулировку Claude → лимит Kimi/OpenAI под
+        // неё не подходит, и «фолбэк тоже упёрся в лимит» для них недостижимо. Теперь любой
+        // ненулевой код фолбэка → штатное ожидание основного провайдера.
+        const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
+        const fallbackRun = vi.fn(() => ({ code: 127, output: 'codex: command not found' }));
+        const coderRuntimeRunForFn = vi.fn(() => fallbackRun);
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                coderRuntimeRunForFn,
+                cfg: {
+                    apiLimitMaxWaits: 1,
+                    modelRouting: { apiLimitFallback: { provider: 'kimi', model: 'x' } },
+                },
+            },
+        );
+
+        // Итог — код ОСНОВНОГО провайдера (1, лимит), не 127 фолбэка; ожидание отработало.
+        expect(code).toBe(1);
+        expect(fallbackRun).toHaveBeenCalledTimes(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(2);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('apiLimitFallback пробуется ДАЖЕ при waitOnApiLimit:false (фолбэк — «вместо ожидания», не часть его); успех завершает', () => {
+        // Ревью-thread: return по waitOnApiLimit===false раньше срабатывал ДО фолбэк-ветки.
+        // Оператор, выключивший ожидание, всё ещё может хотеть кросс-провайдерную попытку.
+        const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
+        const fallbackRun = vi.fn(() => ({ code: 0, output: 'diff from kimi' }));
+        const coderRuntimeRunForFn = vi.fn(() => fallbackRun);
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn: vi.fn(),
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                coderRuntimeRunForFn,
+                cfg: {
+                    waitOnApiLimit: false,
+                    modelRouting: { apiLimitFallback: { provider: 'kimi', model: 'x' } },
+                },
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(fallbackRun).toHaveBeenCalledTimes(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+    });
+
+    it('фолбэк не помог + waitOnApiLimit:false → честно возвращаем код лимита, без ожидания', () => {
+        const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
+        const fallbackRun = vi.fn(() => ({ code: 127, output: 'codex not found' }));
+        const coderRuntimeRunForFn = vi.fn(() => fallbackRun);
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn: vi.fn(),
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                coderRuntimeRunForFn,
+                cfg: {
+                    waitOnApiLimit: false,
+                    modelRouting: { apiLimitFallback: { provider: 'kimi', model: 'x' } },
+                },
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(fallbackRun).toHaveBeenCalledTimes(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
     });
 
     it('apiLimitFallback без явного provider (голая строка = тот же провайдер) не пробуется — сразу обычное ожидание', () => {
@@ -1324,6 +1455,75 @@ describe('preflight — валидация конфига/среды и подг
         // должен упасть при запуске, как на authorAllowlist/TG.
         const cfg = validCfg({ gate: undefined });
         expect(() => preflight(cfg, okDeps({ loadStateFn: fakeState }))).toThrow(/gate/);
+    });
+
+    // Ревью-thread: env-ключи ВСЕХ рантаймов, достижимых из modelRouting (не только
+    // статического coderRuntime), резолвим на СТАРТЕ — иначе конфиг фолбэка/label на
+    // провайдера без ключа взорвался бы process.exit только в момент использования.
+    describe('#376 (ревью): секреты достижимых рантаймов резолвятся на старте', () => {
+        const savedEnv = { ...process.env };
+        beforeEach(() => {
+            process.env = { ...savedEnv };
+            delete process.env.RALPH_KIMI_AUTH_TOKEN;
+            delete process.env.OPENAI_API_KEY;
+        });
+        afterEach(() => {
+            process.env = savedEnv;
+        });
+
+        it('apiLimitFallback на kimi без RALPH_KIMI_AUTH_TOKEN → fail на старте (не в момент лимита)', () => {
+            const cfg = validCfg({
+                modelRouting: {
+                    apiLimitFallback: { provider: 'kimi', model: 'kimi-k2-0711-preview' },
+                },
+            });
+            expect(() => preflight(cfg, okDeps({ dry: false, loadStateFn: fakeState }))).toThrow(
+                /RALPH_KIMI_AUTH_TOKEN/,
+            );
+        });
+
+        it('label на openai без OPENAI_API_KEY → fail на старте', () => {
+            const cfg = validCfg({
+                modelRouting: {
+                    labels: { 'complexity:low': { provider: 'openai', model: 'gpt-5-codex' } },
+                },
+            });
+            expect(() => preflight(cfg, okDeps({ dry: false, loadStateFn: fakeState }))).toThrow(
+                /OPENAI_API_KEY/,
+            );
+        });
+
+        it('kimi-фолбэк С ключом в env → эта проверка не бросает', () => {
+            process.env.RALPH_KIMI_AUTH_TOKEN = 'sk-moon';
+            const cfg = validCfg({
+                modelRouting: {
+                    apiLimitFallback: { provider: 'kimi', model: 'kimi-k2-0711-preview' },
+                },
+            });
+            expect(() =>
+                preflight(cfg, okDeps({ dry: false, loadStateFn: fakeState })),
+            ).not.toThrow();
+        });
+
+        it('dry-run не требует секрета рантайма (read-only)', () => {
+            const cfg = validCfg({
+                modelRouting: {
+                    apiLimitFallback: { provider: 'kimi', model: 'kimi-k2-0711-preview' },
+                },
+            });
+            expect(() =>
+                preflight(cfg, okDeps({ dry: true, loadStateFn: fakeState })),
+            ).not.toThrow();
+        });
+
+        it('claude-only роутинг → провайдерных ключей не требует (поведение прежнее)', () => {
+            const cfg = validCfg({
+                modelRouting: { labels: { 'complexity:low': 'claude-haiku-4-5' } },
+            });
+            expect(() =>
+                preflight(cfg, okDeps({ dry: false, loadStateFn: fakeState })),
+            ).not.toThrow();
+        });
     });
 
     it('state старой схемы (phaseIndex, без milestone) → fail (через реальный loadState)', () => {
@@ -3049,12 +3249,15 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(healPrompt).toContain('boom-fail');
     });
 
-    // #376 доп.скоуп: после modelRouting.healEscalation.afterAttempts НЕУДАЧНЫХ heal-попыток
-    // подряд чини-сессия гейта переключается на route (может быть другим провайдером).
-    it('гейт red-checks: healEscalation.afterAttempts достигнут → чини-сессия идёт на эскалированный route', () => {
+    // #376 доп.скоуп: ПОСЛЕ modelRouting.healEscalation.afterAttempts НЕУДАЧНЫХ heal-попыток
+    // подряд чини-сессия гейта переключается на route (может быть другим провайдером). Ревью-
+    // thread (off-by-one): gateHeals инкрементируется ДО проверки и равен номеру ЗАПУСКАЕМОЙ
+    // попытки; условие `> afterAttempts` даёт ровно «после afterAttempts неудач», а не на них.
+    it('гейт red-checks: healEscalation — эскалация на попытке afterAttempts+1 (ПОСЛЕ afterAttempts неудач)', () => {
         const logs = [];
-        // gateHeals:1 → эта попытка станет 2-й, ровно afterAttempts.
-        const state = mkState({ submitted: true, gateHeals: 1 });
+        // gateHeals:2 → эта попытка станет 3-й (afterAttempts+1): первые 2 были на дешёвой,
+        // эскалация — после 2 неудачных.
+        const state = mkState({ submitted: true, gateHeals: 2 });
         const runClaudeFn = vi.fn(() => 0);
         const kimiRun = ralph.coderRuntimeRunFor('kimi');
         runLoop(
@@ -3081,11 +3284,47 @@ describe('runLoop — основной while-цикл: итерации коде
                 runClaudeFn,
             }),
         );
-        expect(state.gateHeals).toBe(2);
+        expect(state.gateHeals).toBe(3);
         const [, opts, depsOverride] = runClaudeFn.mock.calls[0];
         expect(opts.model).toBe('kimi-k2-0711-preview');
         expect(depsOverride.runClaudeOnceFn).toBe(kimiRun);
         expect(logs.join('\n')).toMatch(/эскалация → kimi\/kimi-k2-0711-preview/);
+    });
+
+    it('гейт red-checks: РОВНО на afterAttempts-й попытке эскалации ещё НЕТ (граница off-by-one)', () => {
+        const logs = [];
+        // gateHeals:1 → эта попытка станет 2-й = afterAttempts. `2 > 2` ложно → без эскалации:
+        // afterAttempts-я попытка ещё дешёвая, эскалация только со следующей.
+        const state = mkState({ submitted: true, gateHeals: 1 });
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({
+                gateHealAttempts: 5,
+                modelRouting: {
+                    healEscalation: {
+                        afterAttempts: 2,
+                        route: { provider: 'kimi', model: 'kimi-k2-0711-preview' },
+                    },
+                },
+            }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'red-checks',
+                getLastRedCheck: () => ({
+                    name: 'test',
+                    cmd: 'npm run test',
+                    excerpt: 'boom-fail',
+                }),
+                runClaudeFn,
+            }),
+        );
+        expect(state.gateHeals).toBe(2);
+        const [, opts] = runClaudeFn.mock.calls[0];
+        expect(opts.model).toBe('claude-coder'); // cfg.model, без эскалации
+        expect(logs.join('\n')).not.toMatch(/эскалация/);
     });
 
     it('гейт red-checks: healEscalation задан, но afterAttempts ещё не достигнут → heal на cfg.model, без эскалации', () => {

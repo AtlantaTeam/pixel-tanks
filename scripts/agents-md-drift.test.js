@@ -81,12 +81,13 @@ describe('diffSyncBlocks', () => {
         expect(problems.some((p) => /не найдено ни одного блока/.test(p))).toBe(true);
     });
 
-    it('несколько блоков разошлись сразу — все проблемы в списке', () => {
+    it('несколько блоков разошлись сразу — ВСЕ проблемы в списке (накопление, не первая ошибка)', () => {
         const source = `${block('a', '1')}\n${block('b', '2')}`;
-        const target = `${block('a', '1')}\n${block('b', 'ДРУГОЕ')}`;
+        const target = `${block('a', 'ИНОЕ')}\n${block('b', 'ДРУГОЕ')}`;
         const problems = diffSyncBlocks(source, target);
-        expect(problems).toHaveLength(1);
-        expect(problems[0]).toMatch(/"b"/);
+        expect(problems).toHaveLength(2);
+        expect(problems.some((p) => /"a"/.test(p))).toBe(true);
+        expect(problems.some((p) => /"b"/.test(p))).toBe(true);
     });
 });
 

@@ -189,47 +189,27 @@ export function createGithubActionsDeploy(fns: GithubActionsDeployFns): DeployCh
     };
 }
 
-// Рантайм Claude CLI: запуск кодер-сессии → {code, output} (orchestrator.ts runClaudeOnce).
-export type ClaudeRuntimeFns = {
+// Конструктор шва кодер-рантайма: раскладывает боевую функцию запуска сессии
+// (`run(prompt, options) → {code, output}`) по имени метода интерфейса CoderRuntimeAdapter.
+// ОДИН конструктор на все провайдеры (claude/kimi/openai): контракт шва у них идентичен, а
+// провайдер-специфика (Claude — `runClaudeOnce`; Kimi — endpoint Moonshot через env `claude`
+// в `runKimiOnce`; OpenAI — отдельный бинарь `codex exec` в `runOpenAIOnce`) живёт ВНУТРИ
+// боевой функции, а не в маппере. Читаемость намерения даёт КЛЮЧ реестра `coderRuntime`
+// (`{ claude, kimi, openai }` в composition root orchestrator.ts) + говорящее имя переданной
+// функции, а не имя конструктора — поэтому три байт-в-байт копии не нужны (research:
+// `docs/…/research.md`). Claude-путь не трогается.
+export type CoderRuntimeFns = {
     run: (prompt: string, options: RunOptions) => RunResult;
 };
 
-export function createClaudeRuntime(fns: ClaudeRuntimeFns): CoderRuntimeAdapter {
-    return { run: fns.run };
-}
-
-// Рантайм Kimi (#373, фаза 6): ТОТ ЖЕ контракт CoderRuntimeAdapter, что и Claude — форма
-// метода идентична (`run(prompt, options) → {code, output}`). Kimi-специфика (endpoint
-// Moonshot через env `claude`, обязательная модель Moonshot, свой fallback) живёт ВНУТРИ
-// боевой функции `runKimiOnce` (orchestrator.ts), а не в мапперe: маппер лишь раскладывает
-// её по имени метода интерфейса, как createClaudeRuntime. Отдельный конструктор (а не
-// переиспользование createClaudeRuntime) — ради читаемого имени ключа `kimi` в реестре и
-// явности намерения; Claude-путь он не трогает (research: `docs/…/research.md`).
-export type KimiRuntimeFns = {
-    run: (prompt: string, options: RunOptions) => RunResult;
-};
-
-export function createKimiRuntime(fns: KimiRuntimeFns): CoderRuntimeAdapter {
-    return { run: fns.run };
-}
-
-// Рантайм OpenAI (#374, фаза 6): ТОТ ЖЕ контракт CoderRuntimeAdapter, что и Claude/Kimi —
-// форма метода идентична (`run(prompt, options) → {code, output}`). OpenAI-специфика (ОТДЕЛЬНЫЙ
-// бинарь `codex exec`, обязательная модель OpenAI, песочница, ключ из env `OPENAI_API_KEY`)
-// живёт ВНУТРИ боевой функции `runOpenAIOnce` (orchestrator.ts), а не в маппере: маппер лишь
-// раскладывает её по имени метода интерфейса. Отдельный конструктор — ради читаемого ключа
-// `openai` в реестре и явности намерения; Claude-путь он не трогает (research: маршрут (б)).
-export type OpenAIRuntimeFns = {
-    run: (prompt: string, options: RunOptions) => RunResult;
-};
-
-export function createOpenAIRuntime(fns: OpenAIRuntimeFns): CoderRuntimeAdapter {
+export function createCoderRuntime(fns: CoderRuntimeFns): CoderRuntimeAdapter {
     return { run: fns.run };
 }
 
 // ── Сборка набора швов по выбору из конфига (fail-closed) ─────────────────────
 // registries: реестр доступных реализаций по швам — { taskSource: { github: … }, … }.
-// Реализаций пока по одной на шов (текущий проект); фаза 6 добавит ключи в coderRuntime.
+// Реализаций по одной на большинство швов (текущий проект); шов coderRuntime несёт три —
+// `claude`/`kimi`/`openai` (фаза 6, #373/#374), выбираемые config.adapters.coderRuntime.
 // selection: результат resolveAdapterSelection. failFn: боевой fail (стоп раннера).
 // Реализация, которой нет в реестре под выбранным ключом, = fail (тот же класс, что
 // неизвестный ключ — просто ловится на слой ниже, когда реестр знает набор имён).
