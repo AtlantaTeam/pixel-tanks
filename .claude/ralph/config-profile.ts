@@ -14,6 +14,8 @@
 // возвращённые функции сохраняют показательную DI (failFn параметром) — ровно так их
 // зовут существующие тесты (config-profile.test.ts) и monitor.js (мягкий failFn `() => null`).
 
+import { CODER_RUNTIME_PROVIDERS } from './adapters-impl.ts';
+
 // fail() боевой уходит в process.exit(1); тестовый failFn может вернуть значение или
 // бросить — поэтому возврат unknown, а не never (мягкий результат пробрасывается наверх).
 type FailFn = (msg: string) => unknown;
@@ -164,6 +166,119 @@ export function createConfigProfile(env: ConfigProfileEnv) {
         return true;
     }
 
+    // #376 (фаза 6): значение modelRouting — либо строка (обратная совместимость,
+    // claude-модель, провайдер по умолчанию — статический adapters.coderRuntime), либо
+    // объект { provider, model } (явный выбор провайдера кодер-рантайма). provider
+    // сверяется ПРОТИВ РЕЕСТРА (CODER_RUNTIME_PROVIDERS), а не принимается любой строкой —
+    // иначе опечатка вида "kimy" тихо укатилась бы на дефолтный рантайм (инвариант №1).
+    // Используется для modelRouting.labels[*]/default/apiLimitFallback/healEscalation.route —
+    // один валидатор на все четыре места, схема одинаковая.
+    function describeModelRouteEntry(path: string, entry: unknown, failFn: FailFn): unknown {
+        if (entry === undefined) return true; // не задан — нечего проверять
+        if (typeof entry === 'string') {
+            if (entry.trim() === '') {
+                return failFn(
+                    `ralph.config.json: ${path} — пустая строка. Задай имя модели (строка) либо объект { provider, model }.`,
+                );
+            }
+            return true;
+        }
+        if (!isPlainObject(entry)) {
+            return failFn(
+                `ralph.config.json: ${path} должен быть строкой (имя claude-модели, обратная совместимость) ` +
+                    `либо объектом { provider, model } (#376, provider-aware роутинг). Получено: ${JSON.stringify(entry)}.`,
+            );
+        }
+        const { provider, model } = entry;
+        if (
+            provider !== undefined &&
+            (typeof provider !== 'string' ||
+                !(CODER_RUNTIME_PROVIDERS as readonly string[]).includes(provider))
+        ) {
+            return failFn(
+                `ralph.config.json: ${path}.provider = ${JSON.stringify(provider)} — неизвестный провайдер кодер-рантайма. ` +
+                    `Допустимые (реестр coderRuntime): ${CODER_RUNTIME_PROVIDERS.join(', ')}.`,
+            );
+        }
+        if (typeof model !== 'string' || model.trim() === '') {
+            return failFn(
+                `ralph.config.json: ${path}.model обязателен и должен быть непустой строкой модели провайдера.`,
+            );
+        }
+        return true;
+    }
+
+    // Fail-closed на схеме modelRouting целиком (#376): labels/default читает КАЖДЫЙ
+    // кодер-запуск (pickModel/pickRuntime, orchestrator.ts), apiLimitFallback/healEscalation —
+    // доп.скоуп кросс-провайдерного фолбэка и эскалации heal-сессий гейта. Невалидная
+    // комбинация провайдер/модель ловится здесь, на старте, а не в момент диспетчеризации
+    // кодер-сессии посреди ночного прогона. Возврат: true — валиден; иначе результат failFn
+    // (мягкий failFn пробрасываем наверх).
+    function assertValidModelRouting(
+        cfg: Record<string, unknown>,
+        profileName: string,
+        failFn: FailFn = fail,
+    ): unknown {
+        const routing = cfg.modelRouting;
+        if (routing === undefined) return true; // не задан — раннер берёт config.model как раньше
+        if (!isPlainObject(routing)) {
+            return failFn(
+                `ralph.config.json (профиль "${profileName}"): modelRouting должен быть объектом.`,
+            );
+        }
+        const defaultOk = describeModelRouteEntry('modelRouting.default', routing.default, failFn);
+        if (defaultOk !== true) return defaultOk;
+        if (routing.labels !== undefined) {
+            if (!isPlainObject(routing.labels)) {
+                return failFn(
+                    `ralph.config.json (профиль "${profileName}"): modelRouting.labels должен быть объектом label → модель.`,
+                );
+            }
+            for (const [label, entry] of Object.entries(routing.labels)) {
+                const ok = describeModelRouteEntry(
+                    `modelRouting.labels["${label}"]`,
+                    entry,
+                    failFn,
+                );
+                if (ok !== true) return ok;
+            }
+        }
+        // Доп.скоуп #376: кросс-провайдерный фолбэк при API-лимите — та же схема записи.
+        const fallbackOk = describeModelRouteEntry(
+            'modelRouting.apiLimitFallback',
+            routing.apiLimitFallback,
+            failFn,
+        );
+        if (fallbackOk !== true) return fallbackOk;
+        // Доп.скоуп #376: эскалация heal-сессий гейта «с дешёвой на сильную» после
+        // afterAttempts неудачных попыток — порог обязан быть положительным числом
+        // (0/отрицательное/строка эскалировали бы на первой же попытке или никогда явно
+        // не по намерению автора конфига).
+        if (routing.healEscalation !== undefined) {
+            if (!isPlainObject(routing.healEscalation)) {
+                return failFn(
+                    `ralph.config.json (профиль "${profileName}"): modelRouting.healEscalation должен быть объектом { afterAttempts, route }.`,
+                );
+            }
+            const { afterAttempts, route } = routing.healEscalation;
+            if (
+                afterAttempts !== undefined &&
+                !(typeof afterAttempts === 'number' && afterAttempts > 0)
+            ) {
+                return failFn(
+                    `ralph.config.json (профиль "${profileName}"): modelRouting.healEscalation.afterAttempts должен быть положительным числом попыток.`,
+                );
+            }
+            const routeOk = describeModelRouteEntry(
+                'modelRouting.healEscalation.route',
+                route,
+                failFn,
+            );
+            if (routeOk !== true) return routeOk;
+        }
+        return true;
+    }
+
     // Fail-closed: любой изъян схемы — стоп с внятным сообщением, а не тихий дефолт.
     // Автономный раннер с bypassPermissions не имеет права УГАДЫВАТЬ, в каком режиме он
     // работает: «молча свалился в playground, думая что он prod» — худший исход из всех.
@@ -215,8 +330,19 @@ export function createConfigProfile(env: ConfigProfileEnv) {
         // иначе опечатка в типе тихо даёт halt-режим — см. assertValidHaltBeforeDeploy).
         const haltOk = assertValidHaltBeforeDeploy(merged, wanted, failFn);
         if (haltOk !== true) return haltOk; // мягкий failFn — наверх как есть
+        // #376: modelRouting провайдер-осведомлён — валидируем схему целиком (labels/
+        // default/apiLimitFallback/healEscalation) до того, как раннер начнёт резолвить
+        // провайдера по label'ам issue.
+        const routingOk = assertValidModelRouting(merged, wanted, failFn);
+        if (routingOk !== true) return routingOk; // мягкий failFn — наверх как есть
         return { ...merged, profileName: wanted };
     }
 
-    return { deepMerge, parseProfileFlag, assertValidHaltBeforeDeploy, resolveProfile };
+    return {
+        deepMerge,
+        parseProfileFlag,
+        assertValidHaltBeforeDeploy,
+        assertValidModelRouting,
+        resolveProfile,
+    };
 }

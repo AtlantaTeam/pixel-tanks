@@ -735,6 +735,232 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
     });
 });
 
+// #376 (фаза 6): provider-aware modelRouting — label сложности может вести на модель
+// ЛЮБОГО зарегистрированного провайдера (не только claude), а не только на имя claude-
+// модели. resolveModelRoute — чистая нормализация записи; pickModel/pickRuntime — две
+// ортогональные оси роутинга (research: `docs/ralph-mini-framework/research.md`).
+describe('resolveModelRoute — нормализация записи modelRouting (#376)', () => {
+    const { resolveModelRoute } = ralph;
+
+    it('строка → {provider: fallback, model: строка}', () => {
+        expect(resolveModelRoute('claude-opus-4-8', 'claude')).toEqual({
+            provider: 'claude',
+            model: 'claude-opus-4-8',
+        });
+    });
+
+    it('пустая/пробельная строка → null', () => {
+        expect(resolveModelRoute('   ', 'claude')).toBe(null);
+        expect(resolveModelRoute('', 'claude')).toBe(null);
+    });
+
+    it('undefined → null (запись не задана)', () => {
+        expect(resolveModelRoute(undefined, 'claude')).toBe(null);
+    });
+
+    it('объект с provider → {provider, model} из объекта, fallback игнорируется', () => {
+        expect(
+            resolveModelRoute({ provider: 'kimi', model: 'kimi-k2-0711-preview' }, 'claude'),
+        ).toEqual({
+            provider: 'kimi',
+            model: 'kimi-k2-0711-preview',
+        });
+    });
+
+    it('объект без provider → берёт fallback-провайдер, свой model', () => {
+        expect(resolveModelRoute({ model: 'claude-fable-5' }, 'openai')).toEqual({
+            provider: 'openai',
+            model: 'claude-fable-5',
+        });
+    });
+
+    it('объект без валидного model → model: undefined (провайдер всё равно резолвится)', () => {
+        expect(resolveModelRoute({ provider: 'kimi' }, 'claude')).toEqual({
+            provider: 'kimi',
+            model: undefined,
+        });
+    });
+});
+
+describe('pickModel/pickRuntime — provider-aware роутинг по label issue (#376)', () => {
+    // Фикстура: НОВЫЙ orchestrator (createOrchestrator напрямую, как в блоках Kimi/OpenAI
+    // выше) — pickModel/pickRuntime читают ФАБРИЧНЫЙ config (setConfigForTests), не делят
+    // состояние с REAL_CONFIG общего singleton'а `ralph`.
+    function routingRuntime(modelRouting) {
+        const runtime = buildRuntime();
+        runtime.setConfigForTests({ ...REAL_CONFIG, modelRouting });
+        return runtime;
+    }
+    const issueWithLabels = (labels) => ({
+        number: 1,
+        title: 't',
+        labels: labels.map((name) => ({ name })),
+    });
+
+    it('label с объектной записью {provider, model} — pickModel/pickRuntime читают именно её', () => {
+        const runtime = routingRuntime({
+            labels: { 'complexity:low': { provider: 'kimi', model: 'kimi-k2-0711-preview' } },
+        });
+        const issue = issueWithLabels(['complexity:low']);
+        expect(runtime.pickModel(issue)).toBe('kimi-k2-0711-preview');
+        expect(runtime.pickRuntime(issue)).toBe('kimi');
+    });
+
+    it('label — голая строка (обратная совместимость): модель как раньше, провайдер — статический дефолт', () => {
+        const runtime = routingRuntime({
+            labels: { 'complexity:low': 'claude-haiku-4-5-20251001' },
+        });
+        const issue = issueWithLabels(['complexity:low']);
+        expect(runtime.pickModel(issue)).toBe('claude-haiku-4-5-20251001');
+        expect(runtime.pickRuntime(issue)).toBe('claude');
+    });
+
+    it('label задан, но не совпадает ни с одним issue — берёт default (объектная запись)', () => {
+        const runtime = routingRuntime({
+            labels: { 'complexity:expert': 'claude-fable-5' },
+            default: { provider: 'openai', model: 'gpt-5-codex' },
+        });
+        const issue = issueWithLabels(['complexity:medium']);
+        expect(runtime.pickModel(issue)).toBe('gpt-5-codex');
+        expect(runtime.pickRuntime(issue)).toBe('openai');
+    });
+
+    it('modelRouting не задан вовсе → pickModel = config.model, pickRuntime = дефолтный провайдер', () => {
+        const runtime = buildRuntime();
+        runtime.setConfigForTests({
+            ...REAL_CONFIG,
+            modelRouting: undefined,
+            model: 'claude-sonnet-5',
+        });
+        const issue = issueWithLabels([]);
+        expect(runtime.pickModel(issue)).toBe('claude-sonnet-5');
+        expect(runtime.pickRuntime(issue)).toBe('claude');
+    });
+});
+
+// #376 доп.скоуп: кросс-провайдерный фолбэк при API-лимите — «сначала фолбэк, потом
+// ожидание». Существующие тесты в describe('runClaude — 4-е событие...') без
+// modelRouting.apiLimitFallback остаются зелёными без изменений (проверено выше) — эта
+// ветка выполняется, только если фолбэк явно сконфигурирован.
+describe('runClaude — #376 доп.скоуп: кросс-провайдерный фолбэк при API-лимите', () => {
+    const { runClaude } = ralph;
+
+    it('лимит основного рантайма → один пробный запуск другим провайдером ДО ожидания; успех — sleep/pushEvent не зовутся', () => {
+        const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
+        const fallbackRun = vi.fn(() => ({ code: 0, output: 'diff from kimi' }));
+        const coderRuntimeRunForFn = vi.fn((provider) => {
+            expect(provider).toBe('kimi');
+            return fallbackRun;
+        });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            { model: 'claude-opus-4-8', maxTurns: 5 },
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                coderRuntimeRunForFn,
+                cfg: {
+                    apiLimitMaxWaits: 3,
+                    modelRouting: {
+                        apiLimitFallback: { provider: 'kimi', model: 'kimi-k2-0711-preview' },
+                    },
+                },
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(fallbackRun).toHaveBeenCalledTimes(1);
+        expect(fallbackRun.mock.calls[0][1]).toEqual({
+            model: 'kimi-k2-0711-preview',
+            maxTurns: 5,
+        });
+        expect(pushEventFn).not.toHaveBeenCalled();
+        expect(sleepFn).not.toHaveBeenCalled();
+    });
+
+    it('фолбэк тоже упёрся в лимит → переходим к обычному ожиданию основного рантайма (фолбэк пробуется РОВНО раз за вызов)', () => {
+        const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
+        const fallbackRun = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
+        const coderRuntimeRunForFn = vi.fn(() => fallbackRun);
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                coderRuntimeRunForFn,
+                cfg: {
+                    apiLimitMaxWaits: 1,
+                    modelRouting: { apiLimitFallback: { provider: 'kimi', model: 'x' } },
+                },
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(fallbackRun).toHaveBeenCalledTimes(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(2);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('apiLimitFallback без явного provider (голая строка = тот же провайдер) не пробуется — сразу обычное ожидание', () => {
+        const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
+        const coderRuntimeRunForFn = vi.fn();
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                coderRuntimeRunForFn,
+                cfg: {
+                    apiLimitMaxWaits: 1,
+                    modelRouting: { apiLimitFallback: 'claude-opus-4-8' },
+                },
+            },
+        );
+
+        expect(coderRuntimeRunForFn).not.toHaveBeenCalled();
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('apiLimitFallback не задан → ветка не выполняется (дефолт, поведение прежнее)', () => {
+        const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
+        const coderRuntimeRunForFn = vi.fn();
+
+        runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn: vi.fn(),
+                sleepFn: vi.fn(),
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                coderRuntimeRunForFn,
+                cfg: { apiLimitMaxWaits: 1 },
+            },
+        );
+
+        expect(coderRuntimeRunForFn).not.toHaveBeenCalled();
+    });
+});
+
 describe('formatExcerpt — хвост вывода упавшего чека для heal-промпта', () => {
     it('сплющивает переводы строк, табы и повторные пробелы в один пробел', () => {
         expect(formatExcerpt('a\n\nb\t\tc   d')).toBe('a b c d');
@@ -1358,6 +1584,9 @@ describe('runLoop — основной while-цикл: итерации коде
             // 1-й проход → фаза 0; 2-й и далее → «за концом» массива phases → break.
             phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
             pickModelFn: () => 'claude-picked',
+            // #376: тот же безопасный дефолт, что у pickModelFn — реальный pickRuntime читает
+            // фабричный config (не задан в этих тестах), и без заглушки упал бы TypeError'ом.
+            pickRuntimeFn: () => 'claude',
             pickReviewModelFn: () => 'none',
             // #138: без этих двух дефолтов тесты, доходившие до шага ревью, звали
             // НАСТОЯЩИЕ phaseDiffFiles/reviewDiffContext — то есть реальный
@@ -1528,6 +1757,58 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(opts).toEqual({ model: 'claude-picked', maxTurns: 200 });
         expect(state.count).toBe(1);
         expect(logs.join('\n')).toMatch(/HITL: одна итерация/);
+    });
+
+    // #376: pickRuntimeFn резолвит провайдера ОРТОГОНАЛЬНО pickModelFn — кодер-итерация
+    // передаёт runClaudeFn третьим аргументом рантайм ИМЕННО этого провайдера из реестра
+    // coderRuntime (ralph.coderRuntimeRunFor), а не статический дефолт.
+    it('#376: кодер-итерация резолвит рантайм по pickRuntimeFn (провайдер → run из реестра coderRuntime)', () => {
+        const logs = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn(() => 0);
+        const kimiRun = ralph.coderRuntimeRunFor('kimi');
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                once: true,
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [
+                    { number: 6, title: 'задача-kimi', labels: [{ name: 'complexity:low' }] },
+                ],
+                pickModelFn: () => 'kimi-k2-0711-preview',
+                pickRuntimeFn: () => 'kimi',
+                runClaudeFn,
+            }),
+        );
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        const [, opts, depsOverride] = runClaudeFn.mock.calls[0];
+        expect(opts).toEqual({ model: 'kimi-k2-0711-preview', maxTurns: 200 });
+        expect(depsOverride.runClaudeOnceFn).toBe(kimiRun);
+        expect(logs.join('\n')).toMatch(/модель: kimi-k2-0711-preview \(kimi\)/);
+    });
+
+    // Провайдер БЕЗ явного override в modelRouting (дефолтный роутинг, как до #376) должен
+    // резолвиться на claude — статический adapters.coderRuntime текущего прогона.
+    it('#376: pickRuntime без override даёт claude (обратная совместимость дефолтного роутинга)', () => {
+        const logs = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn(() => 0);
+        const claudeRun = ralph.coderRuntimeRunFor('claude');
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                once: true,
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [{ number: 7, title: 'задача', labels: [] }],
+                pickModelFn: () => 'claude-picked',
+                // pickRuntimeFn не переопределён сверх дефолта общего deps() — 'claude'.
+                runClaudeFn,
+            }),
+        );
+        const [, , depsOverride] = runClaudeFn.mock.calls[0];
+        expect(depsOverride.runClaudeOnceFn).toBe(claudeRun);
     });
 
     it('no-progress breaker (AFK): HEAD не сдвинулся и очередь та же → стоп, пуш', () => {
@@ -2766,6 +3047,83 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(healPrompt).toContain('test');
         expect(healPrompt).toContain('npm run test');
         expect(healPrompt).toContain('boom-fail');
+    });
+
+    // #376 доп.скоуп: после modelRouting.healEscalation.afterAttempts НЕУДАЧНЫХ heal-попыток
+    // подряд чини-сессия гейта переключается на route (может быть другим провайдером).
+    it('гейт red-checks: healEscalation.afterAttempts достигнут → чини-сессия идёт на эскалированный route', () => {
+        const logs = [];
+        // gateHeals:1 → эта попытка станет 2-й, ровно afterAttempts.
+        const state = mkState({ submitted: true, gateHeals: 1 });
+        const runClaudeFn = vi.fn(() => 0);
+        const kimiRun = ralph.coderRuntimeRunFor('kimi');
+        runLoop(
+            validCfg({
+                gateHealAttempts: 5,
+                modelRouting: {
+                    healEscalation: {
+                        afterAttempts: 2,
+                        route: { provider: 'kimi', model: 'kimi-k2-0711-preview' },
+                    },
+                },
+            }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'red-checks',
+                getLastRedCheck: () => ({
+                    name: 'test',
+                    cmd: 'npm run test',
+                    excerpt: 'boom-fail',
+                }),
+                runClaudeFn,
+            }),
+        );
+        expect(state.gateHeals).toBe(2);
+        const [, opts, depsOverride] = runClaudeFn.mock.calls[0];
+        expect(opts.model).toBe('kimi-k2-0711-preview');
+        expect(depsOverride.runClaudeOnceFn).toBe(kimiRun);
+        expect(logs.join('\n')).toMatch(/эскалация → kimi\/kimi-k2-0711-preview/);
+    });
+
+    it('гейт red-checks: healEscalation задан, но afterAttempts ещё не достигнут → heal на cfg.model, без эскалации', () => {
+        const logs = [];
+        const state = mkState({ submitted: true, gateHeals: 0 });
+        const runClaudeFn = vi.fn(() => 0);
+        runLoop(
+            validCfg({
+                gateHealAttempts: 5,
+                modelRouting: {
+                    healEscalation: {
+                        afterAttempts: 2,
+                        route: { provider: 'kimi', model: 'kimi-k2-0711-preview' },
+                    },
+                },
+            }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'red-checks',
+                getLastRedCheck: () => ({
+                    name: 'test',
+                    cmd: 'npm run test',
+                    excerpt: 'boom-fail',
+                }),
+                runClaudeFn,
+            }),
+        );
+        expect(state.gateHeals).toBe(1);
+        const [, opts, depsOverride] = runClaudeFn.mock.calls[0];
+        expect(opts.model).toBe('claude-coder'); // cfg.model, без эскалации
+        // healRoute===null → runClaudeOnceFn:undefined — реальный runClaude сам упал бы
+        // на дефолт adapters.coderRuntime.run (деструктуризация); мок фиксирует именно
+        // «override не передан», не разворачивая дефолт за него.
+        expect(depsOverride.runClaudeOnceFn).toBeUndefined();
+        expect(logs.join('\n')).not.toMatch(/эскалация/);
     });
 
     it('гейт not-merged (нечинимая причина) → PR оставлен человеку, стоп', () => {
@@ -4906,6 +5264,7 @@ describe('runLoop → промпт ревью получает контекст 
                 allOpenIssuesFn: () => [],
                 phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
                 pickModelFn: () => 'claude-picked',
+                pickRuntimeFn: () => 'claude',
                 pickReviewModelFn: () => 'claude-reviewer',
                 runClaudeFn: (prompt) => {
                     prompts.push(prompt);

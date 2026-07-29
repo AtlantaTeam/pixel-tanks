@@ -66,6 +66,7 @@ import {
     resolveAdapterSelection,
     type AdapterConfig,
     type AdapterRegistries,
+    type AdapterSelection,
 } from './adapters-impl.ts';
 
 const CLAUDE_DIR = '.claude';
@@ -101,6 +102,15 @@ const LOCK_MARKER_PATH = path.join(CLAUDE_DIR, 'ralph', '.deps-lock.sha');
 // Фаза в форме, которую хранит config.phases.
 type Phase = { milestone: string; branch: string };
 
+// #376 (фаза 6): один элемент provider-aware modelRouting — либо строка (обратная
+// совместимость: claude-модель, провайдер НЕ меняется — берётся статический
+// adapters.coderRuntime, ровно как до этой карточки), либо объект { provider, model }
+// (явный выбор провайдера кодер-рантайма из реестра coderRuntime, независимо от
+// статического adapters.coderRuntime — pickRuntime резолвит провайдера ПО ISSUE, а не
+// один раз на весь прогон). Схема валидируется на старте (config-profile.ts,
+// assertValidModelRouting) — сюда доходят только уже проверенные значения.
+export type ModelRouteEntry = string | { provider?: string; model: string };
+
 // Плоский конфиг раннера ПОСЛЕ resolveProfile (common + профиль + profileName).
 // Типизированы поля, которые читает оркестратор и стыкуемые модули; полная схема
 // уедет в конфиг-границу фазы 4 (#204).
@@ -112,7 +122,18 @@ export type RalphConfig = {
     model?: string;
     fallbackModel?: string;
     permissionMode?: string;
-    modelRouting?: { labels?: Record<string, string | undefined>; default?: string };
+    modelRouting?: {
+        labels?: Record<string, ModelRouteEntry | undefined>;
+        default?: ModelRouteEntry;
+        // Доп.скоуп #376: кросс-провайдерный фолбэк при API-лимите основного рантайма —
+        // ОДИН пробный запуск через этот маршрут ДО цикла ожидания (apiLimitMaxWaits).
+        // Не задан — поведение прежнее (сразу ждём сброс лимита текущего провайдера).
+        apiLimitFallback?: ModelRouteEntry;
+        // Доп.скоуп #376: эскалация heal-сессий гейта «с дешёвой на сильную» — после
+        // afterAttempts неудачных попыток чини-сессия гейта переключается на route
+        // (может быть другим провайдером). Не задан — heal всегда идёт на cfg.model.
+        healEscalation?: { afterAttempts?: number; route?: ModelRouteEntry };
+    };
     review?: {
         default?: string;
         escalated?: string;
@@ -168,12 +189,18 @@ export type RalphConfig = {
     // этих швов. Поведение петли фаза 5 сознательно не меняет (см. `gateRunChecks`).
     adapters?: AdapterConfig;
     // #373 (фаза 6): рантайм Kimi — тот же бинарь `claude` через Anthropic-совместимый
-    // endpoint Moonshot (research: `docs/ralph-mini-framework/research.md`). Читается ТОЛЬКО
-    // когда выбран `adapters.coderRuntime: 'kimi'`; при дефолте (claude) не влияет ни на что.
+    // endpoint Moonshot (research: `docs/ralph-mini-framework/research.md`). Читается когда
+    // выбран `adapters.coderRuntime: 'kimi'` (статический дефолт всего прогона) ЛИБО когда
+    // #376 modelRouting резолвит provider:'kimi' для КОНКРЕТНОГО issue (per-issue override,
+    // ортогональная ось — pickRuntime); при дефолте claude без per-issue override не влияет
+    // ни на что.
     //   baseUrl — endpoint Moonshot (дефолт международный `https://api.moonshot.ai/anthropic`;
     //             `https://api.moonshot.cn/anthropic` — для КНР). НЕ секрет → допустим в конфиге.
-    //   model — имя модели Moonshot (напр. `kimi-k2-0711-preview`); ОБЯЗАТЕЛЕН (без него claude
-    //           ушёл бы на Anthropic-имя, которого endpoint Kimi не знает — тихий сбой).
+    //   model — имя модели Moonshot (напр. `kimi-k2-0711-preview`); ОБЯЗАТЕЛЕН, ЕСЛИ #376
+    //           modelRouting не даёт свою модель для конкретного issue (иначе claude ушёл бы
+    //           на Anthropic-имя, которого endpoint Kimi не знает — тихий сбой). Per-issue
+    //           модель из modelRouting (provider:'kimi') ПЕРЕОПРЕДЕЛЯЕТ это поле для ТОГО
+    //           issue — kimiRuntime.model тогда служит дефолтом для остальных.
     //   authTokenEnv — имя env-переменной с ключом Moonshot (дефолт `RALPH_KIMI_AUTH_TOKEN`).
     //           Сам КЛЮЧ — только из env (инвариант №11), в конфиг/argv не попадает.
     //   fallbackModel — только Claude-семантика; общий cfg.fallbackModel (claude-имя) в
@@ -188,10 +215,15 @@ export type RalphConfig = {
     // #374 (фаза 6): рантайм OpenAI — ОТДЕЛЬНЫЙ бинарь `codex exec` (research: маршрут (б),
     // `docs/ralph-mini-framework/research.md`). API OpenAI не Anthropic-совместим нативно, а
     // транслирующий прокси нарушил бы fail-closed (тихая мистрансляция) — поэтому не `claude`,
-    // а первопартийный Codex CLI рядом с Claude, не поверх. Читается ТОЛЬКО когда выбран
-    // `adapters.coderRuntime: 'openai'`; при дефолте (claude) ни на что не влияет.
-    //   model — имя модели OpenAI (напр. `gpt-5-codex`); ОБЯЗАТЕЛЕН (детерминизм и паритет с
-    //           Kimi: не полагаемся на скрытый дефолт codex — инвариант №1, без тихого выбора).
+    // а первопартийный Codex CLI рядом с Claude, не поверх. Читается когда выбран
+    // `adapters.coderRuntime: 'openai'` (статический дефолт всего прогона) ЛИБО когда #376
+    // modelRouting резолвит provider:'openai' для КОНКРЕТНОГО issue (per-issue override);
+    // при дефолте claude без per-issue override ни на что не влияет.
+    //   model — имя модели OpenAI (напр. `gpt-5-codex`); ОБЯЗАТЕЛЕН, ЕСЛИ #376 modelRouting не
+    //           даёт свою модель для конкретного issue (иначе не полагаемся на скрытый дефолт
+    //           codex — инвариант №1, без тихого выбора). Per-issue модель из modelRouting
+    //           (provider:'openai') ПЕРЕОПРЕДЕЛЯЕТ это поле для ТОГО issue — openaiRuntime.model
+    //           тогда служит дефолтом для остальных.
     //   sandboxMode — режим песочницы codex (`-s`): `danger-full-access` (дефолт — раннер
     //           крутится в изолированном worktree, инвариант №3, полный доступ там штатен и
     //           нужен для git/npm) либо более узкий `workspace-write`/`read-only`.
@@ -312,6 +344,12 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // выбором из config.adapters (fail-closed на неизвестной реализации). DI-дефолты цикла
     // (runLoop/runClaude/pushEvent) читают adapters ПРИ ВЫЗОВЕ — т.е. уже после присваивания.
     let adapters: RalphAdapters;
+    // #376: выбор реализаций ДО pick(), т.е. { coderRuntime: 'claude'|'kimi'|'openai', ... } —
+    // тот же результат resolveAdapterSelection, что строит `adapters` выше, но по КЛЮЧАМ, а
+    // не по реализациям. pickRuntime читает adapterSelection.coderRuntime как fallback-провайдер
+    // для label'ов modelRouting без явного provider (обратная совместимость: рантайм по
+    // умолчанию решает СТАТИЧЕСКИЙ adapters.coderRuntime текущего прогона, как до этой карточки).
+    let adapterSelection: AdapterSelection;
 
     // #138: предохранитель от побочек в тестах. Раннерные функции берут коллабораторов
     // (shFn/logFn/…) через DI, но у каждого есть ДЕФОЛТ — настоящие sh/log. Тест, забывший
@@ -502,12 +540,16 @@ export function createOrchestrator(env: OrchestratorEnv) {
             runClaudeOnceFn = adapters.coderRuntime.run,
             ensureTunnelFn = ensureTunnel,
             sleepFn = sleep,
+            // #376 доп.скоуп: резолвер рантайма кросс-провайдерного фолбэка — DI как остальные
+            // коллабораторы (тест подменяет фейком, не завязываясь на боевой реестр адаптеров).
+            coderRuntimeRunForFn = coderRuntimeRunFor,
         }: {
             pushEventFn?: typeof pushEvent;
             cfg?: RalphConfig;
             runClaudeOnceFn?: typeof runClaudeOnce;
             ensureTunnelFn?: typeof ensureTunnel;
             sleepFn?: typeof sleep;
+            coderRuntimeRunForFn?: typeof coderRuntimeRunFor;
         } = {},
     ): number {
         // #92: единая точка всех claude-сессий (кодер-итерации И шаги сдачи) — здесь же
@@ -530,10 +572,42 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // молча исчез бы, и раннер спал/повторял без ограничения. positiveIntOrDefault
         // отсекает NaN/строку/≤0, как уже делают apiLimitGraceMin/FallbackWaitMin.
         const maxWaits = positiveIntOrDefault(cfg.apiLimitMaxWaits, 3);
+        // #376 доп.скоуп: «сначала фолбэк, потом ожидание» — пробуем ОДИН раз ЗА ВЕСЬ
+        // вызов (не на каждый attempt: иначе тот же кросс-провайдерный запуск повторялся
+        // бы вместе с обычными повторами и жёг чужой лимит/бюджет без пользы).
+        let fallbackTried = false;
         for (let attempt = 0; ; attempt++) {
             const { code, output } = runClaudeOnceFn(prompt, opts);
             const limitHit = code !== 0 && API_LIMIT_RE.test(output);
-            if (!limitHit || cfg.waitOnApiLimit === false || attempt >= maxWaits) return code;
+            if (!limitHit || cfg.waitOnApiLimit === false) return code;
+            if (!fallbackTried) {
+                fallbackTried = true;
+                // Не задан modelRouting.apiLimitFallback — resolveModelRoute вернёт null и
+                // ветка НИ РАЗУ не выполнится: поведение байт-в-байт прежнее (дефолт).
+                // Провайдер фолбэка совпал бы со СТАТИЧЕСКИМ adapters.coderRuntime (запись —
+                // голая строка без provider, либо provider явно тот же) — пропускаем: повтор
+                // ТЕМ ЖЕ провайдером немедленно, без ожидания сброса, бессмысленен.
+                const fallbackRoute = resolveModelRoute(
+                    cfg.modelRouting?.apiLimitFallback,
+                    adapterSelection.coderRuntime,
+                );
+                if (fallbackRoute && fallbackRoute.provider !== adapterSelection.coderRuntime) {
+                    log(
+                        `🔀 API-лимит — пробую кросс-провайдерный фолбэк "${fallbackRoute.provider}" вместо ожидания (modelRouting.apiLimitFallback).`,
+                    );
+                    const fallbackRun = coderRuntimeRunForFn(fallbackRoute.provider);
+                    const fb = fallbackRun(prompt, {
+                        ...opts,
+                        model: fallbackRoute.model ?? opts.model,
+                    });
+                    const fbLimitHit = fb.code !== 0 && API_LIMIT_RE.test(fb.output);
+                    if (!fbLimitHit) return fb.code;
+                    log(
+                        `⚠ Фолбэк-провайдер "${fallbackRoute.provider}" тоже упёрся в лимит/недоступен — переходим к ожиданию.`,
+                    );
+                }
+            }
+            if (attempt >= maxWaits) return code;
             const waitMs = apiLimitWaitMs(output, cfg);
             const limitMsg = apiLimitMessage(waitMs, attempt, maxWaits);
             // pushEvent — единственный логгер события (маркер 🔔 PUSH печатается всегда,
@@ -684,12 +758,16 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // Отдельная чистая функция с ИНЖЕКТИРУЕМЫМ failFn (как resolveAdapterSelection) —
     // чтобы тест проверял стоп через throwingFail, а не через боевой process.exit.
     // requireToken=false (dry-run): секрет при read-only-прогоне не нужен, но кривой
-    // model ловится и в dry (misconfig виден заранее).
+    // model ловится и в dry (misconfig виден заранее). opts.model (#376) — модель из
+    // modelRouting per-issue ("kimi-k2-...", РЕЗОЛВЛЕННАЯ pickModel/pickRuntime, не
+    // claude-имя): если задана, ПЕРЕОПРЕДЕЛЯЕТ kimiRuntime.model — тогда сам
+    // kimiRuntime.model не обязателен. Не задана (дефолтный claude-роутинг, старое
+    // поведение) — требуем kimiRuntime.model, как раньше.
     function resolveKimiRuntime(
         kimiCfg: RalphConfig['kimiRuntime'],
         envSource: NodeJS.ProcessEnv,
         failFn: (msg: string) => never,
-        opts: { requireToken?: boolean } = {},
+        opts: { requireToken?: boolean; model?: string } = {},
     ): { baseUrl: string; model: string; token: string | null; fallbackModel: string | null } {
         const requireToken = opts.requireToken ?? true;
         const kimi = kimiCfg ?? {};
@@ -697,10 +775,12 @@ export function createOrchestrator(env: OrchestratorEnv) {
             typeof kimi.baseUrl === 'string' && kimi.baseUrl.trim() !== ''
                 ? kimi.baseUrl
                 : KIMI_DEFAULT_BASE_URL;
-        const model = kimi.model;
+        const model =
+            typeof opts.model === 'string' && opts.model.trim() !== '' ? opts.model : kimi.model;
         if (typeof model !== 'string' || model.trim() === '') {
             failFn(
-                "adapters.coderRuntime='kimi' требует kimiRuntime.model — имя модели Moonshot " +
+                "adapters.coderRuntime='kimi' требует kimiRuntime.model (либо modelRouting-запись " +
+                    "с provider:'kimi' и своим model, #376) — имя модели Moonshot " +
                     "(напр. 'kimi-k2-0711-preview'). Без него claude ушёл бы на Anthropic-имя, " +
                     'которого endpoint Kimi не знает (тихий сбой, инвариант №1).',
             );
@@ -722,28 +802,33 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // Одна Kimi-сессия. Форма и роль как у runClaudeOnce: {code, output}, DRY возвращает
     // рано, timeout тот же. spawnFn — инжектируемая точка (как у spawnClaude) для тестов
-    // без живого процесса. Модель берётся из kimiRuntime.model (НЕ из opts.model: до #376
-    // modelRouting отдаёт claude-имена — их Moonshot не поймёт); фолбэк — kimi-специфичный.
+    // без живого процесса. Модель — из opts.model, если РОУТИНГ (#376) явно указал
+    // provider:'kimi' для этого issue; иначе (opts.model не задан либо это claude-имя из
+    // дефолтного роутинга — pickRuntime в этом случае вообще не выбрал бы kimi) падаем на
+    // kimiRuntime.model, как до #376. Фолбэк — kimi-специфичный (kimiRuntime.fallbackModel).
     function runKimiOnce(
         prompt: string,
-        { maxTurns }: ClaudeOpts,
+        { model, maxTurns }: ClaudeOpts,
         spawnFn: typeof spawnSync = spawnSync,
     ): { code: number; output: string } {
-        const { baseUrl, model, token, fallbackModel } = resolveKimiRuntime(
-            config.kimiRuntime,
-            process.env,
-            fail,
-            { requireToken: !DRY },
-        );
+        const {
+            baseUrl,
+            model: resolvedModel,
+            token,
+            fallbackModel,
+        } = resolveKimiRuntime(config.kimiRuntime, process.env, fail, {
+            requireToken: !DRY,
+            model,
+        });
         const cmdArgs = buildClaudeArgs(
             prompt,
-            { model, maxTurns, fallbackModel },
+            { model: resolvedModel, maxTurns, fallbackModel },
             // permissionMode — из конфига (bypassPermissions в бою); общий cfg.fallbackModel
             // НЕ прокидываем (opts.fallbackModel всегда задан → cfg.fallbackModel не читается).
             { permissionMode: config.permissionMode },
         );
         log(
-            `▶ kimi (claude+Moonshot) -p "${prompt.slice(0, 80)}…" --max-turns ${maxTurns} --model ${model}`,
+            `▶ kimi (claude+Moonshot) -p "${prompt.slice(0, 80)}…" --max-turns ${maxTurns} --model ${resolvedModel}`,
         );
         if (DRY) return { code: 0, output: '' };
         const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
@@ -828,21 +913,24 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // форма как resolveKimiRuntime, с ИНЖЕКТИРУЕМЫМ failFn (тест видит стоп через
     // throwingFail, не через боевой process.exit). requireToken=false (dry-run): секрет при
     // read-only не нужен, но кривой model ловится и в dry. Fallback у Codex нет (риск #3),
-    // поэтому в возврате его тоже нет — в отличие от Kimi.
+    // поэтому в возврате его тоже нет — в отличие от Kimi. opts.model (#376) — модель из
+    // modelRouting per-issue (provider:'openai'): если задана, ПЕРЕОПРЕДЕЛЯЕТ
+    // openaiRuntime.model — тогда сам openaiRuntime.model не обязателен.
     function resolveOpenAIRuntime(
         openaiCfg: RalphConfig['openaiRuntime'],
         envSource: NodeJS.ProcessEnv,
         failFn: (msg: string) => never,
-        opts: { requireToken?: boolean } = {},
+        opts: { requireToken?: boolean; model?: string } = {},
     ): { model: string; sandboxMode: string; token: string | null } {
         const requireToken = opts.requireToken ?? true;
         const openai = openaiCfg ?? {};
-        const model = openai.model;
+        const model =
+            typeof opts.model === 'string' && opts.model.trim() !== '' ? opts.model : openai.model;
         if (typeof model !== 'string' || model.trim() === '') {
             failFn(
-                "adapters.coderRuntime='openai' требует openaiRuntime.model — имя модели OpenAI " +
-                    "(напр. 'gpt-5-codex'). Полагаться на скрытый дефолт codex недопустимо " +
-                    '(тихий выбор модели, инвариант №1).',
+                "adapters.coderRuntime='openai' требует openaiRuntime.model (либо modelRouting-запись " +
+                    "с provider:'openai' и своим model, #376) — имя модели OpenAI (напр. 'gpt-5-codex'). " +
+                    'Полагаться на скрытый дефолт codex недопустимо (тихий выбор модели, инвариант №1).',
             );
         }
         const sandboxMode =
@@ -865,21 +953,26 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // Одна OpenAI-сессия. Форма и роль как у runClaudeOnce/runKimiOnce: {code, output}, DRY
     // возвращает рано, timeout тот же. spawnFn — инжектируемая точка для тестов без живого
-    // процесса. Модель — из openaiRuntime.model (НЕ из opts.model: до #376 modelRouting отдаёт
-    // claude-имена — их codex не поймёт). maxTurns у Codex аналога не имеет — не прокидываем.
+    // процесса. Модель — из opts.model, если РОУТИНГ (#376) явно указал provider:'openai' для
+    // этого issue; иначе падаем на openaiRuntime.model, как до #376. maxTurns у Codex
+    // аналога не имеет — не прокидываем.
     function runOpenAIOnce(
         prompt: string,
-        _opts: ClaudeOpts,
+        { model }: ClaudeOpts,
         spawnFn: typeof spawnSync = spawnSync,
     ): { code: number; output: string } {
-        const { model, sandboxMode, token } = resolveOpenAIRuntime(
-            config.openaiRuntime,
-            process.env,
-            fail,
-            { requireToken: !DRY },
+        const {
+            model: resolvedModel,
+            sandboxMode,
+            token,
+        } = resolveOpenAIRuntime(config.openaiRuntime, process.env, fail, {
+            requireToken: !DRY,
+            model,
+        });
+        const cmdArgs = buildCodexArgs(prompt, { model: resolvedModel, sandboxMode });
+        log(
+            `▶ openai (codex exec) "${prompt.slice(0, 80)}…" -m ${resolvedModel} -s ${sandboxMode}`,
         );
-        const cmdArgs = buildCodexArgs(prompt, { model, sandboxMode });
-        log(`▶ openai (codex exec) "${prompt.slice(0, 80)}…" -m ${model} -s ${sandboxMode}`);
         if (DRY) return { code: 0, output: '' };
         const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
         // token гарантированно не-null при !DRY (requireToken выше). Секрет — только в env
@@ -933,10 +1026,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // ── Роутинг моделей по сложности ─────────────────────────────────────────
     // Issue помечается одним label complexity:{low|medium|high|expert}.
-    // Кодер: label → модель из config.modelRouting.labels (haiku/sonnet/opus/fable).
-    // Ревью фазы: config.review.default (opus); эскалация на config.review.escalated
-    // (fable) — по ЗОНЕ РИСКА диффа (config.review.escalateOnPaths), а не по сложности
-    // написания. Подробности и мотивация — в докблоке pickReviewModel (#130).
+    // Кодер: label → модель из config.modelRouting.labels (haiku/sonnet/opus/fable, либо
+    // #376 — { provider, model } любого зарегистрированного рантайма). Ревью фазы:
+    // config.review.default (opus); эскалация на config.review.escalated (fable) — по
+    // ЗОНЕ РИСКА диффа (config.review.escalateOnPaths), а не по сложности написания.
+    // Подробности и мотивация — в докблоке pickReviewModel (#130).
 
     const COMPLEXITY_PRIORITY = [
         'complexity:expert',
@@ -945,14 +1039,90 @@ export function createOrchestrator(env: OrchestratorEnv) {
         'complexity:low',
     ];
 
+    // #376: нормализация ОДНОЙ записи modelRouting в {provider, model}. Строка — обратная
+    // совместимость (провайдер НЕ указан явно → берём fallbackProvider, т.е. СТАТИЧЕСКИЙ
+    // adapters.coderRuntime текущего прогона — ровно так работал роутинг ДО этой карточки:
+    // модель менялась, рантайм — нет). Объект без provider — та же обратная совместимость.
+    // Схема уже проверена на старте (assertValidModelRouting) — здесь только резолв, без
+    // повторной валидации; чистая функция (тот же вход → тот же результат).
+    function resolveModelRoute(
+        entry: ModelRouteEntry | undefined,
+        fallbackProvider: string,
+    ): { provider: string; model?: string } | null {
+        if (entry === undefined) return null;
+        if (typeof entry === 'string') {
+            return entry.trim() === '' ? null : { provider: fallbackProvider, model: entry };
+        }
+        if (!isPlainObject(entry)) return null;
+        const raw = entry as Record<string, unknown>;
+        const provider =
+            typeof raw.provider === 'string' && raw.provider.trim() !== ''
+                ? raw.provider
+                : fallbackProvider;
+        const model =
+            typeof raw.model === 'string' && raw.model.trim() !== '' ? raw.model : undefined;
+        return { provider, model };
+    }
+
+    // Имя модели для label'а issue — ПОВЕДЕНИЕ НЕ МЕНЯЕТСЯ относительно до-#376 версии:
+    // строковая запись возвращается как есть, объектная — отдаёт своё поле .model. Модель
+    // уходит в opts.model кодер-сессии (см. runLoop) независимо от того, каким рантаймом
+    // сессия в итоге запускается (см. pickRuntime).
     function pickModel(issue: Issue): string | undefined {
         const routing = config.modelRouting;
         if (!routing || !routing.labels) return config.model;
         const names = (issue.labels || []).map((l) => l.name);
         for (const label of COMPLEXITY_PRIORITY) {
-            if (names.includes(label) && routing.labels[label]) return routing.labels[label];
+            const entry = routing.labels[label];
+            if (names.includes(label) && entry) {
+                const route = resolveModelRoute(entry, adapterSelection.coderRuntime);
+                if (route?.model) return route.model;
+            }
         }
-        return routing.default || config.model;
+        const def = resolveModelRoute(routing.default, adapterSelection.coderRuntime);
+        return def?.model || config.model;
+    }
+
+    // #376: провайдер кодер-рантайма для label'а issue — ортогональная ось к pickModel
+    // (research: `docs/ralph-mini-framework/research.md`, «выбор рантайма и выбор модели —
+    // две ортогональные оси конфига»). Запись без явного provider (строка ИЛИ объект без
+    // provider) отдаёт adapterSelection.coderRuntime — СТАТИЧЕСКИЙ выбор рантайма всего
+    // прогона (config.adapters.coderRuntime, дефолт 'claude'): именно так вело себя
+    // modelRouting ДО этой карточки, когда рантайм переключался только через
+    // adapters.coderRuntime, а labels были claude-именами. Явный provider в записи
+    // ПЕРЕОПРЕДЕЛЯЕТ его для ЭТОГО issue, не трогая остальные — переключение рантайма
+    // становится решением per-issue, а не на весь прогон.
+    function pickRuntime(issue: Issue): string {
+        const fallback = adapterSelection.coderRuntime;
+        const routing = config.modelRouting;
+        if (!routing || !routing.labels) {
+            return resolveModelRoute(routing?.default, fallback)?.provider ?? fallback;
+        }
+        const names = (issue.labels || []).map((l) => l.name);
+        for (const label of COMPLEXITY_PRIORITY) {
+            const entry = routing.labels[label];
+            if (names.includes(label) && entry) {
+                return resolveModelRoute(entry, fallback)?.provider ?? fallback;
+            }
+        }
+        return resolveModelRoute(routing.default, fallback)?.provider ?? fallback;
+    }
+
+    // #376: рантайм-функция кодер-сессии по имени провайдера — реестр валидирован на
+    // старте (assertValidModelRouting сверяет provider против CODER_RUNTIME_PROVIDERS,
+    // который зеркалит именно ЭТОТ реестр), поэтому промах здесь — рассинхрон реестра
+    // и списка провайдеров, а не опечатка конфига; fail-closed на нём же (инвариант №1),
+    // а не тихий откат на claude.
+    function coderRuntimeRunFor(provider: string): typeof runClaudeOnce {
+        const impl = adapterRegistries.coderRuntime[provider];
+        if (!impl) {
+            fail(
+                `modelRouting резолвил провайдера "${provider}", которого нет в реестре coderRuntime ` +
+                    `(доступные: ${Object.keys(adapterRegistries.coderRuntime).join(', ')}). ` +
+                    'Рассинхрон CODER_RUNTIME_PROVIDERS и adapterRegistries.coderRuntime — почини реестр, не конфиг.',
+            );
+        }
+        return impl.run;
     }
 
     // ── #130: зоны риска для эскалации ревью ─────────────────────────────────
@@ -1206,8 +1376,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // assertKnownReviewModels (#223, планка #217 не должна инвертироваться незнакомой
     // моделью); возвращённые функции сохраняют DI (failFn параметром) — так их зовут
     // config-profile.test.ts и monitor.js (мягкий failFn `() => null`).
-    const { deepMerge, parseProfileFlag, assertValidHaltBeforeDeploy, resolveProfile } =
-        createConfigProfile({ fail, assertKnownReviewModels });
+    const {
+        deepMerge,
+        parseProfileFlag,
+        assertValidHaltBeforeDeploy,
+        assertValidModelRouting,
+        resolveProfile,
+    } = createConfigProfile({ fail, assertKnownReviewModels });
 
     // ── Закрытие milestones ──────────────────────────────────────────────────
     // Milestone закрывается НЕ при создании PR (ревью может вернуть работу),
@@ -1611,7 +1786,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // Дефолтный набор швов (без config — для юнит-тестов, строящих runtime без main()).
     // main() пересоберёт с выбором из config.adapters (fail-closed). Здесь fail недостижим:
     // дефолтный выбор всегда указывает на зарегистрированные реализации.
-    adapters = buildAdapters(adapterRegistries, resolveAdapterSelection(undefined, fail), fail);
+    adapterSelection = resolveAdapterSelection(undefined, fail);
+    adapters = buildAdapters(adapterRegistries, adapterSelection, fail);
 
     // ── State ────────────────────────────────────────────────────────────────
     // Схема: { count, milestone, submitted }.
@@ -1889,6 +2065,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
         allOpenIssuesFn?: typeof allOpenIssues;
         phaseIndexOfFn?: typeof phaseIndexOf;
         pickModelFn?: typeof pickModel;
+        // #376: провайдер кодер-рантайма для issue — ортогональная ось к pickModelFn.
+        pickRuntimeFn?: typeof pickRuntime;
         pickReviewModelFn?: typeof pickReviewModel;
         reviewDiffContextFn?: typeof reviewDiffContext;
         phaseDiffFilesFn?: typeof phaseDiffFiles;
@@ -1959,6 +2137,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             allOpenIssuesFn = adapters.taskSource.listAllOpenIssues,
             phaseIndexOfFn = phaseIndexOf,
             pickModelFn = pickModel,
+            pickRuntimeFn = pickRuntime,
             pickReviewModelFn = pickReviewModel,
             reviewDiffContextFn = reviewDiffContext,
             phaseDiffFilesFn = phaseDiffFiles,
@@ -2053,8 +2232,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 saveStateFn(state);
                 const next = issues[0];
                 const issueModel = pickModelFn(next);
+                // #376: провайдер — ортогональная ось к модели (research: обе оси стыкует
+                // именно эта карточка). По умолчанию (label без явного provider) отдаёт
+                // adapterSelection.coderRuntime — статический рантайм всего прогона, ровно
+                // как до этой карточки; явный provider в modelRouting переключает рантайм
+                // ТОЛЬКО для этого issue.
+                const issueProvider = pickRuntimeFn(next);
                 logFn(
-                    `🔄 ${phase.milestone} | итерация ${state.count}/${maxIterations} | Issue #${next.number}: ${next.title} | модель: ${issueModel} | осталось: ${issues.length}`,
+                    `🔄 ${phase.milestone} | итерация ${state.count}/${maxIterations} | Issue #${next.number}: ${next.title} | модель: ${issueModel} (${issueProvider}) | осталось: ${issues.length}`,
                 );
 
                 // Breaker «нет прогресса» (идея из frankbria/ralph-claude-code): фиксируем
@@ -2072,7 +2257,17 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // с двумя {branch} молча оставила бы плейсхолдер в промпте.
                     .replaceAll('{milestone}', phase.milestone)
                     .replaceAll('{branch}', phase.branch);
-                const code = runClaudeFn(prompt, { model: issueModel, maxTurns });
+                // #376: рантайм — по резолву pickRuntimeFn, а не статический
+                // adapters.coderRuntime.run (дефолт runClaude). При провайдере без явного
+                // override в modelRouting это ТА ЖЕ ссылка (coderRuntimeRunFor('claude') ===
+                // adapters.coderRuntime.run при дефолтном выборе) — поведение прежнее.
+                const code = runClaudeFn(
+                    prompt,
+                    { model: issueModel, maxTurns },
+                    {
+                        runClaudeOnceFn: coderRuntimeRunFor(issueProvider),
+                    },
+                );
                 // Кодер-итерация: ненулевой код НЕ фатален — issue остался открытым, его
                 // возьмёт следующая чистая сессия, а breaker ограничит бесконечные повторы.
                 // (В шагах СДАЧИ ниже логика противоположная — fail-closed, H2.)
@@ -2745,8 +2940,26 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     }
                     state.gateHeals = healsDone + 1;
                     saveStateFn(state);
+                    // #376 доп.скоуп: эскалация heal-сессий гейта «с дешёвой на сильную» —
+                    // после modelRouting.healEscalation.afterAttempts НЕУДАЧНЫХ heal-попыток
+                    // подряд переключаемся на healEscalation.route (может быть другим
+                    // провайдером, напр. сильная модель Kimi/OpenAI вместо дешёвой claude).
+                    // Не задано — healRoute всегда null, heal идёт на cfg.model дефолтным
+                    // рантаймом, ровно как до этой карточки.
+                    const healEsc = cfg.modelRouting?.healEscalation;
+                    const healRoute =
+                        healEsc &&
+                        typeof healEsc.afterAttempts === 'number' &&
+                        healEsc.afterAttempts > 0 &&
+                        state.gateHeals >= healEsc.afterAttempts
+                            ? resolveModelRoute(healEsc.route, adapterSelection.coderRuntime)
+                            : null;
                     logFn(
-                        `🩹 Чини-сессия гейта ${state.gateHeals}/${healMax}: чек ${redCheck.name} (${redCheck.cmd})...`,
+                        `🩹 Чини-сессия гейта ${state.gateHeals}/${healMax}` +
+                            (healRoute
+                                ? ` (эскалация → ${healRoute.provider}/${healRoute.model ?? cfg.model})`
+                                : '') +
+                            `: чек ${redCheck.name} (${redCheck.cmd})...`,
                     );
                     // Список чеков берём из gateChecksFor(profileName), не хардкодим базовые
                     // 5: в prod «весь набор» включает толстые (e2e/coverage/security), и heal
@@ -2757,7 +2970,12 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         .join(', ');
                     const healCode = runClaudeFn(
                         `Гейт мерджа фазы упал на чеке ${redCheck.name} (команда: ${redCheck.cmd}) в ветке ${phase.branch}. Хвост вывода ошибки: ${redCheck.excerpt}. Переключись на ветку ${phase.branch}, воспроизведи чек локально, найди и исправь ПРИЧИНУ. Затем добейся зелёного всего набора: ${gateCmdList}. Закоммить исправление в ${phase.branch} и запушь в origin. Не мерджи PR и не пушь в main. Если причина не чинится кодом автономно — поставь на PR label blocked и объясни комментарием. Метку hold не ставь и не снимай — это стоп-кран человека.`,
-                        { model: cfg.model, maxTurns },
+                        { model: healRoute?.model ?? cfg.model, maxTurns },
+                        {
+                            runClaudeOnceFn: healRoute
+                                ? coderRuntimeRunFor(healRoute.provider)
+                                : undefined,
+                        },
                     );
                     if (healCode !== 0) {
                         // Fail-closed как у шагов сдачи (H2): упавшая чини-сессия не должна
@@ -3201,11 +3419,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // неизвестном шве/имени/незарегистрированной реализации — как остальные проверки
         // конфига). Дефолтная сборка выше дала рабочий набор для юнит-тестов; здесь — боевой
         // выбор. Свап реализации шва = правка config.adapters, не кода (переносимость #204).
-        adapters = buildAdapters(
-            adapterRegistries,
-            resolveAdapterSelection(config.adapters, fail),
-            fail,
-        );
+        adapterSelection = resolveAdapterSelection(config.adapters, fail);
+        adapters = buildAdapters(adapterRegistries, adapterSelection, fail);
         // Абсолютный путь конфига раннера фиксируем ДО любого chdir: прокинем его монитору,
         // чтобы панель читала ТОТ ЖЕ конфиг, что раннер (дерево человека), а не свою копию в
         // worktree на детач-коммите, которая могла отстать (#SiaT8).
@@ -3355,6 +3570,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         deepMerge,
         parseProfileFlag,
         assertValidHaltBeforeDeploy,
+        assertValidModelRouting,
         startMonitor,
         stopMonitor,
         adoptMonitor,
@@ -3451,6 +3667,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
         getAdapters: (): RalphAdapters => adapters,
         buildAdapters,
         resolveAdapterSelection,
+        // #376 (фаза 6): provider-aware modelRouting — экспорт для юнитов резолва/роутинга.
+        // getAdapterSelection — тот же паттерн геттера, что и getAdapters (значение
+        // переприсваивается в main()).
+        getAdapterSelection: (): AdapterSelection => adapterSelection,
+        resolveModelRoute,
+        pickModel,
+        pickRuntime,
+        coderRuntimeRunFor,
         deployPhasePlaceholder,
         mergedShaOf,
         deployWaitMessage,

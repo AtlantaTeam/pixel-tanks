@@ -58,6 +58,15 @@ export const ADAPTER_SEAMS = Object.keys(ADAPTER_DEFAULTS) as Array<keyof typeof
 export type AdapterSeam = keyof typeof ADAPTER_DEFAULTS;
 export type AdapterSelection = Record<AdapterSeam, string>;
 
+// Провайдеры, реально зарегистрированные под швом `coderRuntime` в composition root
+// (orchestrator.ts: adapterRegistries.coderRuntime = { claude, kimi, openai }). Источник
+// правды для provider-aware modelRouting (#376, фаза 6): конфиг не может указать
+// провайдера, которого раннер не умеет запускать — validateModelRouting (config-profile.ts)
+// сверяет modelRouting.*.provider против этого списка ДО сборки адаптеров (инвариант №1:
+// опечатка вида "kimy" — fail на старте, а не тихий откат на дефолтный рантайм).
+export const CODER_RUNTIME_PROVIDERS = ['claude', 'kimi', 'openai'] as const;
+export type CoderRuntimeProvider = (typeof CODER_RUNTIME_PROVIDERS)[number];
+
 // Конфиг-секция выбора реализаций (плоский конфиг ПОСЛЕ resolveProfile). Все ключи
 // опциональны — отсутствующий шов берёт дефолт из ADAPTER_DEFAULTS.
 export type AdapterConfig = Partial<Record<AdapterSeam, string>>;
