@@ -91,64 +91,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Верстка ДС ralph · Фаза 1: Токены + DotGothic16",
-                "branch": "feature/ds-phase-1-tokens"
-            },
-            {
-                "milestone": "Верстка ДС ralph · Фаза 2: Иконки + линт",
-                "branch": "feature/ds-phase-2-icons"
-            },
-            {
-                "milestone": "Верстка ДС ralph · Фаза 3: Атомы форм и контролов",
-                "branch": "feature/ds-phase-3-form-atoms"
-            },
-            {
-                "milestone": "Верстка ДС ralph · Фаза 4: Атомы данных и HUD",
-                "branch": "feature/ds-phase-4-data-hud"
-            },
-            {
-                "milestone": "Верстка ДС ralph · Фаза 5: Обратная связь и состояния",
-                "branch": "feature/ds-phase-5-feedback"
-            },
-            {
-                "milestone": "Верстка ДС ralph · Фаза 6: Попапы и оверлеи",
-                "branch": "feature/ds-phase-6-overlays"
-            },
-            {
-                "milestone": "Верстка ДС ralph · Фаза 7: Витрина 1:1",
-                "branch": "feature/ds-phase-7-showcase"
-            },
-            {
-                "milestone": "Баг-фиксы ralph · Экран боя и легаси UI",
-                "branch": "feature/bugfix-endgame-legacy"
-            },
-            {
-                "milestone": "Баг-фиксы ralph · Дизайн-система: Select и вход на витрину",
-                "branch": "feature/bugfix-ds-select-nav"
-            },
-            {
-                "milestone": "Фреймворк ralph · Фаза 1: TS-фундамент — util и side-effect-guard",
-                "branch": "feature/ralph-fw-1-ts-foundation"
-            },
-            {
-                "milestone": "Фреймворк ralph · Фаза 2: argv-изоляция и инфраструктурные модули",
-                "branch": "feature/ralph-fw-2-argv-infra"
-            },
-            {
-                "milestone": "Фреймворк ralph · Фаза 3: Процессные модули и entry",
-                "branch": "feature/ralph-fw-3-process-modules"
-            },
-            {
-                "milestone": "Фреймворк ralph · Фаза 4: Конфиг-граница",
-                "branch": "feature/ralph-fw-4-config-boundary"
-            },
-            {
-                "milestone": "Фреймворк ralph · Фаза 5: Интерфейсы адаптеров и переносимость",
-                "branch": "feature/ralph-fw-5-adapters"
-            },
-            {
-                "milestone": "Фреймворк ralph · Фаза 6: Агент-рантаймы Kimi и OpenAI + AGENTS.md",
-                "branch": "feature/ralph-fw-6-runtimes"
+                "milestone": "Фреймворк ralph · Фаза 7: Раскладка модулей по папкам",
+                "branch": "feature/ralph-fw-7-layout"
             }
         ]
     },
