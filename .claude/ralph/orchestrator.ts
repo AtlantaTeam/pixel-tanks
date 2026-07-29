@@ -289,7 +289,21 @@ type KillFn = (pid: number, signal?: number | string) => unknown;
 type ReadFileFn = typeof fs.readFileSync;
 type ReadCmdlineFn = (pid: number) => string;
 // Опции claude-сессии: model/maxTurns/fallbackModel (см. buildClaudeArgs, #221).
-type ClaudeOpts = { model?: string; maxTurns: number; fallbackModel?: string | null };
+//
+// modelProvider (#393, ревью фазы 6) — ПРОВАЙДЕР, которому принадлежит `model`. Барьер
+// против «claude-имя уезжает на чужой endpoint»: не-Claude рантайм (runKimiOnce/
+// runOpenAIOnce) применяет `opts.model` ТОЛЬКО когда `modelProvider` совпадает с его
+// собственным провайдером; иначе игнорирует его и падает на свой *Runtime.model. Так
+// сессии сдачи/ревью/heal (передают claude-имя `cfg.model`/`reviewModel` статическому
+// рантайму БЕЗ тега) на не-Claude прогоне честно идут на kimiRuntime.model/
+// openaiRuntime.model, а не запускают `claude --model claude-opus-4-8` против Moonshot.
+// undefined = модель не привязана к провайдеру (легаси claude-путь, дефолт).
+type ClaudeOpts = {
+    model?: string;
+    maxTurns: number;
+    fallbackModel?: string | null;
+    modelProvider?: string;
+};
 
 // Флаги режима из argv entry (ONCE/DRY/RESET/RESUBMIT/DEPLOY_RESOLVED как раньше).
 export type OrchestratorFlags = {
@@ -603,6 +617,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     const fb = fallbackRun(prompt, {
                         ...opts,
                         model: fallbackRoute.model ?? opts.model,
+                        // #393: фолбэк-запись реально даёт свою модель (assertValidModelRouting
+                        // требует model у кросс-провайдерного apiLimitFallback) — помечаем её
+                        // провайдером фолбэка, чтобы не-Claude рантайм фолбэка её применил, а не
+                        // отбросил как чужую. Своей модели нет — сохраняем исходный тег opts.
+                        modelProvider: fallbackRoute.model
+                            ? fallbackRoute.provider
+                            : opts.modelProvider,
                     });
                     // ТОЛЬКО чистый успех (code 0) завершает вызов. Любой ненулевой код —
                     // это может быть собственный лимит фолбэка, НО РАВНО и «бинарь не
@@ -823,18 +844,26 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // Одна Kimi-сессия. Форма и роль как у runClaudeOnce: {code, output}, DRY возвращает
     // рано, timeout тот же. spawnFn — инжектируемая точка (как у spawnClaude) для тестов
-    // без живого процесса. Модель — из opts.model, если РОУТИНГ (#376) явно указал
-    // provider:'kimi' для этого issue (тогда opts.model — модель Moonshot, а не claude-имя:
-    // при статическом coderRuntime≠claude assertValidModelRouting ЗАПРЕЩАЕТ безпровайдерные
-    // записи, чтобы claude-имя из дефолтного роутинга не уехало на endpoint Kimi — barrier
-    // против регрессии «claude --model claude-… против Moonshot»). Не задана (дефолтный
-    // claude-роутинг, статический coderRuntime=claude) — падаем на kimiRuntime.model, как
-    // до #376. Фолбэк — kimi-специфичный (kimiRuntime.fallbackModel).
+    // без живого процесса.
+    //
+    // Модель (#393, барьер против «claude-имя на Moonshot»): opts.model применяется ТОЛЬКО
+    // когда opts.modelProvider === 'kimi' — т.е. маршрут (pickRoute/apiLimitFallback/
+    // healEscalation) ЯВНО назвал провайдера 'kimi' и передал его модель. Во всех
+    // остальных вызовах (сессии сдачи/ревью/heal, идущие через СТАТИЧЕСКИЙ adapters.
+    // coderRuntime с claude-именем cfg.model/reviewModel БЕЗ тега; либо кодер-итерация,
+    // упавшая на config.model из-за отсутствия route-модели) opts.model — НЕ модель
+    // Moonshot, поэтому его отбрасываем и падаем на kimiRuntime.model. Так `claude --model
+    // claude-opus-4-8` против endpoint Kimi становится структурно невозможным, а не
+    // «запрещённым только для записей modelRouting» (исходный блокер устранён не частично).
+    // Фолбэк — kimi-специфичный (kimiRuntime.fallbackModel).
     function runKimiOnce(
         prompt: string,
-        { model, maxTurns }: ClaudeOpts,
+        { model, maxTurns, modelProvider }: ClaudeOpts,
         spawnFn: typeof spawnSync = spawnSync,
     ): { code: number; output: string } {
+        // Провайдер-гейт: чужую (не-kimi) модель к Moonshot не пускаем — резолвер тогда
+        // возьмёт kimiRuntime.model.
+        const routedModel = modelProvider === 'kimi' ? model : undefined;
         const {
             baseUrl,
             model: resolvedModel,
@@ -842,7 +871,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             fallbackModel,
         } = resolveKimiRuntime(config.kimiRuntime, process.env, fail, {
             requireToken: !DRY,
-            model,
+            model: routedModel,
         });
         const cmdArgs = buildClaudeArgs(
             prompt,
@@ -989,23 +1018,33 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // Одна OpenAI-сессия. Форма и роль как у runClaudeOnce/runKimiOnce: {code, output}, DRY
     // возвращает рано, timeout тот же. spawnFn — инжектируемая точка для тестов без живого
-    // процесса. Модель — из opts.model, если РОУТИНГ (#376) явно указал provider:'openai' для
-    // этого issue (тогда opts.model — модель OpenAI, а не claude-имя: при статическом
-    // coderRuntime≠claude assertValidModelRouting ЗАПРЕЩАЕТ безпровайдерные записи, чтобы
-    // claude-имя из дефолтного роутинга не уехало на codex `-m`); иначе падаем на
-    // openaiRuntime.model, как до #376. maxTurns у Codex аналога не имеет — не прокидываем.
+    // процесса. maxTurns у Codex аналога не имеет — не прокидываем.
+    //
+    // Модель (#393, барьер против «claude-имя на codex `-m`»): opts.model применяется ТОЛЬКО
+    // когда opts.modelProvider === 'openai' — т.е. маршрут (pickRoute/apiLimitFallback/
+    // healEscalation) ЯВНО назвал провайдера 'openai' и передал его модель. Во всех
+    // остальных вызовах (сессии сдачи/ревью/heal, идущие через СТАТИЧЕСКИЙ adapters.
+    // coderRuntime с claude-именем cfg.model/reviewModel БЕЗ тега; либо кодер-итерация,
+    // упавшая на config.model из-за отсутствия route-модели) opts.model — НЕ модель OpenAI,
+    // поэтому его отбрасываем и падаем на openaiRuntime.model. Так `codex -m claude-opus-4-8`
+    // становится структурно невозможным, а не «запрещённым только для записей modelRouting»
+    // (исходный блокер устранён не частично — то же для сессий сдачи/ревью, не только для
+    // безпровайдерных записей роутинга).
     function runOpenAIOnce(
         prompt: string,
-        { model }: ClaudeOpts,
+        { model, modelProvider }: ClaudeOpts,
         spawnFn: typeof spawnSync = spawnSync,
     ): { code: number; output: string } {
+        // Провайдер-гейт: чужую (не-openai) модель к codex `-m` не пускаем — резолвер тогда
+        // возьмёт openaiRuntime.model.
+        const routedModel = modelProvider === 'openai' ? model : undefined;
         const {
             model: resolvedModel,
             sandboxMode,
             token,
         } = resolveOpenAIRuntime(config.openaiRuntime, process.env, fail, {
             requireToken: !DRY,
-            model,
+            model: routedModel,
         });
         const cmdArgs = buildCodexArgs(prompt, { model: resolvedModel, sandboxMode });
         log(
@@ -2150,6 +2189,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
         pickModelFn?: typeof pickModel;
         // #376: провайдер кодер-рантайма для issue — ортогональная ось к pickModelFn.
         pickRuntimeFn?: typeof pickRuntime;
+        // #393: единый резолв маршрута кодер-итерации → {provider, model?}. Модель и
+        // провайдер берутся из ОДНОЙ записи, а тег modelProvider ставится только когда
+        // маршрут реально дал модель (route.model), а не когда pickModel упал на claude-имя
+        // config.model — иначе барьер «claude-имя на чужой endpoint» обходится (см. runLoop).
+        pickRouteFn?: typeof pickRoute;
         pickReviewModelFn?: typeof pickReviewModel;
         reviewDiffContextFn?: typeof reviewDiffContext;
         phaseDiffFilesFn?: typeof phaseDiffFiles;
@@ -2221,6 +2265,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             phaseIndexOfFn = phaseIndexOf,
             pickModelFn = pickModel,
             pickRuntimeFn = pickRuntime,
+            pickRouteFn = pickRoute,
             pickReviewModelFn = pickReviewModel,
             reviewDiffContextFn = reviewDiffContext,
             phaseDiffFilesFn = phaseDiffFiles,
@@ -2314,13 +2359,24 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 iterationsThisRun++;
                 saveStateFn(state);
                 const next = issues[0];
-                const issueModel = pickModelFn(next);
-                // #376: провайдер — ортогональная ось к модели (research: обе оси стыкует
-                // именно эта карточка). По умолчанию (label без явного provider) отдаёт
-                // adapterSelection.coderRuntime — статический рантайм всего прогона, ровно
-                // как до этой карточки; явный provider в modelRouting переключает рантайм
-                // ТОЛЬКО для этого issue.
-                const issueProvider = pickRuntimeFn(next);
+                // #376/#393: провайдер и модель — из ОДНОЙ записи маршрута (pickRoute).
+                // По умолчанию (label без явного provider) провайдер = adapterSelection.
+                // coderRuntime — статический рантайм всего прогона, ровно как до #376; явный
+                // provider в modelRouting переключает рантайм ТОЛЬКО для этого issue.
+                //
+                // #393 (барьер блокера фазы 6): issueModel — модель ИЗ МАРШРУТА (route.model),
+                // а если запись маршрута своей модели не дала — общий cfg.model (claude-имя,
+                // дефолтный claude-роутинг). modelProvider ставим ТОЛЬКО в первом случае и
+                // только для не-claude провайдера: тогда не-Claude рантайм применит модель
+                // маршрута. Когда issueModel — это фолбэк на claude-имя cfg.model (у записи
+                // нет своей модели / modelRouting не задан вовсе), тег НЕ ставим — и не-Claude
+                // рантайм отбросит claude-имя, упав на свой *Runtime.model. Так на статическом
+                // не-claude прогоне без route-модели claude-имя не уезжает на Moonshot/codex.
+                const route = pickRouteFn(next);
+                const issueProvider = route.provider;
+                const issueModel = route.model ?? cfg.model;
+                const routeModelProvider =
+                    route.model && issueProvider !== 'claude' ? issueProvider : undefined;
                 logFn(
                     `🔄 ${phase.milestone} | итерация ${state.count}/${maxIterations} | Issue #${next.number}: ${next.title} | модель: ${issueModel} (${issueProvider}) | осталось: ${issues.length}`,
                 );
@@ -2346,7 +2402,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 // adapters.coderRuntime.run при дефолтном выборе) — поведение прежнее.
                 const code = runClaudeFn(
                     prompt,
-                    { model: issueModel, maxTurns },
+                    {
+                        model: issueModel,
+                        maxTurns,
+                        ...(routeModelProvider ? { modelProvider: routeModelProvider } : {}),
+                    },
                     {
                         runClaudeOnceFn: coderRuntimeRunFor(issueProvider),
                     },
@@ -3061,7 +3121,15 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         .join(', ');
                     const healCode = runClaudeFn(
                         `Гейт мерджа фазы упал на чеке ${redCheck.name} (команда: ${redCheck.cmd}) в ветке ${phase.branch}. Хвост вывода ошибки: ${redCheck.excerpt}. Переключись на ветку ${phase.branch}, воспроизведи чек локально, найди и исправь ПРИЧИНУ. Затем добейся зелёного всего набора: ${gateCmdList}. Закоммить исправление в ${phase.branch} и запушь в origin. Не мерджи PR и не пушь в main. Если причина не чинится кодом автономно — поставь на PR label blocked и объясни комментарием. Метку hold не ставь и не снимай — это стоп-кран человека.`,
-                        { model: healRoute?.model ?? cfg.model, maxTurns },
+                        {
+                            model: healRoute?.model ?? cfg.model,
+                            maxTurns,
+                            // #393: тег ставим только когда эскалация реально дала свою модель
+                            // (healRoute.model) — тогда её применит не-Claude рантайм эскалации.
+                            // Эскалация без своей модели падает на cfg.model (claude-имя) — тег
+                            // не ставим, не-Claude рантайм отбросит claude-имя на свой *Runtime.model.
+                            ...(healRoute?.model ? { modelProvider: healRoute.provider } : {}),
+                        },
                         {
                             runClaudeOnceFn: healRoute
                                 ? coderRuntimeRunFor(healRoute.provider)

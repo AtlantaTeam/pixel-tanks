@@ -453,6 +453,45 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv).not.toContain('--fallback-model');
         });
+
+        // #393 (блокер фазы 6): claude-имя, пришедшее БЕЗ тега провайдера (сессии сдачи/
+        // ревью/heal передают cfg.model/reviewModel статическому рантайму; кодер-итерация
+        // без route-модели падает на config.model), НЕ должно уехать `claude --model
+        // claude-opus-4-8` против Moonshot — рантайм обязан отбросить его и взять kimiRuntime.model.
+        it('#393: claude-имя opts.model БЕЗ modelProvider отбрасывается → argv берёт kimiRuntime.model', () => {
+            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            runtime.runKimiOnce('сессия сдачи', { model: 'claude-opus-4-8', maxTurns: 5 }, spawnFn);
+            const [, argv] = spawnFn.mock.calls[0];
+            expect(argv[argv.indexOf('--model') + 1]).toBe('kimi-k2-0711-preview');
+            expect(argv.join(' ')).not.toContain('claude-opus-4-8');
+        });
+
+        // #393: тот же класс, но модель пришла ИЗ МАРШРУТА с тегом modelProvider:'kimi'
+        // (route явно выбрал провайдера kimi + свою модель) — её раннер применяет.
+        it('#393: opts.model с modelProvider:"kimi" применяется (модель маршрута Moonshot)', () => {
+            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            runtime.runKimiOnce(
+                'кодер-итерация',
+                { model: 'kimi-k2-turbo-preview', maxTurns: 5, modelProvider: 'kimi' },
+                spawnFn,
+            );
+            const [, argv] = spawnFn.mock.calls[0];
+            expect(argv[argv.indexOf('--model') + 1]).toBe('kimi-k2-turbo-preview');
+        });
+
+        // #393: тег ЧУЖОГО провайдера (openai) к kimi-рантайму модель тоже не пускает —
+        // применяется только собственный тег провайдера.
+        it('#393: opts.model с чужим modelProvider:"openai" отбрасывается kimi-рантаймом', () => {
+            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            runtime.runKimiOnce(
+                'x',
+                { model: 'gpt-5-codex', maxTurns: 5, modelProvider: 'openai' },
+                spawnFn,
+            );
+            const [, argv] = spawnFn.mock.calls[0];
+            expect(argv[argv.indexOf('--model') + 1]).toBe('kimi-k2-0711-preview');
+            expect(argv.join(' ')).not.toContain('gpt-5-codex');
+        });
     });
 });
 
@@ -728,6 +767,46 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             expect(argv).not.toContain('--max-turns');
             expect(argv).not.toContain('--fallback-model');
         });
+
+        // #393 (блокер фазы 6): claude-имя без тега провайдера (сессии сдачи/ревью/heal,
+        // либо кодер-итерация на config.model) НЕ должно уехать `codex -m claude-opus-4-8` —
+        // рантайм обязан отбросить его и взять openaiRuntime.model.
+        it('#393: claude-имя opts.model БЕЗ modelProvider отбрасывается → argv берёт openaiRuntime.model', () => {
+            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            runtime.runOpenAIOnce(
+                'сессия сдачи',
+                { model: 'claude-opus-4-8', maxTurns: 5 },
+                spawnFn,
+            );
+            const [, argv] = spawnFn.mock.calls[0];
+            expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex');
+            expect(argv.join(' ')).not.toContain('claude-opus-4-8');
+        });
+
+        // #393: модель ИЗ МАРШРУТА с тегом modelProvider:'openai' — применяется.
+        it('#393: opts.model с modelProvider:"openai" применяется (модель маршрута OpenAI)', () => {
+            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            runtime.runOpenAIOnce(
+                'кодер-итерация',
+                { model: 'gpt-5-codex-mini', maxTurns: 5, modelProvider: 'openai' },
+                spawnFn,
+            );
+            const [, argv] = spawnFn.mock.calls[0];
+            expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex-mini');
+        });
+
+        // #393: чужой тег (kimi) к codex-рантайму модель не пускает.
+        it('#393: opts.model с чужим modelProvider:"kimi" отбрасывается codex-рантаймом', () => {
+            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            runtime.runOpenAIOnce(
+                'x',
+                { model: 'kimi-k2-0711-preview', maxTurns: 5, modelProvider: 'kimi' },
+                spawnFn,
+            );
+            const [, argv] = spawnFn.mock.calls[0];
+            expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex');
+            expect(argv.join(' ')).not.toContain('kimi-k2-0711-preview');
+        });
     });
 });
 
@@ -913,9 +992,12 @@ describe('runClaude — #376 доп.скоуп: кросс-провайдерн�
         expect(code).toBe(0);
         expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
         expect(fallbackRun).toHaveBeenCalledTimes(1);
+        // #393: запись apiLimitFallback дала свою модель ⇒ помечена провайдером фолбэка
+        // (modelProvider:'kimi'), иначе не-Claude рантайм фолбэка отбросил бы её как чужую.
         expect(fallbackRun.mock.calls[0][1]).toEqual({
             model: 'kimi-k2-0711-preview',
             maxTurns: 5,
+            modelProvider: 'kimi',
         });
         expect(pushEventFn).not.toHaveBeenCalled();
         expect(sleepFn).not.toHaveBeenCalled();
@@ -1787,6 +1869,10 @@ describe('runLoop — основной while-цикл: итерации коде
             // #376: тот же безопасный дефолт, что у pickModelFn — реальный pickRuntime читает
             // фабричный config (не задан в этих тестах), и без заглушки упал бы TypeError'ом.
             pickRuntimeFn: () => 'claude',
+            // #393: кодер-итерация резолвит маршрут единой pickRouteFn (модель+провайдер из
+            // одной записи). Дефолт — claude-роутинг с моделью 'claude-picked': провайдер
+            // claude, тег modelProvider не ставится (не-Claude рантайма нет).
+            pickRouteFn: () => ({ provider: 'claude', model: 'claude-picked' }),
             pickReviewModelFn: () => 'none',
             // #138: без этих двух дефолтов тесты, доходившие до шага ревью, звали
             // НАСТОЯЩИЕ phaseDiffFiles/reviewDiffContext — то есть реальный
@@ -1976,16 +2062,52 @@ describe('runLoop — основной while-цикл: итерации коде
                 openIssuesFn: () => [
                     { number: 6, title: 'задача-kimi', labels: [{ name: 'complexity:low' }] },
                 ],
-                pickModelFn: () => 'kimi-k2-0711-preview',
-                pickRuntimeFn: () => 'kimi',
+                pickRouteFn: () => ({ provider: 'kimi', model: 'kimi-k2-0711-preview' }),
                 runClaudeFn,
             }),
         );
         expect(runClaudeFn).toHaveBeenCalledTimes(1);
         const [, opts, depsOverride] = runClaudeFn.mock.calls[0];
-        expect(opts).toEqual({ model: 'kimi-k2-0711-preview', maxTurns: 200 });
+        // #393: модель ИЗ МАРШРУТА (route.model) + провайдер kimi ⇒ помечена тегом
+        // modelProvider:'kimi', чтобы runKimiOnce её применил (не отбросил как чужую).
+        expect(opts).toEqual({
+            model: 'kimi-k2-0711-preview',
+            maxTurns: 200,
+            modelProvider: 'kimi',
+        });
         expect(depsOverride.runClaudeOnceFn).toBe(kimiRun);
         expect(logs.join('\n')).toMatch(/модель: kimi-k2-0711-preview \(kimi\)/);
+    });
+
+    // #393 (блокер фазы 6, path 2): статический не-claude рантайм + маршрут БЕЗ своей модели
+    // (issue без complexity-метки, modelRouting.default не задан) ⇒ pickRoute отдаёт
+    // {provider:'kimi', model:undefined}, кодер-итерация падает на общий cfg.model (claude-имя).
+    // Барьер: тег modelProvider НЕ ставится (модель не из маршрута) — не-Claude рантайм ниже
+    // отбросит claude-имя. Проверяем на уровне цикла: opts НЕ содержит modelProvider, а рантайм
+    // резолвится kimi (сам drop покрыт юнитом runKimiOnce выше).
+    it('#393: статический kimi + маршрут без модели → opts.model=cfg.model БЕЗ тега modelProvider (claude-имя не уедет)', () => {
+        const logs = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn(() => 0);
+        const kimiRun = ralph.coderRuntimeRunFor('kimi');
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                once: true,
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [{ number: 8, title: 'задача-без-метки', labels: [] }],
+                // Статический не-claude прогон без route-модели: провайдер kimi, model undefined.
+                pickRouteFn: () => ({ provider: 'kimi' }),
+                runClaudeFn,
+            }),
+        );
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        const [, opts, depsOverride] = runClaudeFn.mock.calls[0];
+        // Модель — общий cfg.model (claude-имя), тега провайдера НЕТ: не-Claude рантайм её отбросит.
+        expect(opts.model).toBe('claude-coder');
+        expect(opts).not.toHaveProperty('modelProvider');
+        expect(depsOverride.runClaudeOnceFn).toBe(kimiRun);
     });
 
     // Провайдер БЕЗ явного override в modelRouting (дефолтный роутинг, как до #376) должен
@@ -3287,6 +3409,9 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(state.gateHeals).toBe(3);
         const [, opts, depsOverride] = runClaudeFn.mock.calls[0];
         expect(opts.model).toBe('kimi-k2-0711-preview');
+        // #393: модель эскалации пришла ИЗ route.model ⇒ помечена провайдером эскалации,
+        // чтобы не-Claude рантайм её применил (а не отбросил как чужую claude-имя).
+        expect(opts.modelProvider).toBe('kimi');
         expect(depsOverride.runClaudeOnceFn).toBe(kimiRun);
         expect(logs.join('\n')).toMatch(/эскалация → kimi\/kimi-k2-0711-preview/);
     });
