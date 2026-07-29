@@ -191,7 +191,7 @@ describe('dry-run переносимости ядра на чужом конфи
                 runClaudeCalls.push({ prompt, model: opts.model });
                 return 0;
             },
-        } as never);
+        });
 
         // Фаза/milestone — только из фикстуры (не боевой pixel-tanks milestone).
         expect(openIssuesCalls).toEqual(['Sputnik Tracker · Фаза 1: Каркас']);

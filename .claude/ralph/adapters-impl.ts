@@ -62,7 +62,11 @@ export type AdapterSelection = Record<AdapterSeam, string>;
 // опциональны — отсутствующий шов берёт дефолт из ADAPTER_DEFAULTS.
 export type AdapterConfig = Partial<Record<AdapterSeam, string>>;
 
-type FailFn = (msg: string) => unknown;
+// `=> never`, не `=> unknown`: боевой `fail` (process.exit) и тестовый `throwingFail`
+// не возвращаются, и код после `failFn(...)` в resolveAdapterSelection/pick недостижим —
+// тип это выражает (иначе `out[seam] = v` присвоило бы невалидное имя, а `pick` вернул бы
+// `undefined as T` при нестандартном failFn, который бы вернул управление).
+type FailFn = (msg: string) => never;
 
 // ── Резолв выбора реализаций из конфига (fail-closed) ─────────────────────────
 // Возвращает ПОЛНЫЙ выбор по всем пяти швам: заданное в конфиге либо дефолт. Отвергает:
@@ -76,7 +80,12 @@ export function resolveAdapterSelection(
 ): AdapterSelection {
     const sel = adapters ?? {};
     for (const key of Object.keys(sel)) {
-        if (!(key in ADAPTER_DEFAULTS)) {
+        // Object.hasOwn, не `key in`: `in` смотрит и цепочку прототипов — ключи вроде
+        // `toString`/`valueOf`/`hasOwnProperty` прошли бы проверку «неизвестный шов» молча
+        // и затем тихо проигнорировались циклом по ADAPTER_SEAMS (тот самый «тихий дефолт»,
+        // от которого этот резолвер защищает; resolveAdapterSelection экспортирована и как
+        // самостоятельная API — resolveProfile её не всегда прикрывает).
+        if (!Object.hasOwn(ADAPTER_DEFAULTS, key)) {
             failFn(
                 `adapters.${key} — неизвестный шов адаптера. Допустимые: ${ADAPTER_SEAMS.join(', ')}.`,
             );

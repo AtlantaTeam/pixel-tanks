@@ -146,6 +146,24 @@ export type RalphConfig = {
     // рантайм). Опционально — отсутствующий шов берёт канон-дефолт (ADAPTER_DEFAULTS);
     // неизвестный ключ/имя = fail-closed (resolveAdapterSelection). Свап реализации =
     // правка конфига, не кода.
+    //
+    // ГРАНИЦА ФАЗЫ 5 (важно для фазы 6). Цикл сдачи ещё НЕ роутит через switch(adapters)
+    // ЧАСТЬ методов форжа/гейта: `runLoop` зовёт `tryMergePhase(phase, {profileName})`, а
+    // тот внутри берёт `findOpenPr`/`checksGreen`/`mergePr` из замыкания gate.ts, НЕ из
+    // `adapters.taskSource.findOpenPullRequest`/`adapters.gate.runChecks`/
+    // `adapters.taskSource.mergePullRequest`. Через switch уже идут: чтение очереди
+    // (listReadyIssues/listAllOpenIssues), проверка мерджа (isPhaseMerged/
+    // mergedPullRequestNumber), метки, closeMilestone/syncBoard, notifier, coderRuntime,
+    // deployCheck. `gateRunChecks`/`mergePr` пока существуют как швы только для набора
+    // адаптеров и контрактного сьюта #370.
+    //
+    // Сегодня это безобидно (реализация по одной на шов, ссылки те же), но ловушка на
+    // фазу 6+: `gate: 'cargo'` пройдёт resolveAdapterSelection/buildAdapters и контрактный
+    // сьют, а мердж-путь молча продолжит гонять npm-гейт (класс «тихого дефолта»,
+    // инвариант №1). ПЕРЕД тем как объявлять gate/taskSource-мердж свапаемыми, фаза 6
+    // обязана либо провести `tryMergePhase` на швы (прокинуть checksGreenFn/mergePrFn/
+    // findOpenPrFn из adapters.*), либо поставить fail-closed барьер на НЕдефолтный выбор
+    // этих швов. Поведение петли фаза 5 сознательно не меняет (см. `gateRunChecks`).
     adapters?: AdapterConfig;
     tunnelCheck?: {
         enabled?: boolean;
@@ -1240,7 +1258,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // (оркестрация: композиция runChecks + mergePullRequest), а этот метод — для набора швов
     // и контрактного сьюта #370; поведение петли не меняется.
     function gateRunChecks(branch: string, prNumber: number): GateCheckResult {
-        const green = checksGreen(branch, prNumber, { checks: gateChecksFor(config.profileName) });
+        // config?. — до main() (юнит-тесты, строящие runtime без main()) config ещё не
+        // инициализирован; читать .profileName напрямую дало бы TypeError вместо базового
+        // состава чеков. undefined ⇒ gateChecksFor берёт базу (безопасный дефолт вне цикла).
+        const green = checksGreen(branch, prNumber, { checks: gateChecksFor(config?.profileName) });
         if (green) {
             return { green: true, verifiedHead: gateGetVerifiedHead(), redCheck: null };
         }
@@ -1275,9 +1296,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
             npm: createNpmGate({ resolveChecks: gateChecksFor, runChecks: gateRunChecks }),
         },
         notifier: {
-            // notify === sendTelegramMessage (та же ссылка): интерфейс — notify(text), но
-            // рантайм-функция принимает и {logFn,execFn} — pushEvent прокидывает их насквозь,
-            // интеграционный тест шва цел; фолбэк/анти-RCE/токен-вне-argv живут в нотифаере.
+            // notify === sendTelegramMessage (та же ссылка): интерфейс — notify(text, opts?)
+            // с узаконенным контекстом доставки {logFn,execFn} (NotifierDeliveryOpts, #392) —
+            // pushEvent прокидывает их насквозь, интеграционный тест шва цел; фолбэк/анти-RCE/
+            // токен-вне-argv живут в нотифаере.
             telegram: createTelegramNotifier({ notify: sendTelegramMessage }),
         },
         deployCheck: {

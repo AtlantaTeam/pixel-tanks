@@ -16,11 +16,11 @@
 // `allOpenIssues` (orchestrator.ts) не имеют собственного DI-хука на чтение gh (в
 // отличие от соседних findOpenPr/closeMilestoneByTitle) — их вызывает только runLoop
 // через параметр `openIssuesFn`. Поэтому «боевая» реализация TaskSourceAdapter здесь
-// покрывает 7 из 9 методов реальным кодом (findOpenPr/phaseMerged/mergedPhasePr/mergePr/
-// addBlockedLabel/removeBlockedLabel/closeMilestone/syncBoard — считая последние два
-// одним методом каждый, итого 8), а listReadyIssues/listAllOpenIssues — тем же фейком,
-// что и в realizability-флейворе (честно закомментировано на месте, не выдаётся за
-// боевую логику).
+// покрывает боевым кодом 8 из 10 методов интерфейса (findOpenPullRequest/isPhaseMerged/
+// mergedPullRequestNumber/mergePullRequest/addBlockedLabel/removeBlockedLabel/
+// closeMilestone/syncBoard), а listReadyIssues/listAllOpenIssues — тем же фейком, что и
+// в realizability-флейворе (честно закомментировано на месте, не выдаётся за боевую
+// логику).
 import { describe, expect, it, vi } from 'vitest';
 import type {
     CoderRuntimeAdapter,
@@ -44,6 +44,9 @@ import type { GateEnv } from './gate.ts';
 import { createGateRunner } from './gate.ts';
 import type { DeployCheckEnv } from './deploy-check.ts';
 import { createDeployCheckModule } from './deploy-check.ts';
+// Боевой POSIX-квотер без побочек — тот же, что импортируют соседние тесты; локальная
+// копия молча разъехалась бы с ним при правке экранирования.
+import { shq } from './ralph-util.ts';
 // @ts-expect-error — JS-модуль без деклараций типов (тот же приём, что telegram-notifier.test.js).
 import { sendTelegramMessage } from './telegram-notifier.js';
 // @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что gate.test.ts
@@ -52,7 +55,6 @@ import { sendTelegramMessage } from './telegram-notifier.js';
 import ralph from './ralph.js';
 
 const SHA = 'a'.repeat(40);
-const shq = (v: unknown): string => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
 // ── Синтетические env боевых фабрик (реальная логика, фейковый I/O) ──────────────────
 
@@ -174,43 +176,43 @@ function buildFakeTaskSource(): { adapter: TaskSourceAdapter; calls: string[] } 
 // addBlockedLabel/removeBlockedLabel — СВЕЖИЙ createGateRunner(fakeEnv), не зависящий от
 // синглтона ralph.js (та же логика, что gate.ts реально исполняет в бою). listReadyIssues/
 // listAllOpenIssues — см. докблок файла, тем же фейком, что и realizability-флейвор.
+// Собираем адаптер ИМЕННО через боевой маппер createGithubTaskSource(adapters-impl.ts) —
+// тогда под контрактом оказывается и сам сдвиг имён (openIssues→listReadyIssues и т.п.),
+// а не только функции под ним.
 function buildRealTaskSource(): { adapter: TaskSourceAdapter; gateEnv: GateEnv } {
     let ghJsonImpl: (cmd: string) => unknown = () => {
         throw new Error('ghJson не подменён в тесте (gate)');
     };
-    let shArgvCalls: string[] = [];
+    const shArgvCalls: string[] = [];
     const gateEnv = makeGateEnv({
         ghJson: ((cmd: string) => ghJsonImpl(cmd)) as GateEnv['ghJson'],
         shArgv: (file, args) => {
             shArgvCalls.push(`${file} ${args.join(' ')}`);
             return '';
         },
-        sh: (cmd) => {
-            if (cmd.includes('gh pr list --head')) return ''; // без открытого PR по умолчанию
-            return '';
-        },
+        // Эти пути читают gh через ghJson, не sh; sh-стаб просто нейтрален.
+        sh: () => '',
     });
     const g = createGateRunner(gateEnv);
 
     let allOpenThrows = false;
-    const adapter: TaskSourceAdapter = {
-        listReadyIssues: (milestone) => (milestone === MILESTONE ? filterReady(ISSUES) : []),
-        listAllOpenIssues: (milestone) => {
+    const adapter: TaskSourceAdapter = createGithubTaskSource({
+        openIssues: (milestone) => (milestone === MILESTONE ? filterReady(ISSUES) : []),
+        allOpenIssues: (milestone) => {
             if (allOpenThrows) throw new Error('gh issue list упал');
             return milestone === MILESTONE ? ISSUES.slice() : [];
         },
-        findOpenPullRequest: (branch: string): PullRequest | null =>
+        findOpenPr: (branch: string): PullRequest | null =>
             ralph.findOpenPr(branch, {
                 ghJsonFn: (cmd: string) => ghJsonImpl(cmd),
                 logFn: () => {},
             }),
-        isPhaseMerged: g.phaseMerged,
-        mergedPullRequestNumber: g.mergedPhasePr,
-        mergePullRequest: (prNumber: number, headSha?: string | null) =>
-            g.mergePr(prNumber, headSha),
+        phaseMerged: g.phaseMerged,
+        mergedPhasePr: g.mergedPhasePr,
+        mergePr: (prNumber: number, headSha?: string | null) => g.mergePr(prNumber, headSha),
         addBlockedLabel: (branch: string) => g.addBlockedLabel(branch),
         removeBlockedLabel: (branch: string) => g.removeBlockedLabel(branch),
-        closeMilestone: (title: string) =>
+        closeMilestoneByTitle: (title: string) =>
             ralph.closeMilestoneByTitle(title, {
                 ghJsonFn: (cmd: string) => ghJsonImpl(cmd),
                 runArgvFn: (file: string, args: string[]) => {
@@ -219,7 +221,7 @@ function buildRealTaskSource(): { adapter: TaskSourceAdapter; gateEnv: GateEnv }
                 },
                 logFn: () => {},
             }),
-        syncBoard: () =>
+        syncProjectBoard: () =>
             ralph.syncProjectBoard(
                 (file: string, args: string[]) => {
                     shArgvCalls.push(`${file} ${args.join(' ')}`);
@@ -227,7 +229,7 @@ function buildRealTaskSource(): { adapter: TaskSourceAdapter; gateEnv: GateEnv }
                 },
                 () => {},
             ),
-    };
+    });
     // Тест-хук: подменить ghJson-диспетчер сценария (разные тесты — разные фикстуры gh).
     (adapter as unknown as { __setGhJson: (fn: (cmd: string) => unknown) => void }).__setGhJson = (
         fn,
@@ -307,7 +309,25 @@ function registerTaskSourceContract(
 
         it('mergePullRequest прокидывает sha головы (для --match-head-commit) и не бросает', () => {
             const { adapter } = build();
+            const hook = adapter as unknown as TaskSourceHook;
             expect(() => adapter.mergePullRequest(42, SHA)).not.toThrow();
+            // Боевой флейвор: проверяем не только «не бросает», а что sha реально уехал в
+            // argv `gh pr merge` через --match-head-commit — то самое TOCTOU-свойство
+            // контракта. Фейк argv не моделирует, для него достаточно not.toThrow выше.
+            if (hook.__shArgvCalls) {
+                const mergeArgv = hook.__shArgvCalls().find((c) => c.includes('pr merge'));
+                expect(mergeArgv).toContain(`--match-head-commit ${SHA}`);
+            }
+        });
+
+        it('НЕГАТИВНЫЙ: mergePullRequest без валидного sha — мердж БЕЗ --match-head-commit', () => {
+            const { adapter } = build();
+            const hook = adapter as unknown as TaskSourceHook;
+            if (!hook.__shArgvCalls) return; // ветку SHA40_RE моделирует только боевой argv
+            expect(() => adapter.mergePullRequest(42, '')).not.toThrow();
+            const mergeArgv = hook.__shArgvCalls().find((c) => c.includes('pr merge'));
+            expect(mergeArgv).toBeDefined();
+            expect(mergeArgv).not.toContain('--match-head-commit');
         });
 
         it('addBlockedLabel/removeBlockedLabel/closeMilestone/syncBoard не бросают (fail-open)', () => {
@@ -443,8 +463,7 @@ function buildRealNotifier(fail: boolean): { adapter: NotifierAdapter; sent: str
     const sent: string[] = [];
     const execFn = (_file: string, args: string[]): string => {
         if (fail) {
-            const e = new Error('Command failed: curl …') as Error & { message: string };
-            throw e;
+            throw new Error('Command failed: curl …');
         }
         // --data-urlencode text=<...> — вытащим отправленный текст для ассерта.
         const textArg = args.find((a) => a.startsWith('text='));
