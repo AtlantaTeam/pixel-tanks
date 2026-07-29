@@ -620,7 +620,7 @@ function buildFakeRuntime(result: { code: number; output: string }): CoderRuntim
 }
 
 // Боевая логика: buildClaudeArgs + spawnClaude (ralph.js), spawnFn подменён — та же граница
-// DI, что и в orchestrator.test.js (явная инъекция, НЕ vi.mock('node:child_process')).
+// DI, что и в orchestrator.test.ts (явная инъекция, НЕ vi.mock('node:child_process')).
 function buildRealRuntime(spawnResult: {
     status: number | null;
     stdout: string;

@@ -7,7 +7,7 @@
 // `ralph.config.json` (кроме имён моделей ревью — те часть словаря ядра, не проекта,
 // см. REVIEW_MODEL_STRENGTH в review.ts).
 //
-// createOrchestrator зовётся НАПРЯМУЮ (как в orchestrator.test.js, блок «createOrchestrator:
+// createOrchestrator зовётся НАПРЯМУЮ (как в orchestrator.test.ts, блок «createOrchestrator:
 // API-поверхность»), а не через singleton ralph.js — так фикстурный прогон получает
 // независимый config/adapters и не делит состояние с остальным сьютом.
 //
