@@ -27,8 +27,12 @@
 
 ## Язык общения
 
+<!-- AGENTS-SYNC:START lang -->
+
 - Всегда общайся на русском языке
 - Комментарии к коду, коммиты, PR — на русском
+
+<!-- AGENTS-SYNC:END lang -->
 
 ## Обзор проекта
 
@@ -38,6 +42,8 @@
 **Что выкидываем:** Redux + redux-saga, Webpack, connected-react-router, Formik+Yup, Sequelize+Express, Storybook, страницы Forum и Privacy. OAuth Яндекс — возвращаем в фазе 9. Аудио из `static/audio/` (мелодии Андрея) — возвращаем в фазе 6 (game-next).
 
 ## Технологический стек
+
+<!-- AGENTS-SYNC:START stack -->
 
 **Основа:** Next.js 16 + React 19 + TypeScript 5 + Tailwind 4 + своя UI-библиотека `shared/ui` (игровая тема: шрифты **DotGothic16** (display) + **JetBrains Mono** (UI/HUD) + **Montserrat** (body-sans) + **Press Start 2P** (pixel-акценты), self-hosted из `public/fonts`; NES-рамки `pixel-border`; кастомная dark-палитра + faction-темы через `[data-faction]` — токены в `globals.css`, витрина `/design-system`).
 
@@ -50,6 +56,8 @@
 **Тесты:** Vitest + Testing Library + happy-dom (unit/component), Playwright (e2e).
 
 **Линтинг:** ESLint 9 (flat config) + Steiger (FSD) + Prettier + Husky + lint-staged.
+
+<!-- AGENTS-SYNC:END stack -->
 
 ## Архитектура: FSD 2.1 + App Router
 
@@ -79,17 +87,23 @@ src/
 
 ### Правила FSD (ОБЯЗАТЕЛЬНО)
 
+<!-- AGENTS-SYNC:START fsd-import-rules -->
+
 - **Импорты только сверху вниз:** `app → views → widgets → features → entities → shared`
 - **Нельзя** импортировать из соседнего слайса того же слоя. Для cross-entity связей — поднимать в features
 - **Public API:** каждый слайс экспортирует через `index.ts`. Импорт из внутренних файлов запрещён
 - **`app/`** — только маршрутизация и провайдеры. `page.tsx` — тонкая обёртка над `views/`
 - **`src/pages/` запрещён** — Next.js считает его Pages Router. FSD-слой `pages` живёт в `src/views/`
 
+<!-- AGENTS-SYNC:END fsd-import-rules -->
+
 Steiger валидирует структуру автоматически: `npm run lint:fsd`.
 
 ## Конвенции кода
 
 ### Форматирование
+
+<!-- AGENTS-SYNC:START formatting -->
 
 - **Отступы:** 4 пробела (табы запрещены)
 - **Никаких `any`** — `unknown`, дженерики, Zod-инференс. ESLint `@typescript-eslint/no-explicit-any: error`
@@ -98,7 +112,11 @@ Steiger валидирует структуру автоматически: `npm
 - **`h-dvh` вместо `h-screen`** — учитывает dynamic viewport на мобилках
 - **APP_NAME через константу** из `@/shared/config`, не хардкодить
 
+<!-- AGENTS-SYNC:END formatting -->
+
 ### Нейминг файлов и папок
+
+<!-- AGENTS-SYNC:START naming-files -->
 
 Всё **kebab-case**. Точка-суффикс = назначение модуля. Префикс = тип сущности.
 
@@ -114,7 +132,11 @@ Steiger валидирует структуру автоматически: `npm
 | **Enum**                     | `e-kebab-case.ts` → `enum EName` | `e-game-mode.ts` → `EGameMode`  |
 | **Public API**               | `index.ts`                       | Обязательно в каждом FSD-слайсе |
 
+<!-- AGENTS-SYNC:END naming-files -->
+
 ### Нейминг сущностей в коде
+
+<!-- AGENTS-SYNC:START naming-entities -->
 
 | Сущность                 | Правило                              | Пример              |
 | ------------------------ | ------------------------------------ | ------------------- |
@@ -125,12 +147,18 @@ Steiger валидирует структуру автоматически: `npm
 | **Переменная / функция** | camelCase                            | `calculateImpact()` |
 | **Константа**            | UPPER_SNAKE_CASE                     | `MAX_WIND_SPEED`    |
 
+<!-- AGENTS-SYNC:END naming-entities -->
+
 ### Тесты
+
+<!-- AGENTS-SYNC:START tests -->
 
 - Каждый новый модуль — сопровождается тестом рядом (`game.store.ts` → `game.store.test.ts`)
 - Утилиты, хелперы, хуки — unit-тесты обязательны
 - Игровая физика (траектория, столкновения, ветер) — детерминированные unit-тесты с фиксированными входами
 - Zod-схемы — тесты на валидные и невалидные данные
+
+<!-- AGENTS-SYNC:END tests -->
 
 ### Git
 
@@ -141,6 +169,8 @@ Steiger валидирует структуру автоматически: `npm
 **Актуальный `.claude/state/HANDOFF.md` обязан быть в `origin/main`** — его грузит SessionStart-хук; незакоммиченный он теряется при stash/reset. Обновил — сразу через PR доведи до main (строгое правило в скилле `handoff`). Правки очереди раннера вози отдельной веткой, не подмешивая HANDOFF.
 
 ### Коммиты (Conventional Commits)
+
+<!-- AGENTS-SYNC:START git-commits -->
 
 Формат: `тип: описание на русском`
 
@@ -157,6 +187,8 @@ Steiger валидирует структуру автоматически: `npm
 ### Автозакрытие issues
 
 Ключевые слова в описании PR — **только английские**: `Closes #N`, `Fixes #N`, `Resolves #N`. Русское «Закрывает #N» GitHub не распознаёт: PR смерджится, а issue останется висеть открытым. Сам текст PR при этом на русском.
+
+<!-- AGENTS-SYNC:END git-commits -->
 
 ## Линтинг
 

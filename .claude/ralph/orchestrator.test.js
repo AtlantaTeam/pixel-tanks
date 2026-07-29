@@ -3174,9 +3174,10 @@ describe('ветковая хореография в worktree раннера (#7
         // в gate.ts; теперь они сторожат ШИПНУТЫЙ конфиг — фабричный config засеян боевым
         // выше (setConfigForTests), gateChecksFor читает его через getConfig().
 
-        it('playground = ровно базовые 10 чеков, без толстых; канарейка, храповик, only- и skip-детект первыми (#190, #156, #160, #161)', () => {
+        it('playground = ровно базовые 11 чеков, без толстых; канарейка, дрейф AGENTS.md, храповик, only- и skip-детект первыми (#190, #156, #160, #161, #375)', () => {
             expect(names(gateChecksFor('playground'))).toEqual([
                 'security:canary',
+                'docs:agents-drift',
                 'test:ratchet',
                 'test:only-detect',
                 'test:skip-detect',
@@ -3192,6 +3193,7 @@ describe('ветковая хореография в worktree раннера (#7
         it('prod = база (без дубля test) + fail-fast security/coverage/e2e', () => {
             expect(names(gateChecksFor('prod'))).toEqual([
                 'security:canary',
+                'docs:agents-drift',
                 'test:ratchet',
                 'test:only-detect',
                 'test:skip-detect',
@@ -3206,19 +3208,22 @@ describe('ветковая хореография в worktree раннера (#7
             ]);
         });
 
-        it('#190/#156/#160/#161: канарейка, храповик, only- и skip-детект стоят первыми — секундные, красный отменяет мердж до build/e2e', () => {
-            // «В начале fail-fast порядка»: канарейка/`vitest list`/`git grep` (секунды каждый)
-            // дешевле build (минуты) и e2e (минуты), поэтому упавший чек не оплачивает дорогие
-            // следом. Канарейка (#190) — первая: находка секрета важнее любой другой причины
-            // красного, и это самая дешёвая проверка из всех (только fs.readFileSync).
-            expect(names(gateChecksFor('playground')).slice(0, 4)).toEqual([
+        it('#190/#156/#160/#161/#375: канарейка, дрейф AGENTS.md, храповик, only- и skip-детект стоят первыми — секундные, красный отменяет мердж до build/e2e', () => {
+            // «В начале fail-fast порядка»: канарейка/дрейф AGENTS.md/`vitest list`/`git grep`
+            // (секунды каждый) дешевле build (минуты) и e2e (минуты), поэтому упавший чек не
+            // оплачивает дорогие следом. Канарейка (#190) — первая: находка секрета важнее любой
+            // другой причины красного, и это самая дешёвая проверка из всех (только
+            // fs.readFileSync). Дрейф AGENTS.md (#375) — следом: тоже только чтение файлов.
+            expect(names(gateChecksFor('playground')).slice(0, 5)).toEqual([
                 'security:canary',
+                'docs:agents-drift',
                 'test:ratchet',
                 'test:only-detect',
                 'test:skip-detect',
             ]);
-            expect(names(gateChecksFor('prod')).slice(0, 4)).toEqual([
+            expect(names(gateChecksFor('prod')).slice(0, 5)).toEqual([
                 'security:canary',
+                'docs:agents-drift',
                 'test:ratchet',
                 'test:only-detect',
                 'test:skip-detect',

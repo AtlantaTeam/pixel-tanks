@@ -17,6 +17,7 @@
         "gate": {
             "checks": [
                 ["security:canary", "npm run security:canary"],
+                ["docs:agents-drift", "npm run docs:agents-drift"],
                 ["test:ratchet", "npm run test:ratchet"],
                 ["test:only-detect", "npm run test:only-detect"],
                 ["test:skip-detect", "npm run test:skip-detect"],
