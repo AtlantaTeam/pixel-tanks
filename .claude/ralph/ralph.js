@@ -52,7 +52,7 @@ const { createOrchestrator } = require('./core/orchestrator.ts');
 // (см. orchestrator.test.js). telegram-notifier.ts самостоятелен (не require ralph.js —
 // цикл), предохранитель #138 у него общий через side-effect-guard.ts.
 const { sendTelegramMessage, telegramConfigFromEnv } = require('./runtime/telegram-notifier.ts');
-const { buildSanitizedGateEnv } = require('./gate-env.js');
+const { buildSanitizedGateEnv } = require('./gate-env.mts');
 
 // Флаги режима — прежние module-level ONCE/DRY/RESET/RESUBMIT/DEPLOY_RESOLVED монолита.
 // --deploy-resolved (#165): снятие барьера красного пост-мердж деплоя — только человек,

@@ -20,17 +20,18 @@ const REPO_ROOT = resolve(__dirname, '../../..'); // .claude/ralph/tests → к�
 // живого скана — единственный источник правды, чтобы они не разъехались.
 const SPECIFICS = /pixel-tanks|pixeltanks|AtlantaTeam|game-next/;
 
-const CODE_EXT = /\.(js|ts|mjs)$/;
+const CODE_EXT = /\.(js|ts|mjs|mts)$/;
 // Из скана исключаем: тесты (сами держат паттерн в проверках), общую тест-инфру
-// предохранителя #138 и `test-helpers`. Сканируем только код ядра (CODE_EXT = js/ts/mjs).
+// предохранителя #138 и `test-helpers`. Сканируем только код ядра (CODE_EXT = js/ts/mjs/mts —
+// .mts у gate-env.mts, единственного явно-ESM модуля ядра, #403).
 // .json/.log/.md — данные/конфиг/доки. .sh (deploy-remote.sh/backup-db.sh) НЕ сканируем не
 // потому что «не код» — это исполняемые скрипты с проектной специфики (домен, VDS), — а
 // потому что это деплой-обвязка ВНЕ переносимого ядра раннера: при переносе она заменяется
 // под своё окружение, а не копируется как есть (#367-ревью).
-const EXCLUDE = /\.test\.(js|ts|mjs)$|^test-setup\.js$|^test-helpers\.(js|mjs)$/;
+const EXCLUDE = /\.test\.(js|ts|mjs|mts)$|^test-setup\.js$|^test-helpers\.(js|mjs)$/;
 
 // После раскладки по папкам (#396) модули ядра лежат в подпапках `.claude/ralph/`
-// (core/adapters/shared/runtime) + два файла в корне (ralph.js, gate-env.js). Обход стал
+// (core/adapters/shared/runtime) + два файла в корне (ralph.js, gate-env.mts). Обход стал
 // РЕКУРСИВНЫМ — иначе `coreFiles('.claude/ralph')` вернул бы только пару корневых файлов,
 // а весь ядровый код в подпапках выпал бы из скана: grep-guard остался бы зелёным, ничего
 // не проверяя (тот же класс, что `looksBlind` в security-audit.mjs). Пропускаем каталоги:
@@ -180,8 +181,9 @@ describe('набор сканируемых модулей ядра', () => {
     // Fail-closed страж набора (#396): после раскладки по папкам рекурсивный обход обязан
     // видеть КАЖДЫЙ модуль ядра в своей подпапке. Пустой/усохший CORE = красный, а не
     // «нечего проверять»: если рекурсия сломается или каталог переименуют, модуль выпадет
-    // из скана и этот список его недосчитается. Перечислены все 15 TS-модулей ядра +
-    // 2 рантайм-JS-модуля + два корневых файла (ralph.js, gate-env.js) по НОВЫМ путям.
+    // из скана и этот список его недосчитается. Перечислены все 19 файлов ядра: 17 TS-модулей
+    // (10 core + 2 adapters + 2 shared + 2 runtime + ESM-gate-env.mts) + 2 JS
+    // (рантайм-monitor.js, entry-ralph.js) по НОВЫМ путям.
     const EXPECTED = [
         // core/
         'core/orchestrator.ts',
@@ -206,7 +208,7 @@ describe('набор сканируемых модулей ядра', () => {
         'runtime/telegram-notifier.ts',
         // корень раннера
         'ralph.js',
-        'gate-env.js',
+        'gate-env.mts',
     ].map((rel) => join('.claude/ralph', rel));
 
     it('непуст и включает КАЖДЫЙ ожидаемый модуль ядра', () => {

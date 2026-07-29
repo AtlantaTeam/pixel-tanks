@@ -17,7 +17,7 @@
 // (shFn/logFn/… параметрами) — ровно так их зовут существующие тесты (orchestrator.test.js,
 // сценарные *.test.js) и monitor.js через ре-экспорт из ralph.js, как раньше.
 //
-// external — мост из entry к соседям (telegram-notifier.ts, gate-env.js): их
+// external — мост из entry к соседям (telegram-notifier.ts, gate-env.mts): их
 // require остаётся в entry, фабрика получает готовые функции. Так orchestrator.ts не
 // тянет env/сеть при сборке, а тесты передают фейки (см. orchestrator.test.js).
 
@@ -319,7 +319,7 @@ export type OrchestratorFlags = {
     deployResolved: boolean;
 };
 
-// Мост из entry к соседям: telegram-notifier.ts (доставка пушей) и gate-env.js
+// Мост из entry к соседям: telegram-notifier.ts (доставка пушей) и gate-env.mts
 // (санация env чеков). Их require остаётся в entry — фабрика получает функции готовыми.
 export type OrchestratorExternal = {
     sendTelegramMessage: (msg: string, opts?: { logFn?: LogFn; execFn?: ExecFn }) => boolean;

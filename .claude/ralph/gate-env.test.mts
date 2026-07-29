@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
+import path from 'node:path';
 import {
     DEFAULT_ALLOWLIST_PATH,
     normalizeAllowlist,
@@ -7,15 +8,15 @@ import {
     isAllowed,
     sanitizeEnv,
     buildSanitizedGateEnv,
-} from './gate-env.js';
+} from './gate-env.mts';
 
 // #188: allowlist-санация env чеков гейта. Тесты гоняют чистые функции на ФИКСТУРАХ
 // (фейковый env, инжектированный readFileFn) — настоящие process.env/файлы не читаются,
 // поэтому в гейте зелёные и секрет не утаскивают.
 
 // Ошибка чтения с кодом — как её бросает fs.readFileSync (ENOENT/EACCES).
-function fsError(code) {
-    const e = new Error(`${code}: fake`);
+function fsError(code: string): NodeJS.ErrnoException {
+    const e: NodeJS.ErrnoException = new Error(`${code}: fake`);
     e.code = code;
     return e;
 }
@@ -126,7 +127,7 @@ describe('sanitizeEnv — allowlist, а не blocklist (#188)', () => {
         const out = sanitizeEnv(env, a);
         expect(out.PATH).toBe('/usr/bin');
         expect('__proto__' in out).toBe(false);
-        expect({}.polluted).toBeUndefined();
+        expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     });
 });
 
@@ -161,6 +162,28 @@ describe('buildSanitizedGateEnv — обёртка загрузка+санаци
         });
         expect(out.PATH).toBe('/usr/bin');
         expect('GH_TOKEN' in out).toBe(false);
+    });
+});
+
+// #403: провенанс — DEFAULT_ALLOWLIST_PATH обязан указывать на каталог МОДУЛЯ
+// (import.meta.dirname), а не на cwd. Это свойство держит барьер #209: код проверяемого
+// PR не подменит список санации своего же гейта, потому что раннер читает его из
+// launch-дерева, а не из детаченного worktree. Барьер, а не только ручная проверка:
+// «упрощение» до process.cwd()/пути от конфига сразу покраснит этот тест.
+describe('провенанс DEFAULT_ALLOWLIST_PATH — от каталога модуля, не от cwd (#403)', () => {
+    it('абсолютный путь внутри .claude/ralph рядом с модулем', () => {
+        expect(path.isAbsolute(DEFAULT_ALLOWLIST_PATH)).toBe(true);
+        expect(DEFAULT_ALLOWLIST_PATH.endsWith(path.join('.claude', 'ralph', 'gate-env-allowlist.json'))).toBe(
+            true,
+        );
+    });
+
+    it('не зависит от cwd: не строится от process.cwd()', () => {
+        // Если бы путь строился от cwd, он начинался бы с текущего рабочего каталога
+        // (корень репо во время тестов). import.meta.dirname даёт каталог модуля —
+        // .claude/ralph — который лишь ВЛОЖЕН в cwd, но самим cwd не является.
+        expect(DEFAULT_ALLOWLIST_PATH).not.toBe(path.join(process.cwd(), 'gate-env-allowlist.json'));
+        expect(path.dirname(DEFAULT_ALLOWLIST_PATH).endsWith(path.join('.claude', 'ralph'))).toBe(true);
     });
 });
 
