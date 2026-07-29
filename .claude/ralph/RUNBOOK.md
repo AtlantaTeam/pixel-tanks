@@ -56,7 +56,7 @@ tmux send-keys -t work:2 'set -a && . /root/ralph.env && set +a && node .claude/
 
 # окно 3 — дашборд (фаза, submitted, прогресс issues, открытые PR, порог тишины)
 tmux new-window -t work -n monitor -c /root/pixel-tanks-ralph
-tmux send-keys -t work:3 'node .claude/ralph/monitor.js --profile prod --interval 60 --config /root/pixel-tanks/.claude/ralph/ralph.config.json' Enter
+tmux send-keys -t work:3 'node .claude/ralph/runtime/monitor.js --profile prod --interval 60 --config /root/pixel-tanks/.claude/ralph/ralph.config.json' Enter
 ```
 
 Монитор запускать **из дерева раннера** (`/root/pixel-tanks-ralph`): он берёт

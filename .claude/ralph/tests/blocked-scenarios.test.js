@@ -27,7 +27,7 @@
 // (#223) — общие с hold-scenarios.test.js: правку сигнатуры deps runLoop синхронизируем
 // в одном месте. Здесь остаются только сценарные describe этого файла.
 import { describe, it, expect } from 'vitest';
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 import {
     makeRunLoopScenario as scenario,
     SCENARIO_REVIEW_MODEL as REVIEW_MODEL,

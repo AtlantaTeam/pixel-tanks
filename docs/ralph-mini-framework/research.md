@@ -31,7 +31,7 @@
 | **OpenAI** | **(б)** отдельный CLI                  | `codex exec …`                | `AGENTS.md`     |
 
 Оба новых рантайма реализуют **уже существующий** контракт
-`CoderRuntimeAdapter` (`.claude/ralph/adapters.ts`, §5) и подключаются через
+`CoderRuntimeAdapter` (`.claude/ralph/adapters/adapters.ts`, §5) и подключаются через
 `ralph.config.json` → `adapters.coderRuntime` (ключи `kimi` / `openai`
 добавляются в реестр `coderRuntime` в composition root оркестратора — тем же
 путём, что уже описан в докблоке `adapters-impl.ts`: «фаза 6 добавит ключи в

@@ -20,9 +20,9 @@ import {
     maybePushDeadman,
     openPhasePRs,
 } from './monitor.js';
-import { pushEvent as pushEventReal } from './ralph.js';
+import { pushEvent as pushEventReal } from '../ralph.js';
 import { DEFAULT_DEADMAN } from './deadman.js';
-import { logLine as t, makeTmpLog } from './test-helpers.js';
+import { logLine as t, makeTmpLog } from '../tests/test-helpers.js';
 
 // Резолвнутый конфиг (как отдаёт resolveProfile раннеру/монитору): пороги на верхнем
 // уровне. coder = claudeTimeoutMs + iterationGraceMs = 7.8M; gate = 600k; default = 300k.

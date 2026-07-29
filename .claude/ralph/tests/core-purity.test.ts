@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path';
 
 // `__dirname` (не import.meta): tsconfig ралфа компилит в CommonJS-режиме nodenext, где
 // import.meta запрещён (TS1470). Отсчёт от файла, а не от cwd, — устойчив к месту запуска.
-const REPO_ROOT = resolve(__dirname, '../..'); // .claude/ralph → корень репозитория
+const REPO_ROOT = resolve(__dirname, '../../..'); // .claude/ralph/tests → корень репозитория
 
 // Проектная специфика pixel-tanks: имя репозитория/домена, владелец доски, фича game-next
 // (#204 замерял именно этот набор). Одинаковый паттерн для юнит-проверок стриппера и для
@@ -29,15 +29,29 @@ const CODE_EXT = /\.(js|ts|mjs)$/;
 // под своё окружение, а не копируется как есть (#367-ревью).
 const EXCLUDE = /\.test\.(js|ts|mjs)$|^test-setup\.js$|^test-helpers\.(js|mjs)$/;
 
-// Модули ядра одного уровня директории (без рекурсии): в `.claude/ralph/` подпапка
-// `provision/` — специфика VDS-в-РФ (bash + README), в другом окружении просто
-// выключается и к переносимости кода отношения не имеет. `ralph.config.json` — это
-// ИМЕННО место, где проектные строки жить обязаны, поэтому в скан не попадает (JSON, не код).
+// После раскладки по папкам (#396) модули ядра лежат в подпапках `.claude/ralph/`
+// (core/adapters/shared/runtime) + два файла в корне (ralph.js, gate-env.js). Обход стал
+// РЕКУРСИВНЫМ — иначе `coreFiles('.claude/ralph')` вернул бы только пару корневых файлов,
+// а весь ядровый код в подпапках выпал бы из скана: grep-guard остался бы зелёным, ничего
+// не проверяя (тот же класс, что `looksBlind` в security-audit.mjs). Пропускаем каталоги:
+// `provision/` (специфика VDS-в-РФ, при переносе заменяется), `tests/` вместе с
+// `__fixtures__/` (сами держат паттерн в проверках + фикстура ОБЯЗАНА нести чужую специфику),
+// `node_modules/`. `ralph.config.json` — ИМЕННО место, где проектные строки жить обязаны,
+// поэтому в скан не попадает (JSON, не код).
+const SKIP_DIRS = new Set(['provision', 'tests', '__fixtures__', 'node_modules']);
+
 function coreFiles(relDir: string): string[] {
-    return readdirSync(join(REPO_ROOT, relDir), { withFileTypes: true })
-        .filter((e) => e.isFile() && CODE_EXT.test(e.name) && !EXCLUDE.test(e.name))
-        .map((e) => join(relDir, e.name))
-        .sort();
+    const out: string[] = [];
+    for (const e of readdirSync(join(REPO_ROOT, relDir), { withFileTypes: true })) {
+        const rel = join(relDir, e.name);
+        if (e.isDirectory()) {
+            if (SKIP_DIRS.has(e.name)) continue;
+            out.push(...coreFiles(rel));
+        } else if (e.isFile() && CODE_EXT.test(e.name) && !EXCLUDE.test(e.name)) {
+            out.push(rel);
+        }
+    }
+    return out.sort();
 }
 
 const CORE = [...coreFiles('.claude/ralph'), ...coreFiles('scripts')];
@@ -161,14 +175,43 @@ describe('stripComments — граница «код vs комментарий-п
 });
 
 describe('набор сканируемых модулей ядра', () => {
-    // Пустой it.each([]) был бы «зелёным» вхолостую — фиксируем, что скан реально видит
-    // ядро, а не молча ничего (сломанный путь/фильтр).
-    it('непуст и включает ключевые модули', () => {
+    // Fail-closed страж набора (#396): после раскладки по папкам рекурсивный обход обязан
+    // видеть КАЖДЫЙ модуль ядра в своей подпапке. Пустой/усохший CORE = красный, а не
+    // «нечего проверять»: если рекурсия сломается или каталог переименуют, модуль выпадет
+    // из скана и этот список его недосчитается. Перечислены все 14 TS-модулей ядра +
+    // рантайм-js + два корневых файла (ralph.js, gate-env.js) по НОВЫМ путям.
+    const EXPECTED = [
+        // core/
+        'core/orchestrator.ts',
+        'core/gate.ts',
+        'core/review.ts',
+        'core/deploy-check.ts',
+        'core/api-limit.ts',
+        'core/state-lock.ts',
+        'core/worktree.ts',
+        'core/exec.ts',
+        'core/tunnel-check.ts',
+        // adapters/
+        'adapters/adapters.ts',
+        'adapters/adapters-impl.ts',
+        // shared/
+        'shared/ralph-util.ts',
+        'shared/side-effect-guard.ts',
+        'shared/config-profile.ts',
+        // runtime/
+        'runtime/monitor.js',
+        'runtime/deadman.js',
+        'runtime/telegram-notifier.js',
+        // корень раннера
+        'ralph.js',
+        'gate-env.js',
+    ].map((rel) => join('.claude/ralph', rel));
+
+    it('непуст и включает КАЖДЫЙ ожидаемый модуль ядра', () => {
         expect(CORE.length).toBeGreaterThan(10);
-        expect(CORE).toContain(join('.claude/ralph', 'ralph.js'));
-        expect(CORE).toContain(join('.claude/ralph', 'orchestrator.ts'));
-        expect(CORE).toContain(join('.claude/ralph', 'monitor.js'));
-        expect(CORE).toContain(join('.claude/ralph', 'telegram-notifier.js'));
+        for (const mod of EXPECTED) {
+            expect(CORE, `модуль ${mod} выпал из скана core-purity`).toContain(mod);
+        }
         expect(CORE).toContain(join('scripts', 'project-sync.mjs'));
     });
 });

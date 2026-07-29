@@ -10,7 +10,7 @@ import type { WorktreeEnv } from './worktree.ts';
 import { createWorktreeManager } from './worktree.ts';
 // @ts-expect-error — JS-entry раннера без деклараций типов; блоки в конце файла
 // перенесены из ralph.test.js как есть и ходят через его ре-экспорт (#366).
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 
 // Синтетический env: заглушки-коллабораторы, которые молча падают, если функция под
 // тестом их зовёт без явного override, — чтобы забытый override был громкой ошибкой

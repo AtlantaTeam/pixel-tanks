@@ -51,7 +51,7 @@ export default defineConfig({
                     // Сверка журнала побочек — общим afterEach на весь проект, а не в
                     // одном тест-файле: include ниже покрывает и scripts/**, и будущие
                     // файлы рядом с раннером (ревью PR #141).
-                    setupFiles: ['./.claude/ralph/test-setup.js'],
+                    setupFiles: ['./.claude/ralph/tests/test-setup.js'],
                     include: [
                         '.claude/ralph/**/*.test.{js,ts}',
                         // *.config.test.ts в корне — тесты корневых конфигов (vitest.config

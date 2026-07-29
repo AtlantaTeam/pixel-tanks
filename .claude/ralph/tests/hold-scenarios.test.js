@@ -18,7 +18,7 @@
 // Оркестратор сценария (makeRunLoopScenario) вынесен в test-helpers.js (#223) — общий с
 // blocked-scenarios.test.js. Здесь остаются только hold-специфичные describe.
 import { describe, it, expect } from 'vitest';
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 import { makeRunLoopScenario as scenario } from './test-helpers.js';
 
 describe('hold: стоп + пуш, без разбора, без чини-сессий, без повторного ревью', () => {

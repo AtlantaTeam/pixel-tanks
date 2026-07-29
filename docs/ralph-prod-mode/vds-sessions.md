@@ -139,5 +139,5 @@ tail -f .claude/ralph/monitor.out      # панель прогресса, из �
 pgrep -af 'ralph.js'                   # процесс
 tail -f .claude/ralph/ralph.log        # живой лог (Ctrl+C — выйти)
 tail -f .claude/ralph/monitor.out      # панель, поднятая самим раннером
-node .claude/ralph/monitor.js --once   # разовый снимок панели (если раннер не запущен)
+node .claude/ralph/runtime/monitor.js --once   # разовый снимок панели (если раннер не запущен)
 ```

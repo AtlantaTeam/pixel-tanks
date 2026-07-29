@@ -6,7 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { vi } from 'vitest';
-import { runLoop } from './ralph.js';
+import { runLoop } from '../ralph.js';
 
 // Строка лога как её пишет log() в ralph.js — ISO-таймстамп + маркер. Таймстамп
 // фиксированный: тесты задают «сейчас» через mtime + ageMs, сам префикс роли не играет.

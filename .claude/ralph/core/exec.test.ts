@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 // @ts-expect-error — JS-entry раннера без деклараций типов: блоки перенесены из
 // ralph.test.js как есть и ходят через его ре-экспорт (#366).
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 
 describe('#195: тесты изменённых вызовов гейта на argv (#193)', () => {
     // #195: Критерий готовности (2) — побочки через DI, RALPH_NO_SIDE_EFFECTS=1,

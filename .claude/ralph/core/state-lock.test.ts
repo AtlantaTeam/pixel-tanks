@@ -10,7 +10,7 @@ import type { StateLockEnv } from './state-lock.ts';
 import { createStateLock } from './state-lock.ts';
 // @ts-expect-error — JS-entry раннера без деклараций типов; блоки в конце файла
 // перенесены из ralph.test.js как есть и ходят через его ре-экспорт (#366).
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 
 const { isRalphProcess, lockAlive, writeLock, removeLock, releaseLockIfOurs } = ralph;
 

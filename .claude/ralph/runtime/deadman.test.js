@@ -14,8 +14,8 @@ import {
     API_WAIT_RE,
     DEPLOY_WAIT_RE,
 } from './deadman.js';
-import { apiLimitMessage, deployWaitMessage } from './ralph.js';
-import { logLine as t } from './test-helpers.js';
+import { apiLimitMessage, deployWaitMessage } from '../ralph.js';
+import { logLine as t } from '../tests/test-helpers.js';
 
 describe('classifyActivity — режим петли по хвосту лога', () => {
     it('claude-сессия в работе (▶ claude -p последней строкой) → coder', () => {

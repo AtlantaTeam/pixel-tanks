@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 // @ts-expect-error — JS-entry раннера без деклараций типов: блоки перенесены из
 // ralph.test.js как есть и ходят через его ре-экспорт (#366).
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 
 const { deepMerge, resolveProfile, parseProfileFlag } = ralph;
 

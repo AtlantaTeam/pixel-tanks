@@ -46,12 +46,12 @@ if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
     process.exit(1);
 }
 
-const { createOrchestrator } = require('./orchestrator.ts');
+const { createOrchestrator } = require('./core/orchestrator.ts');
 // Мост к JS-соседям: их require остаётся в entry, фабрика получает функции готовыми —
 // orchestrator.ts при импорте не тянет env/сеть, а тесты передают фейки
 // (см. orchestrator.test.js). telegram-notifier.js самостоятелен (не require ralph.js —
 // цикл), предохранитель #138 у него общий через side-effect-guard.ts.
-const { sendTelegramMessage, telegramConfigFromEnv } = require('./telegram-notifier.js');
+const { sendTelegramMessage, telegramConfigFromEnv } = require('./runtime/telegram-notifier.js');
 const { buildSanitizedGateEnv } = require('./gate-env.js');
 
 // Флаги режима — прежние module-level ONCE/DRY/RESET/RESUBMIT/DEPLOY_RESOLVED монолита.

@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // @ts-expect-error — JS-entry раннера без деклараций типов: блок ниже перенесён из
 // ralph.test.js как есть и ходит через боевую поверхность ralph.js (#366).
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 import {
     API_LIMIT_RE,
     parseResetWaitMs,

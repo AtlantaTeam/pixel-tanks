@@ -15,8 +15,8 @@
 // инжектируемый pushFn/logFn (DI), реальный pushEvent зовём в non-prod профиле, где он
 // печатает маркер, но НЕ ходит в Telegram (проверяется отдельным assert'ом ниже).
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
-import { readLogTail, evalDeadman, maybePushDeadman } from './monitor.js';
-import ralph, { pushEvent as pushEventReal } from './ralph.js';
+import { readLogTail, evalDeadman, maybePushDeadman } from '../runtime/monitor.js';
+import ralph, { pushEvent as pushEventReal } from '../ralph.js';
 import { logLine as t, makeTmpLog } from './test-helpers.js';
 
 const MIN = 60000;
