@@ -36,7 +36,21 @@ import { execSync } from 'node:child_process';
 // в sync-пути require(esm)); @ts-expect-error — как в config-profile.test.ts (#366).
 // @ts-expect-error — JS-entry раннера без деклараций типов.
 import ralph from '../ralph.js';
-const { resolveProfile, parseProfileFlag, pushEvent, shq } = ralph;
+// ralph.js — module.exports = createOrchestrator(...), поэтому его поверхность точно
+// описывается ReturnType<typeof createOrchestrator> (#409-ревью). Тем же кастом, что в
+// test-helpers.ts, типизируем три функции боевыми типами вместо `any` из ts-expect-error-
+// импорта. resolveProfile/parseProfileFlag боевым типом возвращают unknown (конфиг
+// недоверенный) — сужение остаётся по месту (см. `as ResolvedConfig` в snapshot()).
+type Runtime = ReturnType<typeof import('../core/orchestrator.ts').createOrchestrator>;
+const resolveProfile = ralph.resolveProfile as Runtime['resolveProfile'];
+const parseProfileFlag = ralph.parseProfileFlag as Runtime['parseProfileFlag'];
+const shq = ralph.shq as Runtime['shq'];
+// pushEvent СОЗНАТЕЛЬНО остаётся нетипизированным: боевой тип (msg, cfg?: RalphConfig, opts)
+// не присваивается локальному PushFn — у панели cfg: ResolvedConfig nullable и частичный
+// (конфиг читается мягко), а строгий каст покраснил бы default `pushFn = pushEvent` в
+// maybePushDeadman. Тот же осознанный отказ, что у поверхности в orchestrator.test.ts, но по
+// конкретной причине — трение строгого типа pushEvent с nullable cfg панели.
+const { pushEvent } = ralph;
 // Пороги тишины (#147): классификация хвоста лога по режиму + порог по режиму. Здесь
 // (в мониторе) — импёровая половина: чтение файла, «сейчас» и сравнение с порогом.
 import { classifyActivity, silenceThresholdMs, type Activity } from './deadman.ts';
@@ -161,8 +175,11 @@ export function fmtDur(ms: number): string {
 // лога и есть признак жизни петли (log() пишется на каждом шаге хореографии). logPath
 // параметром — чтобы тестировать на временном файле, а не только на боевом LOG_PATH.
 // n — сколько последних строк вернуть; n === null → ВЕСЬ файл (явный контракт вместо
-// slice(-Infinity), который «случайно» отдавал весь массив). Детекту нужен весь хвост
-// (маркер режима может быть глубоко), панели — последние n через signalTail.
+// slice(-Infinity), который «случайно» отдавал весь массив). Весь файл нужен ПАНЕЛИ:
+// значимые маркеры редки, последние 8 (signalTail) приходится искать по всей глубине.
+// Детект же в snapshot() намеренно ограничен последними 200 строками (allLogLines.slice(-200)):
+// расширять окно детекта на весь файл нельзя — древний ⛔/🎉 из глубины лога переклассифицировал
+// бы режим (реальное изменение поведения, а не оптимизация).
 export function readLogTail(
     n: number | null = 200,
     logPath: string = LOG_PATH,
@@ -415,7 +432,9 @@ function snapshot(): void {
     // Конфиг профильный (#71) — phases лежат в common, поэтому резолвим тем же кодом,
     // что и раннер, а не читаем сырой JSON. failFn → null: монитор наблюдательный,
     // кривой конфиг для него повод показать «—», а не упасть (упасть должен ralph.js).
-    const config: ResolvedConfig = resolveProfile(readJSON(CONFIG_PATH), PROFILE, () => null);
+    // resolveProfile боевым типом возвращает unknown (конфиг недоверенный) — сужаем к
+    // ResolvedConfig здесь; поля всё равно читаются мягко (Array.isArray/typeof по месту).
+    const config = resolveProfile(readJSON(CONFIG_PATH), PROFILE, () => null) as ResolvedConfig;
     // Одно чтение лога на тик — источник правды и для панели, и для детекта. readLogTail
     // отдаёт весь хвост (n=null — явный контракт «весь файл») и ОДИН mtime: от него и
     // признак жизни (alive), и детект тишины, и последние значимые строки. Детект смотрит

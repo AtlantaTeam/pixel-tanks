@@ -12,7 +12,8 @@
  *   2) парсинг CLI-флагов режима и передача argv фабрике;
  *   3) запуск main() под guard require.main === module и ре-экспорт API-поверхности
  *      (module.exports = runtime) — на ней сидят orchestrator.test.ts, сценарные тесты и
- *      monitor.js, ровно как на прежнем монолите.
+ *      monitor-panel.mts (тонкий entry monitor.js её больше не импортирует — #404),
+ *      ровно как на прежнем монолите.
  *
  * Запуск:
  *   node .claude/ralph/ralph.js             AFK: до maxIterations итераций, авто-мердж фаз
