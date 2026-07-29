@@ -15,8 +15,8 @@
 // инжектируемый pushFn/logFn (DI), реальный pushEvent зовём в non-prod профиле, где он
 // печатает маркер, но НЕ ходит в Telegram (проверяется отдельным assert'ом ниже).
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
-// @ts-expect-error — JS-entry раннера без деклараций типов.
-import { readLogTail, evalDeadman, maybePushDeadman } from '../runtime/monitor.js';
+// Логика панели монитора теперь на TS (#404) — импорт типизирован, @ts-expect-error не нужен.
+import { readLogTail, evalDeadman, maybePushDeadman } from '../runtime/monitor-panel.mts';
 // @ts-expect-error — JS-entry раннера без деклараций типов.
 import ralph, { pushEvent as pushEventReal } from '../ralph.js';
 // @ts-expect-error — JS-инфра тестов без деклараций типов.
@@ -58,7 +58,10 @@ function tick(
     }: { prevKey?: number | null; logSpy?: ReturnType<typeof vi.fn>; cfg?: typeof CFG } = {},
 ) {
     const { lines, lastMtime } = readLogTail(200, logPath);
-    const now = lastMtime + ageMs;
+    // writeLog всегда создаёт реальный файл → mtime есть (readLogTail отдаёт null только
+    // при отсутствии файла, чего в этих сценариях не бывает). `!` — чтобы арифметика
+    // «сейчас = mtime + возраст» видела number, а не number | null.
+    const now = lastMtime! + ageMs;
     const deadman = evalDeadman({ now, lastMtime, lines, config: cfg });
     const key = maybePushDeadman(deadman, lastMtime, prevKey, {
         cfg,

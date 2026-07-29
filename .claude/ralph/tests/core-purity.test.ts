@@ -181,9 +181,9 @@ describe('набор сканируемых модулей ядра', () => {
     // Fail-closed страж набора (#396): после раскладки по папкам рекурсивный обход обязан
     // видеть КАЖДЫЙ модуль ядра в своей подпапке. Пустой/усохший CORE = красный, а не
     // «нечего проверять»: если рекурсия сломается или каталог переименуют, модуль выпадет
-    // из скана и этот список его недосчитается. Перечислены все 19 файлов ядра: 17 TS-модулей
-    // (10 core + 2 adapters + 2 shared + 2 runtime + ESM-gate-env.mts) + 2 JS
-    // (рантайм-monitor.js, entry-ralph.js) по НОВЫМ путям.
+    // из скана и этот список его недосчитается. Перечислены все 20 файлов ядра: 18 TS-модулей
+    // (10 core + 2 adapters + 2 shared + 3 runtime + ESM-gate-env.mts; runtime включает
+    // ESM-monitor-panel.mts, #404) + 2 JS (рантайм-entry monitor.js, entry-ralph.js).
     const EXPECTED = [
         // core/
         'core/orchestrator.ts',
@@ -204,6 +204,7 @@ describe('набор сканируемых модулей ядра', () => {
         'shared/side-effect-guard.ts',
         // runtime/
         'runtime/monitor.js',
+        'runtime/monitor-panel.mts',
         'runtime/deadman.ts',
         'runtime/telegram-notifier.ts',
         // корень раннера
@@ -212,7 +213,7 @@ describe('набор сканируемых модулей ядра', () => {
     ].map((rel) => join('.claude/ralph', rel));
 
     it('непуст и включает КАЖДЫЙ ожидаемый модуль ядра', () => {
-        // Явный `EXPECTED` строго сильнее прежнего `CORE.length > 10`: если каждый из 19
+        // Явный `EXPECTED` строго сильнее прежнего `CORE.length > 10`: если каждый из 20
         // ожидаемых модулей в наборе — набор заведомо непуст. Один источник правды об
         // инварианте (#398-ревью), без параллельной проверки длины.
         for (const mod of EXPECTED) {

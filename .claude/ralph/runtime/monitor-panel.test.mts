@@ -1,4 +1,4 @@
-// Юнит-тесты детекта тишины в monitor.js (#148).
+// Юнит-тесты логики панели монитора (monitor-panel.mts, #148/#149; перенесён на TS в #404).
 //
 // Монитор — сторож петли: detached, переживает смерть раннера (kill -9), знает путь
 // лога. Детект тишины = чтение времени последней записи ralph.log СНАРУЖИ процесса
@@ -19,9 +19,11 @@ import {
     deadmanPushMessage,
     maybePushDeadman,
     openPhasePRs,
-} from './monitor.js';
+} from './monitor-panel.mts';
+// @ts-expect-error — JS-entry раннера без деклараций типов.
 import { pushEvent as pushEventReal } from '../ralph.js';
 import { DEFAULT_DEADMAN } from './deadman.ts';
+// @ts-expect-error — JS-инфра тестов без деклараций типов.
 import { logLine as t, makeTmpLog } from '../tests/test-helpers.js';
 
 // Резолвнутый конфиг (как отдаёт resolveProfile раннеру/монитору): пороги на верхнем
@@ -232,7 +234,7 @@ describe('maybePushDeadman — доставка через pushEvent() + дед�
     const notSilent = { silent: false, silenceMs: 100, thresholdMs: 600000, activity: 'gate' };
 
     it('тихо, prod, доставка удалась (pushFn→true) → пуш ОДИН раз, ключ дедупа встал на lastMtime', () => {
-        const pushFn = vi.fn(() => true);
+        const pushFn = vi.fn((_msg: string, _cfg: unknown, _opts: unknown) => true);
         const cfg = { profileName: 'prod' };
         const next = maybePushDeadman(deadman, 12345, null, {
             pushFn,
@@ -249,7 +251,7 @@ describe('maybePushDeadman — доставка через pushEvent() + дед�
         // Самый дорогой сценарий watchdog: единственный алерт о мёртвом ночном раннере не
         // должен пропасть из-за временного сбоя curl/сети/Telegram. Ключ не сдвигаем —
         // shouldPushDeadman на следующем тике той же тишины снова разрешит пуш.
-        const pushFn = vi.fn(() => false);
+        const pushFn = vi.fn((_msg: string, _cfg: unknown, _opts: unknown) => false);
         const cfg = { profileName: 'prod' };
         const next = maybePushDeadman(deadman, 12345, null, {
             pushFn,
@@ -271,7 +273,7 @@ describe('maybePushDeadman — доставка через pushEvent() + дед�
     it('non-prod, pushFn→false (подавлено профилем) → ключ ВСТАЁТ: наивный ретрай не спамит', () => {
         // В non-prod false = штатное подавление, доставки нет и не будет — защёлкиваем,
         // иначе маркер 🔔 печатался бы в monitor.out каждый тик.
-        const pushFn = vi.fn(() => false);
+        const pushFn = vi.fn((_msg: string, _cfg: unknown, _opts: unknown) => false);
         const next = maybePushDeadman(deadman, 12345, null, {
             pushFn,
             cfg: { profileName: 'playground' },
@@ -283,7 +285,7 @@ describe('maybePushDeadman — доставка через pushEvent() + дед�
     it('null-конфиг (деадман обезоружен в prod) → раз на эпизод предупреждает в stdout + защёлкивает', () => {
         const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
         try {
-            const pushFn = vi.fn(() => false);
+            const pushFn = vi.fn((_msg: string, _cfg: unknown, _opts: unknown) => false);
             const next = maybePushDeadman(deadman, 12345, null, {
                 pushFn,
                 cfg: null,
@@ -332,13 +334,15 @@ describe('maybePushDeadman — доставка через pushEvent() + дед�
 
     it('не тихо — pushFn не зовётся, ключ дедупа не меняется', () => {
         const pushFn = vi.fn();
-        const next = maybePushDeadman(notSilent, 12345, 'старый-ключ', {
+        // Ключ-сентинел числом (тип дедупа — number | null): при notSilent он возвращается
+        // без изменений, что и проверяем.
+        const next = maybePushDeadman(notSilent, 12345, 55555, {
             pushFn,
             cfg: {},
             milestoneName: 'Фаза 1',
         });
         expect(pushFn).not.toHaveBeenCalled();
-        expect(next).toBe('старый-ключ');
+        expect(next).toBe(55555);
     });
 
     it('logFn пуша печатает в свой stdout (console.log), а НЕ в log() раннера — иначе пуш обновил бы mtime ralph.log и замаскировал бы собственную тишину', () => {
@@ -372,7 +376,7 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
             ],
         };
         const state = { milestone: 'Фаза 2' };
-        const shFn = vi.fn(() =>
+        const shFn = vi.fn((_cmd: string) =>
             JSON.stringify([
                 { number: 123, title: 'PR Фаза 2', headRefName: 'feature/ralph-post-merge' },
             ]),
@@ -394,7 +398,7 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
             phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }],
         };
         const state = { milestone: 'Фаза 1' };
-        const shFn = vi.fn(() => '[]');
+        const shFn = vi.fn((_cmd: string) => '[]');
         const result = openPhasePRs(config, state, shFn);
         expect(result).toEqual([]);
         expect(shFn).toHaveBeenCalledWith(expect.stringContaining("--head 'feature/phase-1'"));
@@ -439,7 +443,7 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
     it('#THS8Z: gh упал (пустой вывод) → { error: "gh-failed" }, не молчаливое «нет PR»', () => {
         const config = { phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }] };
         const state = { milestone: 'Фаза 1' };
-        const shFn = vi.fn(() => '');
+        const shFn = vi.fn((_cmd: string) => '');
         const result = openPhasePRs(config, state, shFn);
         expect(result).toEqual({ error: 'gh-failed' });
     });
@@ -447,7 +451,7 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
     it('#THS8Z: gh вернул мусор (невалидный JSON) → { error: "gh-failed" }', () => {
         const config = { phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }] };
         const state = { milestone: 'Фаза 1' };
-        const shFn = vi.fn(() => 'не-json');
+        const shFn = vi.fn((_cmd: string) => 'не-json');
         const result = openPhasePRs(config, state, shFn);
         expect(result).toEqual({ error: 'gh-failed' });
     });
@@ -457,7 +461,7 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
             phases: [{ milestone: 'Фаза 1', branch: 'feature/phase-1' }],
         };
         const state = {};
-        const shFn = vi.fn(() => '[]');
+        const shFn = vi.fn((_cmd: string) => '[]');
         const result = openPhasePRs(config, state, shFn);
         expect(result).toEqual({ error: 'no-branch' });
     });
