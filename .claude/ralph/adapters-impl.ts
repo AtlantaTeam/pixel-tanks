@@ -58,6 +58,15 @@ export const ADAPTER_SEAMS = Object.keys(ADAPTER_DEFAULTS) as Array<keyof typeof
 export type AdapterSeam = keyof typeof ADAPTER_DEFAULTS;
 export type AdapterSelection = Record<AdapterSeam, string>;
 
+// Провайдеры, реально зарегистрированные под швом `coderRuntime` в composition root
+// (orchestrator.ts: adapterRegistries.coderRuntime = { claude, kimi, openai }). Источник
+// правды для provider-aware modelRouting (#376, фаза 6): конфиг не может указать
+// провайдера, которого раннер не умеет запускать — validateModelRouting (config-profile.ts)
+// сверяет modelRouting.*.provider против этого списка ДО сборки адаптеров (инвариант №1:
+// опечатка вида "kimy" — fail на старте, а не тихий откат на дефолтный рантайм).
+export const CODER_RUNTIME_PROVIDERS = ['claude', 'kimi', 'openai'] as const;
+export type CoderRuntimeProvider = (typeof CODER_RUNTIME_PROVIDERS)[number];
+
 // Конфиг-секция выбора реализаций (плоский конфиг ПОСЛЕ resolveProfile). Все ключи
 // опциональны — отсутствующий шов берёт дефолт из ADAPTER_DEFAULTS.
 export type AdapterConfig = Partial<Record<AdapterSeam, string>>;
@@ -180,18 +189,27 @@ export function createGithubActionsDeploy(fns: GithubActionsDeployFns): DeployCh
     };
 }
 
-// Рантайм Claude CLI: запуск кодер-сессии → {code, output} (orchestrator.ts runClaudeOnce).
-export type ClaudeRuntimeFns = {
+// Конструктор шва кодер-рантайма: раскладывает боевую функцию запуска сессии
+// (`run(prompt, options) → {code, output}`) по имени метода интерфейса CoderRuntimeAdapter.
+// ОДИН конструктор на все провайдеры (claude/kimi/openai): контракт шва у них идентичен, а
+// провайдер-специфика (Claude — `runClaudeOnce`; Kimi — endpoint Moonshot через env `claude`
+// в `runKimiOnce`; OpenAI — отдельный бинарь `codex exec` в `runOpenAIOnce`) живёт ВНУТРИ
+// боевой функции, а не в маппере. Читаемость намерения даёт КЛЮЧ реестра `coderRuntime`
+// (`{ claude, kimi, openai }` в composition root orchestrator.ts) + говорящее имя переданной
+// функции, а не имя конструктора — поэтому три байт-в-байт копии не нужны (research:
+// `docs/…/research.md`). Claude-путь не трогается.
+export type CoderRuntimeFns = {
     run: (prompt: string, options: RunOptions) => RunResult;
 };
 
-export function createClaudeRuntime(fns: ClaudeRuntimeFns): CoderRuntimeAdapter {
+export function createCoderRuntime(fns: CoderRuntimeFns): CoderRuntimeAdapter {
     return { run: fns.run };
 }
 
 // ── Сборка набора швов по выбору из конфига (fail-closed) ─────────────────────
 // registries: реестр доступных реализаций по швам — { taskSource: { github: … }, … }.
-// Реализаций пока по одной на шов (текущий проект); фаза 6 добавит ключи в coderRuntime.
+// Реализаций по одной на большинство швов (текущий проект); шов coderRuntime несёт три —
+// `claude`/`kimi`/`openai` (фаза 6, #373/#374), выбираемые config.adapters.coderRuntime.
 // selection: результат resolveAdapterSelection. failFn: боевой fail (стоп раннера).
 // Реализация, которой нет в реестре под выбранным ключом, = fail (тот же класс, что
 // неизвестный ключ — просто ловится на слой ниже, когда реестр знает набор имён).

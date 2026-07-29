@@ -14,7 +14,7 @@ import {
     ADAPTER_DEFAULTS,
     ADAPTER_SEAMS,
     buildAdapters,
-    createClaudeRuntime,
+    createCoderRuntime,
     createGithubActionsDeploy,
     createGithubTaskSource,
     createNpmGate,
@@ -157,10 +157,14 @@ describe('мапперы гейта / нотификатора / рантайм�
         expect(notify).toHaveBeenCalledWith('текст');
     });
 
-    it('createClaudeRuntime раскладывает run', () => {
-        const run = vi.fn(() => ({ code: 0, output: 'ok' }));
-        const r: CoderRuntimeAdapter = createClaudeRuntime({ run });
-        expect(r.run('промпт', { maxTurns: 10 })).toEqual({ code: 0, output: 'ok' });
+    // #373/#374: один конструктор на все провайдеры кодер-рантайма (claude/kimi/openai) —
+    // контракт шва идентичен, провайдер-специфика живёт в боевой функции `run`, а читаемость
+    // намерения даёт КЛЮЧ реестра, не имя конструктора.
+    it('createCoderRuntime раскладывает run (общий на claude/kimi/openai)', () => {
+        const run = vi.fn(() => ({ code: 0, output: 'diff' }));
+        const r: CoderRuntimeAdapter = createCoderRuntime({ run });
+        expect(r.run('промпт', { maxTurns: 10 })).toEqual({ code: 0, output: 'diff' });
+        expect(run).toHaveBeenCalledWith('промпт', { maxTurns: 10 });
     });
 });
 
@@ -196,7 +200,7 @@ function fakeRegistries(): AdapterRegistries {
         checkProdHealth: () => ({ ok: true, status: 200, url: 'u' }),
         classifyDeployOutcome: () => ({ red: false, reason: 'ok' }),
     });
-    const coderRuntime: CoderRuntimeAdapter = createClaudeRuntime({
+    const coderRuntime: CoderRuntimeAdapter = createCoderRuntime({
         run: () => ({ code: 0, output: '' }),
     });
     return {
@@ -224,7 +228,7 @@ describe('buildAdapters — сборка набора швов по выбору
 
     it('выбирает реализацию по ключу селекции, а не первую попавшуюся', () => {
         const reg = fakeRegistries();
-        const secondRuntime: CoderRuntimeAdapter = createClaudeRuntime({
+        const secondRuntime: CoderRuntimeAdapter = createCoderRuntime({
             run: () => ({ code: 7, output: 'kimi' }),
         });
         reg.coderRuntime.kimi = secondRuntime;

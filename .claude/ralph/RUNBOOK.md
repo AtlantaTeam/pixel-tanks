@@ -81,6 +81,100 @@ tmux send-keys -t work:3 'node .claude/ralph/monitor.js --profile prod --interva
 метка **`hold`** проверяется первой, сильнее `blocked`, и раннер её не снимает ни на одном
 пути — снять можно только руками (`gh pr edit <N> --remove-label hold`).
 
+## Альтернативный рантайм кодер-сессии — Kimi (#373, фаза 6)
+
+Кодер-сессия по умолчанию — Claude CLI (`adapters.coderRuntime` не задан → `claude`,
+`ADAPTER_DEFAULTS`). Рантайм **Kimi** — тот же бинарь `claude` через Anthropic-совместимый
+endpoint Moonshot (research: `docs/ralph-mini-framework/research.md`): выбор конфигом, ключ
+только из env. Claude-путь при этом не меняется.
+
+**Включить (в `ralph.config.json` профиля или `common`):**
+
+```jsonc
+"adapters": { "coderRuntime": "kimi" },
+"kimiRuntime": {
+    "model": "kimi-k2-0711-preview"           // ОБЯЗАТЕЛЕН — имя модели Moonshot
+    // "baseUrl": "https://api.moonshot.ai/anthropic"  // дефолт (междунар.); .cn — для КНР
+    // "authTokenEnv": "RALPH_KIMI_AUTH_TOKEN"          // дефолт; имя env-переменной с ключом
+    // "fallbackModel": null                            // Claude-fallback НЕ подмешивается (риск #3)
+}
+```
+
+**Ключ — только из env** (инвариант №11): в env-файле раннера
+`export RALPH_KIMI_AUTH_TOKEN=sk-…` (ключ Moonshot). В argv он не попадает
+(не светится в `/proc/*/cmdline`); каналы Claude-аутентификации в Kimi-сессии снимаются,
+чтобы CLI не ушёл на `api.anthropic.com` мимо Moonshot.
+
+**Смоук вручную** (детерминированная проверка проводки — в `orchestrator.test.js`, блок
+«Kimi-рантайм»; ниже — живой прогон против Moonshot):
+
+```bash
+export RALPH_KIMI_AUTH_TOKEN=sk-…                 # ключ Moonshot
+# в конфиге: adapters.coderRuntime=kimi, kimiRuntime.model=kimi-k2-…
+node .claude/ralph/ralph.js --profile playground --once --dry-run   # проводка без спавна
+# затем без --dry-run на тестовой фазе — кодер-сессия стартует и выдаёт дифф
+```
+
+**Известное ограничение смоука** (research §«Границы»): маркер API-лимита `API_LIMIT_RE`
+провайдер-специфичен (Claude). При лимите Kimi даст другой текст — цикл ожидания его не
+распознает, обойдётся как с обычным ненулевым завершением. Для смоука приемлемо;
+провайдер-осведомлённый маркер — отдельная задача, не в скоупе фазы 6.
+
+## Альтернативный рантайм кодер-сессии — OpenAI (#374, фаза 6)
+
+В отличие от Kimi (тот же `claude` + endpoint Moonshot), рантайм **OpenAI** — **отдельный
+первопартийный бинарь `codex exec`** рядом с Claude, не поверх (research: маршрут (б) —
+API OpenAI не Anthropic-совместим, а транслирующий прокси нарушил бы fail-closed тихой
+мистрансляцией). Claude-путь при этом не меняется; contract шва тот же — `{code, output}`,
+вывод склеивается stdout+stderr и сканируется оркестратором.
+
+**Предпосылка:** установлен и авторизован **Codex CLI** (`codex`) — как `claude` для
+Claude-пути. Ключ — только из env.
+
+**Проектные инструкции (#375):** `codex exec` не читает `CLAUDE.md`/`.claude/rules/**` —
+он подхватывает файл **`AGENTS.md`** из корня репозитория автоматически (тот же
+механизм, каким `claude` читает `CLAUDE.md`). `AGENTS.md` несёт синхронизированную с
+`CLAUDE.md` копию проектных конвенций (маркеры `AGENTS-SYNC:START`/`END`, гейт-чек
+`docs:agents-drift` красит гейт при расхождении) — общий контракт петли (`ralph.md` +
+`ralph.project.md`) в него не дублируется, он приходит текстом промпта сессии, как и у
+Claude.
+
+**Включить (в `ralph.config.json` профиля или `common`):**
+
+```jsonc
+"adapters": { "coderRuntime": "openai" },
+"openaiRuntime": {
+    "model": "gpt-5-codex"                     // ОБЯЗАТЕЛЕН — имя модели OpenAI
+    // "sandboxMode": "danger-full-access"     // дефолт; более узкие: workspace-write / read-only
+    // "authTokenEnv": "OPENAI_API_KEY"         // дефолт; имя env-переменной с ключом
+}
+```
+
+**Ключ — только из env** (инвариант №11): в env-файле раннера
+`export OPENAI_API_KEY=sk-…`. В argv он не попадает (не светится в `/proc/*/cmdline`) —
+codex читает его из окружения процесса. Аппрув фиксирован `never` (non-interactive AFK:
+`codex exec` при запросе аппрува падает); песочница `danger-full-access` штатна, т.к.
+раннер крутится в изолированном worktree (инвариант №3), и нужна для git/npm.
+
+**Смоук вручную** (детерминированная проверка проводки — в `orchestrator.test.js`, блок
+«OpenAI-рантайм»; ниже — живой прогон против OpenAI):
+
+```bash
+export OPENAI_API_KEY=sk-…                        # ключ OpenAI
+# в конфиге: adapters.coderRuntime=openai, openaiRuntime.model=gpt-5-codex
+node .claude/ralph/ralph.js --profile playground --once --dry-run   # проводка без спавна
+# затем без --dry-run на тестовой фазе — codex-сессия стартует и выдаёт дифф
+```
+
+**Известные ограничения смоука** (research §«Границы»):
+
+- маркер API-лимита `API_LIMIT_RE` провайдер-специфичен (Claude) — при лимите OpenAI
+  даст другой текст, цикл ожидания его не распознает (как и для Kimi);
+- у Codex нет аналога `--fallback-model`/`--max-turns` (Claude-семантика) — в argv их не
+  тащим (research, риск #3); фолбэк-политика — honest-стоп/повторная итерация.
+
+Оба ограничения — вне скоупа фазы 6, кандидаты в отдельные задачи.
+
 ## Красный пост-мердж деплой (#163–#167, prod)
 
 С фазы 5 наблюдаемости раннер после мерджа prod-фазы **дожидается итога deploy-workflow**

@@ -253,6 +253,285 @@ describe('resolveProfile — сборка итогового конфига из
     });
 });
 
+// #376 (фаза 6): modelRouting провайдер-осведомлён — значение может быть строкой
+// (обратная совместимость, claude-модель) либо объектом { provider, model } (явный выбор
+// провайдера кодер-рантайма). Валидируется на старте resolveProfile — та же fail-closed
+// схема, что у haltBeforeDeploy.
+describe('#376 modelRouting провайдер-осведомлён — fail-closed валидация', () => {
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+    const withRouting = (routing: unknown) => ({
+        defaultProfile: 'playground',
+        common: { phases: [{ milestone: 'M', branch: 'b' }], modelRouting: routing },
+        profiles: { playground: {} },
+    });
+
+    it('текущий роутинг (голые строки label→модель) проходит без правок', () => {
+        const cfg = resolveProfile(
+            withRouting({
+                default: 'claude-sonnet-5',
+                labels: { 'complexity:high': 'claude-opus-4-8' },
+            }),
+            'playground',
+            boom,
+        );
+        expect(cfg.modelRouting).toEqual({
+            default: 'claude-sonnet-5',
+            labels: { 'complexity:high': 'claude-opus-4-8' },
+        });
+    });
+
+    it('объектная запись { provider, model } с известным провайдером проходит', () => {
+        const cfg = resolveProfile(
+            withRouting({
+                labels: { 'complexity:low': { provider: 'kimi', model: 'kimi-k2-0711-preview' } },
+            }),
+            'playground',
+            boom,
+        );
+        expect(cfg.modelRouting.labels['complexity:low']).toEqual({
+            provider: 'kimi',
+            model: 'kimi-k2-0711-preview',
+        });
+    });
+
+    it('объектная запись без provider (только model) проходит — провайдер решает pickRuntime', () => {
+        const cfg = resolveProfile(
+            withRouting({ default: { model: 'claude-fable-5' } }),
+            'playground',
+            boom,
+        );
+        expect(cfg.modelRouting.default).toEqual({ model: 'claude-fable-5' });
+    });
+
+    it('modelRouting не объект → стоп', () => {
+        expect(() => resolveProfile(withRouting('opus'), 'playground', boom)).toThrow(
+            /modelRouting должен быть объектом/,
+        );
+    });
+
+    it('modelRouting.labels не объект → стоп', () => {
+        expect(() => resolveProfile(withRouting({ labels: ['opus'] }), 'playground', boom)).toThrow(
+            /modelRouting\.labels должен быть объектом/,
+        );
+    });
+
+    it('пустая строка в label/default → стоп', () => {
+        expect(() =>
+            resolveProfile(withRouting({ labels: { high: '   ' } }), 'playground', boom),
+        ).toThrow(/modelRouting\.labels\["high"\] — пустая строка/);
+        expect(() => resolveProfile(withRouting({ default: '' }), 'playground', boom)).toThrow(
+            /modelRouting\.default — пустая строка/,
+        );
+    });
+
+    it('запись не строка и не объект (число/массив) → стоп', () => {
+        expect(() =>
+            resolveProfile(withRouting({ labels: { high: 42 } }), 'playground', boom),
+        ).toThrow(/должен быть строкой.*либо объектом/);
+        expect(() =>
+            resolveProfile(withRouting({ default: ['opus'] }), 'playground', boom),
+        ).toThrow(/должен быть строкой.*либо объектом/);
+    });
+
+    it('неизвестный provider (опечатка "kimy") → стоп, перечислены допустимые', () => {
+        expect(() =>
+            resolveProfile(
+                withRouting({ labels: { high: { provider: 'kimy', model: 'x' } } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/неизвестный провайдер.*claude, kimi, openai/);
+    });
+
+    it('объект без model (только provider) → стоп', () => {
+        expect(() =>
+            resolveProfile(
+                withRouting({ labels: { high: { provider: 'kimi' } } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/\.model обязателен/);
+    });
+
+    it('apiLimitFallback (доп.скоуп) валидируется той же схемой', () => {
+        expect(
+            resolveProfile(
+                withRouting({ apiLimitFallback: { provider: 'openai', model: 'gpt-5-codex' } }),
+                'playground',
+                boom,
+            ).modelRouting.apiLimitFallback,
+        ).toEqual({ provider: 'openai', model: 'gpt-5-codex' });
+        expect(() =>
+            resolveProfile(
+                withRouting({ apiLimitFallback: { provider: 'bogus', model: 'x' } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/неизвестный провайдер/);
+    });
+
+    it('healEscalation (доп.скоуп): afterAttempts обязан быть положительным числом', () => {
+        expect(() =>
+            resolveProfile(
+                withRouting({ healEscalation: { afterAttempts: 0, route: 'opus' } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/afterAttempts должен быть положительным числом/);
+        expect(() =>
+            resolveProfile(
+                withRouting({ healEscalation: { afterAttempts: '2', route: 'opus' } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/afterAttempts должен быть положительным числом/);
+    });
+
+    it('healEscalation.route валидируется той же схемой; валидный проходит целиком', () => {
+        const cfg = resolveProfile(
+            withRouting({
+                healEscalation: {
+                    afterAttempts: 2,
+                    route: { provider: 'openai', model: 'gpt-5-codex' },
+                },
+            }),
+            'playground',
+            boom,
+        );
+        expect(cfg.modelRouting.healEscalation).toEqual({
+            afterAttempts: 2,
+            route: { provider: 'openai', model: 'gpt-5-codex' },
+        });
+        expect(() =>
+            resolveProfile(
+                withRouting({
+                    healEscalation: { afterAttempts: 2, route: { provider: 'kimy', model: 'x' } },
+                }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/неизвестный провайдер/);
+    });
+
+    it('healEscalation не объект → стоп', () => {
+        expect(() =>
+            resolveProfile(withRouting({ healEscalation: 'да' }), 'playground', boom),
+        ).toThrow(/healEscalation должен быть объектом/);
+    });
+
+    // Ревью-thread: частично заданный healEscalation в рантайме — тихий no-op (эскалация
+    // никогда не сработает). Требуем ОБА поля, раз секция задана (инвариант №1).
+    it('healEscalation задан без afterAttempts → стоп (частичная секция = тихий no-op)', () => {
+        expect(() =>
+            resolveProfile(
+                withRouting({ healEscalation: { route: 'claude-opus-4-8' } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/afterAttempts отсутствует/);
+    });
+
+    it('healEscalation задан без route → стоп (эскалации не на что переключаться)', () => {
+        expect(() =>
+            resolveProfile(
+                withRouting({ healEscalation: { afterAttempts: 2 } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/route отсутствует/);
+    });
+
+    // Ревью-thread: apiLimitFallback, резолвящийся в тот же провайдер, что статический
+    // coderRuntime (claude по дефолту) — гарантированный no-op (runClaude пропускает
+    // same-provider фолбэк). Молчаливый no-op-конфиг хуже честного отказа.
+    it('apiLimitFallback с тем же провайдером, что статический coderRuntime → стоп (no-op)', () => {
+        // Голая строка → провайдер = статический (claude) = провайдер прогона → no-op.
+        expect(() =>
+            resolveProfile(
+                withRouting({ apiLimitFallback: 'claude-opus-4-8' }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/ТОТ ЖЕ.*провайдер/s);
+        // Явный provider, совпавший со статическим — тот же no-op.
+        expect(() =>
+            resolveProfile(
+                withRouting({ apiLimitFallback: { provider: 'claude', model: 'claude-opus-4-8' } }),
+                'playground',
+                boom,
+            ),
+        ).toThrow(/ТОТ ЖЕ.*провайдер/s);
+    });
+
+    // Ревью-blocker: статический не-claude рантайм + безпровайдерная запись роутинга =
+    // claude-имя молча уехало бы на чужой endpoint. Требуем provider явно в каждой записи.
+    describe('статический coderRuntime ≠ claude требует явного provider в записях', () => {
+        const withAdapters = (routing: unknown, coderRuntime: string) => ({
+            defaultProfile: 'playground',
+            common: {
+                phases: [{ milestone: 'M', branch: 'b' }],
+                adapters: { coderRuntime },
+                modelRouting: routing,
+            },
+            profiles: { playground: {} },
+        });
+
+        it('голая строка-модель в labels → стоп', () => {
+            expect(() =>
+                resolveProfile(
+                    withAdapters({ labels: { 'complexity:low': 'claude-haiku-4-5' } }, 'kimi'),
+                    'playground',
+                    boom,
+                ),
+            ).toThrow(/голая строка-модель.*≠ 'claude'/s);
+        });
+
+        it('объект без provider → стоп', () => {
+            expect(() =>
+                resolveProfile(
+                    withAdapters({ default: { model: 'kimi-k2-0711-preview' } }, 'kimi'),
+                    'playground',
+                    boom,
+                ),
+            ).toThrow(/provider обязателен.*≠ 'claude'/s);
+        });
+
+        it('все записи с явным provider → проходит', () => {
+            const cfg = resolveProfile(
+                withAdapters(
+                    {
+                        labels: {
+                            'complexity:low': { provider: 'kimi', model: 'kimi-k2-0711-preview' },
+                        },
+                    },
+                    'kimi',
+                ),
+                'playground',
+                boom,
+            );
+            expect(cfg.modelRouting.labels['complexity:low']).toEqual({
+                provider: 'kimi',
+                model: 'kimi-k2-0711-preview',
+            });
+        });
+    });
+
+    it('modelRouting не задан вовсе → resolveProfile не спотыкается', () => {
+        const cfg = resolveProfile(
+            {
+                defaultProfile: 'playground',
+                common: { phases: [{ milestone: 'M', branch: 'b' }] },
+                profiles: { playground: {} },
+            },
+            'playground',
+            boom,
+        );
+        expect(cfg.modelRouting).toBeUndefined();
+    });
+});
+
 describe('parseProfileFlag — выбор профиля из argv (#72)', () => {
     const boom = (m: string) => {
         throw new Error(m);

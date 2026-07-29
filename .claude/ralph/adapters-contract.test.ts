@@ -34,7 +34,7 @@ import type {
     TaskSourceAdapter,
 } from './adapters.ts';
 import {
-    createClaudeRuntime,
+    createCoderRuntime,
     createGithubActionsDeploy,
     createGithubTaskSource,
     createNpmGate,
@@ -617,7 +617,7 @@ registerDeployCheckContract(
 // ── CoderRuntimeAdapter ──────────────────────────────────────────────────────────────
 
 function buildFakeRuntime(result: { code: number; output: string }): CoderRuntimeAdapter {
-    return createClaudeRuntime({ run: () => ({ code: result.code, output: result.output }) });
+    return createCoderRuntime({ run: () => ({ code: result.code, output: result.output }) });
 }
 
 // Боевая логика: buildClaudeArgs + spawnClaude (ralph.js), spawnFn подменён — та же граница
@@ -629,7 +629,7 @@ function buildRealRuntime(spawnResult: {
     signal?: string | null;
 }): CoderRuntimeAdapter {
     const spawnFn = vi.fn(() => spawnResult);
-    return createClaudeRuntime({
+    return createCoderRuntime({
         run: (prompt: string, options): RunResult => {
             const argv = ralph.buildClaudeArgs(prompt, options, {});
             return ralph.spawnClaude(argv, 1000, spawnFn);

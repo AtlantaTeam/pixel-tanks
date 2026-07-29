@@ -26,6 +26,7 @@
         "security:canary": "node scripts/secret-canary-gate.mjs",
         "security:canary:baseline": "node scripts/secret-canary.mjs",
         "canary:postinstall": "node scripts/canary-postinstall.mjs",
+        "docs:agents-drift": "node scripts/agents-md-drift.mjs",
         "prepare": "husky"
     },
     "dependencies": {
