@@ -33,7 +33,7 @@ import {
     guardSideEffect as sharedGuardSideEffect,
 } from '../shared/side-effect-guard.ts';
 import { createExec, loadJson } from './exec.ts';
-import { createConfigProfile, isPlainObject } from '../shared/config-profile.ts';
+import { createConfigProfile, isPlainObject } from './config-profile.ts';
 import { createStateLock } from './state-lock.ts';
 import type { RalphState } from './state-lock.ts';
 import { createTunnelCheck } from './tunnel-check.ts';

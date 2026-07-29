@@ -34,10 +34,12 @@ const EXCLUDE = /\.test\.(js|ts|mjs)$|^test-setup\.js$|^test-helpers\.(js|mjs)$/
 // РЕКУРСИВНЫМ — иначе `coreFiles('.claude/ralph')` вернул бы только пару корневых файлов,
 // а весь ядровый код в подпапках выпал бы из скана: grep-guard остался бы зелёным, ничего
 // не проверяя (тот же класс, что `looksBlind` в security-audit.mjs). Пропускаем каталоги:
-// `provision/` (специфика VDS-в-РФ, при переносе заменяется), `tests/` вместе с
-// `__fixtures__/` (сами держат паттерн в проверках + фикстура ОБЯЗАНА нести чужую специфику),
-// `node_modules/`. `ralph.config.json` — ИМЕННО место, где проектные строки жить обязаны,
-// поэтому в скан не попадает (JSON, не код).
+// `provision/` (специфика VDS-в-РФ, при переносе заменяется), `tests/` (сам держит паттерн
+// в проверках, а `__fixtures__/` под ним ОБЯЗАНА нести чужую специфику), `node_modules/`.
+// `__fixtures__` в наборе — защита НА БУДУЩЕЕ: сейчас единственный такой каталог лежит внутри
+// `tests/` и отсекается раньше (до вложенной проверки рекурсия не доходит), но появись
+// `__fixtures__` в другом месте — он всё равно выпадет из скана. `ralph.config.json` — ИМЕННО
+// место, где проектные строки жить обязаны, поэтому в скан не попадает (JSON, не код).
 const SKIP_DIRS = new Set(['provision', 'tests', '__fixtures__', 'node_modules']);
 
 function coreFiles(relDir: string): string[] {
@@ -191,13 +193,13 @@ describe('набор сканируемых модулей ядра', () => {
         'core/worktree.ts',
         'core/exec.ts',
         'core/tunnel-check.ts',
+        'core/config-profile.ts',
         // adapters/
         'adapters/adapters.ts',
         'adapters/adapters-impl.ts',
         // shared/
         'shared/ralph-util.ts',
         'shared/side-effect-guard.ts',
-        'shared/config-profile.ts',
         // runtime/
         'runtime/monitor.js',
         'runtime/deadman.js',
@@ -208,7 +210,9 @@ describe('набор сканируемых модулей ядра', () => {
     ].map((rel) => join('.claude/ralph', rel));
 
     it('непуст и включает КАЖДЫЙ ожидаемый модуль ядра', () => {
-        expect(CORE.length).toBeGreaterThan(10);
+        // Явный `EXPECTED` строго сильнее прежнего `CORE.length > 10`: если каждый из 19
+        // ожидаемых модулей в наборе — набор заведомо непуст. Один источник правды об
+        // инварианте (#398-ревью), без параллельной проверки длины.
         for (const mod of EXPECTED) {
             expect(CORE, `модуль ${mod} выпал из скана core-purity`).toContain(mod);
         }

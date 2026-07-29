@@ -10,9 +10,9 @@
  *   - последние значимые строки ralph.log (маркеры фаз/итераций/ревью/мерджа)
  *
  * Использование:
- *   node .claude/ralph/monitor.js              # цикл каждые 5 мин
- *   node .claude/ralph/monitor.js --once       # разовый снимок и выход
- *   node .claude/ralph/monitor.js --interval 60   # свой интервал (сек)
+ *   node .claude/ralph/runtime/monitor.js              # цикл каждые 5 мин
+ *   node .claude/ralph/runtime/monitor.js --once       # разовый снимок и выход
+ *   node .claude/ralph/runtime/monitor.js --interval 60   # свой интервал (сек)
  *
  * Только чтение: gh-запросы + чтение файлов. Ничего не мутирует.
  */
