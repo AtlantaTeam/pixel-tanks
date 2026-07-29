@@ -39,7 +39,7 @@
 //   время НЕ пишет в лог (запись только в catch сетевого чиха). Своя строка ожидания
 //   несёт таймаут N в тексте, поэтому у ожидания СВОЙ режим (deploywait) с порогом = N мин
 //   + запас — ровно как apiwait. Без него строка нейтральна, скан ушёл бы к `🚀 Деплой
-//   фазы»/«✅ смерджена` → default (5 мин) → ложный DEADMAN-пуш на КАЖДОМ prod-мердже
+//   фазы`/`✅ смерджена` → default (5 мин) → ложный DEADMAN-пуш на КАЖДОМ prod-мердже
 //   (deploy на VDS регулярно длиннее 5 мин). См. DEPLOY_WAIT_RE ниже.
 // Гейт (🚦 → между строками ✓/✗ чеков): checksGreen логирует каждый чек, поэтому
 //   тишина внутри гейта ограничена САМЫМ ДОЛГИМ одиночным чеком. Замер сейчас на этом
@@ -81,7 +81,7 @@ export const STOPPED_RE = /⏸|✋|🎉|⛔/u;
 export const DEFAULT_RE = /✅|🏁|🚀|🔀/u;
 // Маркер API-лимитной паузы. Формат строки — единственный источник правды в ralph.js
 // (функция apiLimitMessage(); pushEvent префиксит `🔔 PUSH:`): `⏳ Ralph: API-лимит — …
-// Жду N мин …`. Синхронность текста и этого regex закреплена тестом (deadman.test.js:
+// Жду N мин …`. Синхронность текста и этого regex закреплена тестом (deadman.test.ts:
 // apiLimitMessage из ralph.js ↔ API_WAIT_RE) — правка формулировки в ралфе, ломающая
 // матч, покраснит гейт, а не всплывёт ночью ложным пушем. N (минуты сна до сброса окна)
 // захватываем группой — по нему порог именно этой паузы, а не coder-режима.
@@ -90,14 +90,16 @@ export const API_WAIT_RE = /⏳ Ralph: API-лимит[\s\S]*?Жду (\d+) мин
 // правды в ralph.js (функция deployWaitMessage()): `⏳ Пост-мердж: жду итог deploy-workflow
 // «…» на sha … (таймаут N мин).`. Цикл опроса deploy-workflow за N мин (боевой таймаут
 // 20 мин) не пишет в лог ни строки — без своего режима строка нейтральна, скан ушёл бы
-// назад к `🚀 Деплой фазы…»/«✅ … смерджена` → DEFAULT_RE (5 мин) → ложный DEADMAN-пуш на
+// назад к `🚀 Деплой фазы…`/`✅ … смерджена` → DEFAULT_RE (5 мин) → ложный DEADMAN-пуш на
 // каждом prod-мердже. N (таймаут в минутах) захватываем группой — по нему порог именно
-// этого ожидания. Синхронность текста и regex закреплена тестом (deadman.test.js:
+// этого ожидания. Синхронность текста и regex закреплена тестом (deadman.test.ts:
 // deployWaitMessage из ralph.js ↔ DEPLOY_WAIT_RE), как у apiLimitMessage ↔ API_WAIT_RE.
 export const DEPLOY_WAIT_RE = /⏳ Пост-мердж: жду итог[\s\S]*?таймаут (\d+) мин/u;
 
-// Режимы петли, определяемые по последнему значимому маркеру в хвосте лога.
-type Activity = 'stopped' | 'apiwait' | 'deploywait' | 'coder' | 'gate' | 'default';
+// Режимы петли, определяемые по последнему значимому маркеру в хвосте лога. Экспортируется
+// (#403-review): silenceThresholdMs и DeadmanEval.activity в monitor-panel.mts типизируются
+// им, а не широким string.
+export type Activity = 'stopped' | 'apiwait' | 'deploywait' | 'coder' | 'gate' | 'default';
 
 type DeadmanThresholds = {
     iterationGraceMs: number;
@@ -212,7 +214,7 @@ function readCfg(cfg: unknown): { deadman: DeadmanThresholds; claudeTimeoutMs: n
 // Порог тишины (мс) для режима. Неизвестный режим → default (fail-safe: не занижаем).
 // lines нужны только режиму apiwait/deploywait (порог берётся из строки паузы); для
 // остальных режимов параметр не читается, поэтому старые вызовы (activity, cfg) валидны.
-export function silenceThresholdMs(activity: string, cfg: unknown, lines?: string[]): number {
+export function silenceThresholdMs(activity: Activity, cfg: unknown, lines?: string[]): number {
     const { deadman, claudeTimeoutMs } = readCfg(cfg);
     switch (activity) {
         case 'stopped':

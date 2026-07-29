@@ -13,6 +13,7 @@ import {
     DEFAULT_CLAUDE_TIMEOUT_MS,
     API_WAIT_RE,
     DEPLOY_WAIT_RE,
+    type Activity,
 } from './deadman.ts';
 // @ts-expect-error — JS-entry раннера без деклараций типов.
 import { apiLimitMessage, deployWaitMessage } from '../ralph.js';
@@ -342,7 +343,9 @@ describe('silenceThresholdMs — порог по режиму и конфигу'
     });
 
     it('неизвестный режим трактуется как default (fail-safe)', () => {
-        expect(silenceThresholdMs('что-то', cfg)).toBe(300000);
+        // Каст: activity типизирован Activity (#403-review), но проверяем именно ветку
+        // default switch — рантайм-мусор мимо union'а, ради которого она и оставлена.
+        expect(silenceThresholdMs('что-то' as Activity, cfg)).toBe(300000);
     });
 
     it('apiwait → N мин из строки паузы + запас (lines прокинуты)', () => {

@@ -140,12 +140,11 @@ function attemptSend({
             { encoding: 'utf-8', input: curlConfig, stdio: ['pipe', 'pipe', 'pipe'] },
         );
 
-        let parsed: {
-            ok: boolean;
-            description?: string;
-            error_code?: number;
-            parameters?: { retry_after?: number };
-        };
+        // Ответ Telegram — недоверенные данные из сети: JSON.parse даёт `any`, поэтому
+        // держим его как unknown и сужаем ПО МЕСТУ (как `cfg: unknown` в deadman.ts), а не
+        // утверждаем форму, которую рантайм не проверял. Все обращения ниже толерантны к
+        // мусору (Number()/typeof), так что поведение не меняется — вопрос честности типа.
+        let parsed: unknown;
         try {
             parsed = JSON.parse(raw);
         } catch {
@@ -154,14 +153,20 @@ function attemptSend({
                 reason: `не удалось разобрать ответ API — ${String(raw).slice(0, 200)}`,
             };
         }
-        if (!parsed.ok) {
-            const code = Number(parsed.error_code);
-            const desc = parsed.description || 'без описания';
+        const res: Record<string, unknown> =
+            parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+        if (!res.ok) {
+            const code = Number(res.error_code);
+            const desc = (typeof res.description === 'string' && res.description) || 'без описания';
             // 429 (rate-limit) — транзиентно, но Telegram сам подсказывает паузу в
             // parameters.retry_after (сек). Уважаем её: фиксированные 5с могли бы повторно
             // упереться в лимит. retryAfterMs !== undefined перекрывает нарастающую паузу.
             if (code === 429) {
-                const ra = parsed.parameters ? Number(parsed.parameters.retry_after) : NaN;
+                const params = res.parameters;
+                const ra =
+                    params && typeof params === 'object'
+                        ? Number((params as Record<string, unknown>).retry_after)
+                        : NaN;
                 return {
                     ok: false,
                     reason: `API rate-limit (429) — ${desc}`,

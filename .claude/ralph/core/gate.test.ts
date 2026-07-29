@@ -2,7 +2,7 @@
 // что она собирает рабочие функции из синтетического env, независимо от ralph.js: контракт
 // extraction'а — модуль самодостаточен и переносим (цель фазы 3), а не «работает только
 // пока его зовёт ralph.js». Проход «через ре-экспорт ralph.js» с боевым контекстом раннера —
-// в orchestrator.test.js / blocked-scenarios.test.js / hold-scenarios.test.js и в блоке в
+// в orchestrator.test.ts / blocked-scenarios.test.ts / hold-scenarios.test.ts и в блоке в
 // конце этого файла, перенесённом из ralph.test.js при её разнесении по модулям (#366).
 import { describe, it, expect, vi } from 'vitest';
 // @ts-expect-error — JS-entry раннера без деклараций типов; блок в конце файла перенесён

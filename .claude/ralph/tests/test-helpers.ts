@@ -8,11 +8,17 @@ import path from 'path';
 import { vi, type Mock } from 'vitest';
 // @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что в
 // orchestrator.test.ts, #366): дефолт ralph.js — ре-экспорт runtime фабрики.
-import ralph from '../ralph.js';
+import ralphDefault from '../ralph.js';
 import type { RalphConfig } from '../core/orchestrator.ts';
 import type { RalphState } from '../core/state-lock.ts';
 
-const { runLoop } = ralph;
+// ralph.js — module.exports = createOrchestrator(...) того же runtime, поэтому его
+// поверхность точно описывается ReturnType<typeof createOrchestrator>. Типизируем runLoop
+// через него (а не оставляем `any` из ts-expect-error-импорта): иначе объект deps из ~30
+// полей в makeRunLoopScenario компилятором не сверялся бы с боевой сигнатурой — обещание
+// «правку сигнатуры deps синхронизируем здесь одним местом» держал бы комментарий, а не тип.
+type Runtime = ReturnType<typeof import('../core/orchestrator.ts').createOrchestrator>;
+const runLoop = ralphDefault.runLoop as Runtime['runLoop'];
 
 // Строка лога как её пишет log() в ralph.js — ISO-таймстамп + маркер. Таймстамп
 // фиксированный: тесты задают «сейчас» через mtime + ageMs, сам префикс роли не играет.
@@ -101,7 +107,12 @@ const scenarioCfg = (o: Partial<RalphConfig> = {}): RalphConfig => ({
     ...o,
 });
 
-type GateVerdict = 'blocked' | 'hold' | 'merged' | 'not-merged' | 'red-checks';
+// Вердикт гейта — из боевой сигнатуры tryMergePhase, а не переобъявлённый список: тот
+// однажды разъехался бы с ядром (напр. потерял бы 'merged-local-stale').
+type GateVerdict = ReturnType<Runtime['tryMergePhase']>;
+// Красный чек — тоже из боевого геттера (getLastRedCheck), а не `unknown`: так фейк
+// getLastRedCheck типизируется под сигнатуру runLoop, и RED_CHECK-фикстура сверяется формой.
+type RedCheckResult = ReturnType<Runtime['getLastRedCheck']>;
 
 // Общий оркестратор сценарных тестов гейта для blocked-scenarios и hold-scenarios: один
 // state, кумулятивные спаи, pass(gate,{redCheck}) = один проход раннера с заданным
@@ -117,7 +128,7 @@ export function makeRunLoopScenario(
     { lastGatePr = 777 }: { lastGatePr?: number } = {},
 ): {
     readonly state: RalphState;
-    pass: (gate: GateVerdict, o?: { redCheck?: unknown }) => void;
+    pass: (gate: GateVerdict, o?: { redCheck?: RedCheckResult }) => void;
     restart: () => RalphState;
     logs: string[];
     saved: RalphState[];
@@ -136,7 +147,10 @@ export function makeRunLoopScenario(
     const addBlockedLabelFn = vi.fn();
     let state = scenarioState(initialState);
 
-    function pass(gate: GateVerdict, { redCheck = null }: { redCheck?: unknown } = {}): void {
+    function pass(
+        gate: GateVerdict,
+        { redCheck = null }: { redCheck?: RedCheckResult } = {},
+    ): void {
         let idxCalls = 0;
         runLoop(
             scenarioCfg(),

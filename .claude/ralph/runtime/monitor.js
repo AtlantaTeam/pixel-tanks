@@ -40,4 +40,8 @@ if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
 
 const { main } = require('./monitor-panel.mts');
 
-main();
+// Гейт require.main === module — как в ralph.js: панель запускается ТОЛЬКО при прямом
+// `node monitor.js` (tmux/спавн раннера). При случайном require (будущий импорт, глоб
+// тест-раннера) выполнятся лишь объявления, но не побочки панели — gh-запросы и
+// бесконечный setInterval. Стоит одну строку, снимает целый класс тихого запуска.
+if (require.main === module) main();

@@ -2,8 +2,8 @@
 // копиях в ralph.js и telegram-notifier.ts (ревью PR #231) — правка в одной не доезжала
 // до другой. Вынесены сюда по тому же приёму, что и guardSideEffect (#145,
 // side-effect-guard.ts): общий модуль без cycle на ralph.js, требуется и через
-// require() (CommonJS: ralph.js), и потенциально через import (telegram-notifier.ts)
-// (ESM-потребители).
+// require() (CommonJS-entry ralph.js), и через import (telegram-notifier.ts —
+// ESM-потребитель, уже фактически импортирует sleep/positiveIntOrDefault отсюда).
 //
 // TS-модуль без билд-шага: исполняется нативным type stripping Node 24 (erasable-only
 // синтаксис — только аннотации типов, ни enum, ни namespace, ни parameter properties).

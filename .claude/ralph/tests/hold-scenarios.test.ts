@@ -1,6 +1,6 @@
 // Приёмочные (сценарные) тесты метки hold (#222, следствие #217) — доказательство
 // критериев готовности через ВЕСЬ цикл гейта end-to-end, а не по кускам. Образец —
-// blocked-scenarios.test.js, та же модель «прохода раннера»: один вызов runLoop = одно
+// blocked-scenarios.test.ts, та же модель «прохода раннера»: один вызов runLoop = одно
 // детерминированное срабатывание гейта, state переносится между проходами как на диске.
 //
 // Проверяются ровно сценарии из критериев Issue #222:
@@ -12,11 +12,11 @@
 //     зовётся ТОЛЬКО с именем 'blocked', hold она не видит и не трогает.
 //
 // Побочки запрещены (RALPH_NO_SIDE_EFFECTS=1, guardSideEffect, общий afterEach в
-// test-setup.js): все коллабораторы с побочками — фейки через DI, ни одного реального
+// test-setup.ts): все коллабораторы с побочками — фейки через DI, ни одного реального
 // вызова gh или сети.
 //
-// Оркестратор сценария (makeRunLoopScenario) вынесен в test-helpers.js (#223) — общий с
-// blocked-scenarios.test.js. Здесь остаются только hold-специфичные describe.
+// Оркестратор сценария (makeRunLoopScenario) вынесен в test-helpers.ts (#223) — общий с
+// blocked-scenarios.test.ts. Здесь остаются только hold-специфичные describe.
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что в
 // orchestrator.test.ts, #366): дефолт ralph.js — ре-экспорт runtime фабрики.

@@ -1,5 +1,5 @@
 // Юнит-тесты telegram-notifier.ts (#85). execFn всегда мокается явно — реальный
-// curl запрещён в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1, см. test-setup.js);
+// curl запрещён в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1, см. test-setup.ts);
 // забытый мок ловит общий afterEach через sideEffectAttempts, а не тихо бьёт в сеть.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {

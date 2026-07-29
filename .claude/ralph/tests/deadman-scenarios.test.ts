@@ -2,7 +2,7 @@
 // фазы 1 «тишина как алерт» через ВЕСЬ конвейер детекта end-to-end, а не по кускам.
 //
 // Юнит-тесты живут рядом: deadman.test.ts (#147 — классификация хвоста и порог) и
-// monitor.test.js (#148/#149 — evalDeadman/readLogTail/дедуп на замороженных числах).
+// monitor-panel.test.mts (#148/#149 — evalDeadman/readLogTail/дедуп на замороженных числах).
 // Здесь другой уровень: реальный файл лога на диске → readLogTail (реальный fs.stat
 // mtime) → evalDeadman → maybePushDeadman → доставка через настоящий pushEvent(), с
 // проверкой ровно тех сценариев отказа, что в критериях Issue #150:
@@ -11,7 +11,7 @@
 //   • полный живой прогон фазы → ни одного ложного пуша.
 //
 // Побочки запрещены и здесь (RALPH_NO_SIDE_EFFECTS=1 из vitest.config, guardSideEffect,
-// общий afterEach в test-setup.js): сеть/шелл/state не трогаем, доставка пуша — через
+// общий afterEach в test-setup.ts): сеть/шелл/state не трогаем, доставка пуша — через
 // инжектируемый pushFn/logFn (DI), реальный pushEvent зовём в non-prod профиле, где он
 // печатает маркер, но НЕ ходит в Telegram (проверяется отдельным assert'ом ниже).
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
@@ -36,7 +36,7 @@ const GATE_THRESHOLD = 600000; // 10м
 const DEFAULT_THRESHOLD = 300000; // 5м
 
 // ── Реальный временный лог на диске (как боевой ralph.log) ────────────────────────
-// Общая фабрика (test-helpers.js): приватный tmp-каталог + writeLog + cleanup — чтобы
+// Общая фабрика (test-helpers.ts): приватный tmp-каталог + writeLog + cleanup — чтобы
 // формат/жизненный цикл временного лога жил в одном месте, а не в трёх тест-файлах.
 const { writeLog, cleanupFiles, removeDir } = makeTmpLog('ralph-deadman-scn-');
 afterEach(cleanupFiles);
@@ -112,7 +112,7 @@ describe('kill -9 раннера → пуш без участия раннера
     // Раннер убит (kill -9, OOM): ralph.js больше ничего не пишет, лог замёрз. Монитор
     // detached — жив и считает тишину ПО ФАЙЛУ. Доказательство «без участия раннера»:
     // на входе tick() только путь к файлу; ни одной боевой побочки ralph.js (afterEach
-    // в test-setup.js сверяет журнал sideEffectAttempts — он обязан остаться пустым).
+    // в test-setup.ts сверяет журнал sideEffectAttempts — он обязан остаться пустым).
     it('раннер мёртв на хоз-шаге дольше дефолта → пуш из одного лишь файла', () => {
         const p = writeLog([t('🔀 Переключение на ветку feature/ralph-deadman')]);
         const r = tick(p, DEFAULT_THRESHOLD + MIN); // мёртв 6 мин > default 5 мин

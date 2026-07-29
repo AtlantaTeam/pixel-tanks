@@ -169,7 +169,7 @@ describe('appendJournalEntry', () => {
     });
 
     it('#237 дефолтный writeFn под RALPH_NO_SIDE_EFFECTS=1 — кидает, не пишет в настоящий журнал', () => {
-        // Vitest-проект ralph выставляет RALPH_NO_SIDE_EFFECTS=1 (test-setup.js) — тест,
+        // Vitest-проект ralph выставляет RALPH_NO_SIDE_EFFECTS=1 (test-setup.ts) — тест,
         // забывший инжектировать writeFn, обязан упасть, а не молча дописать строку на диск.
         expect(process.env.RALPH_NO_SIDE_EFFECTS).toBe('1');
         expect(() =>

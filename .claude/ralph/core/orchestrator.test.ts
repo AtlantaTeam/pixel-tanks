@@ -7,10 +7,19 @@
 // Файл — единственный тест-файл модуля orchestrator.ts (#366, один файл на модуль).
 // Переведён в .ts (#405, фаза 8 «Дотипизация оболочки»): дословный перенос блоков без
 // переписывания моков — под tsc --strict добавлены только аннотации фикстур и DI-заглушек
-// (узкие локальные типы, не `any`: правило проекта no-explicit-any: error), а частичные
-// spawnSync-фейки приводятся к боевому `typeof spawnSync` точечным `as unknown as
-// SpawnSyncFn` в вызове. Число тестов и их суть не менялись (перенос, не переписывание);
-// теперь файл в периметре typecheck:ralph (tsconfig включает **/*.ts).
+// (узкие локальные типы вместо `any`), а частичные spawnSync-фейки приводятся к боевому
+// `typeof spawnSync` точечным `as unknown as SpawnSyncFn` в вызове. Число тестов и их суть
+// не менялись (перенос, не переписывание); файл теперь КОМПИЛИРУЕТСЯ typecheck:ralph
+// (tsconfig включает **/*.ts). Единственный барьер здесь — tsc: ESLint на `.claude/**` не
+// распространяется (globalIgnores в eslint.config.mjs).
+//
+// Что именно проверяет tsc, а что нет (честно, #409-ревью): поверхность ralph.js держится
+// `any` (ts-expect-error-импорт ниже), поэтому tsc сверяет ЛОКАЛЬНЫЕ аннотации — фикстуры,
+// DI-заглушки (SpawnFake/ChecksGreenFake/…), формы `mock.calls[i]` — но НЕ сигнатуры вызовов
+// боевого API: `runLoop`/`checksGreen`/`closeMilestone…` зовутся через `any`. Полная
+// типизация деструктуризации (`ralph as ReturnType<typeof createOrchestrator>`) покраснила
+// бы ~150 вызовов с генерик-коллабораторами (`GhJsonFn`) и частичными cfg/state-фейками —
+// это отдельный трек, а не правка переноса #405.
 //
 // Файл собран при разнесении монолитного ralph.test.js по модульным тест-файлам (#366):
 // блоки перенесены как есть, включая их фикстуры и комментарии.
@@ -18,7 +27,7 @@
 // Тесты детерминированы: время мокается фейк-таймерами, платформо- и TZ-независимы.
 // Побочек нет ни одной: все коллабораторы (sh/shArgv/spawn/gh/fs) инжектируются, а
 // боевые дефолты под RALPH_NO_SIDE_EFFECTS=1 громко падают на guardSideEffect (#138) —
-// общий afterEach из test-setup.js сверяет журнал попыток.
+// общий afterEach из test-setup.ts сверяет журнал попыток.
 //
 // spawnClaude тестируем через явную инъекцию фейковой spawn-функции (3-й параметр),
 // НЕ через vi.mock('node:child_process'): мок модуля на границе CJS require()
@@ -30,10 +39,16 @@ import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vite
 import fs from 'node:fs';
 // @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что в
 // monitor-panel.mts / config-profile.test.ts, #366): дефолт ralph.js — ре-экспорт
-// runtime фабрики, типы швов приходят из createOrchestrator ниже.
+// runtime фабрики. Поверхность держим `any` СОЗНАТЕЛЬНО (не кастуем к
+// ReturnType<typeof createOrchestrator>): боевые DI-коллабораторы этого сьюта — генерик
+// `GhJsonFn` (`<T>(cmd)=>T`), частичные cfg/state-фейки и ClaudeOpts-заглушки, которые
+// #405 намеренно перенёс ДОСЛОВНО, не переписывая под строгие типы. Каст фабрики
+// покраснил бы ~150 таких вызовов разом — это отдельный крупный трек «типизация DI-моков
+// сценариев», а не правка этого переноса (см. ответ в ревью PR #409).
 import ralph from '../ralph.js';
 import type { AdapterRegistries, AdapterConfig } from '../adapters/adapters-impl.ts';
 import type { DeployOutcome } from './deploy-check.ts';
+import type { RalphState } from './state-lock.ts';
 
 // #204: состав чеков гейта переехал в ralph.config.json. gateChecksFor и tryMergePhase
 // читают ФАБРИЧНЫЙ config, который в проде ставит main() (в юнит-тестах не запускаемая).
@@ -108,7 +123,12 @@ type ChecksGreenFake = (
     prNumber: number,
     deps: { checks: Array<[string, string]>; [k: string]: unknown },
 ) => unknown;
-type WaitDeployFake = (sha: string) => unknown;
+// Фейк waitForDeployRun-коллаборатора. Боевой цикл зовёт его ТРЕМЯ аргументами:
+// waitForDeployRunFn(mergedSha, cfg, { logFn }) (orchestrator.ts:2755). Повторяем арность,
+// чтобы mock.calls[i] был 3-кортежем реального контракта (унарный тип скрыл бы calls[i][1]
+// /[2] и сделал бы обращение к ним тайп-ошибкой на живых данных). Ассерты читают только
+// calls[0][0] (sha), поэтому cfg/opts не типизируем строго → unknown.
+type WaitDeployFake = (sha: string, cfg?: unknown, opts?: { logFn?: unknown }) => unknown;
 // Фейк spawn (не spawnSync) для монитора: возвращает child-подобие, читаются
 // opts.detached/opts.stdio и argv.
 type MonitorSpawnFake = (
@@ -1926,11 +1946,15 @@ describe('runLoop — основной while-цикл: итерации коде
     // ни диска. Терминация цикла: phaseIndexOfFn по умолчанию — счётчик, отдающий
     // валидный индекс на 1-м проходе и «за концом» на 2-м, поэтому любой сценарий с
     // continue гарантированно упирается в ветку «все фазы завершены» и не зациклится.
-    // Узкий локальный тип state цикла: базовые поля счётчиков + опциональные барьеры,
-    // которые проверяют отдельные сценарии (deployBlock/reviewModelFloor/…). Индекс-
-    // сигнатура держит перенос дословным — mkState({ любое: … }) остаётся валидным, как в
-    // прежнем .js, где state был нетипизирован.
-    type TFakeState = {
+    // Локальный тип state цикла ДЕРИВИРУЕТСЯ из боевого RalphState (state-lock.ts), а не
+    // переобъявляется: так добавленное туда поле (reReviewPending и т.п.) не разъедется с
+    // фикстурой молча. Обязательными оставляем счётчики, которые mkState всегда задаёт;
+    // deployBlock сужаем до формы, читаемой сценариями (в RalphState он `unknown`).
+    // Индекс-сигнатура `[k: string]: unknown` держит перенос дословным — mkState({ любое:
+    // … }) остаётся валидным, как в прежнем .js, где state был нетипизирован; ЦЕНА её —
+    // отключение проверки опечаток в ключах фикстур (tsc не поймает `submited: true`),
+    // сознательный размен ради дословности переноса.
+    type FakeState = Partial<RalphState> & {
         count: number;
         milestone: string;
         submitted: boolean;
@@ -1943,11 +1967,9 @@ describe('runLoop — основной while-цикл: итерации коде
             status?: string;
             reason?: string;
         } | null;
-        reviewModelFloor?: string | null;
-        lastReviewModel?: string | null;
         [k: string]: unknown;
     };
-    const mkState = (o: Partial<TFakeState> = {}): TFakeState => ({
+    const mkState = (o: Partial<FakeState> = {}): FakeState => ({
         count: 0,
         milestone: 'M1',
         submitted: false,

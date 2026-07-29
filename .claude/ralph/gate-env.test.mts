@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
     DEFAULT_ALLOWLIST_PATH,
     normalizeAllowlist,
@@ -171,17 +172,24 @@ describe('buildSanitizedGateEnv — обёртка загрузка+санаци
 // launch-дерева, а не из детаченного worktree. Барьер, а не только ручная проверка:
 // «упрощение» до process.cwd()/пути от конфига сразу покраснит этот тест.
 describe('провенанс DEFAULT_ALLOWLIST_PATH — от каталога модуля, не от cwd (#403)', () => {
-    it('абсолютный путь внутри .claude/ralph рядом с модулем', () => {
+    // Тест лежит РЯДОМ с gate-env.mts (оба в .claude/ralph/), поэтому каталог теста и есть
+    // каталог модуля. Ждём ТОЧНОГО равенства — только оно ловит регрессию вида
+    // path.join(process.cwd(), '.claude/ralph/gate-env-allowlist.json'): она прошла бы обе
+    // мягкие проверки (endsWith / «не cwd+имя файла»), т.к. под vitest cwd — корень репо и
+    // путь от cwd совпал бы с путём от каталога модуля. Но во время гейта cwd — worktree на
+    // PR-голове, и allowlist читался бы из кода проверяемого PR (провенанс #209 сломан).
+    const HERE = path.dirname(fileURLToPath(import.meta.url));
+    const EXPECTED = path.join(HERE, 'gate-env-allowlist.json');
+
+    it('точное равенство с путём от каталога самого модуля', () => {
         expect(path.isAbsolute(DEFAULT_ALLOWLIST_PATH)).toBe(true);
-        expect(DEFAULT_ALLOWLIST_PATH.endsWith(path.join('.claude', 'ralph', 'gate-env-allowlist.json'))).toBe(
-            true,
-        );
+        expect(DEFAULT_ALLOWLIST_PATH).toBe(EXPECTED);
     });
 
     it('не зависит от cwd: не строится от process.cwd()', () => {
-        // Если бы путь строился от cwd, он начинался бы с текущего рабочего каталога
-        // (корень репо во время тестов). import.meta.dirname даёт каталог модуля —
-        // .claude/ralph — который лишь ВЛОЖЕН в cwd, но самим cwd не является.
+        // Дополнительная явная проверка «не от cwd»: даже наивную форму cwd+имя файла
+        // (когда корень репо совпал бы с каталогом модуля лишь случайно) точное равенство
+        // выше уже отсекает, но оставляем как читаемую формулировку инварианта.
         expect(DEFAULT_ALLOWLIST_PATH).not.toBe(path.join(process.cwd(), 'gate-env-allowlist.json'));
         expect(path.dirname(DEFAULT_ALLOWLIST_PATH).endsWith(path.join('.claude', 'ralph'))).toBe(true);
     });

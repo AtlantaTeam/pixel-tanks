@@ -39,7 +39,7 @@ import ralph from '../ralph.js';
 const { resolveProfile, parseProfileFlag, pushEvent, shq } = ralph;
 // Пороги тишины (#147): классификация хвоста лога по режиму + порог по режиму. Здесь
 // (в мониторе) — импёровая половина: чтение файла, «сейчас» и сравнение с порогом.
-import { classifyActivity, silenceThresholdMs } from './deadman.ts';
+import { classifyActivity, silenceThresholdMs, type Activity } from './deadman.ts';
 
 // monitor-panel.mts живёт в .claude/ralph/runtime/ (#396), поэтому каталог раннера —
 // родитель import.meta.dirname, а не он сам. Служебные файлы (ralph.log/state/config)
@@ -72,11 +72,17 @@ const PROFILE = parseProfileFlag(args, () => null);
 // иначе на панели невидимо; заодно в ленту попадают старты claude-сессий (▶ claude -p).
 const SIGNAL_RE = /🚀|🔄|✅|🔍|🔧|🛑|⛔|🏁|❌|⚠|🔀|💤|🔔|▶/u;
 
+// Фаза из конфига — панели нужны только milestone (сверка со state) и branch (поиск PR).
+// Оба опциональны: конфиг недоверенный, поля читаются мягко (guard'ы по месту).
+type PhaseConfig = { milestone?: string; branch?: string };
+
 // Резолвнутый профилем конфиг — как его видят вызывающие (пороги/phases на верхнем
-// уровне). Поля читаются мягко (все чеки — Array.isArray / typeof), поэтому тип широкий.
+// уровне). Поля читаются мягко (все чеки — Array.isArray / typeof), поэтому тип широкий,
+// но phases типизируем сразу PhaseConfig[] — иначе Array.isArray сужал бы до any[] и
+// implicit any просачивался бы в currentMilestone/openPhasePRs.
 type ResolvedConfig = {
     profileName?: string;
-    phases?: unknown;
+    phases?: PhaseConfig[];
 } | null;
 
 // state фазы (ralph.state.json): milestone === null — штатный конец очереди (#THS8M).
@@ -91,7 +97,7 @@ type PhaseState = {
 type DeadmanEval = {
     silent: boolean;
     reason: string | null;
-    activity: string | null;
+    activity: Activity | null;
     thresholdMs: number | null;
     silenceMs: number | null;
 };
@@ -233,11 +239,13 @@ export function shouldPushDeadman(
 // silenceMs/thresholdMs здесь всегда числа (пуш только при silent), `?? 0` — лишь чтобы
 // удовлетворить nullable-тип DeadmanEval, в бою эта ветка недостижима.
 export function deadmanPushMessage(
-    deadman: { silenceMs: number | null; thresholdMs: number | null; activity: string | null },
+    deadman: { silenceMs: number | null; thresholdMs: number | null; activity: Activity | null },
     milestoneName: string,
 ): string {
     return (
-        `💀 Ralph: DEADMAN на фазе "${milestoneName}" — лог молчит ${fmtAge(deadman.silenceMs ?? 0)}, ` +
+        // «молчит N» — длительность тишины (fmtDur, без «назад»): fmtAge добавил бы «назад»
+        // и вышло бы «молчит 5м назад» (как будто молчание было в прошлом, а оно длится).
+        `💀 Ralph: DEADMAN на фазе "${milestoneName}" — лог молчит ${fmtDur(deadman.silenceMs ?? 0)}, ` +
         `дольше порога ${fmtDur(deadman.thresholdMs ?? 0)} (режим ${deadman.activity}). ` +
         'Цикл продолжается без остановки — проверь вручную.'
     );
@@ -261,7 +269,7 @@ export function maybePushDeadman(
         silent: boolean;
         silenceMs: number | null;
         thresholdMs: number | null;
-        activity: string | null;
+        activity: Activity | null;
     },
     lastMtime: number | null,
     lastPushedForMtime: number | null,
@@ -317,7 +325,7 @@ function signalTail(lines: string[], n: number): string[] {
 function currentMilestone(
     state: PhaseState,
     config: ResolvedConfig,
-): { idx: number; phase: { milestone: string; branch?: string } | null; total: number } | null {
+): { idx: number; phase: PhaseConfig | null; total: number } | null {
     // state.milestone может быть точным именем фазы; сверяем с конфигом,
     // чтобы понять индекс/ветку.
     if (!config || !Array.isArray(config.phases)) return null;
@@ -368,9 +376,7 @@ export function openPhasePRs(
     if (!config || !Array.isArray(config.phases) || !state?.milestone) {
         return { error: 'no-branch' };
     }
-    const phase = config.phases.find(
-        (p: { milestone: string; branch?: string }) => p.milestone === state.milestone,
-    );
+    const phase = config.phases.find((p) => p.milestone === state.milestone);
     if (!phase || !phase.branch) {
         return { error: 'no-branch' };
     }
@@ -469,12 +475,14 @@ function snapshot(): void {
         // Штатная остановка петли: порог +∞, тишина сюда не применяется. Отдельная
         // строка, а не «порог Infinityм» — раннер вышел из loop корректно, не завис.
         out.push(
-            `  ⏹  петля штатно остановлена (лог ${fmtAge(deadman.silenceMs ?? 0)} назад) — watchdog не считает это тишиной`,
+            // fmtAge уже включает «назад» — своё «назад» в шаблоне не дублируем.
+            `  ⏹  петля штатно остановлена (лог ${fmtAge(deadman.silenceMs ?? 0)}) — watchdog не считает это тишиной`,
         );
     } else if (deadman.reason !== 'no-log') {
         out.push(
             deadman.silent
-                ? `  💀 DEADMAN: лог молчит ${fmtAge(deadman.silenceMs ?? 0)} — дольше порога ${fmtDur(deadman.thresholdMs ?? 0)} (режим ${deadman.activity})`
+                ? // «молчит N» — длительность (fmtDur), не «N назад» (fmtAge): тишина длится.
+                  `  💀 DEADMAN: лог молчит ${fmtDur(deadman.silenceMs ?? 0)} — дольше порога ${fmtDur(deadman.thresholdMs ?? 0)} (режим ${deadman.activity})`
                 : `  ⏱  лог ${fmtAge(deadman.silenceMs ?? 0)}, порог тишины ${fmtDur(deadman.thresholdMs ?? 0)} (режим ${deadman.activity})`,
         );
     }

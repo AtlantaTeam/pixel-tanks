@@ -23,12 +23,15 @@ const SPECIFICS = /pixel-tanks|pixeltanks|AtlantaTeam|game-next/;
 const CODE_EXT = /\.(js|ts|mjs|mts)$/;
 // Из скана исключаем: тесты (сами держат паттерн в проверках), общую тест-инфру
 // предохранителя #138 и `test-helpers`. Сканируем только код ядра (CODE_EXT = js/ts/mjs/mts —
-// .mts у gate-env.mts, единственного явно-ESM модуля ядра, #403).
+// .mts у явно-ESM модулей ядра: gate-env.mts (#403) и runtime/monitor-panel.mts (#404)).
 // .json/.log/.md — данные/конфиг/доки. .sh (deploy-remote.sh/backup-db.sh) НЕ сканируем не
 // потому что «не код» — это исполняемые скрипты с проектной специфики (домен, VDS), — а
 // потому что это деплой-обвязка ВНЕ переносимого ядра раннера: при переносе она заменяется
 // под своё окружение, а не копируется как есть (#367-ревью).
-const EXCLUDE = /\.test\.(js|ts|mjs|mts)$|^test-setup\.js$|^test-helpers\.(js|mjs)$/;
+// test-setup/test-helpers переведены в .ts (#405), поэтому и в EXCLUDE — `.ts`. Отсечение
+// это «защита на будущее»: сейчас оба файла лежат в `tests/` (SKIP_DIRS) и до имени скан не
+// доходит, но появись такой файл вне tests/ — он всё равно выпадет из скана.
+const EXCLUDE = /\.test\.(js|ts|mjs|mts)$|^test-setup\.ts$|^test-helpers\.ts$/;
 
 // После раскладки по папкам (#396) модули ядра лежат в подпапках `.claude/ralph/`
 // (core/adapters/shared/runtime) + два файла в корне (ralph.js, gate-env.mts). Обход стал

@@ -159,7 +159,7 @@ describe('evalDeadman — тишина как возраст последней 
 });
 
 describe('readLogTail — сырой хвост лога + время последней записи', () => {
-    // Общая фабрика временного лога (test-helpers.js) — приватный tmp-каталог + cleanup
+    // Общая фабрика временного лога (test-helpers.ts) — приватный tmp-каталог + cleanup
     // в одном месте на все тесты deadman/monitor. mkTmp принимает готовый контент-строку.
     const { writeLog: mkTmp, cleanupFiles, removeDir } = makeTmpLog('ralph-monitor-test-');
     afterEach(cleanupFiles);
@@ -229,8 +229,15 @@ describe('deadmanPushMessage — текст пуша', () => {
 });
 
 describe('maybePushDeadman — доставка через pushEvent() + дедуп по эпизоду (#149)', () => {
-    const deadman = { silent: true, silenceMs: 700000, thresholdMs: 600000, activity: 'gate' };
-    const notSilent = { silent: false, silenceMs: 100, thresholdMs: 600000, activity: 'gate' };
+    // activity как const: maybePushDeadman теперь ждёт Activity | null, а не широкий string
+    // (#403-review) — у отдельного const'а без as const поле вывелось бы в string.
+    const deadman = { silent: true, silenceMs: 700000, thresholdMs: 600000, activity: 'gate' as const };
+    const notSilent = {
+        silent: false,
+        silenceMs: 100,
+        thresholdMs: 600000,
+        activity: 'gate' as const,
+    };
 
     it('тихо, prod, доставка удалась (pushFn→true) → пуш ОДИН раз, ключ дедупа встал на lastMtime', () => {
         const pushFn = vi.fn((_msg: string, _cfg: unknown, _opts: unknown) => true);
@@ -415,7 +422,9 @@ describe('openPhasePRs — поиск PR текущей фазы по ветке
     });
 
     it('возвращает { error: "no-branch" } когда phases не массив', () => {
-        const config = { phases: null };
+        // Каст: тип ResolvedConfig.phases теперь PhaseConfig[] (#403-review), но проверяем
+        // именно рантайм-ветку Array.isArray — phases: null мимо типа, ради fail-closed.
+        const config = { phases: null } as unknown as Parameters<typeof openPhasePRs>[0];
         const state = { milestone: 'Фаза 1' };
         const shFn = vi.fn();
         const result = openPhasePRs(config, state, shFn);

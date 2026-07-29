@@ -14,12 +14,12 @@
 // Фабрика, а не standalone-экспорты: почти всё здесь НЕ чистое (git/gh/claude/fs/
 // process), а флаги режима (--once/--dry-run/…) и argv приходят из entry — фабрика
 // захватывает их один раз, возвращённые функции сохраняют показательную DI
-// (shFn/logFn/… параметрами) — ровно так их зовут существующие тесты (orchestrator.test.js,
-// сценарные *.test.js) и monitor.js через ре-экспорт из ralph.js, как раньше.
+// (shFn/logFn/… параметрами) — ровно так их зовут существующие тесты (orchestrator.test.ts,
+// сценарные *.test.ts) и monitor-panel.mts через ре-экспорт из ralph.js, как раньше.
 //
 // external — мост из entry к соседям (telegram-notifier.ts, gate-env.mts): их
 // require остаётся в entry, фабрика получает готовые функции. Так orchestrator.ts не
-// тянет env/сеть при сборке, а тесты передают фейки (см. orchestrator.test.js).
+// тянет env/сеть при сборке, а тесты передают фейки (см. orchestrator.test.ts).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -410,7 +410,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // (маркер npm ci #SiaUX) — state-lock.ts. Фабрика захватывает контекст оркестратора
     // один раз (пути, DRY, ленивый config, общий предохранитель #138, process-примитивы
     // processAlive/cmdlineIncludes, которые остаются здесь — их делит и монитор).
-    // Возвращённые функции сохраняют DI: сценарные (lock-scenarios.test.js) и юнит-тесты
+    // Возвращённые функции сохраняют DI: сценарные (lock-scenarios.test.ts) и юнит-тесты
     // (state-lock.test.ts) зовут их через ре-экспорт из ralph.js как раньше. processAlive/
     // cmdlineIncludes — function-объявления (hoisted, зона монитора ниже), доступны здесь
     // до их текста.
@@ -3725,9 +3725,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // ── API-поверхность ──────────────────────────────────────────────────────
     // Ровно прежний module.exports ralph.js (#69 и далее) плюс main: на этой поверхности
-    // сидят orchestrator.test.js, сценарные тесты и monitor.js (resolveProfile/parseProfileFlag/
-    // pushEvent/shq). Пропавший ключ = молча сломанный тест или монитор — контракт
-    // закреплён orchestrator.test.js (REQUIRED_API).
+    // сидят orchestrator.test.ts, сценарные тесты и monitor-panel.mts (resolveProfile/
+    // parseProfileFlag/pushEvent/shq). Пропавший ключ = молча сломанный тест или монитор —
+    // контракт закреплён orchestrator.test.ts (REQUIRED_API).
     return {
         setConfigForTests,
         resolveProfile,

@@ -17,9 +17,9 @@ import { guardSideEffect as sharedGuardSideEffect } from '../.claude/ralph/share
 // намерение «лишь ре-экспорт», а не «завёл свою копию»).
 export { sideEffectAttempts } from '../.claude/ralph/shared/side-effect-guard.ts';
 
-// telegram-notifier.ts — CommonJS-модуль раннера (#85), самостоятельный: он не тянет
-// ralph.js, а предохранитель берёт из того же общего side-effect-guard.ts, поэтому в
-// тестах побочка не улетит.
+// telegram-notifier.ts — ESM-модуль раннера (#85), Node детектит его как ESM и грузит
+// через require(esm) на Node ≥24; самостоятельный: он не тянет ralph.js, а предохранитель
+// берёт из того же общего side-effect-guard.ts, поэтому в тестах побочка не улетит.
 const { sendTelegramMessage } = createRequire(import.meta.url)(
     '../.claude/ralph/runtime/telegram-notifier.ts',
 );
@@ -244,7 +244,7 @@ const PUSH_DEDUP_PATH = path.join(
 
 // #145: предохранитель (NO_SIDE_EFFECTS/sideEffectAttempts/guardSideEffect) вынесен в
 // side-effect-guard.ts — общий модуль на ralph.js/telegram-notifier.ts/security-audit.mjs,
-// журнал один на все три, test-setup.js сверяет его одним afterEach вместо трёх.
+// журнал один на все три, test-setup.ts сверяет его одним afterEach вместо трёх.
 // sideEffectAttempts ре-экспортируется выше (`export { … } from …`), рядом с импортом.
 function guardSideEffect(what) {
     sharedGuardSideEffect(

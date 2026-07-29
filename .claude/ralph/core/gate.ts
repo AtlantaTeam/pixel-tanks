@@ -24,7 +24,7 @@
 // regex'ов). Фабрика захватывает этот контекст один раз, а возвращённые функции
 // сохраняют ПОКАЗАТЕЛЬНУЮ DI: каждая по-прежнему принимает свои коллабораторы
 // (shFn/logFn/checksGreenFn/…) параметром — ровно так их зовут существующие тесты
-// (gate.test.ts, blocked-scenarios.test.js, hold-scenarios.test.js) через ре-экспорт из
+// (gate.test.ts, blocked-scenarios.test.ts, hold-scenarios.test.ts) через ре-экспорт из
 // ralph.js. Module-level state гейта (lastRedCheck/lastVerifiedHead/lastGatePr) живёт в
 // замыкании фабрики и читается наружу геттерами — как раньше module.exports у ralph.js.
 

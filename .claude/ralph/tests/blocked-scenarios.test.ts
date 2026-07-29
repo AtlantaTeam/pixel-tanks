@@ -1,6 +1,6 @@
 // Приёмочные (сценарные) тесты разбора blocked (#219, часть #215) — доказательство
 // критериев готовности фазы 3 «разбор blocked без человека» через ВЕСЬ цикл сдачи
-// end-to-end, а не по кускам. Образец — deadman-scenarios.test.js.
+// end-to-end, а не по кускам. Образец — deadman-scenarios.test.ts.
 //
 // Юнит-тесты живут рядом в ralph.test.js (describe «runLoop …»): там проверяется ОДИН
 // проход гейта (инкремент счётчика, снятие метки раннером, планка reviewModelFloor,
@@ -20,11 +20,11 @@
 // перезапуск» (крит. 4 отдельно пересобирает state из последнего saveState-снимка).
 //
 // Побочки запрещены и здесь (RALPH_NO_SIDE_EFFECTS=1, guardSideEffect, общий afterEach
-// в test-setup.js): все коллабораторы с побочками (sh/gh/сеть/state/runClaude/снятие
+// в test-setup.ts): все коллабораторы с побочками (sh/gh/сеть/state/runClaude/снятие
 // метки) инжектированы фейками через DI — ни одного реального вызова gh или сети.
 //
-// Оркестратор сценария (makeRunLoopScenario) и константы вынесены в test-helpers.js
-// (#223) — общие с hold-scenarios.test.js: правку сигнатуры deps runLoop синхронизируем
+// Оркестратор сценария (makeRunLoopScenario) и константы вынесены в test-helpers.ts
+// (#223) — общие с hold-scenarios.test.ts: правку сигнатуры deps runLoop синхронизируем
 // в одном месте. Здесь остаются только сценарные describe этого файла.
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что в
