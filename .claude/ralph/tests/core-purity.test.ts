@@ -203,7 +203,7 @@ describe('набор сканируемых модулей ядра', () => {
         // runtime/
         'runtime/monitor.js',
         'runtime/deadman.ts',
-        'runtime/telegram-notifier.js',
+        'runtime/telegram-notifier.ts',
         // корень раннера
         'ralph.js',
         'gate-env.js',

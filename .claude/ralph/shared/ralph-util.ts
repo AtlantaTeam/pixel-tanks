@@ -1,8 +1,8 @@
 // Общий util-модуль без побочек (#232): `shq`/`positiveIntOrDefault`/`sleep` жили в
-// копиях в ralph.js и telegram-notifier.js (ревью PR #231) — правка в одной не доезжала
+// копиях в ralph.js и telegram-notifier.ts (ревью PR #231) — правка в одной не доезжала
 // до другой. Вынесены сюда по тому же приёму, что и guardSideEffect (#145,
 // side-effect-guard.ts): общий модуль без cycle на ralph.js, требуется и через
-// require() (CommonJS: ralph.js, telegram-notifier.js), и потенциально через import
+// require() (CommonJS: ralph.js), и потенциально через import (telegram-notifier.ts)
 // (ESM-потребители).
 //
 // TS-модуль без билд-шага: исполняется нативным type stripping Node 24 (erasable-only
@@ -40,7 +40,7 @@ export function resolveInstallCmd(cfg?: { installCmd?: string } | null): string 
 // event loop свободен, поэтому Atomics.wait — корректный способ подождать без busy-loop.
 // Валидация ms на правильном слое (#232): Atomics.wait трактует NaN-таймаут как +∞ —
 // вечный сон посреди прогона. Пока функция была приватной копией, защиту держали
-// вызывающие (minutesOrDefault в ralph.js, комментарий у base в telegram-notifier.js);
+// вызывающие (minutesOrDefault в ralph.js, комментарий у base в telegram-notifier.ts);
 // теперь это общий API фреймворка — новый потребитель про эту мину не знает, поэтому
 // отсекаем NaN/±∞/отрицательное здесь: нечего ждать — сразу возвращаемся.
 export function sleep(ms: number): void {

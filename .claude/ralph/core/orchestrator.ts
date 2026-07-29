@@ -17,7 +17,7 @@
 // (shFn/logFn/… параметрами) — ровно так их зовут существующие тесты (orchestrator.test.js,
 // сценарные *.test.js) и monitor.js через ре-экспорт из ralph.js, как раньше.
 //
-// external — мост из entry к JS-соседям (telegram-notifier.js, gate-env.js): их
+// external — мост из entry к соседям (telegram-notifier.ts, gate-env.js): их
 // require остаётся в entry, фабрика получает готовые функции. Так orchestrator.ts не
 // тянет env/сеть при сборке, а тесты передают фейки (см. orchestrator.test.js).
 
@@ -51,7 +51,7 @@ import {
 // #369 (фаза 5): сборка адаптеров — текущие реализации пяти швов (форж/гейт/нотификатор/
 // деплой/рантайм) оформлены как интерфейсы adapters.ts и выбираются через конфиг. Ядро
 // ниже зависит ТОЛЬКО от типов-интерфейсов (RalphAdapters); конкретные модули (gate.ts,
-// deploy-check.ts, telegram-notifier.js, gh-функции, runClaudeOnce) стыкуются здесь, в
+// deploy-check.ts, telegram-notifier.ts, gh-функции, runClaudeOnce) стыкуются здесь, в
 // единой точке сборки (composition root), и попадают в ядро уже как швы.
 import type {
     GateCheckResult,
@@ -319,7 +319,7 @@ export type OrchestratorFlags = {
     deployResolved: boolean;
 };
 
-// Мост из entry к JS-соседям: telegram-notifier.js (доставка пушей) и gate-env.js
+// Мост из entry к соседям: telegram-notifier.ts (доставка пушей) и gate-env.js
 // (санация env чеков). Их require остаётся в entry — фабрика получает функции готовыми.
 export type OrchestratorExternal = {
     sendTelegramMessage: (msg: string, opts?: { logFn?: LogFn; execFn?: ExecFn }) => boolean;
@@ -385,7 +385,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // предохранителем: в бою массив всегда пуст и не растёт.
     //
     // #145: сам предохранитель — side-effect-guard.ts, общий модуль на ralph.js,
-    // telegram-notifier.js и security-audit.mjs. hint параметризован там же — подсказка
+    // telegram-notifier.ts и security-audit.mjs. hint параметризован там же — подсказка
     // про DI-коллабораторов раннера остаётся здесь, рядом с местом использования.
     const SIDE_EFFECT_HINT =
         'Тест дошёл до боевого дефолта. Подмени зависимость в deps теста ' +
@@ -455,7 +455,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         cfg: RalphConfig | undefined = config,
         {
             // #369: доставка — через шов нотификатора (adapters.notifier), не напрямую в
-            // telegram-notifier.js. Значение метода — та же ссылка sendTelegramMessage, поэтому
+            // telegram-notifier.ts. Значение метода — та же ссылка sendTelegramMessage, поэтому
             // execFn/logFn прокидываются как раньше (интеграционный тест шва цел), а ядро
             // (pushEvent — политика: лог-маркер + prod-гейт + C1) зависит от ИНТЕРФЕЙСА доставки.
             sendFn = adapters.notifier.notify,

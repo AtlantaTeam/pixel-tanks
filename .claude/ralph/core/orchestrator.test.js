@@ -9,8 +9,9 @@
 // .js) под tsc --strict потребовал бы переписывания моков под явные типы на ~4600 строк,
 // то есть менял бы суть сценариев, а не их расположение. .claude/ralph/tsconfig.json
 // включает только **/*.ts, поэтому файл вне периметра typecheck:ralph — как и остальные
-// тесты .js-модулей (monitor.test.js, deadman.test.js, telegram-notifier.test.js,
-// gate-env.test.js); orchestrator.ts сам по себе остаётся типизированным и проверяемым.
+// тесты .js-модулей (monitor.test.js, gate-env.test.js); orchestrator.ts сам по себе
+// остаётся типизированным и проверяемым (как и уже переведённые deadman.test.ts/
+// telegram-notifier.test.ts).
 //
 // Файл собран при разнесении монолитного ralph.test.js по модульным тест-файлам (#366):
 // блоки перенесены как есть, включая их фикстуры и комментарии.

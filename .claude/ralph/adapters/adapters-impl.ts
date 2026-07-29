@@ -8,7 +8,7 @@
 // (`RalphAdapters`), а не от конкретных модулей: свап реализации шва = правка ключа в
 // конфиге, не в коде (переносимость #204/#262). Композиция концентрируется в одной точке
 // (composition root в orchestrator строит реестр реализаций и зовёт `buildAdapters`);
-// конкретные модули (`gate.ts`, `deploy-check.ts`, `telegram-notifier.js`, gh-функции,
+// конкретные модули (`gate.ts`, `deploy-check.ts`, `telegram-notifier.ts`, gh-функции,
 // `spawnClaude`) остаются внизу, а ядро видит только швы.
 //
 // Форма мапперов. Каждая `createX*Adapter` — ТОНКИЙ маппер: берёт пучок уже построенных
@@ -163,7 +163,7 @@ export function createNpmGate(fns: NpmGateFns): GateAdapter {
     };
 }
 
-// Нотификатор Telegram: доставка текста, fail-open (telegram-notifier.js).
+// Нотификатор Telegram: доставка текста, fail-open (telegram-notifier.ts).
 export type TelegramNotifierFns = {
     notify: NotifierAdapter['notify'];
 };
