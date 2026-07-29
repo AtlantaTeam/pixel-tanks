@@ -4859,6 +4859,55 @@ describe('createOrchestrator: API-поверхность', () => {
     });
 });
 
+// #369 (фаза 5): ядро зависит от набора швов adapters.ts, собранного из текущих реализаций
+// и выбираемого конфигом. Проверяем, что фабрика отдаёт полный набор (дефолтная сборка, до
+// main()) и что сборка/резолв доступны на API-поверхности (для контрактного сьюта #370).
+describe('createOrchestrator: набор швов адаптеров (#369)', () => {
+    it('getAdapters отдаёт все пять швов сразу после сборки фабрики (дефолтный выбор)', () => {
+        const runtime = buildRuntime();
+        const adapters = runtime.getAdapters();
+        expect(Object.keys(adapters).sort()).toEqual(
+            ['coderRuntime', 'deployCheck', 'gate', 'notifier', 'taskSource'].sort(),
+        );
+        // Методы швов — функции (текущие реализации разложены по интерфейсам).
+        expect(typeof adapters.taskSource.listReadyIssues).toBe('function');
+        expect(typeof adapters.taskSource.mergePullRequest).toBe('function');
+        expect(typeof adapters.gate.runChecks).toBe('function');
+        expect(typeof adapters.notifier.notify).toBe('function');
+        expect(typeof adapters.deployCheck.classifyOutcome).toBe('function');
+        expect(typeof adapters.coderRuntime.run).toBe('function');
+    });
+
+    it('deployCheck.classifyOutcome — та же чистая классификация (GREEN только зелёный+здоровый)', () => {
+        const { deployCheck } = buildRuntime().getAdapters();
+        const green = {
+            status: 'completed',
+            conclusion: 'success',
+            sha: 'b'.repeat(40),
+            url: null,
+            runId: 1,
+        };
+        expect(deployCheck.classifyOutcome(green, { ok: true, status: 200, url: 'u' }).red).toBe(
+            false,
+        );
+        expect(deployCheck.classifyOutcome(green, { ok: false, status: 502, url: 'u' }).red).toBe(
+            true,
+        );
+    });
+
+    it('buildAdapters/resolveAdapterSelection на API-поверхности; неизвестная реализация → fail', () => {
+        const runtime = buildRuntime();
+        expect(typeof runtime.buildAdapters).toBe('function');
+        expect(typeof runtime.resolveAdapterSelection).toBe('function');
+        // resolveAdapterSelection fail-closed на неизвестном шве.
+        expect(() =>
+            runtime.resolveAdapterSelection({ nope: 'x' }, (m) => {
+                throw new Error(m);
+            }),
+        ).toThrow();
+    });
+});
+
 describe('createOrchestrator: флаги CLI', () => {
     it('dry: acquireRunnerLock не берёт лок вовсе (C1 read-only)', () => {
         const runtime = buildRuntime({ ...FLAGS_OFF, dry: true });

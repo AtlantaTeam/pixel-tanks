@@ -559,6 +559,28 @@ export function createGateRunner(env: GateEnv) {
         return merged.length > 0 ? merged[0].number : null;
     }
 
+    // ── Примитив мерджа (шов форжа, #369) ────────────────────────────────────
+    // Squash-мердж PR одной командой `gh pr merge` — гранулярная операция форжа,
+    // которую tryMergePhase (оркестрация цикла сдачи) вызывает ПОСЛЕ зелёного гейта.
+    // Вынесен из тела tryMergePhase, чтобы стать методом TaskSourceAdapter
+    // (mergePullRequest) — ядро зависит от интерфейса форжа, а не от inline-строки
+    // внутри гейта. Поведение прежнее: argv (#193), номер PR и sha — отдельными
+    // элементами (не в шелл-строку); --match-head-commit только при валидном sha
+    // (#SiaTz, TOCTOU); пусто/невалидно → мердж без привязки (мок checksGreen в
+    // тестах sha не выставляет). Ретрай/сверку phaseMerged/park держит tryMergePhase —
+    // это композиция, а не примитив. runArgvFn — DI (#193/#138), в проде shArgv.
+    function mergePr(
+        prNumber: number,
+        headSha?: string | null,
+        { runArgvFn = shArgv }: { runArgvFn?: ShArgvFn } = {},
+    ): void {
+        const mergeArgs = ['pr', 'merge', String(prNumber), '--squash', '--delete-branch'];
+        if (SHA40_RE.test(String(headSha))) {
+            mergeArgs.push('--match-head-commit', headSha as string);
+        }
+        runArgvFn('gh', mergeArgs);
+    }
+
     // ── Гейт мерджа фазы ─────────────────────────────────────────────────────
 
     /**
@@ -602,6 +624,7 @@ export function createGateRunner(env: GateEnv) {
             phaseMergedFn = phaseMerged,
             sleepFn = sleep,
             parkFn = parkOnOriginMain,
+            mergePrFn = mergePr,
             getLastRedCheckFn = () => lastRedCheck,
             getVerifiedHeadFn = () => lastVerifiedHead,
             // Профиль (#80) решает состав гейта. runLoop прокидывает cfg.profileName; по
@@ -618,6 +641,7 @@ export function createGateRunner(env: GateEnv) {
             phaseMergedFn?: (phase: { branch: string }) => boolean;
             sleepFn?: SleepFn;
             parkFn?: ParkFn;
+            mergePrFn?: typeof mergePr;
             getLastRedCheckFn?: () => RedCheck | null;
             getVerifiedHeadFn?: () => string | null;
             profileName?: string;
@@ -679,16 +703,14 @@ export function createGateRunner(env: GateEnv) {
         // смерджил бы новую, НЕ прогнанную голову. Сервер отвергнет мердж, если голова уехала.
         // Пусто (мок checksGreen в тестах не выставил sha) → мерджим как раньше, без привязки.
         const verifiedHead = getVerifiedHeadFn();
-        // argv (#193): номер PR и sha — отдельными элементами, не в шелл-строку. Пусто
-        // (мок checksGreen в тестах не выставил sha) → мерджим без привязки, как раньше.
-        const mergeArgs = ['pr', 'merge', String(pr.number), '--squash', '--delete-branch'];
-        if (SHA40_RE.test(String(verifiedHead))) {
-            mergeArgs.push('--match-head-commit', verifiedHead as string);
-        }
+        // Мердж — через примитив форжа mergePr (шов TaskSourceAdapter, #369): argv (#193),
+        // --match-head-commit при валидном sha (#SiaTz). Ретрай и сверку phaseMerged держит
+        // ЭТА функция (оркестрация), не примитив. runArgvFn прокинут насквозь — тесты видят
+        // тот же вызов `gh pr merge …`, что и раньше.
         let mergedOk = false;
         for (let attempt = 1; attempt <= 2 && !mergedOk; attempt++) {
             try {
-                runArgvFn('gh', mergeArgs);
+                mergePrFn(pr.number, verifiedHead, { runArgvFn });
                 mergedOk = true;
             } catch (e: unknown) {
                 try {
@@ -740,6 +762,7 @@ export function createGateRunner(env: GateEnv) {
         gateChecksFor,
         checksGreen,
         tryMergePhase,
+        mergePr,
         phaseMerged,
         mergedPhasePr,
         removeBlockedLabel,

@@ -48,6 +48,23 @@ import {
     apiLimitWaitMs,
     apiLimitMessage,
 } from './api-limit.ts';
+// #369 (фаза 5): сборка адаптеров — текущие реализации пяти швов (форж/гейт/нотификатор/
+// деплой/рантайм) оформлены как интерфейсы adapters.ts и выбираются через конфиг. Ядро
+// ниже зависит ТОЛЬКО от типов-интерфейсов (RalphAdapters); конкретные модули (gate.ts,
+// deploy-check.ts, telegram-notifier.js, gh-функции, runClaudeOnce) стыкуются здесь, в
+// единой точке сборки (composition root), и попадают в ядро уже как швы.
+import type { GateCheckResult, RalphAdapters, RunOptions, RunResult } from './adapters.ts';
+import {
+    buildAdapters,
+    createClaudeRuntime,
+    createGithubActionsDeploy,
+    createGithubTaskSource,
+    createNpmGate,
+    createTelegramNotifier,
+    resolveAdapterSelection,
+    type AdapterConfig,
+    type AdapterRegistries,
+} from './adapters-impl.ts';
 
 const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
@@ -125,6 +142,11 @@ export type RalphConfig = {
     runnerWorktreeDirname?: string;
     board?: { owner?: string; number?: number };
     gate?: { checks?: unknown; prodChecks?: unknown; prodDropChecks?: unknown };
+    // #369 (фаза 5): выбор реализации каждого шва по ключу (форж/гейт/нотификатор/деплой/
+    // рантайм). Опционально — отсутствующий шов берёт канон-дефолт (ADAPTER_DEFAULTS);
+    // неизвестный ключ/имя = fail-closed (resolveAdapterSelection). Свап реализации =
+    // правка конфига, не кода.
+    adapters?: AdapterConfig;
     tunnelCheck?: {
         enabled?: boolean;
         proxyUrl?: string;
@@ -224,6 +246,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // main(), т.е. уже после присваивания.
     let config: RalphConfig;
 
+    // #369 (фаза 5): набор швов, от которых зависит ядро. Собирается фабрикой (composition
+    // root ниже, после сборки всех боевых функций) с ДЕФОЛТНЫМ выбором — так юнит-тесты,
+    // строящие runtime без main(), получают рабочий набор. main() ПЕРЕсобирает его с
+    // выбором из config.adapters (fail-closed на неизвестной реализации). DI-дефолты цикла
+    // (runLoop/runClaude/pushEvent) читают adapters ПРИ ВЫЗОВЕ — т.е. уже после присваивания.
+    let adapters: RalphAdapters;
+
     // #138: предохранитель от побочек в тестах. Раннерные функции берут коллабораторов
     // (shFn/logFn/…) через DI, но у каждого есть ДЕФОЛТ — настоящие sh/log. Тест, забывший
     // подменить хоть один, молча уходил в реальный git и дописывал строки в ralph.log
@@ -310,7 +339,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
         msg: string,
         cfg: RalphConfig | undefined = config,
         {
-            sendFn = sendTelegramMessage,
+            // #369: доставка — через шов нотификатора (adapters.notifier), не напрямую в
+            // telegram-notifier.js. Значение метода — та же ссылка sendTelegramMessage, поэтому
+            // execFn/logFn прокидываются как раньше (интеграционный тест шва цел), а ядро
+            // (pushEvent — политика: лог-маркер + prod-гейт + C1) зависит от ИНТЕРФЕЙСА доставки.
+            sendFn = adapters.notifier.notify,
             logFn = log,
             execFn,
             dry = DRY,
@@ -327,9 +360,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // путь — breaker maxIterations проверяется до первого dry-guard'а в loop.
         if (dry) return false;
         if (!cfg || cfg.profileName !== 'prod') return false;
-        // execFn пробрасывается в дефолтный sendTelegramMessage (curl) — так один тест
-        // закрывает интеграционный шов pushEvent→нотифаер без реальной сети. undefined в
-        // проде = сработает realExecFn нотифаера.
+        // execFn пробрасывается в реальную доставку (curl) — так один тест закрывает
+        // интеграционный шов pushEvent→нотифаер без реальной сети. undefined в проде =
+        // сработает realExecFn нотифаера.
         return sendFn(msg, { logFn, execFn });
     }
 
@@ -402,7 +435,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
         {
             pushEventFn = pushEvent,
             cfg = config,
-            runClaudeOnceFn = runClaudeOnce,
+            // #369: запуск сессии — через шов рантайма (adapters.coderRuntime.run). Значение —
+            // та же ссылка runClaudeOnce, поведение прежнее; ядро (runClaude — политика:
+            // ожидание API-лимита + health туннеля вокруг запуска) зависит от ИНТЕРФЕЙСА рантайма.
+            // Фаза 6 подменит рантайм (Kimi/OpenAI) сменой ключа adapters.coderRuntime в конфиге.
+            runClaudeOnceFn = adapters.coderRuntime.run,
             ensureTunnelFn = ensureTunnel,
             sleepFn = sleep,
         }: {
@@ -1128,6 +1165,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         gateChecksFor,
         checksGreen,
         tryMergePhase,
+        mergePr,
         phaseMerged,
         mergedPhasePr,
         removeBlockedLabel,
@@ -1185,6 +1223,80 @@ export function createOrchestrator(env: OrchestratorEnv) {
         positiveIntOrDefault,
         SHA40_RE,
     });
+
+    // ── Composition root швов (#369, фаза 5) ─────────────────────────────────
+    // Все боевые функции пяти швов построены выше (openIssues/findOpenPr — форж-часть в
+    // этом модуле; phaseMerged/mergedPhasePr/метки/mergePr — из gate.ts; deploy — из
+    // deploy-check.ts; runClaudeOnce — рантайм; sendTelegramMessage — external). Здесь они
+    // раскладываются по интерфейсам adapters.ts и собираются в РЕЕСТР реализаций (по одной
+    // на шов сейчас; фаза 6 добавит рантаймы Kimi/OpenAI ключами в coderRuntime). `adapters`
+    // выбирается из реестра по конфигу — ядро ниже зависит только от интерфейсов.
+
+    // Прогон чеков в форме шва (GateAdapter.runChecks): checksGreen возвращает голый boolean
+    // и кладёт verifiedHead/redCheck в замыкание гейта (геттеры) — здесь это сводится в один
+    // объект-вердикт контракта. green ⇒ verifiedHead!=null,redCheck=null; !green ⇒ наоборот
+    // (если гейт упал ДО чеков и redCheck пуст — синтезируем маркер, чтобы не нарушить
+    // инвариант «!green ⇒ redCheck!=null»). Сам цикл сдачи по-прежнему зовёт tryMergePhase
+    // (оркестрация: композиция runChecks + mergePullRequest), а этот метод — для набора швов
+    // и контрактного сьюта #370; поведение петли не меняется.
+    function gateRunChecks(branch: string, prNumber: number): GateCheckResult {
+        const green = checksGreen(branch, prNumber, { checks: gateChecksFor(config.profileName) });
+        if (green) {
+            return { green: true, verifiedHead: gateGetVerifiedHead(), redCheck: null };
+        }
+        const redCheck = gateGetLastRedCheck() ?? {
+            name: 'gate',
+            cmd: 'checksGreen',
+            excerpt: 'гейт упал до чеков (fetch/HEAD/detach)',
+        };
+        return { green: false, verifiedHead: null, redCheck };
+    }
+
+    // Реестр доступных реализаций по швам. Ключи (github/npm/telegram/github-actions/claude)
+    // фиксируют, ЧЬЯ реализация; выбор из них — resolveAdapterSelection по config.adapters.
+    // Значения методов — те же боевые функции (сигнатуры адаптеров уже боевых, лишние опции
+    // DI-параметров опциональны и структурно совместимы) → поведение петли байт-в-байт то же.
+    const adapterRegistries: AdapterRegistries = {
+        taskSource: {
+            github: createGithubTaskSource({
+                openIssues,
+                allOpenIssues,
+                findOpenPr,
+                phaseMerged,
+                mergedPhasePr,
+                mergePr,
+                addBlockedLabel,
+                removeBlockedLabel,
+                closeMilestoneByTitle,
+                syncProjectBoard,
+            }),
+        },
+        gate: {
+            npm: createNpmGate({ resolveChecks: gateChecksFor, runChecks: gateRunChecks }),
+        },
+        notifier: {
+            // notify === sendTelegramMessage (та же ссылка): интерфейс — notify(text), но
+            // рантайм-функция принимает и {logFn,execFn} — pushEvent прокидывает их насквозь,
+            // интеграционный тест шва цел; фолбэк/анти-RCE/токен-вне-argv живут в нотифаере.
+            telegram: createTelegramNotifier({ notify: sendTelegramMessage }),
+        },
+        deployCheck: {
+            'github-actions': createGithubActionsDeploy({
+                mergedShaOf,
+                waitForDeployRun,
+                checkProdHealth,
+                classifyDeployOutcome,
+            }),
+        },
+        coderRuntime: {
+            claude: createClaudeRuntime({ run: runClaudeOnce }),
+        },
+    };
+
+    // Дефолтный набор швов (без config — для юнит-тестов, строящих runtime без main()).
+    // main() пересоберёт с выбором из config.adapters (fail-closed). Здесь fail недостижим:
+    // дефолтный выбор всегда указывает на зарегистрированные реализации.
+    adapters = buildAdapters(adapterRegistries, resolveAdapterSelection(undefined, fail), fail);
 
     // ── State ────────────────────────────────────────────────────────────────
     // Схема: { count, milestone, submitted }.
@@ -1524,23 +1636,27 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // #193: git-мутации обновления дерева раннера после мерджа — через argv (shArgv).
             runArgvFn = shArgv,
             saveStateFn = saveState,
-            openIssuesFn = openIssues,
-            allOpenIssuesFn = allOpenIssues,
+            // #369: швы форжа/деплоя — из config-выбранного набора adapters (значения — те
+            // же боевые функции, поведение прежнее). Ядро цикла зависит от интерфейсов, а не
+            // от конкретных openIssues/phaseMerged/mergedShaOf/…; тесты по-прежнему инжектят
+            // фейки этими же именами *Fn.
+            openIssuesFn = adapters.taskSource.listReadyIssues,
+            allOpenIssuesFn = adapters.taskSource.listAllOpenIssues,
             phaseIndexOfFn = phaseIndexOf,
             pickModelFn = pickModel,
             pickReviewModelFn = pickReviewModel,
             reviewDiffContextFn = reviewDiffContext,
             phaseDiffFilesFn = phaseDiffFiles,
-            removeBlockedLabelFn = removeBlockedLabel,
-            addBlockedLabelFn = addBlockedLabel,
+            removeBlockedLabelFn = adapters.taskSource.removeBlockedLabel,
+            addBlockedLabelFn = adapters.taskSource.addBlockedLabel,
             runClaudeFn = runClaude,
             ensureCleanFn = ensureClean,
-            phaseMergedFn = phaseMerged,
-            mergedPhasePrFn = mergedPhasePr,
+            phaseMergedFn = adapters.taskSource.isPhaseMerged,
+            mergedPhasePrFn = adapters.taskSource.mergedPullRequestNumber,
             advancePhaseFn = advancePhase,
             tryMergePhaseFn = tryMergePhase,
-            closeMilestoneByTitleFn = closeMilestoneByTitle,
-            syncProjectBoardFn = syncProjectBoard,
+            closeMilestoneByTitleFn = adapters.taskSource.closeMilestone,
+            syncProjectBoardFn = adapters.taskSource.syncBoard,
             recordReviewFindingsFn = recordReviewFindings as (
                 phase: Phase,
                 prNumber: number | null,
@@ -1550,9 +1666,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
             getLastGatePr = gateGetLastGatePr,
             pushEventFn = pushEvent,
             deployPhaseFn = deployPhasePlaceholder,
-            mergedShaOfFn = mergedShaOf as (prNumber: number | null) => string,
-            waitForDeployRunFn = waitForDeployRun,
-            checkProdHealthFn = checkProdHealth,
+            mergedShaOfFn = adapters.deployCheck.mergedShaOf as (prNumber: number | null) => string,
+            waitForDeployRunFn = adapters.deployCheck.waitForDeployRun,
+            checkProdHealthFn = adapters.deployCheck.checkHealth,
             ensureMonitorAliveFn = ensureMonitorAlive,
             monitorConfigPath,
         }: RunLoopDeps = {},
@@ -1992,7 +2108,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
                             if (isWorkflowGreen(outcome)) {
                                 health = checkProdHealthFn(cfg, { logFn });
                             }
-                            const verdict = classifyDeployOutcome(outcome, health);
+                            // #369: классификация — через шов деплой-проверки (та же функция).
+                            const verdict = adapters.deployCheck.classifyOutcome(outcome, health);
                             if (verdict.red) {
                                 block = {
                                     milestone: phase.milestone,
@@ -2765,6 +2882,15 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // про профили не знает вовсе. Парсим флаг в main(), а не в entry рядом с ONCE/DRY —
         // иначе кривой argv ронял бы process.exit при простом import в тестах.
         config = resolveProfile(raw, parseProfileFlag(argv)) as RalphConfig;
+        // #369: пересобираем набор швов с ВЫБОРОМ из config.adapters (fail-closed на
+        // неизвестном шве/имени/незарегистрированной реализации — как остальные проверки
+        // конфига). Дефолтная сборка выше дала рабочий набор для юнит-тестов; здесь — боевой
+        // выбор. Свап реализации шва = правка config.adapters, не кода (переносимость #204).
+        adapters = buildAdapters(
+            adapterRegistries,
+            resolveAdapterSelection(config.adapters, fail),
+            fail,
+        );
         // Абсолютный путь конфига раннера фиксируем ДО любого chdir: прокинем его монитору,
         // чтобы панель читала ТОТ ЖЕ конфиг, что раннер (дерево человека), а не свою копию в
         // worktree на детач-коммите, которая могла отстать (#SiaT8).
@@ -2991,6 +3117,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
         checksGreen,
         findOpenPr,
         tryMergePhase,
+        mergePr,
+        // #369 (фаза 5): набор швов, от которых зависит ядро (config-выбранный), и сборка —
+        // для контрактного сьюта #370 и проверки, что петля тянет именно швы. adapters —
+        // геттер (значение переприсваивается в main() с выбором из config.adapters).
+        getAdapters: (): RalphAdapters => adapters,
+        buildAdapters,
+        resolveAdapterSelection,
         deployPhasePlaceholder,
         mergedShaOf,
         deployWaitMessage,
