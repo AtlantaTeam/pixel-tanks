@@ -91,8 +91,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Фреймворк ralph · Фаза 7: Раскладка модулей по папкам",
-                "branch": "feature/ralph-fw-7-layout"
+                "milestone": "Фреймворк ralph · Фаза 8: Дотипизация оболочки",
+                "branch": "feature/ralph-fw-8-typing"
             }
         ]
     },
