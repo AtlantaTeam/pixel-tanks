@@ -271,6 +271,195 @@ describe('spawnClaude — фактический вызов spawn-функции
         const result = spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn);
         expect(result.code).toBe(1);
     });
+
+    it('без env-аргумента опции spawn НЕ содержат ключ env — Claude-путь наследует env раннера байт-в-байт', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+        spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn);
+        const [, , opts] = spawnFn.mock.calls[0];
+        expect('env' in opts).toBe(false);
+    });
+
+    it('с env-аргументом (#373 Kimi) опции spawn несут ровно этот env', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+        const env = { PATH: '/usr/bin', ANTHROPIC_BASE_URL: 'https://api.moonshot.ai/anthropic' };
+        spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn, env);
+        const [, , opts] = spawnFn.mock.calls[0];
+        expect(opts.env).toBe(env);
+        expect(opts.shell).toBe(false);
+    });
+});
+
+// #373 (фаза 6): рантайм Kimi — тот же бинарь `claude` через endpoint Moonshot, выбор
+// конфигом (adapters.coderRuntime: 'kimi'). Смоук + юниты чистых хелперов. Claude-путь не
+// меняется: дефолт coderRuntime остаётся claude, его сценарии выше зелёные.
+describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
+    // Боевой fail уходит в process.exit; в тестах инжектируем бросающий, чтобы увидеть стоп.
+    const throwingFail = (msg) => {
+        throw new Error(msg);
+    };
+
+    describe('buildKimiSpawnEnv — окружение процесса claude под Moonshot (чистая функция)', () => {
+        const { buildKimiSpawnEnv } = ralph;
+
+        it('добавляет ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN, наследуя базовое env', () => {
+            const env = buildKimiSpawnEnv('https://api.moonshot.ai/anthropic', 'sk-moon', {
+                PATH: '/usr/bin',
+                HOME: '/root',
+            });
+            expect(env.ANTHROPIC_BASE_URL).toBe('https://api.moonshot.ai/anthropic');
+            expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-moon');
+            expect(env.PATH).toBe('/usr/bin');
+            expect(env.HOME).toBe('/root');
+        });
+
+        it('снимает каналы Claude-аутентификации (иначе CLI ушёл бы на api.anthropic.com мимо Kimi)', () => {
+            const env = buildKimiSpawnEnv('https://api.moonshot.ai/anthropic', 'sk-moon', {
+                CLAUDE_CODE_OAUTH_TOKEN: 'oauth-claude',
+                ANTHROPIC_API_KEY: 'anthropic-key',
+            });
+            expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false);
+            expect('ANTHROPIC_API_KEY' in env).toBe(false);
+        });
+
+        it('не мутирует переданное базовое env', () => {
+            const base = { CLAUDE_CODE_OAUTH_TOKEN: 'x', PATH: '/usr/bin' };
+            buildKimiSpawnEnv('u', 't', base);
+            expect(base.CLAUDE_CODE_OAUTH_TOKEN).toBe('x');
+        });
+    });
+
+    describe('resolveKimiRuntime — резолв параметров из конфига + env (fail-closed)', () => {
+        const { resolveKimiRuntime } = ralph;
+
+        it('дефолты: международный endpoint и env RALPH_KIMI_AUTH_TOKEN', () => {
+            const r = resolveKimiRuntime(
+                { model: 'kimi-k2-0711-preview' },
+                { RALPH_KIMI_AUTH_TOKEN: 'sk-moon' },
+                throwingFail,
+            );
+            expect(r.baseUrl).toBe('https://api.moonshot.ai/anthropic');
+            expect(r.model).toBe('kimi-k2-0711-preview');
+            expect(r.token).toBe('sk-moon');
+            expect(r.fallbackModel).toBe(null);
+        });
+
+        it('переопределение baseUrl/authTokenEnv/fallbackModel из конфига', () => {
+            const r = resolveKimiRuntime(
+                {
+                    model: 'kimi-k2-0711-preview',
+                    baseUrl: 'https://api.moonshot.cn/anthropic',
+                    authTokenEnv: 'MY_KIMI_KEY',
+                    fallbackModel: 'kimi-k2-turbo',
+                },
+                { MY_KIMI_KEY: 'sk-cn' },
+                throwingFail,
+            );
+            expect(r.baseUrl).toBe('https://api.moonshot.cn/anthropic');
+            expect(r.token).toBe('sk-cn');
+            expect(r.fallbackModel).toBe('kimi-k2-turbo');
+        });
+
+        it('отсутствующая/пустая модель → fail (тихий сбой на endpoint Kimi недопустим)', () => {
+            expect(() =>
+                resolveKimiRuntime({}, { RALPH_KIMI_AUTH_TOKEN: 'x' }, throwingFail),
+            ).toThrow(/kimiRuntime\.model/);
+            expect(() =>
+                resolveKimiRuntime({ model: '   ' }, { RALPH_KIMI_AUTH_TOKEN: 'x' }, throwingFail),
+            ).toThrow(/kimiRuntime\.model/);
+        });
+
+        it('отсутствующий ключ Moonshot в env → fail (секреты только из env, инвариант №11)', () => {
+            expect(() =>
+                resolveKimiRuntime({ model: 'kimi-k2-0711-preview' }, {}, throwingFail),
+            ).toThrow(/RALPH_KIMI_AUTH_TOKEN/);
+        });
+
+        it('requireToken:false (dry) — без ключа не падает, token=null, но кривая модель всё равно fail', () => {
+            const r = resolveKimiRuntime({ model: 'kimi-k2-0711-preview' }, {}, throwingFail, {
+                requireToken: false,
+            });
+            expect(r.token).toBe(null);
+            expect(() => resolveKimiRuntime({}, {}, throwingFail, { requireToken: false })).toThrow(
+                /kimiRuntime\.model/,
+            );
+        });
+    });
+
+    describe('runKimiOnce — смоук: кодер-сессия стартует и выдаёт дифф', () => {
+        let runtime;
+        const savedToken = process.env.RALPH_KIMI_AUTH_TOKEN;
+
+        beforeEach(() => {
+            vi.spyOn(console, 'log').mockImplementation(() => {});
+            vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {});
+            vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+            vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+            runtime = buildRuntime();
+            runtime.setConfigForTests({
+                ...REAL_CONFIG,
+                permissionMode: 'bypassPermissions',
+                kimiRuntime: { model: 'kimi-k2-0711-preview' },
+            });
+            process.env.RALPH_KIMI_AUTH_TOKEN = 'sk-moon-smoke';
+        });
+        afterEach(() => {
+            vi.restoreAllMocks();
+            if (savedToken === undefined) delete process.env.RALPH_KIMI_AUTH_TOKEN;
+            else process.env.RALPH_KIMI_AUTH_TOKEN = savedToken;
+        });
+
+        it('спавнит `claude` с моделью Kimi и env Moonshot, возвращает дифф, токен НЕ в argv', () => {
+            const spawnFn = vi.fn(() => ({
+                status: 0,
+                stdout: 'diff --git a/f b/f\n+добавлено',
+                stderr: '',
+                signal: null,
+            }));
+
+            const res = runtime.runKimiOnce('тестовая задача', { maxTurns: 5 }, spawnFn);
+
+            expect(res).toEqual({ code: 0, output: 'diff --git a/f b/f\n+добавлено\n' });
+            expect(spawnFn).toHaveBeenCalledTimes(1);
+            const [bin, argv, opts] = spawnFn.mock.calls[0];
+            expect(bin).toBe('claude');
+            // Модель — Moonshot из kimiRuntime.model, а НЕ claude-модель из modelRouting.
+            expect(argv).toContain('--model');
+            expect(argv[argv.indexOf('--model') + 1]).toBe('kimi-k2-0711-preview');
+            expect(argv).toContain('--permission-mode');
+            // Секрет ушёл env'ом, не в argv (иначе виден в /proc/*/cmdline).
+            expect(argv.join(' ')).not.toContain('sk-moon-smoke');
+            expect(opts.shell).toBe(false);
+            expect(opts.env.ANTHROPIC_BASE_URL).toBe('https://api.moonshot.ai/anthropic');
+            expect(opts.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-moon-smoke');
+        });
+
+        it('НЕ подмешивает общий claude fallbackModel в Kimi-сессию (research, риск #3)', () => {
+            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            // REAL_CONFIG.fallbackModel = claude-opus-4-8 — он не должен утечь в argv Kimi.
+            runtime.runKimiOnce('x', { maxTurns: 1 }, spawnFn);
+            const [, argv] = spawnFn.mock.calls[0];
+            expect(argv).not.toContain('--fallback-model');
+        });
+
+        it('выбор coderRuntime:kimi в конфиге даёт Kimi-адаптер из реестра', () => {
+            const kimiRuntime = buildRuntime();
+            const adapters = kimiRuntime.buildAdapters(
+                {
+                    taskSource: { github: { x: 1 } },
+                    gate: { npm: { x: 1 } },
+                    notifier: { telegram: { x: 1 } },
+                    deployCheck: { 'github-actions': { x: 1 } },
+                    coderRuntime: {
+                        claude: { run: () => ({ code: 0, output: 'claude' }) },
+                        kimi: { run: () => ({ code: 0, output: 'kimi' }) },
+                    },
+                },
+                kimiRuntime.resolveAdapterSelection({ coderRuntime: 'kimi' }, throwingFail),
+                throwingFail,
+            );
+            expect(adapters.coderRuntime.run('p', { maxTurns: 1 }).output).toBe('kimi');
+        });
+    });
 });
 
 describe('formatExcerpt — хвост вывода упавшего чека для heal-промпта', () => {

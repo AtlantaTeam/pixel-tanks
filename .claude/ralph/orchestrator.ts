@@ -57,6 +57,7 @@ import type { GateCheckResult, RalphAdapters, RunOptions, RunResult } from './ad
 import {
     buildAdapters,
     createClaudeRuntime,
+    createKimiRuntime,
     createGithubActionsDeploy,
     createGithubTaskSource,
     createNpmGate,
@@ -165,6 +166,24 @@ export type RalphConfig = {
     // findOpenPrFn из adapters.*), либо поставить fail-closed барьер на НЕдефолтный выбор
     // этих швов. Поведение петли фаза 5 сознательно не меняет (см. `gateRunChecks`).
     adapters?: AdapterConfig;
+    // #373 (фаза 6): рантайм Kimi — тот же бинарь `claude` через Anthropic-совместимый
+    // endpoint Moonshot (research: `docs/ralph-mini-framework/research.md`). Читается ТОЛЬКО
+    // когда выбран `adapters.coderRuntime: 'kimi'`; при дефолте (claude) не влияет ни на что.
+    //   baseUrl — endpoint Moonshot (дефолт международный `https://api.moonshot.ai/anthropic`;
+    //             `https://api.moonshot.cn/anthropic` — для КНР). НЕ секрет → допустим в конфиге.
+    //   model — имя модели Moonshot (напр. `kimi-k2-0711-preview`); ОБЯЗАТЕЛЕН (без него claude
+    //           ушёл бы на Anthropic-имя, которого endpoint Kimi не знает — тихий сбой).
+    //   authTokenEnv — имя env-переменной с ключом Moonshot (дефолт `RALPH_KIMI_AUTH_TOKEN`).
+    //           Сам КЛЮЧ — только из env (инвариант №11), в конфиг/argv не попадает.
+    //   fallbackModel — только Claude-семантика; общий cfg.fallbackModel (claude-имя) в
+    //           Kimi-сессию НЕ подмешивается (research, риск #3) — здесь явный fallback Moonshot
+    //           или honest-стоп (null/none).
+    kimiRuntime?: {
+        baseUrl?: string;
+        model?: string;
+        authTokenEnv?: string;
+        fallbackModel?: string | null;
+    };
     tunnelCheck?: {
         enabled?: boolean;
         proxyUrl?: string;
@@ -557,10 +576,15 @@ export function createOrchestrator(env: OrchestratorEnv) {
         cmdArgs: string[],
         timeoutMs: number,
         spawnFn: typeof spawnSync = spawnSync,
+        env?: NodeJS.ProcessEnv,
     ): { code: number; output: string } {
         // Дефолт — настоящий spawnSync: забытый мок запустил бы живую claude-сессию
         // (это уже случалось, см. докблок выше). Guard делает промах громким.
         if (spawnFn === spawnSync) guardSideEffect('spawnClaude(claude)');
+        // env: по умолчанию (undefined) процесс НАСЛЕДУЕТ env раннера — Claude-путь
+        // байт-в-байт прежний (опция `env` в объекте не появляется). Задан → передаём как
+        // есть: так рантайм Kimi (#373) подсовывает окружение Moonshot (ANTHROPIC_BASE_URL/
+        // ANTHROPIC_AUTH_TOKEN) тому же бинарю `claude`, не форкая spawn-путь.
         // pipe вместо inherit — вывод нужен для детекции API-лимита (см. runClaude).
         // maxBuffer 64 МБ: многочасовая сессия может быть многословной, обрезка вывода
         // уронила бы spawnSync и замаскировала настоящий exit-код.
@@ -570,6 +594,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             timeout: timeoutMs,
             encoding: 'utf-8',
             maxBuffer: 64 * 1024 * 1024,
+            ...(env ? { env } : {}),
         });
         const output = `${res.stdout || ''}\n${res.stderr || ''}`;
         // Захваченный вывод транслируем в консоль (файл фоновой задачи), как раньше
@@ -601,6 +626,108 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // loop навсегда — AFK-прогон молча стоит до утра.
         const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
         return spawnClaude(cmdArgs, timeout);
+    }
+
+    // ── Рантайм Kimi (#373, фаза 6) ──────────────────────────────────────────
+    // Kimi = ТОТ ЖЕ бинарь `claude` через Anthropic-совместимый endpoint Moonshot
+    // (research). Не форкает spawn-путь и не добавляет парсер: параметризует окружение
+    // (ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN) и модель, а всё остальное —
+    // buildClaudeArgs/spawnClaude/скан API-лимита/anti-RCE argv — наследует у Claude-пути.
+    // Дефолты: международный endpoint, ключ из env RALPH_KIMI_AUTH_TOKEN.
+    const KIMI_DEFAULT_BASE_URL = 'https://api.moonshot.ai/anthropic';
+    const KIMI_DEFAULT_TOKEN_ENV = 'RALPH_KIMI_AUTH_TOKEN';
+
+    // Окружение для spawn Kimi-сессии: базовое env раннера + переключение `claude` на
+    // endpoint Moonshot. Каналы Claude-аутентификации СНИМАЕМ, иначе CLI предпочёл бы
+    // OAuth/ключ Anthropic Moonshot-токену и ушёл бы на api.anthropic.com мимо Kimi.
+    // Чистая функция (тот же вход → тот же объект), поэтому тестируема без spawn и
+    // экспортируется отдельно.
+    function buildKimiSpawnEnv(
+        baseUrl: string,
+        token: string,
+        baseEnv: NodeJS.ProcessEnv,
+    ): NodeJS.ProcessEnv {
+        const env: NodeJS.ProcessEnv = {
+            ...baseEnv,
+            ANTHROPIC_BASE_URL: baseUrl,
+            ANTHROPIC_AUTH_TOKEN: token,
+        };
+        delete env.CLAUDE_CODE_OAUTH_TOKEN;
+        delete env.ANTHROPIC_API_KEY;
+        return env;
+    }
+
+    // Резолв параметров Kimi-рантайма из конфига + env (fail-closed, инвариант №1).
+    // Отдельная чистая функция с ИНЖЕКТИРУЕМЫМ failFn (как resolveAdapterSelection) —
+    // чтобы тест проверял стоп через throwingFail, а не через боевой process.exit.
+    // requireToken=false (dry-run): секрет при read-only-прогоне не нужен, но кривой
+    // model ловится и в dry (misconfig виден заранее).
+    function resolveKimiRuntime(
+        kimiCfg: RalphConfig['kimiRuntime'],
+        envSource: NodeJS.ProcessEnv,
+        failFn: (msg: string) => never,
+        opts: { requireToken?: boolean } = {},
+    ): { baseUrl: string; model: string; token: string | null; fallbackModel: string | null } {
+        const requireToken = opts.requireToken ?? true;
+        const kimi = kimiCfg ?? {};
+        const baseUrl =
+            typeof kimi.baseUrl === 'string' && kimi.baseUrl.trim() !== ''
+                ? kimi.baseUrl
+                : KIMI_DEFAULT_BASE_URL;
+        const model = kimi.model;
+        if (typeof model !== 'string' || model.trim() === '') {
+            failFn(
+                "adapters.coderRuntime='kimi' требует kimiRuntime.model — имя модели Moonshot " +
+                    "(напр. 'kimi-k2-0711-preview'). Без него claude ушёл бы на Anthropic-имя, " +
+                    'которого endpoint Kimi не знает (тихий сбой, инвариант №1).',
+            );
+        }
+        const fallbackModel = kimi.fallbackModel ?? null;
+        const tokenEnv =
+            typeof kimi.authTokenEnv === 'string' && kimi.authTokenEnv.trim() !== ''
+                ? kimi.authTokenEnv
+                : KIMI_DEFAULT_TOKEN_ENV;
+        const token = envSource[tokenEnv] || null;
+        if (requireToken && !token) {
+            failFn(
+                `adapters.coderRuntime='kimi' требует ключ Moonshot в env ${tokenEnv} — ` +
+                    'секреты только из env (инвариант №11), не из конфига/argv.',
+            );
+        }
+        return { baseUrl, model, token, fallbackModel };
+    }
+
+    // Одна Kimi-сессия. Форма и роль как у runClaudeOnce: {code, output}, DRY возвращает
+    // рано, timeout тот же. spawnFn — инжектируемая точка (как у spawnClaude) для тестов
+    // без живого процесса. Модель берётся из kimiRuntime.model (НЕ из opts.model: до #376
+    // modelRouting отдаёт claude-имена — их Moonshot не поймёт); фолбэк — kimi-специфичный.
+    function runKimiOnce(
+        prompt: string,
+        { maxTurns }: ClaudeOpts,
+        spawnFn: typeof spawnSync = spawnSync,
+    ): { code: number; output: string } {
+        const { baseUrl, model, token, fallbackModel } = resolveKimiRuntime(
+            config.kimiRuntime,
+            process.env,
+            fail,
+            { requireToken: !DRY },
+        );
+        const cmdArgs = buildClaudeArgs(
+            prompt,
+            { model, maxTurns, fallbackModel },
+            // permissionMode — из конфига (bypassPermissions в бою); общий cfg.fallbackModel
+            // НЕ прокидываем (opts.fallbackModel всегда задан → cfg.fallbackModel не читается).
+            { permissionMode: config.permissionMode },
+        );
+        log(
+            `▶ kimi (claude+Moonshot) -p "${prompt.slice(0, 80)}…" --max-turns ${maxTurns} --model ${model}`,
+        );
+        if (DRY) return { code: 0, output: '' };
+        const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
+        // token гарантированно не-null при !DRY (requireToken выше). Секрет — только в env
+        // процесса (buildKimiSpawnEnv), НЕ в argv (иначе виден в /proc/*/cmdline).
+        const env = buildKimiSpawnEnv(baseUrl, token as string, process.env);
+        return spawnClaude(cmdArgs, timeout, spawnFn, env);
     }
 
     // ── Issues ───────────────────────────────────────────────────────────────
@@ -1312,6 +1439,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
         },
         coderRuntime: {
             claude: createClaudeRuntime({ run: runClaudeOnce }),
+            // #373 (фаза 6): Kimi через тот же `claude` + endpoint Moonshot (env-своп в
+            // runKimiOnce). Ключ выбирается конфигом (`adapters.coderRuntime: 'kimi'`);
+            // дефолт остаётся `claude` (ADAPTER_DEFAULTS) — Claude-путь не меняется.
+            kimi: createKimiRuntime({ run: runKimiOnce }),
         },
     };
 
@@ -3116,6 +3247,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
         API_LIMIT_RE,
         spawnClaude,
         runClaude,
+        // #373 (фаза 6): рантайм Kimi (тот же `claude` + endpoint Moonshot). Экспорт —
+        // для смоук-теста рантайма и юнитов чистых хелперов (env/резолв, fail-closed).
+        runKimiOnce,
+        buildKimiSpawnEnv,
+        resolveKimiRuntime,
         tunnelHealthy,
         ensureTunnel,
         tunnelCheckEnabled,

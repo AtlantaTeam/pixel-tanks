@@ -81,6 +81,45 @@ tmux send-keys -t work:3 'node .claude/ralph/monitor.js --profile prod --interva
 метка **`hold`** проверяется первой, сильнее `blocked`, и раннер её не снимает ни на одном
 пути — снять можно только руками (`gh pr edit <N> --remove-label hold`).
 
+## Альтернативный рантайм кодер-сессии — Kimi (#373, фаза 6)
+
+Кодер-сессия по умолчанию — Claude CLI (`adapters.coderRuntime` не задан → `claude`,
+`ADAPTER_DEFAULTS`). Рантайм **Kimi** — тот же бинарь `claude` через Anthropic-совместимый
+endpoint Moonshot (research: `docs/ralph-mini-framework/research.md`): выбор конфигом, ключ
+только из env. Claude-путь при этом не меняется.
+
+**Включить (в `ralph.config.json` профиля или `common`):**
+
+```jsonc
+"adapters": { "coderRuntime": "kimi" },
+"kimiRuntime": {
+    "model": "kimi-k2-0711-preview"           // ОБЯЗАТЕЛЕН — имя модели Moonshot
+    // "baseUrl": "https://api.moonshot.ai/anthropic"  // дефолт (междунар.); .cn — для КНР
+    // "authTokenEnv": "RALPH_KIMI_AUTH_TOKEN"          // дефолт; имя env-переменной с ключом
+    // "fallbackModel": null                            // Claude-fallback НЕ подмешивается (риск #3)
+}
+```
+
+**Ключ — только из env** (инвариант №11): в env-файле раннера
+`export RALPH_KIMI_AUTH_TOKEN=sk-…` (ключ Moonshot). В argv он не попадает
+(не светится в `/proc/*/cmdline`); каналы Claude-аутентификации в Kimi-сессии снимаются,
+чтобы CLI не ушёл на `api.anthropic.com` мимо Moonshot.
+
+**Смоук вручную** (детерминированная проверка проводки — в `orchestrator.test.js`, блок
+«Kimi-рантайм»; ниже — живой прогон против Moonshot):
+
+```bash
+export RALPH_KIMI_AUTH_TOKEN=sk-…                 # ключ Moonshot
+# в конфиге: adapters.coderRuntime=kimi, kimiRuntime.model=kimi-k2-…
+node .claude/ralph/ralph.js --profile playground --once --dry-run   # проводка без спавна
+# затем без --dry-run на тестовой фазе — кодер-сессия стартует и выдаёт дифф
+```
+
+**Известное ограничение смоука** (research §«Границы»): маркер API-лимита `API_LIMIT_RE`
+провайдер-специфичен (Claude). При лимите Kimi даст другой текст — цикл ожидания его не
+распознает, обойдётся как с обычным ненулевым завершением. Для смоука приемлемо;
+провайдер-осведомлённый маркер — отдельная задача, не в скоупе фазы 6.
+
 ## Красный пост-мердж деплой (#163–#167, prod)
 
 С фазы 5 наблюдаемости раннер после мерджа prod-фазы **дожидается итога deploy-workflow**

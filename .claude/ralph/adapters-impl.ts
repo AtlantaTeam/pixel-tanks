@@ -189,6 +189,21 @@ export function createClaudeRuntime(fns: ClaudeRuntimeFns): CoderRuntimeAdapter 
     return { run: fns.run };
 }
 
+// Рантайм Kimi (#373, фаза 6): ТОТ ЖЕ контракт CoderRuntimeAdapter, что и Claude — форма
+// метода идентична (`run(prompt, options) → {code, output}`). Kimi-специфика (endpoint
+// Moonshot через env `claude`, обязательная модель Moonshot, свой fallback) живёт ВНУТРИ
+// боевой функции `runKimiOnce` (orchestrator.ts), а не в мапперe: маппер лишь раскладывает
+// её по имени метода интерфейса, как createClaudeRuntime. Отдельный конструктор (а не
+// переиспользование createClaudeRuntime) — ради читаемого имени ключа `kimi` в реестре и
+// явности намерения; Claude-путь он не трогает (research: `docs/…/research.md`).
+export type KimiRuntimeFns = {
+    run: (prompt: string, options: RunOptions) => RunResult;
+};
+
+export function createKimiRuntime(fns: KimiRuntimeFns): CoderRuntimeAdapter {
+    return { run: fns.run };
+}
+
 // ── Сборка набора швов по выбору из конфига (fail-closed) ─────────────────────
 // registries: реестр доступных реализаций по швам — { taskSource: { github: … }, … }.
 // Реализаций пока по одной на шов (текущий проект); фаза 6 добавит ключи в coderRuntime.
