@@ -16,8 +16,7 @@ import {
 } from './deadman.ts';
 // @ts-expect-error — JS-entry раннера без деклараций типов.
 import { apiLimitMessage, deployWaitMessage } from '../ralph.js';
-// @ts-expect-error — JS-инфра тестов без деклараций типов.
-import { logLine as t } from '../tests/test-helpers.js';
+import { logLine as t } from '../tests/test-helpers.ts';
 
 describe('classifyActivity — режим петли по хвосту лога', () => {
     it('claude-сессия в работе (▶ claude -p последней строкой) → coder', () => {

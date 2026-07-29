@@ -51,7 +51,7 @@ export default defineConfig({
                     // Сверка журнала побочек — общим afterEach на весь проект, а не в
                     // одном тест-файле: include ниже покрывает и scripts/**, и будущие
                     // файлы рядом с раннером (ревью PR #141).
-                    setupFiles: ['./.claude/ralph/tests/test-setup.js'],
+                    setupFiles: ['./.claude/ralph/tests/test-setup.ts'],
                     include: [
                         // .mts — явно-ESM модуль (gate-env.mts, #403): под nodenext-tsconfig
                         // ралфа только `.mts` даёт TS-режим ESM, где легален import.meta.dirname

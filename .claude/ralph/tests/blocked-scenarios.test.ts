@@ -27,12 +27,14 @@
 // (#223) — общие с hold-scenarios.test.js: правку сигнатуры deps runLoop синхронизируем
 // в одном месте. Здесь остаются только сценарные describe этого файла.
 import { describe, it, expect } from 'vitest';
+// @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что в
+// orchestrator.test.ts, #366): дефолт ralph.js — ре-экспорт runtime фабрики.
 import ralph from '../ralph.js';
 import {
     makeRunLoopScenario as scenario,
     SCENARIO_REVIEW_MODEL as REVIEW_MODEL,
     SCENARIO_B_MAX as B_MAX,
-} from './test-helpers.js';
+} from './test-helpers.ts';
 
 const RED_CHECK = { name: 'test', cmd: 'npm run test', excerpt: 'boom' };
 

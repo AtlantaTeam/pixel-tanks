@@ -5,12 +5,18 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { vi } from 'vitest';
-import { runLoop } from '../ralph.js';
+import { vi, type Mock } from 'vitest';
+// @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что в
+// orchestrator.test.ts, #366): дефолт ralph.js — ре-экспорт runtime фабрики.
+import ralph from '../ralph.js';
+import type { RalphConfig } from '../core/orchestrator.ts';
+import type { RalphState } from '../core/state-lock.ts';
+
+const { runLoop } = ralph;
 
 // Строка лога как её пишет log() в ralph.js — ISO-таймстамп + маркер. Таймстамп
 // фиксированный: тесты задают «сейчас» через mtime + ageMs, сам префикс роли не играет.
-export function logLine(msg) {
+export function logLine(msg: string): string {
     return `[2026-07-22T06:30:07.015Z] ${msg}`;
 }
 
@@ -19,26 +25,31 @@ export function logLine(msg) {
 // vitest (гейт раннера в своём worktree + человек в своём) писали бы и unlink'али одни
 // файлы → флак. Возвращает writeLog() (строки или готовый контент) и cleanup-функции для
 // afterEach (файлы) и afterAll (каталог).
-export function makeTmpLog(prefix) {
+export function makeTmpLog(prefix: string): {
+    tmpDir: string;
+    writeLog: (linesOrContent: string[] | string) => string;
+    cleanupFiles: () => void;
+    removeDir: () => void;
+} {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    const tmpFiles = [];
-    function writeLog(linesOrContent) {
+    const tmpFiles: string[] = [];
+    function writeLog(linesOrContent: string[] | string): string {
         const content = Array.isArray(linesOrContent) ? linesOrContent.join('\n') : linesOrContent;
         const p = path.join(tmpDir, `log-${tmpFiles.length}-${content.length}.log`);
         fs.writeFileSync(p, content);
         tmpFiles.push(p);
         return p;
     }
-    function cleanupFiles() {
+    function cleanupFiles(): void {
         while (tmpFiles.length) {
             try {
-                fs.unlinkSync(tmpFiles.pop());
+                fs.unlinkSync(tmpFiles.pop() as string);
             } catch {
                 /* ignore */
             }
         }
     }
-    function removeDir() {
+    function removeDir(): void {
         try {
             fs.rmSync(tmpDir, { recursive: true, force: true });
         } catch {
@@ -54,20 +65,24 @@ export const SCENARIO_REVIEW_MODEL = 'claude-opus-4-8';
 export const SCENARIO_B_MAX = 3;
 
 // state сдачи: сессии кодера позади (submitted=true) — каждый проход стартует прямо с
-// гейта. lastReviewModel — модель, поставившая блок.
-const scenarioState = (o = {}) => ({
+// гейта. lastReviewModel — модель, поставившая блок. Остальные поля — те же нейтральные
+// дефолты, что и в defaultState() (state-lock.ts): RalphState не знает опциональных полей.
+const scenarioState = (o: Partial<RalphState> = {}): RalphState => ({
     count: 0,
     milestone: 'M1',
     submitted: true,
     noProgress: 0,
     gateHeals: 0,
     blockedHeals: 0,
+    reviewModelFloor: null,
     lastReviewModel: SCENARIO_REVIEW_MODEL,
+    reReviewPending: false,
+    deployBlock: null,
     ...o,
 });
 
 // Профиль НЕ prod: merged завершается continue (мердж — финал). blockedHealAttempts=3.
-const scenarioCfg = (o = {}) => ({
+const scenarioCfg = (o: Partial<RalphConfig> = {}): RalphConfig => ({
     model: 'claude-coder',
     prompt: 'сделай {milestone} в ветке {branch}',
     authorAllowlist: ['owner'],
@@ -86,6 +101,8 @@ const scenarioCfg = (o = {}) => ({
     ...o,
 });
 
+type GateVerdict = 'blocked' | 'hold' | 'merged' | 'not-merged' | 'red-checks';
+
 // Общий оркестратор сценарных тестов гейта для blocked-scenarios и hold-scenarios: один
 // state, кумулятивные спаи, pass(gate,{redCheck}) = один проход раннера с заданным
 // вердиктом гейта. phaseIndexOfFn отдаёт валидный индекс на 1-м обращении и «за концом»
@@ -95,16 +112,31 @@ const scenarioCfg = (o = {}) => ({
 // фейки через DI (RALPH_NO_SIDE_EFFECTS=1, guardSideEffect): ни одного реального gh/сети.
 // Спаи возвращаются объектом — правку сигнатуры deps runLoop синхронизируем здесь одним
 // местом, оба тест-файла оставляют только свои describe.
-export function makeRunLoopScenario(initialState = {}, { lastGatePr = 777 } = {}) {
-    const logs = [];
-    const saved = [];
+export function makeRunLoopScenario(
+    initialState: Partial<RalphState> = {},
+    { lastGatePr = 777 }: { lastGatePr?: number } = {},
+): {
+    readonly state: RalphState;
+    pass: (gate: GateVerdict, o?: { redCheck?: unknown }) => void;
+    restart: () => RalphState;
+    logs: string[];
+    saved: RalphState[];
+    runClaudeFn: Mock;
+    pushEventFn: Mock;
+    removeBlockedLabelFn: Mock;
+    addBlockedLabelFn: Mock;
+    pushTexts: () => string[];
+    maxBlockedHeals: () => number;
+} {
+    const logs: string[] = [];
+    const saved: RalphState[] = [];
     const runClaudeFn = vi.fn(() => 0);
     const pushEventFn = vi.fn();
     const removeBlockedLabelFn = vi.fn();
     const addBlockedLabelFn = vi.fn();
     let state = scenarioState(initialState);
 
-    function pass(gate, { redCheck = null } = {}) {
+    function pass(gate: GateVerdict, { redCheck = null }: { redCheck?: unknown } = {}): void {
         let idxCalls = 0;
         runLoop(
             scenarioCfg(),
@@ -112,9 +144,9 @@ export function makeRunLoopScenario(initialState = {}, { lastGatePr = 777 } = {}
             {
                 once: false,
                 dry: false,
-                logFn: (m) => logs.push(m),
+                logFn: (m: string) => logs.push(m),
                 shFn: () => '',
-                saveStateFn: (s) => saved.push({ ...s }),
+                saveStateFn: (s: RalphState) => saved.push({ ...s }),
                 openIssuesFn: () => [],
                 allOpenIssuesFn: () => [],
                 phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
@@ -140,7 +172,7 @@ export function makeRunLoopScenario(initialState = {}, { lastGatePr = 777 } = {}
         );
     }
 
-    function restart() {
+    function restart(): RalphState {
         state = { ...saved[saved.length - 1] };
         return state;
     }
@@ -157,7 +189,7 @@ export function makeRunLoopScenario(initialState = {}, { lastGatePr = 777 } = {}
         pushEventFn,
         removeBlockedLabelFn,
         addBlockedLabelFn,
-        pushTexts: () => pushEventFn.mock.calls.map((c) => c[0]),
+        pushTexts: () => pushEventFn.mock.calls.map((c: unknown[]) => c[0] as string),
         maxBlockedHeals: () => Math.max(0, ...saved.map((s) => s.blockedHeals ?? 0)),
     };
 }

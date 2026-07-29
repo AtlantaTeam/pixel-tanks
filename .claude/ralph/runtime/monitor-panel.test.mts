@@ -23,8 +23,7 @@ import {
 // @ts-expect-error — JS-entry раннера без деклараций типов.
 import { pushEvent as pushEventReal } from '../ralph.js';
 import { DEFAULT_DEADMAN } from './deadman.ts';
-// @ts-expect-error — JS-инфра тестов без деклараций типов.
-import { logLine as t, makeTmpLog } from '../tests/test-helpers.js';
+import { logLine as t, makeTmpLog } from '../tests/test-helpers.ts';
 
 // Резолвнутый конфиг (как отдаёт resolveProfile раннеру/монитору): пороги на верхнем
 // уровне. coder = claudeTimeoutMs + iterationGraceMs = 7.8M; gate = 600k; default = 300k.

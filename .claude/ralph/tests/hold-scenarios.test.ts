@@ -18,8 +18,10 @@
 // Оркестратор сценария (makeRunLoopScenario) вынесен в test-helpers.js (#223) — общий с
 // blocked-scenarios.test.js. Здесь остаются только hold-специфичные describe.
 import { describe, it, expect } from 'vitest';
+// @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что в
+// orchestrator.test.ts, #366): дефолт ralph.js — ре-экспорт runtime фабрики.
 import ralph from '../ralph.js';
-import { makeRunLoopScenario as scenario } from './test-helpers.js';
+import { makeRunLoopScenario as scenario } from './test-helpers.ts';
 
 describe('hold: стоп + пуш, без разбора, без чини-сессий, без повторного ревью', () => {
     it('гейт hold → ни одной сессии, счётчики не тронуты, ровно один пуш с PR', () => {

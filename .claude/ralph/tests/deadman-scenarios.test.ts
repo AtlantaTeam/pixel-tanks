@@ -19,8 +19,7 @@ import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
 import { readLogTail, evalDeadman, maybePushDeadman } from '../runtime/monitor-panel.mts';
 // @ts-expect-error — JS-entry раннера без деклараций типов.
 import ralph, { pushEvent as pushEventReal } from '../ralph.js';
-// @ts-expect-error — JS-инфра тестов без деклараций типов.
-import { logLine as t, makeTmpLog } from './test-helpers.js';
+import { logLine as t, makeTmpLog } from './test-helpers.ts';
 
 const MIN = 60000;
 
