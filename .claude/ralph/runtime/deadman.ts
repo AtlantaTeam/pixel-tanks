@@ -15,6 +15,11 @@
 // арифметика порога. Чтение файла, сравнение с «сейчас», дедуп и сам пуш — забота
 // монитора (#148/#149). Побочек нет — DI и guardSideEffect не нужны.
 //
+// TS-модуль без билд-шага: исполняется нативным type stripping Node 24 (erasable-only
+// синтаксис — только аннотации типов, ни enum, ни namespace, ни parameter properties).
+// Без побочек вовсе, поэтому, как и ralph-util.ts/api-limit.ts, это набор standalone-
+// экспортов, а не фабрика с DI.
+//
 // ── Числа порогов (замер реальных прогонов фаз 4–5, .claude/ralph/ralph.log) ──
 // Кодер-сессии (🔄 → следующий шаг): реальный максимум ~21 мин (фаза 3, итерация 1),
 //   типично 6–16 мин. Но легитимный ПОТОЛОК сессии — claudeTimeoutMs (2ч): spawnSync
@@ -34,7 +39,7 @@
 //   время НЕ пишет в лог (запись только в catch сетевого чиха). Своя строка ожидания
 //   несёт таймаут N в тексте, поэтому у ожидания СВОЙ режим (deploywait) с порогом = N мин
 //   + запас — ровно как apiwait. Без него строка нейтральна, скан ушёл бы к `🚀 Деплой
-//   фазы`/`✅ смерджена` → default (5 мин) → ложный DEADMAN-пуш на КАЖДОМ prod-мердже
+//   фазы»/«✅ смерджена` → default (5 мин) → ложный DEADMAN-пуш на КАЖДОМ prod-мердже
 //   (deploy на VDS регулярно длиннее 5 мин). См. DEPLOY_WAIT_RE ниже.
 // Гейт (🚦 → между строками ✓/✗ чеков): checksGreen логирует каждый чек, поэтому
 //   тишина внутри гейта ограничена САМЫМ ДОЛГИМ одиночным чеком. Замер сейчас на этом
@@ -53,12 +58,12 @@
 // Маркеры claude-сессии: старт сессии (▶ claude -p логируется перед каждой) плюс
 // шаговые эмодзи — итерация/ревью/правки. Любого достаточно, чтобы понять «идёт
 // многочасовая сессия».
-const CODER_RE = /▶ claude -p|🔄|🔍 Ревью|🔧 Правки/u;
+export const CODER_RE = /▶ claude -p|🔄|🔍 Ревью|🔧 Правки/u;
 // Маркеры гейта: старт (🚦) и строки результата отдельных чеков (checksGreen пишет
 // `  ✓ name` / `  ✗ name — красный`). Якорь на начало не ставим: log() префиксит
 // строку таймстампом, ✓/✗ идёт в середине. ✓/✗ — U+2713/U+2717, это НЕ ✅ U+2705 из
 // completion-маркеров.
-const GATE_RE = /🚦|[✓✗]\s/u;
+export const GATE_RE = /🚦|[✓✗]\s/u;
 // Терминальные маркеры ШТАТНОЙ остановки петли: прод-стоп фазы перед деплоем (⏸),
 // HITL-стоп (✋), circuit breaker и прочие ⛔-стопы, «все фазы завершены» (🎉). После них
 // раннер выходит из loop и процесс завершается — лог замерзает НАВСЕГДА, и это НЕ тишина
@@ -69,37 +74,46 @@ const GATE_RE = /🚦|[✓✗]\s/u;
 // GATE/DEFAULT: транзитных ⛔ нет — ⛔ как ПОСЛЕДНИЙ стабильный маркер всегда означает
 // выход из loop, а гейт-отказ тут же сменяется маркером чини-сессии (▶ claude), который
 // свежее ⛔ и выигрывает классификацию.
-const STOPPED_RE = /⏸|✋|🎉|⛔/u;
+export const STOPPED_RE = /⏸|✋|🎉|⛔/u;
 // Маркеры завершения/старта — закрывают предыдущий режим и переводят в короткий дефолт:
 // мердж (✅ PR), сдача фазы/туннель (✅), закрытие milestone (🏁), баннер старта (🚀),
 // переключение веток (🔀). Стопы (⏸/✋/⛔/🎉) — не сюда: у них свой режим stopped.
-const DEFAULT_RE = /✅|🏁|🚀|🔀/u;
+export const DEFAULT_RE = /✅|🏁|🚀|🔀/u;
 // Маркер API-лимитной паузы. Формат строки — единственный источник правды в ralph.js
 // (функция apiLimitMessage(); pushEvent префиксит `🔔 PUSH:`): `⏳ Ralph: API-лимит — …
 // Жду N мин …`. Синхронность текста и этого regex закреплена тестом (deadman.test.js:
 // apiLimitMessage из ralph.js ↔ API_WAIT_RE) — правка формулировки в ралфе, ломающая
 // матч, покраснит гейт, а не всплывёт ночью ложным пушем. N (минуты сна до сброса окна)
 // захватываем группой — по нему порог именно этой паузы, а не coder-режима.
-const API_WAIT_RE = /⏳ Ralph: API-лимит[\s\S]*?Жду (\d+) мин/u;
+export const API_WAIT_RE = /⏳ Ralph: API-лимит[\s\S]*?Жду (\d+) мин/u;
 // Маркер ожидания пост-мердж деплоя (#TFO89). Формат строки — единственный источник
 // правды в ralph.js (функция deployWaitMessage()): `⏳ Пост-мердж: жду итог deploy-workflow
 // «…» на sha … (таймаут N мин).`. Цикл опроса deploy-workflow за N мин (боевой таймаут
 // 20 мин) не пишет в лог ни строки — без своего режима строка нейтральна, скан ушёл бы
-// назад к `🚀 Деплой фазы…`/`✅ … смерджена` → DEFAULT_RE (5 мин) → ложный DEADMAN-пуш на
+// назад к `🚀 Деплой фазы…»/«✅ … смерджена` → DEFAULT_RE (5 мин) → ложный DEADMAN-пуш на
 // каждом prod-мердже. N (таймаут в минутах) захватываем группой — по нему порог именно
 // этого ожидания. Синхронность текста и regex закреплена тестом (deadman.test.js:
 // deployWaitMessage из ralph.js ↔ DEPLOY_WAIT_RE), как у apiLimitMessage ↔ API_WAIT_RE.
-const DEPLOY_WAIT_RE = /⏳ Пост-мердж: жду итог[\s\S]*?таймаут (\d+) мин/u;
+export const DEPLOY_WAIT_RE = /⏳ Пост-мердж: жду итог[\s\S]*?таймаут (\d+) мин/u;
+
+// Режимы петли, определяемые по последнему значимому маркеру в хвосте лога.
+type Activity = 'stopped' | 'apiwait' | 'deploywait' | 'coder' | 'gate' | 'default';
+
+type DeadmanThresholds = {
+    iterationGraceMs: number;
+    gateSilenceMs: number;
+    defaultSilenceMs: number;
+};
 
 // Дефолты порогов (мс) — если в ralph.config.json нет блока deadman. Совпадают с
 // числами в конфиге; здесь — чтобы модуль работал и на «голом» конфиге (fail-safe).
-const DEFAULT_DEADMAN = {
+export const DEFAULT_DEADMAN: DeadmanThresholds = {
     iterationGraceMs: 10 * 60 * 1000, // запас поверх claudeTimeoutMs для кодер-сессии
     gateSilenceMs: 10 * 60 * 1000, // тишина внутри гейта (самый долгий чек + запас)
     defaultSilenceMs: 5 * 60 * 1000, // короткий дефолт для git/gh-шагов
 };
 
-const DEFAULT_CLAUDE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // как в runClaudeOnce (ralph.js)
+export const DEFAULT_CLAUDE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // как в runClaudeOnce (ralph.js)
 
 // Единый скан хвоста лога (один проход, один список «значимых» RE — источник правды и
 // для режима, и для порога apiwait). От последней строки к первой; возвращаем режим И
@@ -112,7 +126,7 @@ const DEFAULT_CLAUDE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // как в runClaudeOnce
 // активный шаг, отдаём короткий default (fail-safe от обратного: длинный порог на
 // неизвестном хвосте замаскировал бы реальную тишину). На практике хвост почти всегда
 // содержит маркер log(), так что ветка достижима редко.
-function scanTail(lines) {
+export function scanTail(lines: string[]): { activity: Activity; line: string | null } {
     for (let i = lines.length - 1; i >= 0; i--) {
         const l = lines[i];
         if (typeof l !== 'string') continue;
@@ -128,7 +142,7 @@ function scanTail(lines) {
 }
 
 // Режим петли по хвосту лога — тонкая обёртка над единым сканом.
-function classifyActivity(lines) {
+export function classifyActivity(lines: string[]): Activity {
     return scanTail(lines).activity;
 }
 
@@ -137,7 +151,7 @@ function classifyActivity(lines) {
 // N мин × 60000 + запас (iterationGraceMs кроет рестарт сессии после сна и такт монитора).
 // Хвост не в режиме apiwait или N не распарсилось — null (вызывающий возьмёт консервативный
 // coder-порог: не занижаем).
-function parseApiWaitMs(lines, cfg) {
+export function parseApiWaitMs(lines: string[], cfg: unknown): number | null {
     const { activity, line } = scanTail(lines);
     if (activity !== 'apiwait' || line == null) return null;
     const m = API_WAIT_RE.exec(line);
@@ -150,7 +164,7 @@ function parseApiWaitMs(lines, cfg) {
 // мин)`. Тот же единый скан, что и у классификатора. N мин × 60000 + запас
 // (iterationGraceMs кроет healthcheck после ожидания + такт монитора). Хвост не в режиме
 // deploywait или N не распарсилось → null (вызывающий возьмёт консервативный coder-порог).
-function parseDeployWaitMs(lines, cfg) {
+export function parseDeployWaitMs(lines: string[], cfg: unknown): number | null {
     const { activity, line } = scanTail(lines);
     if (activity !== 'deploywait' || line == null) return null;
     const m = DEPLOY_WAIT_RE.exec(line);
@@ -172,18 +186,18 @@ function parseDeployWaitMs(lines, cfg) {
 // значение — конечное неотрицательное число (0 у iterationGraceMs легитимен: нулевой
 // запас); всё остальное (строка/null/объект/NaN/±∞/отрицательное) откатывается на
 // DEFAULT_DEADMAN по-полевно, а не роняет весь блок.
-function coerceDeadmanThresholds(raw) {
-    const src = raw && typeof raw === 'object' ? raw : {};
-    const out = {};
-    for (const key of Object.keys(DEFAULT_DEADMAN)) {
+function coerceDeadmanThresholds(raw: unknown): DeadmanThresholds {
+    const src = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+    const out = {} as DeadmanThresholds;
+    for (const key of Object.keys(DEFAULT_DEADMAN) as Array<keyof DeadmanThresholds>) {
         const v = src[key];
         out[key] = typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : DEFAULT_DEADMAN[key];
     }
     return out;
 }
 
-function readCfg(cfg) {
-    const src = cfg && typeof cfg === 'object' ? cfg : {};
+function readCfg(cfg: unknown): { deadman: DeadmanThresholds; claudeTimeoutMs: number } {
+    const src = cfg && typeof cfg === 'object' ? (cfg as Record<string, unknown>) : {};
     return {
         deadman: coerceDeadmanThresholds(src.deadman),
         claudeTimeoutMs:
@@ -196,9 +210,9 @@ function readCfg(cfg) {
 }
 
 // Порог тишины (мс) для режима. Неизвестный режим → default (fail-safe: не занижаем).
-// lines нужны только режиму apiwait (порог берётся из строки паузы `Жду N мин`); для
+// lines нужны только режиму apiwait/deploywait (порог берётся из строки паузы); для
 // остальных режимов параметр не читается, поэтому старые вызовы (activity, cfg) валидны.
-function silenceThresholdMs(activity, cfg, lines) {
+export function silenceThresholdMs(activity: string, cfg: unknown, lines?: string[]): number {
     const { deadman, claudeTimeoutMs } = readCfg(cfg);
     switch (activity) {
         case 'stopped':
@@ -228,23 +242,6 @@ function silenceThresholdMs(activity, cfg, lines) {
 // Удобный композит: хвост лога → порог. Монитор сравнит его с (сейчас − время
 // последней записи лога) и решит про пуш. lines прокидываем и в порог — режиму apiwait
 // они нужны, чтобы вынуть `Жду N мин` из строки паузы.
-function thresholdForTail(lines, cfg) {
+export function thresholdForTail(lines: string[], cfg: unknown): number {
     return silenceThresholdMs(classifyActivity(lines), cfg, lines);
 }
-
-module.exports = {
-    scanTail,
-    classifyActivity,
-    silenceThresholdMs,
-    thresholdForTail,
-    parseApiWaitMs,
-    parseDeployWaitMs,
-    DEFAULT_DEADMAN,
-    DEFAULT_CLAUDE_TIMEOUT_MS,
-    CODER_RE,
-    GATE_RE,
-    STOPPED_RE,
-    DEFAULT_RE,
-    API_WAIT_RE,
-    DEPLOY_WAIT_RE,
-};

@@ -3,7 +3,7 @@
 // Монитор — сторож петли: detached, переживает смерть раннера (kill -9), знает путь
 // лога. Детект тишины = чтение времени последней записи ralph.log СНАРУЖИ процесса
 // сессии (runClaude — синхронный spawnSync до 2ч, сам heartbeat писать не может) и
-// сравнение возраста с порогом режима из deadman.js (#147).
+// сравнение возраста с порогом режима из deadman.ts (#147).
 //
 // evalDeadman — чистая функция (все входы аргументами, «сейчас» приходит извне),
 // поэтому тестируется без файлов, без сети и БЕЗ живого раннера: именно эта
@@ -21,7 +21,7 @@ import {
     openPhasePRs,
 } from './monitor.js';
 import { pushEvent as pushEventReal } from '../ralph.js';
-import { DEFAULT_DEADMAN } from './deadman.js';
+import { DEFAULT_DEADMAN } from './deadman.ts';
 import { logLine as t, makeTmpLog } from '../tests/test-helpers.js';
 
 // Резолвнутый конфиг (как отдаёт resolveProfile раннеру/монитору): пороги на верхнем

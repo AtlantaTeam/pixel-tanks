@@ -26,7 +26,7 @@ const { execSync } = require('child_process');
 const { resolveProfile, parseProfileFlag, pushEvent, shq } = require('../ralph.js');
 // Пороги тишины (#147): классификация хвоста лога по режиму + порог по режиму. Здесь
 // (в мониторе) — импёровая половина: чтение файла, «сейчас» и сравнение с порогом.
-const { classifyActivity, silenceThresholdMs } = require('./deadman.js');
+const { classifyActivity, silenceThresholdMs } = require('./deadman.ts');
 
 // monitor.js живёт в .claude/ralph/runtime/ (#396), поэтому каталог раннера — родитель
 // __dirname, а не сам __dirname. Служебные файлы (ralph.log/state/config) лежат в .claude/ralph/.

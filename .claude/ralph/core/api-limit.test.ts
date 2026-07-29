@@ -139,7 +139,7 @@ describe('apiLimitWaitMs — сон до сброса окна лимита (#13
     });
 });
 
-describe('apiLimitMessage — формат события паузы (контракт с deadman.js API_WAIT_RE)', () => {
+describe('apiLimitMessage — формат события паузы (контракт с deadman.ts API_WAIT_RE)', () => {
     it('содержит округлённые минуты и «попытка N/maxWaits»', () => {
         const msg = apiLimitMessage(5.4 * 60_000, 0, 3);
         expect(msg).toMatch(/Жду 5 мин/);

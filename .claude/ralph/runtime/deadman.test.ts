@@ -1,4 +1,4 @@
-// Юнит-тесты deadman.js (#147) — чистое правило «какой порог тишины применять».
+// Юнит-тесты deadman.ts (#147) — чистое правило «какой порог тишины применять».
 // Модуль без побочек (только строки/числа на вход-выход), поэтому DI/guardSideEffect
 // не нужны: реального лога, сети и файлов здесь нет, только классификация хвоста и
 // арифметика порога.
@@ -13,8 +13,10 @@ import {
     DEFAULT_CLAUDE_TIMEOUT_MS,
     API_WAIT_RE,
     DEPLOY_WAIT_RE,
-} from './deadman.js';
+} from './deadman.ts';
+// @ts-expect-error — JS-entry раннера без деклараций типов.
 import { apiLimitMessage, deployWaitMessage } from '../ralph.js';
+// @ts-expect-error — JS-инфра тестов без деклараций типов.
 import { logLine as t } from '../tests/test-helpers.js';
 
 describe('classifyActivity — режим петли по хвосту лога', () => {
@@ -187,7 +189,7 @@ describe('API_WAIT_RE синхронизирован с форматом apiLimi
         const msg = `🔔 PUSH: ${apiLimitMessage(140 * 60000, 0, 3)}`;
         const m = API_WAIT_RE.exec(msg);
         expect(m).not.toBeNull();
-        expect(m[1]).toBe('140');
+        expect(m![1]).toBe('140');
     });
 
     it('parseApiWaitMs берёт N именно из фактической строки ралфа (сквозной путь)', () => {
@@ -206,7 +208,7 @@ describe('DEPLOY_WAIT_RE синхронизирован с форматом depl
         const msg = deployWaitMessage('deploy.yml', 'a'.repeat(40), 20 * 60000);
         const m = DEPLOY_WAIT_RE.exec(msg);
         expect(m).not.toBeNull();
-        expect(m[1]).toBe('20');
+        expect(m![1]).toBe('20');
     });
 
     it('строка ожидания деплоя классифицируется как deploywait, не default', () => {

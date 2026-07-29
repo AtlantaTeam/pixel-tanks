@@ -64,11 +64,11 @@ export function apiLimitWaitMs(
     return (parseResetWaitMs(output) ?? fallbackMs) + graceMs;
 }
 
-// Текст события API-лимитной паузы — ЕДИНСТВЕННЫЙ источник правды его формата. deadman.js
+// Текст события API-лимитной паузы — ЕДИНСТВЕННЫЙ источник правды его формата. deadman.ts
 // (режим apiwait) парсит из него «Жду N мин» через API_WAIT_RE; раньше формат жил в двух
 // местах, связанных лишь копией текста, и правка формулировки здесь молча ломала бы
 // классификатор → ложный пуш ночью. Теперь функция экспортирована и её выход сверяется с
-// API_WAIT_RE тестом (deadman.test.js), так что рассинхрон краснит гейт, а не всплывает в бою.
+// API_WAIT_RE тестом (deadman.test.ts), так что рассинхрон краснит гейт, а не всплывает в бою.
 export function apiLimitMessage(waitMs: number, attempt: number, maxWaits: number): string {
     return `⏳ Ralph: API-лимит — сессия упала с маркером лимита. Жду ${Math.round(waitMs / 60000)} мин до сброса окна и повторяю (попытка ${attempt + 1}/${maxWaits}).`;
 }

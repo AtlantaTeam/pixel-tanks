@@ -1,7 +1,7 @@
 // Приёмочные (сценарные) тесты deadman (#150) — доказательство критериев готовности
 // фазы 1 «тишина как алерт» через ВЕСЬ конвейер детекта end-to-end, а не по кускам.
 //
-// Юнит-тесты живут рядом: deadman.test.js (#147 — классификация хвоста и порог) и
+// Юнит-тесты живут рядом: deadman.test.ts (#147 — классификация хвоста и порог) и
 // monitor.test.js (#148/#149 — evalDeadman/readLogTail/дедуп на замороженных числах).
 // Здесь другой уровень: реальный файл лога на диске → readLogTail (реальный fs.stat
 // mtime) → evalDeadman → maybePushDeadman → доставка через настоящий pushEvent(), с
@@ -15,8 +15,11 @@
 // инжектируемый pushFn/logFn (DI), реальный pushEvent зовём в non-prod профиле, где он
 // печатает маркер, но НЕ ходит в Telegram (проверяется отдельным assert'ом ниже).
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
+// @ts-expect-error — JS-entry раннера без деклараций типов.
 import { readLogTail, evalDeadman, maybePushDeadman } from '../runtime/monitor.js';
+// @ts-expect-error — JS-entry раннера без деклараций типов.
 import ralph, { pushEvent as pushEventReal } from '../ralph.js';
+// @ts-expect-error — JS-инфра тестов без деклараций типов.
 import { logLine as t, makeTmpLog } from './test-helpers.js';
 
 const MIN = 60000;
@@ -45,14 +48,23 @@ afterAll(removeDir);
 // maybePushDeadman через настоящий pushEvent() с перехваченным logFn. Возвращаем всё,
 // что нужно проверить: тихо/нет, режим, был ли доставлен пуш и его текст, новый ключ
 // дедупа. Именно этот путь переживает смерть раннера — на входе только файл.
-function tick(logPath, ageMs, { prevKey = null, logSpy = vi.fn(), cfg = CFG } = {}) {
+function tick(
+    logPath: string,
+    ageMs: number,
+    {
+        prevKey = null,
+        logSpy = vi.fn(),
+        cfg = CFG,
+    }: { prevKey?: number | null; logSpy?: ReturnType<typeof vi.fn>; cfg?: typeof CFG } = {},
+) {
     const { lines, lastMtime } = readLogTail(200, logPath);
     const now = lastMtime + ageMs;
     const deadman = evalDeadman({ now, lastMtime, lines, config: cfg });
     const key = maybePushDeadman(deadman, lastMtime, prevKey, {
         cfg,
         milestoneName: 'Наблюдаемость ralph · Фаза 1',
-        pushFn: (msg, c, opts) => pushEventReal(msg, c, { ...opts, logFn: logSpy }),
+        pushFn: (msg: string, c: unknown, opts: Record<string, unknown>) =>
+            pushEventReal(msg, c, { ...opts, logFn: logSpy }),
     });
     const pushed = logSpy.mock.calls.filter((c) => /🔔 PUSH/.test(c[0]));
     return { deadman, key, logSpy, pushedText: pushed.map((c) => c[0]) };
