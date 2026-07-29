@@ -14,7 +14,7 @@
 // возвращённые функции сохраняют показательную DI (failFn параметром) — ровно так их
 // зовут существующие тесты (config-profile.test.ts) и monitor.js (мягкий failFn `() => null`).
 
-import { ADAPTER_DEFAULTS, CODER_RUNTIME_PROVIDERS } from './adapters-impl.ts';
+import { ADAPTER_DEFAULTS, CODER_RUNTIME_PROVIDERS } from '../adapters/adapters-impl.ts';
 
 // fail() боевой уходит в process.exit(1); тестовый failFn может вернуть значение или
 // бросить — поэтому возврат unknown, а не never (мягкий результат пробрасывается наверх).

@@ -48,10 +48,10 @@ const TELEGRAM_RETRY_BASE_MS = 5000;
 // (attempts: '5' → 5), общая — строгая typeof number ('5' → дефолт). Для текущих
 // вызовов безопасно (attempts/retryBaseMs передают только тесты), строгая семантика
 // правильнее; будущему потребителю из конфига число слать числом, не строкой.
-const { positiveIntOrDefault, sleep: realSleep } = require('./ralph-util.ts');
+const { positiveIntOrDefault, sleep: realSleep } = require('../shared/ralph-util.ts');
 
 // Тот же предохранитель, что #138 в ralph.js (см. комментарий там), но модуль
-// самостоятельный: require('./ralph.js') отсюда создал бы циклическую зависимость,
+// самостоятельный: require('../ralph.js') отсюда создал бы циклическую зависимость,
 // как только ralph.js подключит этот модуль в pushEvent (#86). #145: сам предохранитель
 // (NO_SIDE_EFFECTS/sideEffectAttempts/guardSideEffect) вынесен в side-effect-guard.ts —
 // журнал общий на ralph.js/telegram-notifier.js/security-audit.mjs, test-setup.js
@@ -59,7 +59,7 @@ const { positiveIntOrDefault, sleep: realSleep } = require('./ralph-util.ts');
 const {
     sideEffectAttempts,
     guardSideEffect: sharedGuardSideEffect,
-} = require('./side-effect-guard.ts');
+} = require('../shared/side-effect-guard.ts');
 
 function guardSideEffect(what) {
     sharedGuardSideEffect(what, 'Подмени execFn в опциях sendTelegramMessage.');

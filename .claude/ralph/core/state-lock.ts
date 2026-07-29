@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
-import { resolveInstallCmd } from './ralph-util.ts';
+import { resolveInstallCmd } from '../shared/ralph-util.ts';
 
 // Формат ralph.state.json — контракт, этим рефактором НЕ меняется (критерий #359).
 // milestone === null означает «все фазы пройдены» (см. phaseIndexOf/advancePhase в

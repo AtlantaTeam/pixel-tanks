@@ -11,17 +11,17 @@ import {
     evaluateBaselineChange,
     mergePushedKeys,
 } from './baseline-policy.mjs';
-import { guardSideEffect as sharedGuardSideEffect } from '../.claude/ralph/side-effect-guard.ts';
+import { guardSideEffect as sharedGuardSideEffect } from '../.claude/ralph/shared/side-effect-guard.ts';
 // #145: журнал попыток — тот же общий массив из side-effect-guard.ts; ре-экспортируем
 // его как live binding, а не деструктурируем локальной константой (форма записи показывает
 // намерение «лишь ре-экспорт», а не «завёл свою копию»).
-export { sideEffectAttempts } from '../.claude/ralph/side-effect-guard.ts';
+export { sideEffectAttempts } from '../.claude/ralph/shared/side-effect-guard.ts';
 
 // telegram-notifier.js — CommonJS-модуль раннера (#85), самостоятельный: он не тянет
 // ralph.js, а предохранитель берёт из того же общего side-effect-guard.ts, поэтому в
 // тестах побочка не улетит.
 const { sendTelegramMessage } = createRequire(import.meta.url)(
-    '../.claude/ralph/telegram-notifier.js',
+    '../.claude/ralph/runtime/telegram-notifier.js',
 );
 
 // #83/#140: детерминированный security-скан прод-гейта.

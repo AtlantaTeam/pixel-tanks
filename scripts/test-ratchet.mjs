@@ -10,7 +10,7 @@ import { fetchOriginMain } from './security-audit.mjs';
 // telegram-notifier.js — CommonJS-модуль раннера (#85), самостоятельный: он не тянет
 // ralph.js и уже носит собственный guardSideEffect, поэтому в тестах побочка не улетит.
 const { sendTelegramMessage } = createRequire(import.meta.url)(
-    '../.claude/ralph/telegram-notifier.js',
+    '../.claude/ralph/runtime/telegram-notifier.js',
 );
 
 // #156: храповик числа тестов — гейт-чек, краснящий гейт, когда число собранных unit-тестов

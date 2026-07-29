@@ -9,12 +9,12 @@
 // одного исключения для покраснения теста мало, и журнал сверяем отдельно.
 //
 // telegram-notifier.js (#85) и security-audit.mjs (#239) — самостоятельные потребители
-// (telegram-notifier.js не может require('./ralph.js') — циклическая зависимость с #86).
+// (telegram-notifier.js не может require('../ralph.js') — циклическая зависимость с #86).
 // #145: журнал попыток теперь один — side-effect-guard.ts, общий на все три модуля.
 // sideEffectAttempts здесь берём напрямую из него (а не из ralph.js/telegram-notifier.js/
 // security-audit.mjs — они лишь ре-экспортируют тот же массив), сверяем одним afterEach.
 import { afterEach, expect } from 'vitest';
-import { sideEffectAttempts } from './side-effect-guard.ts';
+import { sideEffectAttempts } from '../shared/side-effect-guard.ts';
 
 afterEach(() => {
     const attempts = sideEffectAttempts.splice(0);

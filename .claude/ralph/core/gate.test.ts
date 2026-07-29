@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 // @ts-expect-error — JS-entry раннера без деклараций типов; блок в конце файла перенесён
 // из ralph.test.js как есть и ходит через его ре-экспорт (#366).
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 import type { GateEnv } from './gate.ts';
 import { createGateRunner } from './gate.ts';
 

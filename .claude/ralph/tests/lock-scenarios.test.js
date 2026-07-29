@@ -22,7 +22,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 
 const { acquireLock } = ralph;
 
@@ -287,7 +287,7 @@ describe('крит. 1 (точка входа) — лок берётся ПЕРВ
         // #365: main() переехал из монолита ralph.js в orchestrator.ts — барьер сканирует
         // новый дом; сам инвариант «лок первым» не изменился.
         const src = fs.readFileSync(
-            fileURLToPath(new URL('./orchestrator.ts', import.meta.url)),
+            fileURLToPath(new URL('../core/orchestrator.ts', import.meta.url)),
             'utf-8',
         );
         const mainStart = src.indexOf('function main()');

@@ -45,6 +45,16 @@
     pgrep -af "ralph.js|monitor.js"
     ```
 
+    **Первый запуск после #396 (раскладка по папкам):** свип сирот `sweepOrphanMonitors`
+    матчит монитор СТРОГО по новому пути `.claude/ralph/runtime/monitor.js`, а осиротевший
+    монитор пред-#396-раннера несёт в cmdline старый путь `.claude/ralph/monitor.js` — под
+    свип он не попадёт и продолжит слать deadman-пуши параллельно новому. `pgrep` выше его
+    покажет (матчит родовое `monitor.js`); прибить руками до старта:
+
+    ```bash
+    pkill -f "\.claude/ralph/monitor\.js"   # только СТАРЫЙ путь, новый (runtime/) не трогает
+    ```
+
 ## Запуск
 
 Раскладка: **отдельные окна tmux**, `2: ralph` — цикл, `3: monitor` — дашборд.
@@ -56,7 +66,7 @@ tmux send-keys -t work:2 'set -a && . /root/ralph.env && set +a && node .claude/
 
 # окно 3 — дашборд (фаза, submitted, прогресс issues, открытые PR, порог тишины)
 tmux new-window -t work -n monitor -c /root/pixel-tanks-ralph
-tmux send-keys -t work:3 'node .claude/ralph/monitor.js --profile prod --interval 60 --config /root/pixel-tanks/.claude/ralph/ralph.config.json' Enter
+tmux send-keys -t work:3 'node .claude/ralph/runtime/monitor.js --profile prod --interval 60 --config /root/pixel-tanks/.claude/ralph/ralph.config.json' Enter
 ```
 
 Монитор запускать **из дерева раннера** (`/root/pixel-tanks-ralph`): он берёт

@@ -20,12 +20,13 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createOrchestrator } from './orchestrator.ts';
+import { createOrchestrator } from '../core/orchestrator.ts';
 
 const FIXTURE_PATH = path.join(
     process.cwd(),
     '.claude',
     'ralph',
+    'tests',
     '__fixtures__',
     'foreign-project',
     'ralph.config.json',

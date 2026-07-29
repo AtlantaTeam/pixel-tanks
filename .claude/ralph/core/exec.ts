@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import { execSync, execFileSync } from 'node:child_process';
 import type { StdioOptions } from 'node:child_process';
-import { NO_SIDE_EFFECTS } from './side-effect-guard.ts';
+import { NO_SIDE_EFFECTS } from '../shared/side-effect-guard.ts';
 
 type GuardFn = (what: string) => void;
 type SleepFn = (ms: number) => void;

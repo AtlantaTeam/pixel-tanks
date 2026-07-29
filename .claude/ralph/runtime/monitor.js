@@ -10,9 +10,9 @@
  *   - последние значимые строки ralph.log (маркеры фаз/итераций/ревью/мерджа)
  *
  * Использование:
- *   node .claude/ralph/monitor.js              # цикл каждые 5 мин
- *   node .claude/ralph/monitor.js --once       # разовый снимок и выход
- *   node .claude/ralph/monitor.js --interval 60   # свой интервал (сек)
+ *   node .claude/ralph/runtime/monitor.js              # цикл каждые 5 мин
+ *   node .claude/ralph/runtime/monitor.js --once       # разовый снимок и выход
+ *   node .claude/ralph/runtime/monitor.js --interval 60   # свой интервал (сек)
  *
  * Только чтение: gh-запросы + чтение файлов. Ничего не мутирует.
  */
@@ -23,12 +23,14 @@ const { execSync } = require('child_process');
 // Резолв профилей (#71) — единый источник правды с раннером, чтобы монитор не завёл
 // вторую копию правил мерджа. require безопасен: main() в ralph.js под guard
 // require.main === module, при импорте выполняются только объявления и консты.
-const { resolveProfile, parseProfileFlag, pushEvent, shq } = require('./ralph.js');
+const { resolveProfile, parseProfileFlag, pushEvent, shq } = require('../ralph.js');
 // Пороги тишины (#147): классификация хвоста лога по режиму + порог по режиму. Здесь
 // (в мониторе) — импёровая половина: чтение файла, «сейчас» и сравнение с порогом.
 const { classifyActivity, silenceThresholdMs } = require('./deadman.js');
 
-const RALPH_DIR = __dirname;
+// monitor.js живёт в .claude/ralph/runtime/ (#396), поэтому каталог раннера — родитель
+// __dirname, а не сам __dirname. Служебные файлы (ralph.log/state/config) лежат в .claude/ralph/.
+const RALPH_DIR = path.resolve(__dirname, '..');
 const REPO_DIR = path.resolve(RALPH_DIR, '..', '..');
 const LOG_PATH = path.join(RALPH_DIR, 'ralph.log');
 const STATE_PATH = path.join(RALPH_DIR, 'ralph.state.json');
@@ -190,7 +192,7 @@ function maybePushDeadman(
         );
     }
     // dry: false явно. У монитора нет своего dry-режима, но pushEvent по умолчанию берёт
-    // dry из argv СВОЕГО процесса (require('./ralph.js') парсит DRY из process.argv). Если
+    // dry из argv СВОЕГО процесса (require('../ralph.js') парсит DRY из process.argv). Если
     // монитор на prod-хосте запустить со случайно скопированным `--dry-run` в argv,
     // pushEvent вернул бы false ДО проверки профиля → maybePushDeadman счёл бы это сбоем
     // доставки (deliveryAttempted) → вечный ретрай с маркером каждый тик, при «доставка
@@ -438,7 +440,7 @@ function main() {
 
 // Экспорт чистых частей детекта — для тестов (#147/#148) и пуша с дедупом (#149).
 // Гейт require.main === module: при импорте из теста НЕ запускаем панель (gh-запросы,
-// setInterval), выполняются только объявления, как и с require('./ralph.js') выше.
+// setInterval), выполняются только объявления, как и с require('../ralph.js') выше.
 module.exports = {
     evalDeadman,
     readLogTail,

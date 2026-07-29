@@ -32,27 +32,27 @@ import type {
     PullRequest,
     RunResult,
     TaskSourceAdapter,
-} from './adapters.ts';
+} from '../adapters/adapters.ts';
 import {
     createCoderRuntime,
     createGithubActionsDeploy,
     createGithubTaskSource,
     createNpmGate,
     createTelegramNotifier,
-} from './adapters-impl.ts';
-import type { GateEnv } from './gate.ts';
-import { createGateRunner } from './gate.ts';
-import type { DeployCheckEnv } from './deploy-check.ts';
-import { createDeployCheckModule } from './deploy-check.ts';
+} from '../adapters/adapters-impl.ts';
+import type { GateEnv } from '../core/gate.ts';
+import { createGateRunner } from '../core/gate.ts';
+import type { DeployCheckEnv } from '../core/deploy-check.ts';
+import { createDeployCheckModule } from '../core/deploy-check.ts';
 // Боевой POSIX-квотер без побочек — тот же, что импортируют соседние тесты; локальная
 // копия молча разъехалась бы с ним при правке экранирования.
-import { shq } from './ralph-util.ts';
+import { shq } from '../shared/ralph-util.ts';
 // @ts-expect-error — JS-модуль без деклараций типов (тот же приём, что telegram-notifier.test.js).
-import { sendTelegramMessage } from './telegram-notifier.js';
+import { sendTelegramMessage } from '../runtime/telegram-notifier.js';
 // @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что gate.test.ts
 // и deploy-check.test.ts): findOpenPr/closeMilestoneByTitle/syncProjectBoard/buildClaudeArgs/
 // spawnClaude живут только на боевой поверхности ralph.js.
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 
 const SHA = 'a'.repeat(40);
 

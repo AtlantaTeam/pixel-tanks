@@ -14,10 +14,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ReviewEnv } from './review.ts';
 import { createReviewModule } from './review.ts';
-import { shq } from './ralph-util.ts';
+import { shq } from '../shared/ralph-util.ts';
 // @ts-expect-error — JS-entry раннера без деклараций типов; блоки в конце файла
 // перенесены из ralph.test.js как есть и ходят через его ре-экспорт (#366).
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 
 // Синтетический env: побочки (ghJson/sh/shArgv/fail) по умолчанию громко падают, если
 // функция под тестом дёрнет их без явного override — забытый override становится ошибкой

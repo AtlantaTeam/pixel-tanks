@@ -27,11 +27,11 @@ import { spawnSync, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 
 // #232: общие чистые утилиты и предохранитель #138 — те же модули, что были у ralph.js.
-import { shq, positiveIntOrDefault, sleep, resolveInstallCmd } from './ralph-util.ts';
+import { shq, positiveIntOrDefault, sleep, resolveInstallCmd } from '../shared/ralph-util.ts';
 import {
     sideEffectAttempts,
     guardSideEffect as sharedGuardSideEffect,
-} from './side-effect-guard.ts';
+} from '../shared/side-effect-guard.ts';
 import { createExec, loadJson } from './exec.ts';
 import { createConfigProfile, isPlainObject } from './config-profile.ts';
 import { createStateLock } from './state-lock.ts';
@@ -53,7 +53,12 @@ import {
 // ниже зависит ТОЛЬКО от типов-интерфейсов (RalphAdapters); конкретные модули (gate.ts,
 // deploy-check.ts, telegram-notifier.js, gh-функции, runClaudeOnce) стыкуются здесь, в
 // единой точке сборки (composition root), и попадают в ядро уже как швы.
-import type { GateCheckResult, RalphAdapters, RunOptions, RunResult } from './adapters.ts';
+import type {
+    GateCheckResult,
+    RalphAdapters,
+    RunOptions,
+    RunResult,
+} from '../adapters/adapters.ts';
 import {
     buildAdapters,
     createCoderRuntime,
@@ -65,13 +70,13 @@ import {
     type AdapterConfig,
     type AdapterRegistries,
     type AdapterSelection,
-} from './adapters-impl.ts';
+} from '../adapters/adapters-impl.ts';
 
 const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
 const STATE_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.state.json');
 const LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.log');
-const MONITOR_PATH = path.join(CLAUDE_DIR, 'ralph', 'monitor.js');
+const MONITOR_PATH = path.join(CLAUDE_DIR, 'ralph', 'runtime', 'monitor.js');
 // Путь к самому раннеру — для cmdline-сверки лока (isRalphProcess): за pid из лок-файла
 // должен стоять именно наш ralph.js (entry), а не чужой процесс, которому ОС отдала
 // переиспользованный номер. Путь ОТНОСИТЕЛЬНЫЙ (CLAUDE_DIR-относительный) — уникальности

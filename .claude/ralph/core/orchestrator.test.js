@@ -28,7 +28,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import ralph from './ralph.js';
+import ralph from '../ralph.js';
 
 // #204: состав чеков гейта переехал в ralph.config.json. gateChecksFor и tryMergePhase
 // читают ФАБРИЧНЫЙ config, который в проде ставит main() (в юнит-тестах не запускаемая).
@@ -4330,7 +4330,7 @@ describe('cmdlineIncludes — общее тело cmdline-сверок (#176)', 
 
 describe('isMonitorProcess — за pid действительно monitor.js (#74)', () => {
     it('в /proc/<pid>/cmdline есть monitor.js → это наш монитор', () => {
-        const readFn = vi.fn(() => 'node\0.claude/ralph/monitor.js\0');
+        const readFn = vi.fn(() => 'node\0.claude/ralph/runtime/monitor.js\0');
         expect(isMonitorProcess(99, readFn)).toBe(true);
         expect(readFn).toHaveBeenCalledWith('/proc/99/cmdline', 'utf-8');
     });
@@ -4611,7 +4611,8 @@ describe('adoptMonitor — подбор монитора-сироты от пр�
                 readPidFn: () => 77,
                 aliveFn: () => true,
                 isMonitorFn: () => true,
-                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0playground\0',
+                readCmdlineFn: () =>
+                    'node\0.claude/ralph/runtime/monitor.js\0--profile\0playground\0',
                 profile: 'prod',
                 killFn,
                 rmPidFn,
@@ -4630,7 +4631,7 @@ describe('adoptMonitor — подбор монитора-сироты от пр�
                 readPidFn: () => 77,
                 aliveFn: () => true,
                 isMonitorFn: () => true,
-                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0',
+                readCmdlineFn: () => 'node\0.claude/ralph/runtime/monitor.js\0--profile\0prod\0',
                 profile: 'prod',
                 killFn,
             }),
@@ -4648,7 +4649,7 @@ describe('adoptMonitor — подбор монитора-сироты от пр�
                 readPidFn: () => 77,
                 aliveFn: () => true,
                 isMonitorFn: () => true,
-                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0',
+                readCmdlineFn: () => 'node\0.claude/ralph/runtime/monitor.js\0',
                 profile: 'prod',
                 killFn,
                 rmPidFn: vi.fn(),
@@ -4716,8 +4717,8 @@ describe('processPpid — ppid процесса из /proc/<pid>/stat (#235)', (
 // уборку и был бы прибит SIGTERM'ом всей группе.
 
 describe('isRalphMonitorProcess — строгая сверка по полному пути MONITOR_PATH (#235)', () => {
-    it('cmdline с полным путём .claude/ralph/monitor.js → наш монитор', () => {
-        const readFn = () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0';
+    it('cmdline с полным путём .claude/ralph/runtime/monitor.js → наш монитор', () => {
+        const readFn = () => 'node\0.claude/ralph/runtime/monitor.js\0--profile\0prod\0';
         expect(isRalphMonitorProcess(99, readFn)).toBe(true);
     });
 
@@ -4745,7 +4746,7 @@ describe('sweepOrphanMonitors — уборка сирот-мониторов м�
             logFn,
             listPidsFn: () => [100, 200, 300],
             ppidFn: () => 1, // все трое — настоящие сироты (родитель умер, init усыновил)
-            readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0',
+            readCmdlineFn: () => 'node\0.claude/ralph/runtime/monitor.js\0--profile\0prod\0',
             stopFn,
             writePidFn,
         });
@@ -4770,7 +4771,7 @@ describe('sweepOrphanMonitors — уборка сирот-мониторов м�
             profile: 'prod',
             listPidsFn: () => [742406],
             ppidFn: () => 1,
-            readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0',
+            readCmdlineFn: () => 'node\0.claude/ralph/runtime/monitor.js\0--profile\0prod\0',
             stopFn,
             writePidFn,
         });
@@ -4805,7 +4806,7 @@ describe('sweepOrphanMonitors — уборка сирот-мониторов м�
             profile: 'prod',
             listPidsFn: () => [500],
             ppidFn: (pid) => (pid === 500 ? 4242 : 1), // родитель жив — не сирота
-            readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0',
+            readCmdlineFn: () => 'node\0.claude/ralph/runtime/monitor.js\0--profile\0prod\0',
             stopFn,
             writePidFn,
         });
@@ -4823,7 +4824,7 @@ describe('sweepOrphanMonitors — уборка сирот-мониторов м�
             logFn,
             listPidsFn: () => [100, 200],
             ppidFn: () => 1,
-            readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0playground\0',
+            readCmdlineFn: () => 'node\0.claude/ralph/runtime/monitor.js\0--profile\0playground\0',
             stopFn,
             writePidFn,
         });
@@ -4972,7 +4973,7 @@ describe('ensureMonitorAlive — взаимный контроль раннер�
             readPidFn: () => 77,
             aliveFn: () => true,
             isMonitorFn: () => true,
-            readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0playground\0',
+            readCmdlineFn: () => 'node\0.claude/ralph/runtime/monitor.js\0--profile\0playground\0',
             profile: 'prod',
             startMonitorFn,
         });
@@ -4988,7 +4989,7 @@ describe('ensureMonitorAlive — взаимный контроль раннер�
                 readPidFn: () => 77,
                 aliveFn: () => true,
                 isMonitorFn: () => true,
-                readCmdlineFn: () => 'node\0.claude/ralph/monitor.js\0--profile\0prod\0',
+                readCmdlineFn: () => 'node\0.claude/ralph/runtime/monitor.js\0--profile\0prod\0',
                 profile: 'prod',
                 startMonitorFn,
             }),
@@ -5443,7 +5444,7 @@ describe('globToRegExp — ветки конвертера, не покрыты�
 // ralph.js отдаёт ровно тот же объект, а не свою копию (иначе дубль снова разъедется).
 
 describe('ре-экспорт утилит из ralph-util.ts (#232)', () => {
-    const util = require('./ralph-util.ts');
+    const util = require('../shared/ralph-util.ts');
 
     // sleep в module.exports ralph.js не выведен (используется только внутри), поэтому
     // сверяем экспортируемую пару — этого достаточно, чтобы поймать «завёл вторую копию».
@@ -6043,7 +6044,7 @@ describe('createOrchestrator: API-поверхность', () => {
     it('ре-экспорт ralph.js отдаёт тот же контракт (import не запускает main)', async () => {
         // import сам по себе — проверка «main не запущен»: запуск main() из тестового
         // процесса упал бы на guardSideEffect/acquireLock или ушёл в process.exit.
-        const ralphModule = await import('./ralph.js');
+        const ralphModule = await import('../ralph.js');
         const missing = REQUIRED_API.filter((key) => ralphModule.default[key] === undefined);
         expect(missing).toEqual([]);
     });
