@@ -85,7 +85,6 @@ const {
     loadState,
     ensureClean,
     handleCrashedCoderSession,
-    saveSessionOutput,
     parkOnOriginMain,
     gateChecksFor,
     checksGreen,
@@ -3947,6 +3946,60 @@ describe('handleCrashedCoderSession — падение кодер-сессии: 
         });
         expect(saveSessionOutputFn).toHaveBeenCalledTimes(1);
     });
+
+    it('в список редактирования попадает ключ АКТИВНОГО кодер-рантайма (kimi/openai по фактическому authTokenEnv), не только секреты петли', () => {
+        // Итерация могла идти под kimi/openai (coderRuntimeRunFor) — упавшая codex/kimi-сессия,
+        // процитировавшая свой env, легла бы на диск с незаредактированным ключом провайдера,
+        // если бы список был захардкожен на четыре env-имени петли. Имя env резолвим из
+        // конфига рантаймов (в т.ч. КАСТОМНЫЙ authTokenEnv), значение — из process.env.
+        const saveSessionOutputFn = vi.fn();
+        const saved = {
+            RALPH_KIMI_AUTH_TOKEN: process.env.RALPH_KIMI_AUTH_TOKEN,
+            MY_OPENAI_KEY: process.env.MY_OPENAI_KEY,
+            GH_TOKEN: process.env.GH_TOKEN,
+        };
+        process.env.RALPH_KIMI_AUTH_TOKEN = 'sk-moon-secret'; // дефолтный kimi authTokenEnv
+        process.env.MY_OPENAI_KEY = 'sk-openai-secret'; // кастомный openai authTokenEnv
+        process.env.GH_TOKEN = 'gh-secret'; // секрет петли
+        try {
+            handleCrashedCoderSession(issue, 1, 'boom output', {
+                shFn: () => '',
+                logFn: () => {},
+                pushEventFn: () => {},
+                saveSessionOutputFn,
+                cfg: { openaiRuntime: { authTokenEnv: 'MY_OPENAI_KEY' } } as unknown,
+            });
+            const secrets = saveSessionOutputFn.mock.calls[0][2] as Array<string | undefined>;
+            expect(secrets).toContain('gh-secret');
+            expect(secrets).toContain('sk-moon-secret');
+            expect(secrets).toContain('sk-openai-secret');
+        } finally {
+            for (const [k, v] of Object.entries(saved)) {
+                if (v === undefined) delete process.env[k];
+                else process.env[k] = v;
+            }
+        }
+    });
+
+    it('сбой записи вывода (ENOSPC/EACCES) НЕ роняет раннер — диагностика продолжается по git status', () => {
+        // Запись вывода — вежливая диагностика, а не инвариант: необёрнутое исключение
+        // пролетело бы сквозь runLoop наверх и убило раннер вместо честного git-разбора.
+        const logs: string[] = [];
+        const pushEventFn = vi.fn();
+        const result = handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => ' M src/a.ts', // дерево грязное после падения
+            logFn: (m: string) => logs.push(m),
+            pushEventFn,
+            saveSessionOutputFn: () => {
+                throw new Error('ENOSPC: no space left on device');
+            },
+            cfg: {} as unknown,
+        });
+        // Не бросило: git-status-разбор прошёл, грязное дерево → честный стоп.
+        expect(result).toEqual({ stop: true });
+        expect(logs.join('\n')).toMatch(/Не удалось сохранить вывод/);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe('ветковая хореография в worktree раннера (#77)', () => {
@@ -5469,6 +5522,10 @@ describe('Изоляция раннера в worktree — сценарии и м
         // `git branch` разрешён ТОЛЬКО в форме `-D <ветка>` (#387, удаление своего же ref
         // после мерджа) — любая другая форма (создание, -f, list с флагами) запрещена.
         /^git branch(?!\s+-D\s)/,
+        // ...и даже в форме `-D` защищённые main/master удалять нельзя: исключение #387 —
+        // «свой ref ветки фазы», а не «любая ветка». git и сам откажет удалить занятую
+        // чужим worktree ветку, но барьер держит заявленную узость явно, не полагаясь на git.
+        /^git branch\s+-D\s+(?:main|master)\b/,
         /^git switch\b/,
         /^git update-ref\b/,
         /^git commit\b/,
@@ -5515,6 +5572,10 @@ describe('Изоляция раннера в worktree — сценарии и м
             'git branch -f main origin/main',
             'git branch feature/new',
             'git branch --list',
+            // #387: даже форма `-D` не открывает удаление защищённых веток — исключение
+            // узкое, только «свой ref ветки фазы».
+            'git branch -D main',
+            'git branch -D master',
             'git push origin feature/m1',
         ])('ловит нарушение: %s', (bad) => {
             expect(() => assertNoForbiddenGit([bad])).toThrow();
@@ -6434,6 +6495,13 @@ describe('createOrchestrator: API-поверхность', () => {
         'refreshRunnerWorktree',
         'runnerWorktreeReady',
         'ensureRunnerWorktree',
+        // разводка лога + диагностика падения кодер-сессии (#386/#390)
+        'chooseLogPath',
+        'saveSessionOutput',
+        'handleCrashedCoderSession',
+        // барьер [ЧЕЛОВЕК]-issues (#410)
+        'isHumanIssue',
+        'excludeHumanIssues',
         // петля/гейт
         'preflight',
         'runLoop',

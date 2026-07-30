@@ -104,7 +104,8 @@ const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
 // (#SiaUX): фаза, добавившая зависимость, иначе гарантированно красила бы ночной гейт.
 const LOCK_MARKER_PATH = path.join(CLAUDE_DIR, 'ralph', '.deps-lock.sha');
 // #390: stdout/stderr упавших кодер-сессий — сюда, гитигнорено (.gitignore), как
-// ralph.log/ralph.state.json. Имя файла `<issue>-<ts>.log` строит saveCrashedSessionOutput.
+// ralph.log/ralph.state.json. Имя файла `<issue>-<ts>.log` строит handleCrashedCoderSession,
+// а саму запись (с редактированием секретов) делает saveSessionOutput (exec.ts).
 const SESSIONS_DIR = path.join(CLAUDE_DIR, 'ralph', 'sessions');
 
 // ── Типы контрактов ──────────────────────────────────────────────────────────
@@ -1173,9 +1174,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // milestone без фильтров blocked/author: blocked и чужие — незакрытая работа /
     // нерешённый триаж; мерджить фазу поверх них нельзя, следующая фаза строится на этой.
     // ЕДИНСТВЕННОЕ исключение — human-карточки (#410): не работа агента, иначе фаза с
-    // человеческим хвостом никогда не смерджится. Бросает исключение при недоступности gh
-    // (или конфликте human+complexity через excludeHumanIssues) — вызывающий обязан
-    // остановиться.
+    // человеческим хвостом никогда не смерджится. Бросает исключение при недоступности gh —
+    // вызывающий обязан остановиться. Конфликт human+complexity (excludeHumanIssues) при этом
+    // НЕ пробрасывается вызывающему: его дефолтный failFn — `fail`, т.е. process.exit(1),
+    // так что процесс гаснет на месте (fail-closed на двусмысленности замысла), а не через
+    // исключение, которое вызывающий обязан перехватить.
     function allOpenIssues(milestone: string): Issue[] {
         return excludeHumanIssues(
             ghJson<Issue[]>(
@@ -1719,6 +1722,35 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // причина падения при чистом дереве осталась бы такой же невосстановимой, как раньше
     // (issue #390, «стдаут сессии никогда не сохраняется» — фактическая причина падения
     // диагностики в инциденте, не сам DEADMAN).
+    // #390: полный список секретов для редактирования вывода упавшей сессии. Помимо
+    // секретов петли (инвариант №11, их наследует любой кодер-процесс) включает ключ
+    // АКТИВНОГО кодер-рантайма: итерация могла идти под kimi/openai (coderRuntimeRunFor —
+    // тот же путь, чей вывод сюда и попадает), и упавшая codex/kimi-сессия, процитировавшая
+    // свой env, легла бы на диск с НЕзаредактированным ключом провайдера. Имя env резолвим
+    // из конфига рантаймов (фактический authTokenEnv: кастомный, если задан, иначе дефолт —
+    // ровно как resolveKimiRuntime/resolveOpenAIRuntime), значение берём из process.env;
+    // руками имена не перечисляем, иначе кастомный authTokenEnv утёк бы мимо списка.
+    function collectSessionSecrets(cfg: RalphConfig): Array<string | undefined> {
+        const kimiEnv =
+            typeof cfg.kimiRuntime?.authTokenEnv === 'string' &&
+            cfg.kimiRuntime.authTokenEnv.trim() !== ''
+                ? cfg.kimiRuntime.authTokenEnv
+                : KIMI_DEFAULT_TOKEN_ENV;
+        const openaiEnv =
+            typeof cfg.openaiRuntime?.authTokenEnv === 'string' &&
+            cfg.openaiRuntime.authTokenEnv.trim() !== ''
+                ? cfg.openaiRuntime.authTokenEnv
+                : OPENAI_DEFAULT_TOKEN_ENV;
+        return [
+            process.env.GH_TOKEN,
+            process.env.CLAUDE_CODE_OAUTH_TOKEN,
+            process.env.RALPH_TG_BOT_TOKEN,
+            process.env.RALPH_TG_CHAT_ID,
+            process.env[kimiEnv],
+            process.env[openaiEnv],
+        ];
+    }
+
     function handleCrashedCoderSession(
         issue: { number: number },
         code: number,
@@ -1738,14 +1770,20 @@ export function createOrchestrator(env: OrchestratorEnv) {
         } = {},
     ): { stop: boolean } {
         const sessionPath = path.join(SESSIONS_DIR, `${issue.number}-${Date.now()}.log`);
-        // #390: секреты петли (унаследованные claude-процессом, инвариант №11) редактируются
-        // ДО записи на диск — тот же приём, что telegram-notifier.ts применяет к TG-токену.
-        saveSessionOutputFn(sessionPath, output, [
-            process.env.GH_TOKEN,
-            process.env.CLAUDE_CODE_OAUTH_TOKEN,
-            process.env.RALPH_TG_BOT_TOKEN,
-            process.env.RALPH_TG_CHAT_ID,
-        ]);
+        // #390: секреты (петля + ключ активного рантайма, инвариант №11) редактируются ДО
+        // записи на диск — тот же приём, что telegram-notifier.ts применяет к TG-токену.
+        // Запись — вежливая диагностика, а НЕ инвариант: mkdir/writeFile могут бросить
+        // (ENOSPC/EACCES), и необёрнутое исключение пролетело бы сквозь runLoop наверх и
+        // убило раннер вместо честного git-status-разбора ниже. Ловим и логируем; решение
+        // о стопе принимает только блок `git status`.
+        try {
+            saveSessionOutputFn(sessionPath, output, collectSessionSecrets(cfg));
+        } catch (e) {
+            logFn(
+                `⚠ Не удалось сохранить вывод упавшей сессии Issue #${issue.number} в ${sessionPath} ` +
+                    `(${(e as Error).message}) — диагностику продолжаем по git status.`,
+            );
+        }
         let dirtyNow: string;
         try {
             dirtyNow = shFn('git status --porcelain');

@@ -18,6 +18,7 @@ import {
     shouldPushDeadman,
     deadmanPushMessage,
     maybePushDeadman,
+    monitorLogPath,
     openPhasePRs,
 } from './monitor-panel.mts';
 // @ts-expect-error — JS-entry раннера без деклараций типов.
@@ -191,6 +192,25 @@ describe('readLogTail — сырой хвост лога + время после
         );
         expect(lines).toEqual([]);
         expect(lastMtime).toBeNull();
+    });
+});
+
+// #386: панель обязана читать РОВНО тот лог, в который пишет наблюдаемый прогон — иначе о
+// жизни боевой петли судила бы по протухшему ralph.dry.log (и наоборот). monitorLogPath —
+// та же развилка chooseLogPath, что у раннера, по резолвнутому профилю (dry монитор не
+// спавнится, поэтому решает один профиль).
+describe('monitorLogPath — панель читает лог наблюдаемого прогона (#386)', () => {
+    it('профиль prod → боевой ralph.log', () => {
+        expect(monitorLogPath({ profileName: 'prod' })).toMatch(/ralph\.log$/);
+        expect(monitorLogPath({ profileName: 'prod' })).not.toMatch(/ralph\.dry\.log$/);
+    });
+
+    it('профиль playground → не-боевой ralph.dry.log, не общий боевой', () => {
+        expect(monitorLogPath({ profileName: 'playground' })).toMatch(/ralph\.dry\.log$/);
+    });
+
+    it('конфиг нечитаем (null) → консервативно не-боевой лог, не боевой ralph.log', () => {
+        expect(monitorLogPath(null)).toMatch(/ralph\.dry\.log$/);
     });
 });
 
