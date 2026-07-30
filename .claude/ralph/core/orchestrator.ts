@@ -1088,44 +1088,99 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // ── Issues ───────────────────────────────────────────────────────────────
 
+    // #410: детерминированный признак «эту задачу делает человек» — метка `human`, а не
+    // парсинг заголовка `[ЧЕЛОВЕК]` (метки не зависят от языка/опечаток в title). Такие
+    // карточки НЕ берёт кодер-сессия (иначе выполнятся на default-модели — у них по
+    // конвенции нет `complexity:*`) и, что неочевидно, НЕ блокируют сдачу фазы. Раньше
+    // защита жила только «в голове человека, который помнит не класть [ЧЕЛОВЕК]-issue в
+    // milestone фазы» — ровно тот класс «проверка только в голове», против которого в
+    // проекте заведены детерминированные барьеры (инвариант №5).
+    const HUMAN_LABEL = 'human';
+    const COMPLEXITY_PREFIX = 'complexity:';
+
+    function isHumanIssue(issue: Issue): boolean {
+        return (issue.labels || []).some((l) => l.name === HUMAN_LABEL);
+    }
+
     /**
-     * Рабочая очередь фазы: открытые issues МИНУС blocked МИНУС чужие авторы.
+     * Убирает человеческие карточки из набора issues и fail-closed отвергает конфликт
+     * замысла. Применяется И к рабочей очереди (openIssues), И к проверке сдачи фазы
+     * (allOpenIssues, C2) — ОДНОЙ функцией, чтобы обе трактовки не разъехались:
      *
+     * - Исключение из сдачи — единственное осознанное отступление от C2 («очередь пуста»
+     *   ≠ «фаза готова»): фаза с `human`-хвостом иначе НИКОГДА не смерджится и раннер
+     *   встанет намертво — «защита» превратилась бы в вечный стоп. Человеческая карточка
+     *   не является незакрытой работой агента.
+     * - Fail-closed на двусмысленности: карточка И с `human`, И с `complexity:*` — конфликт
+     *   (кто исполняет: человек или раннер?). Молчаливый выбор одной трактовки — тот же
+     *   класс «проверка в голове»; поэтому failFn, а не догадка. failFn инжектируем (как у
+     *   resolveKimiRuntime): боевой дефолт — `fail` (process.exit), тест подаёт свой.
+     */
+    function excludeHumanIssues(issues: Issue[], failFn: (msg: string) => unknown = fail): Issue[] {
+        for (const issue of issues) {
+            if (!isHumanIssue(issue)) continue;
+            const complexity = (issue.labels || [])
+                .map((l) => l.name)
+                .filter((n) => n.startsWith(COMPLEXITY_PREFIX));
+            if (complexity.length > 0) {
+                failFn(
+                    `issue #${issue.number}: одновременно метка '${HUMAN_LABEL}' и ${complexity.join(', ')} — конфликт замысла. ` +
+                        `Человеческую карточку раннер не роутит (нет исполнителя-агента), а 'complexity:*' — признак ралф-роутинга. ` +
+                        `Оставь одну из меток.`,
+                );
+            }
+        }
+        return issues.filter((i) => !isHumanIssue(i));
+    }
+
+    /**
+     * Рабочая очередь фазы: открытые issues МИНУС human МИНУС blocked МИНУС чужие авторы.
+     *
+     * - human (#410): задача человека, раннер её не исполняет (см. excludeHumanIssues).
      * - blocked: агент упёрся в ручной гейт (npm install и т.п.) — пропускаем, чтобы
      *   AFK-цикл не сжигал итерации об одну стену; label снимает человек. ВАЖНО (C2):
      *   такие issues не выпадают из фазы — сдача проверяет открытые issues БЕЗ фильтров
-     *   (allOpenIssues ниже), фаза с blocked-хвостами не мерджится.
+     *   blocked/author (allOpenIssues ниже), фаза с blocked-хвостами не мерджится.
      * - authorAllowlist (C3): репо публичный, issue может создать кто угодно, а его body
      *   попадает в bypassPermissions-сессию как инструкции — прямой канал инъекции.
      *   Чужие issues не исполняем; они остаются открытыми и сознательно блокируют сдачу
      *   фазы до триажа человеком — fail-closed вместо молчаливого игнора.
      */
     function openIssues(milestone: string): Issue[] {
+        let raw: Issue[];
         try {
-            const allow = config.authorAllowlist;
-            return (
-                ghJson<Issue[]>(
-                    `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
-                )
-                    .filter((i) => !(i.labels || []).some((l) => l.name === 'blocked'))
-                    .filter((i) => allow.includes((i.author && i.author.login) as string))
-                    // gh отдаёт новые-первыми; порядок работы — по возрастанию номера (порядок задач в плане)
-                    .sort((a, b) => a.number - b.number)
+            raw = ghJson<Issue[]>(
+                `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
             );
         } catch (e) {
             return fail(
                 `gh issue list упал (после ретраев): ${(e as Error).message}\nПроверь: gh auth status, milestone "${milestone}" существует.`,
             );
         }
+        // excludeHumanIssues — ВНЕ try/catch: его failFn (конфликт human+complexity) не
+        // должен маскироваться под «gh issue list упал».
+        const allow = config.authorAllowlist;
+        return (
+            excludeHumanIssues(raw)
+                .filter((i) => !(i.labels || []).some((l) => l.name === 'blocked'))
+                .filter((i) => allow.includes((i.author && i.author.login) as string))
+                // gh отдаёт новые-первыми; порядок работы — по возрастанию номера (порядок задач в плане)
+                .sort((a, b) => a.number - b.number)
+        );
     }
 
-    // C2: «рабочая очередь пуста» ≠ «фаза готова». Перед сдачей смотрим ВСЕ открытые
-    // issues milestone без фильтров: blocked и чужие — незакрытая работа / нерешённый
-    // триаж; мерджить фазу поверх них нельзя, следующая фаза строится на этой.
-    // Бросает исключение при недоступности gh — вызывающий обязан остановиться.
+    // C2: «рабочая очередь пуста» ≠ «фаза готова». Перед сдачей смотрим открытые issues
+    // milestone без фильтров blocked/author: blocked и чужие — незакрытая работа /
+    // нерешённый триаж; мерджить фазу поверх них нельзя, следующая фаза строится на этой.
+    // ЕДИНСТВЕННОЕ исключение — human-карточки (#410): не работа агента, иначе фаза с
+    // человеческим хвостом никогда не смерджится. Бросает исключение при недоступности gh
+    // (или конфликте human+complexity через excludeHumanIssues) — вызывающий обязан
+    // остановиться.
     function allOpenIssues(milestone: string): Issue[] {
-        return ghJson<Issue[]>(
-            `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
+        return excludeHumanIssues(
+            ghJson<Issue[]>(
+                `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
+            ),
         );
     }
 
@@ -3974,6 +4029,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // переприсваивается в main()).
         getAdapterSelection: (): AdapterSelection => adapterSelection,
         resolveModelRoute,
+        // #410: барьер на [ЧЕЛОВЕК]-issues — экспорт чистых хелперов для юнитов
+        // (isHumanIssue — предикат метки, excludeHumanIssues — фильтр очереди/сдачи +
+        // fail-closed на конфликте human+complexity).
+        isHumanIssue,
+        excludeHumanIssues,
         pickModel,
         pickRuntime,
         coderRuntimeRunFor,

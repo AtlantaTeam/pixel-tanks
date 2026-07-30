@@ -1081,6 +1081,71 @@ describe('pickModel/pickRuntime — provider-aware роутинг по label iss
     });
 });
 
+// #410: барьер на [ЧЕЛОВЕК]-issues. excludeHumanIssues — чистая функция: применяется И к
+// рабочей очереди (openIssues), И к проверке сдачи (allOpenIssues), поэтому тестируется
+// напрямую. isHumanIssue — предикат метки.
+describe('excludeHumanIssues / isHumanIssue — барьер на [ЧЕЛОВЕК]-issues (#410)', () => {
+    const { excludeHumanIssues, isHumanIssue } = ralph;
+    const issue = (number: number, labels: string[]) => ({
+        number,
+        title: `задача ${number}`,
+        labels: labels.map((name: string) => ({ name })),
+        author: { login: 'owner' },
+    });
+    // Тестовый failFn БРОСАЕТ (боевой fail = process.exit убил бы vitest-процесс) — тот же
+    // приём инъекции, что у resolveKimiRuntime/resolveAdapterSelection.
+    const throwingFail = (msg: string) => {
+        throw new Error(msg);
+    };
+
+    it('isHumanIssue: true только при метке human', () => {
+        expect(isHumanIssue(issue(1, ['human']))).toBe(true);
+        expect(isHumanIssue(issue(2, ['area:devops']))).toBe(false);
+        expect(isHumanIssue(issue(3, []))).toBe(false);
+        // без поля labels вовсе — не падает
+        expect(isHumanIssue({ number: 4, title: 't' })).toBe(false);
+    });
+
+    it('milestone из human-issue и обычной → в наборе остаётся только обычная', () => {
+        const kept = excludeHumanIssues(
+            [issue(10, ['human']), issue(11, ['complexity:medium'])],
+            throwingFail,
+        );
+        expect(kept.map((i: { number: number }) => i.number)).toEqual([11]);
+    });
+
+    it('человеческий хвост не блокирует сдачу: набор из одних human-issue → пустой (allOpenIssues → [])', () => {
+        // allOpenIssues тоже прогоняет excludeHumanIssues — если открыты ТОЛЬКО human-карточки,
+        // сдача фазы видит пустоту и не встаёт намертво (осознанное отступление от C2).
+        const kept = excludeHumanIssues([issue(20, ['human']), issue(21, ['human'])], throwingFail);
+        expect(kept).toEqual([]);
+    });
+
+    it('fail-closed: карточка И с human, И с complexity:* → failFn с внятным сообщением', () => {
+        expect(() =>
+            excludeHumanIssues([issue(30, ['human', 'complexity:high'])], throwingFail),
+        ).toThrow(/#30.*human.*complexity:high/s);
+    });
+
+    it('fail-closed срабатывает ДО фильтрации (конфликтная карточка не «проскочит» молча)', () => {
+        // Конфликт в наборе вместе с валидными — failFn всё равно бросает, набор не возвращается.
+        expect(() =>
+            excludeHumanIssues(
+                [issue(40, ['complexity:low']), issue(41, ['human', 'complexity:expert'])],
+                throwingFail,
+            ),
+        ).toThrow(/#41/);
+    });
+
+    it('обычные complexity:*-карточки без human — не конфликт, проходят как есть', () => {
+        const kept = excludeHumanIssues(
+            [issue(50, ['complexity:high']), issue(51, ['complexity:low'])],
+            throwingFail,
+        );
+        expect(kept.map((i: { number: number }) => i.number)).toEqual([50, 51]);
+    });
+});
+
 // #376 доп.скоуп: кросс-провайдерный фолбэк при API-лимите — «сначала фолбэк, потом
 // ожидание». Существующие тесты в describe('runClaude — 4-е событие...') без
 // modelRouting.apiLimitFallback остаются зелёными без изменений (проверено выше) — эта
