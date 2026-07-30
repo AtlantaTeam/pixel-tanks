@@ -55,6 +55,30 @@ export const ADAPTER_DEFAULTS = {
 // Швы в каноничном порядке — единственный источник имён (итерируется резолвером и сборкой).
 export const ADAPTER_SEAMS = Object.keys(ADAPTER_DEFAULTS) as Array<keyof typeof ADAPTER_DEFAULTS>;
 
+// #415: швы, чей МЕРДЖ-ПУТЬ ещё не проведён через `switch(adapters)`. `tryMergePhase` берёт
+// `findOpenPr`/`checksGreen`/`mergePr` напрямую из замыкания gate.ts, поэтому недефолтная
+// реализация этих швов была бы принята конфигом, прошла бы resolveAdapterSelection,
+// buildAdapters и контрактный сьют #370 — а мердж молча продолжил бы гонять npm-гейт против
+// GitHub (класс «тихий дефолт», инвариант №1). До фазы 10 от этого защищала лишь бедность
+// реестра (по одной реализации на шов): второе имя отвергал buildAdapters как
+// незарегистрированное. Защита исчезла бы в момент регистрации второго гейта — то есть ровно
+// при переносе на не-npm стек, главном сценарии README. Поэтому запрет живёт барьером, а не
+// абзацем в доке (инвариант №5).
+//
+// СНЯТИЕ: когда `tryMergePhase` действительно получит checksGreenFn/mergePrFn/findOpenPrFn из
+// `adapters.*` — убрать шов отсюда (правка ровно в одном месте) и заодно снять оговорки
+// «граница фазы 5» в README и докблоке `RalphConfig.adapters`.
+export const MERGE_PATH_BOUND_SEAMS = ['taskSource', 'gate'] as const satisfies ReadonlyArray<
+    keyof typeof ADAPTER_DEFAULTS
+>;
+
+// Предикат вместо приведения по месту: `includes` на `as const`-массиве требует расширения
+// типа, и повторять его в двух местах — лишний шум (плюс соблазн приводить `seam` к
+// литеральному union и получить ложное «сужение»).
+function isMergePathBound(seam: string): boolean {
+    return (MERGE_PATH_BOUND_SEAMS as ReadonlyArray<string>).includes(seam);
+}
+
 export type AdapterSeam = keyof typeof ADAPTER_DEFAULTS;
 export type AdapterSelection = Record<AdapterSeam, string>;
 
@@ -81,6 +105,8 @@ type FailFn = (msg: string) => never;
 // Возвращает ПОЛНЫЙ выбор по всем пяти швам: заданное в конфиге либо дефолт. Отвергает:
 //   • неизвестный ключ шва в `adapters` (опечатка «taskSrc» молча не станет дефолтом);
 //   • нестроковое/пустое имя реализации.
+//   • недефолтную реализацию шва из MERGE_PATH_BOUND_SEAMS (#415) — мердж-путь её не
+//     использует, принять такой конфиг значило бы соврать про свапаемость.
 // Валидность имени против РЕЕСТРА (есть ли такая реализация) проверяет buildAdapters —
 // у резолвера реестра нет, он знает только имена швов.
 export function resolveAdapterSelection(
@@ -109,6 +135,20 @@ export function resolveAdapterSelection(
         }
         if (typeof v !== 'string' || v.trim() === '') {
             failFn(`adapters.${seam} должен быть непустой строкой (имя реализации).`);
+        }
+        // #415: проверка ПОСЛЕ валидации формы (сначала «это вообще строка», потом «эту
+        // реализацию мы умеем довести до мерджа») и ДО записи в out — иначе недефолтное имя
+        // попало бы в выбор, а сообщение об ошибке говорило бы о нём как о принятом.
+        if (v !== ADAPTER_DEFAULTS[seam] && isMergePathBound(seam)) {
+            failFn(
+                `adapters.${seam}: '${v}' — свап этого шва пока не поддержан. Мердж-путь ` +
+                    `(tryMergePhase → findOpenPr/checksGreen/mergePr) берёт функции напрямую ` +
+                    `из gate.ts, а не из adapters.${seam}, поэтому выбранная реализация не ` +
+                    `участвовала бы в сдаче фазы: чеки и мердж продолжили бы идти через ` +
+                    `'${ADAPTER_DEFAULTS[seam]}'. Это «тихий дефолт» (инвариант №1), поэтому ` +
+                    `конфиг отвергается. Подробности — «граница фазы 5» в .claude/ralph/README.md; ` +
+                    `свапаемые сегодня швы: ${ADAPTER_SEAMS.filter((s) => !isMergePathBound(s)).join(', ')}.`,
+            );
         }
         out[seam] = v;
     }

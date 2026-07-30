@@ -19,6 +19,7 @@ import {
     createGithubTaskSource,
     createNpmGate,
     createTelegramNotifier,
+    MERGE_PATH_BOUND_SEAMS,
     resolveAdapterSelection,
     type AdapterRegistries,
 } from './adapters-impl.ts';
@@ -63,6 +64,56 @@ describe('resolveAdapterSelection — выбор реализаций из ко�
 
     it('ADAPTER_SEAMS перечисляет ровно ключи ADAPTER_DEFAULTS', () => {
         expect([...ADAPTER_SEAMS].sort()).toEqual(Object.keys(ADAPTER_DEFAULTS).sort());
+    });
+
+    // #415: мердж-путь (tryMergePhase → findOpenPr/checksGreen/mergePr) берёт функции из
+    // замыкания gate.ts, а не из adapters.*. Принять недефолтный gate/taskSource значило бы
+    // соврать: чеки и мердж всё равно пошли бы через дефолт («тихий дефолт», инвариант №1).
+    it('недефолтный gate → fail: мердж-путь этот шов не роутит', () => {
+        expect(() => resolveAdapterSelection({ gate: 'cargo' }, throwingFail)).toThrow(
+            /свап этого шва пока не поддержан/,
+        );
+        // Сообщение обязано объяснять причину, а не только запрещать.
+        expect(() => resolveAdapterSelection({ gate: 'cargo' }, throwingFail)).toThrow(
+            /tryMergePhase/,
+        );
+    });
+
+    it('недефолтный taskSource → fail по той же причине', () => {
+        expect(() => resolveAdapterSelection({ taskSource: 'gitlab' }, throwingFail)).toThrow(
+            /свап этого шва пока не поддержан/,
+        );
+    });
+
+    it('ЯВНО заданный дефолт этих швов проходит (запрет на свап, а не на упоминание)', () => {
+        const sel = resolveAdapterSelection(
+            { gate: ADAPTER_DEFAULTS.gate, taskSource: ADAPTER_DEFAULTS.taskSource },
+            throwingFail,
+        );
+        expect(sel).toEqual(ADAPTER_DEFAULTS);
+    });
+
+    it('свапаемые швы барьер не задевает: coderRuntime/notifier/deployCheck проходят', () => {
+        // Рантаймы Kimi/OpenAI (#373/#374) проведены через switch(adapters) полностью —
+        // барьер #415 не должен ломать работающую свапаемость.
+        expect(resolveAdapterSelection({ coderRuntime: 'kimi' }, throwingFail).coderRuntime).toBe(
+            'kimi',
+        );
+        expect(resolveAdapterSelection({ coderRuntime: 'openai' }, throwingFail).coderRuntime).toBe(
+            'openai',
+        );
+        // notifier/deployCheck: имя может быть незарегистрированным (это ловит buildAdapters),
+        // но САМ выбор резолвер обязан пропустить — швы свапаемы по построению.
+        expect(resolveAdapterSelection({ notifier: 'slack' }, throwingFail).notifier).toBe('slack');
+        expect(
+            resolveAdapterSelection({ deployCheck: 'gitlab-ci' }, throwingFail).deployCheck,
+        ).toBe('gitlab-ci');
+    });
+
+    it('MERGE_PATH_BOUND_SEAMS — подмножество ADAPTER_SEAMS (опечатка не отключит барьер молча)', () => {
+        for (const seam of MERGE_PATH_BOUND_SEAMS) {
+            expect(ADAPTER_SEAMS).toContain(seam);
+        }
     });
 });
 
