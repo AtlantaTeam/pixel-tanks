@@ -91,12 +91,20 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Фреймворк ralph · Фаза 9: Находки прогона",
-                "branch": "feature/ralph-fw-9-findings"
+                "milestone": "Экран боя ralph · Фаза 1: HP-модель боя",
+                "branch": "feature/game-screen-1-hp-model"
             },
             {
-                "milestone": "Фреймворк ralph · Фаза 10: Документация и финальная валидация",
-                "branch": "feature/ralph-fw-10-docs"
+                "milestone": "Экран боя ralph · Фаза 2: Оверлейный HUD",
+                "branch": "feature/game-screen-2-hud"
+            },
+            {
+                "milestone": "Экран боя ralph · Фаза 3: Визуал жеста и состояния",
+                "branch": "feature/game-screen-3-gesture"
+            },
+            {
+                "milestone": "Экран боя ralph · Фаза 4: Витрина и визрегрессия",
+                "branch": "feature/game-screen-4-showcase"
             }
         ]
     },
