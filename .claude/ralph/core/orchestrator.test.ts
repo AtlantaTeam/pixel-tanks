@@ -5227,13 +5227,21 @@ describe('Изоляция раннера в worktree — сценарии и м
     // и ветку фазы держат ЧУЖИЕ worktree (человек / кодер-сессии), git не отдаст один
     // ref двум деревьям, а сам факт checkout/merge/reset в общий рабочий каталог
     // утащил бы за собой правки человека — ровно то, от чего затевалась изоляция (#76).
+    //
+    // Исключение (#387): `git branch -D <ветка>` РАЗРЕШЁН — но только именно эта форма
+    // (delete). Это не занятие/сдвиг чужого ref, а удаление ЛОКАЛЬНОГО ref, который для
+    // инварианта H3 создал сам раннер (не дерево человека) и который после подтверждённого
+    // мерджа больше не нужен. `git branch -f`/`git branch <name>` (создание/force-move)
+    // по-прежнему запрещены — исключение узкое, под одну конкретную команду очистки.
     const FORBIDDEN_GIT = [
         // checkout НЕ через --detach = занятие именованной ветки (в т.ч. `git checkout main`).
         /^git checkout (?!--detach\b)/,
         /^git pull\b/,
         /^git merge\b/,
         /^git reset\b/,
-        /^git branch\b/,
+        // `git branch` разрешён ТОЛЬКО в форме `-D <ветка>` (#387, удаление своего же ref
+        // после мерджа) — любая другая форма (создание, -f, list с флагами) запрещена.
+        /^git branch(?!\s+-D\s)/,
         /^git switch\b/,
         /^git update-ref\b/,
         /^git commit\b/,
@@ -5265,6 +5273,11 @@ describe('Изоляция раннера в worktree — сценарии и м
             ).not.toThrow();
         });
 
+        // #387: узкое исключение — удаление СВОЕГО ref веткой фазы после мерджа.
+        it('пропускает `git branch -D <ветка>` — удаление своего же ref после мерджа (#387)', () => {
+            expect(() => assertNoForbiddenGit(['git branch -D feature/m1'])).not.toThrow();
+        });
+
         it.each([
             'git checkout main',
             'git checkout feature/m1',
@@ -5273,6 +5286,8 @@ describe('Изоляция раннера в worktree — сценарии и м
             'git merge origin/main',
             'git reset --hard origin/main',
             'git branch -f main origin/main',
+            'git branch feature/new',
+            'git branch --list',
             'git push origin feature/m1',
         ])('ловит нарушение: %s', (bad) => {
             expect(() => assertNoForbiddenGit([bad])).toThrow();
@@ -5407,12 +5422,29 @@ describe('Изоляция раннера в worktree — сценарии и м
             assertNoForbiddenGit(shCmds);
         });
 
-        it('локальную ветку фазы раннер только ЧИТАЕТ (rev-parse --verify), никогда не двигает', () => {
+        it('до мерджа локальную ветку фазы раннер только ЧИТАЕТ (rev-parse --verify), не двигает', () => {
             const { shCmds, deps } = mkWiring();
             expect(tryMergePhase(phase, deps)).toBe('merged');
             // Сверка HEAD==PR идёт read-only обращением к ref — не update-ref/branch -f.
             expect(shCmds).toContain("git rev-parse --verify --quiet 'refs/heads/feature/m1'");
-            expect(shCmds.some((c) => /^git (update-ref|branch)\b/.test(c))).toBe(false);
+            expect(shCmds.some((c) => /^git update-ref\b/.test(c))).toBe(false);
+            expect(shCmds.some((c) => /^git branch(?!\s+-D\s)/.test(c))).toBe(false);
+        });
+
+        // #387: ПОСЛЕ подтверждённого мерджа раннер сам чистит свой же локальный ref
+        // ветки фазы — узкое, сознательное исключение из «раннер не трогает ref фазы»
+        // (создал сам для H3, удаляет сам после мерджа), не занятие/сдвиг чужого ref.
+        it('после мерджа раннер удаляет СВОЙ локальный ref ветки фазы (`git branch -D`), #387', () => {
+            const { shCmds, deps } = mkWiring();
+            expect(tryMergePhase(phase, deps)).toBe('merged');
+            expect(shCmds).toContain('git branch -D feature/m1');
+            // Мердж случился раньше удаления ref — порядок операций важен.
+            const mergeIdx = shCmds.indexOf(
+                `gh pr merge 5 --squash --delete-branch --match-head-commit ${SHA_HEAD}`,
+            );
+            const deleteIdx = shCmds.indexOf('git branch -D feature/m1');
+            expect(mergeIdx).toBeGreaterThanOrEqual(0);
+            expect(deleteIdx).toBeGreaterThan(mergeIdx);
         });
 
         it('worktree-ограничение git (main/ветка заняты чужим деревом) хореографию НЕ ломает — раннер её и не трогает', () => {
