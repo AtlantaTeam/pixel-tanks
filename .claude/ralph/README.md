@@ -38,31 +38,48 @@ ralph.js (тонкий entry: проверка Node ≥24, CLI-флаги)
         → core/gate.ts             (детерминированный гейт + мердж)
         → core/review.ts           (ревью PR: роутинг модели, эскалация)
         → core/deploy-check.ts     (пост-мердж верификация релиза)
+        → core/exec.ts             (примитивы sh/shArgv/ghJson/log, через них идёт всё исполнение)
         → core/worktree.ts, core/state-lock.ts, core/api-limit.ts, core/tunnel-check.ts
         → adapters/adapters-impl.ts → RalphAdapters (5 швов, см. ниже)
+        → shared/ralph-util.ts, shared/side-effect-guard.ts (чистые утилиты + предохранитель #138)
     → runtime/monitor.js + monitor-panel.mts (read-only панель, отдельный процесс)
     → runtime/deadman.ts, runtime/telegram-notifier.ts
 ```
 
-Ядро зависит только от интерфейсов `RalphAdapters` (`adapters/adapters.ts`), а не от
-конкретных модулей — `orchestrator.ts` (composition root) собирает боевые реализации в
-адаптеры через `buildAdapters` и выбирает нужную по ключу `adapters.<шов>` в конфиге.
-Подробности каждого модуля, инварианты и что нельзя ломать — таблица «Карта модулей» в
-`CLAUDE.md`.
+Ядро зависит от интерфейсов `RalphAdapters` (`adapters/adapters.ts`), а не от конкретных
+модулей — `orchestrator.ts` (composition root) собирает боевые реализации в адаптеры через
+`buildAdapters` и выбирает нужную по ключу `adapters.<шов>` в конфиге. Подробности каждого
+модуля, инварианты и что нельзя ломать — таблица «Карта модулей» в `CLAUDE.md`.
+
+**Граница фазы 5 (не вся свапаемость готова).** Через `switch(adapters.<шов>)` пока
+роутятся очередь/метки, деплой-проверка, нотификатор и рантайм. **Мердж-путь** (`runLoop` →
+`tryMergePhase` → `findOpenPr`/`checksGreen`/`mergePr`) берёт функции напрямую из замыкания
+`gate.ts`, а НЕ из `adapters.gate`/`adapters.taskSource`. Практическое следствие: задать
+`gate: 'cargo'` в конфиге можно (пройдёт `resolveAdapterSelection`, `buildAdapters` и
+контрактный сьют), но мердж-путь молча продолжит гонять npm-гейт — «тихий дефолт» из
+инварианта №1. До объявления `gate`/`taskSource`-мерджа свапаемыми фаза 6 обязана либо
+провести `tryMergePhase` через швы, либо поставить fail-closed-барьер на НЕдефолтный их
+выбор. Детали — докблок `RalphConfig.adapters` в `core/orchestrator.ts`.
 
 ## Пять адаптеров (точки расширения)
 
-Контракты — `adapters/adapters.ts`; сборка и реестр реализаций — `adapters/adapters-impl.ts`.
-Каждый шов выбирается ключом `adapters.<шов>` в `ralph.config.json`; отсутствие ключа —
-дефолт текущего проекта.
+Контракты — `adapters/adapters.ts`; сборка (мапперы боевых функций, `buildAdapters`,
+`resolveAdapterSelection`) — `adapters/adapters-impl.ts`; сам реестр реализаций
+(`adapterRegistries`) — composition root в `core/orchestrator.ts`. Каждый шов выбирается
+ключом `adapters.<шов>` в `ralph.config.json`; отсутствие ключа — дефолт текущего проекта.
 
-| Шов            | Контракт              | Дефолт (этот проект)            | Режим отказа                                                                               | За что отвечает                                                            |
-| -------------- | --------------------- | ------------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| `taskSource`   | `TaskSourceAdapter`   | `github` (issues/PR через `gh`) | fail-closed на чтении очереди/мерже; fail-open на метках/косметике                         | Issues фазы, поиск PR, факт мерджа, squash-мердж, метка `blocked`, доска   |
-| `gate`         | `GateAdapter`         | `npm` (npm-скрипты)             | fail-closed                                                                                | Состав чеков по профилю + детерминированный прогон на точном sha PR-головы |
-| `notifier`     | `NotifierAdapter`     | `telegram`                      | fail-open (возвращает `false`, никогда не бросает)                                         | Доставка пуш-события человеку                                              |
-| `deployCheck`  | `DeployCheckAdapter`  | `github-actions` + HTTP health  | fail-closed на резолве sha; классификация — GREEN только когда зелено И воркфлоу, И health | Пост-мердж проверка: воркфлоу деплоя + health-URL прода                    |
-| `coderRuntime` | `CoderRuntimeAdapter` | `claude` (Claude CLI)           | код возврата + вывод, политику ретраев/API-лимита держит оркестратор                       | Запуск одной кодер-сессии по промпту                                       |
+| Шов            | Контракт              | Дефолт (этот проект)            | Режим отказа                                                                                    | За что отвечает                                                              |
+| -------------- | --------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `taskSource`   | `TaskSourceAdapter`   | `github` (issues/PR через `gh`) | fail-closed на чтении очереди/мерже; fail-open на метках/косметике                              | Issues фазы, поиск PR, факт мерджа, squash-мердж †, метка `blocked`, доска   |
+| `gate`         | `GateAdapter`         | `npm` (npm-скрипты)             | fail-closed                                                                                     | Состав чеков по профилю + детерминированный прогон на точном sha PR-головы † |
+| `notifier`     | `NotifierAdapter`     | `telegram`                      | fail-open (возвращает `false`, никогда не бросает)                                              | Доставка пуш-события человеку                                                |
+| `deployCheck`  | `DeployCheckAdapter`  | `github-actions` + HTTP health  | fail-closed на резолве sha; классификация — GREEN только при зелёном воркфлоу И здоровом health | Пост-мердж проверка: воркфлоу деплоя + health-URL прода                      |
+| `coderRuntime` | `CoderRuntimeAdapter` | `claude` (Claude CLI)           | код возврата + вывод, политику ретраев/API-лимита держит оркестратор                            | Запуск одной кодер-сессии по промпту                                         |
+
+† **Мердж-путь пока идёт мимо шва (граница фазы 5, см. выше):** факт/выполнение мерджа и
+прогон чеков в `tryMergePhase` берутся напрямую из `gate.ts`, а не из выбранного
+`adapters.gate`/`adapters.taskSource`. Эти строки описывают роль шва по контракту, но НЕ
+уже готовую свапаемость мердж-пути.
 
 Создание PR и снятие метки `hold` **намеренно не входят** ни в один контракт — первое
 делегировано кодер-сессии (не коду ядра), второе — исключительно человеку (структурный
@@ -71,7 +88,9 @@ ralph.js (тонкий entry: проверка Node ≥24, CLI-флаги)
 Чтобы добавить реализацию шва (например, `notifier: 'slack'` или `coderRuntime: 'kimi'`):
 реализовать интерфейс из `adapters.ts`, зарегистрировать под новым ключом в реестре
 composition root (`orchestrator.ts`), сослаться на ключ в `ralph.config.json` →
-`adapters.<шов>`. Ядро и остальные швы не трогаются.
+`adapters.<шов>`. Ядро и остальные швы не трогаются. (Для `gate`/`taskSource` мердж-путь
+ещё не свапаем — см. границу фазы 5 выше; полностью готовы `notifier`/`coderRuntime`/
+`deployCheck` и не-мерджевая часть `taskSource`.)
 
 ## Подключение к новому проекту
 
@@ -84,8 +103,12 @@ composition root (`orchestrator.ts`), сослаться на ключ в `ralph
 2. Заполнить `ralph.config.json`: `installCmd`, `board.owner`/`number`, `gate.checks`/
    `prodChecks`/`prodDropChecks` (сохранить fail-fast порядок дёшево→дорого),
    `deployCheck.healthUrl`, `phases`, `authorAllowlist`, `modelRouting`, `review`.
-3. Завести метки (`complexity:*`, `area:*`, `blocked`, `hold`, `backlog`) и доску
-   GitHub Projects с полем `Status`/`Done` — без них роутинг и синк слепы.
+3. Завести метки (`complexity:*`, `area:*`, `blocked`, `hold`, `backlog`, `human`) и доску
+   GitHub Projects с полем `Status`/`Done` — без них роутинг и синк слепы. `human` (#410) —
+   детерминированный признак «делает человек»: `HUMAN_LABEL` исключает такую карточку из
+   рабочей очереди И из проверки сдачи фазы, а `human` вместе с `complexity:*` — fail-closed
+   стоп (конфликт замысла). Без неё `[ЧЕЛОВЕК]`-карточка даёт инцидент #379: раннер возьмёт
+   человеческую задачу либо фаза с человеческим хвостом никогда не смерджится.
 4. Заменить файлами (копия из pixel-tanks не подходит): `ralph.project.md` (проектная
    половина промпт-контракта), `AGENTS.md`, `scripts/security-audit.baseline.json`
    (начать с пустого).
@@ -98,10 +121,13 @@ composition root (`orchestrator.ts`), сослаться на ключ в `ralph
 `tests/__fixtures__/foreign-project/ralph.config.json` — конфиг вымышленного проекта
 «Sputnik Tracker» (другой owner доски, другой `installCmd`, другой состав гейта, другой
 промпт, другой роутинг моделей — ни одно значение не пересекается с боевым
-`ralph.config.json`). `tests/porting-dry-run.test.ts` инициализирует ядро на этом
-конфиге и прогоняет один dry-цикл (без реального git/gh/claude — `RALPH_NO_SIDE_EFFECTS`)
-и проверяет, что вся цепочка от `resolveProfile` до промпта кодер-сессии читает
-**только фикстурные значения**, ни разу не подглядывая в дефолты pixel-tanks. Это
-исполняемое доказательство переносимости: шаги выше воспроизводимы, если
-`npx vitest run .claude/ralph/tests/porting-dry-run.test.ts` зелёный на конфиге
-нового проекта.
+`ralph.config.json`, **кроме имён моделей ревью**: они часть словаря ядра, см.
+`REVIEW_MODEL_STRENGTH`, и намеренно совпадают). `tests/porting-dry-run.test.ts`
+инициализирует ядро на этом конфиге и прогоняет один dry-цикл (без реального git/gh/claude —
+`RALPH_NO_SIDE_EFFECTS`) и проверяет, что вся цепочка от `resolveProfile` до промпта
+кодер-сессии читает **только фикстурные значения**, ни разу не подглядывая в дефолты
+pixel-tanks. Это исполняемое доказательство переносимости: шаги выше воспроизводимы, если
+тест зелёный в новом репозитории — но зелёный прогон доказывает «ядро переносимо и не
+подглядывает в pixel-tanks», а НЕ «ваш конфиг валиден»: тест прибит к фикстуре
+(`FIXTURE_PATH`) и `ralph.config.json` нового проекта не читает. Валидность своего конфига
+проверит `resolveProfile` на старте / `--dry-run`.
