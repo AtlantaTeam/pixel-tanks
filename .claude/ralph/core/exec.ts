@@ -9,7 +9,9 @@
 // - sh/shArgv — шелл-строка (только чтения, #133) и argv без шелла (мутации, #193/#252),
 //   обе под предохранителем #138;
 // - ghJson — gh-чтения с ретраями и backoff (M3);
-// - loadJson — чтение JSON с фолбэком (общий помощник конфига/стейта).
+// - loadJson — чтение JSON с фолбэком (общий помощник конфига/стейта);
+// - saveSessionOutput — запись stdout/stderr упавшей кодер-сессии в файл (#390),
+//   секреты редактируются тем же приёмом, что TG-токен в telegram-notifier.ts.
 //
 // TS-модуль без билд-шага: исполняется нативным type stripping Node 24 (erasable-only
 // синтаксис — только аннотации типов, ни enum, ни namespace, ни parameter properties).
@@ -20,9 +22,11 @@
 // функции — те же боевые дефолты-коллабораторы, что раньше жили module-level в ralph.js.
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { execSync, execFileSync } from 'node:child_process';
 import type { StdioOptions } from 'node:child_process';
 import { NO_SIDE_EFFECTS } from '../shared/side-effect-guard.ts';
+import { redactSecrets } from '../shared/ralph-util.ts';
 
 type GuardFn = (what: string) => void;
 type SleepFn = (ms: number) => void;
@@ -42,6 +46,20 @@ export function loadJson<T>(p: string, fallback: T): T {
     } catch {
         return fallback;
     }
+}
+
+// #386: выбор пути лога по режиму прогона. Свежесть ralph.log — признак жизни БОЕВОЙ
+// петли (инвариант №12); чужой прогон (--dry-run и/или профиль ≠ prod — обычный
+// ритуал кодер-сессии, проверяющей правки самого раннера: playground/dry-run) не имеет
+// права писать в тот же файл — его штатные маркеры остановки (⏸/✋/🎉) переводят
+// deadman в режим stopped (порог тишины Infinity) и ослепляют сторож боевой петли
+// навсегда. Чистая функция без побочек — тестируется отдельно от main().
+export function chooseLogPath(
+    run: { dry: boolean; profileName?: string },
+    paths: { battle: string; sideline: string },
+): string {
+    const isBattle = !run.dry && run.profileName === 'prod';
+    return isBattle ? paths.battle : paths.sideline;
 }
 
 export function createExec(env: ExecEnv) {
@@ -140,5 +158,23 @@ export function createExec(env: ExecEnv) {
         throw lastErr;
     }
 
-    return { log, fail, setLogTarget, sh, shArgv, ghJson };
+    // #390: единственная точка записи вывода упавшей кодер-сессии на диск. writeFn —
+    // инжектируемая точка (как saveState/writeLock в state-lock.ts) под guardSideEffect
+    // #138: забытый мок в тесте иначе создал бы файлы прямо в дереве, где идут тесты.
+    // Секреты редактируются ДО записи (redactSecrets), не после — на диске никогда не
+    // появляется незаредактированная версия, даже промежуточно.
+    function saveSessionOutput(
+        filePath: string,
+        output: string,
+        secrets: Array<string | undefined> = [],
+        writeFn: (p: string, data: string) => void = (p, data) => {
+            guardSideEffect(`saveSessionOutput(${p})`);
+            fs.mkdirSync(path.dirname(p), { recursive: true });
+            fs.writeFileSync(p, data);
+        },
+    ): void {
+        writeFn(filePath, redactSecrets(output, secrets));
+    }
+
+    return { log, fail, setLogTarget, sh, shArgv, ghJson, saveSessionOutput };
 }

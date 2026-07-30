@@ -84,6 +84,7 @@ const {
     runLoop,
     loadState,
     ensureClean,
+    handleCrashedCoderSession,
     parkOnOriginMain,
     gateChecksFor,
     checksGreen,
@@ -118,6 +119,14 @@ type RunClaudeFake = (
     opts: { model?: string; fallbackModel?: string; [k: string]: unknown },
     deps?: { runClaudeOnceFn?: unknown; [k: string]: unknown },
 ) => unknown;
+// #390: фейк handleCrashedCoderSession-коллаборатора (runLoop зовёт его с сырым issue,
+// кодом выхода, выводом сессии и объектом shFn/logFn/pushEventFn/cfg).
+type HandleCrashedCoderSessionFake = (
+    issue: { number: number },
+    code: number,
+    output: string,
+    opts?: { [k: string]: unknown },
+) => { stop: boolean };
 type ChecksGreenFake = (
     branch: string,
     prNumber: number,
@@ -1068,6 +1077,71 @@ describe('pickModel/pickRuntime — provider-aware роутинг по label iss
         const issue = issueWithLabels([]);
         expect(runtime.pickModel(issue)).toBe('claude-sonnet-5');
         expect(runtime.pickRuntime(issue)).toBe('claude');
+    });
+});
+
+// #410: барьер на [ЧЕЛОВЕК]-issues. excludeHumanIssues — чистая функция: применяется И к
+// рабочей очереди (openIssues), И к проверке сдачи (allOpenIssues), поэтому тестируется
+// напрямую. isHumanIssue — предикат метки.
+describe('excludeHumanIssues / isHumanIssue — барьер на [ЧЕЛОВЕК]-issues (#410)', () => {
+    const { excludeHumanIssues, isHumanIssue } = ralph;
+    const issue = (number: number, labels: string[]) => ({
+        number,
+        title: `задача ${number}`,
+        labels: labels.map((name: string) => ({ name })),
+        author: { login: 'owner' },
+    });
+    // Тестовый failFn БРОСАЕТ (боевой fail = process.exit убил бы vitest-процесс) — тот же
+    // приём инъекции, что у resolveKimiRuntime/resolveAdapterSelection.
+    const throwingFail = (msg: string) => {
+        throw new Error(msg);
+    };
+
+    it('isHumanIssue: true только при метке human', () => {
+        expect(isHumanIssue(issue(1, ['human']))).toBe(true);
+        expect(isHumanIssue(issue(2, ['area:devops']))).toBe(false);
+        expect(isHumanIssue(issue(3, []))).toBe(false);
+        // без поля labels вовсе — не падает
+        expect(isHumanIssue({ number: 4, title: 't' })).toBe(false);
+    });
+
+    it('milestone из human-issue и обычной → в наборе остаётся только обычная', () => {
+        const kept = excludeHumanIssues(
+            [issue(10, ['human']), issue(11, ['complexity:medium'])],
+            throwingFail,
+        );
+        expect(kept.map((i: { number: number }) => i.number)).toEqual([11]);
+    });
+
+    it('человеческий хвост не блокирует сдачу: набор из одних human-issue → пустой (allOpenIssues → [])', () => {
+        // allOpenIssues тоже прогоняет excludeHumanIssues — если открыты ТОЛЬКО human-карточки,
+        // сдача фазы видит пустоту и не встаёт намертво (осознанное отступление от C2).
+        const kept = excludeHumanIssues([issue(20, ['human']), issue(21, ['human'])], throwingFail);
+        expect(kept).toEqual([]);
+    });
+
+    it('fail-closed: карточка И с human, И с complexity:* → failFn с внятным сообщением', () => {
+        expect(() =>
+            excludeHumanIssues([issue(30, ['human', 'complexity:high'])], throwingFail),
+        ).toThrow(/#30.*human.*complexity:high/s);
+    });
+
+    it('fail-closed срабатывает ДО фильтрации (конфликтная карточка не «проскочит» молча)', () => {
+        // Конфликт в наборе вместе с валидными — failFn всё равно бросает, набор не возвращается.
+        expect(() =>
+            excludeHumanIssues(
+                [issue(40, ['complexity:low']), issue(41, ['human', 'complexity:expert'])],
+                throwingFail,
+            ),
+        ).toThrow(/#41/);
+    });
+
+    it('обычные complexity:*-карточки без human — не конфликт, проходят как есть', () => {
+        const kept = excludeHumanIssues(
+            [issue(50, ['complexity:high']), issue(51, ['complexity:low'])],
+            throwingFail,
+        );
+        expect(kept.map((i: { number: number }) => i.number)).toEqual([50, 51]);
     });
 });
 
@@ -2282,6 +2356,70 @@ describe('runLoop — основной while-цикл: итерации коде
         );
         const [, , depsOverride] = runClaudeFn.mock.calls[0];
         expect(depsOverride!.runClaudeOnceFn).toBe(claudeRun);
+    });
+
+    // #390: инцидент 28.07.2026 — раннер откладывал диагностику падения кодер-сессии до
+    // ensureCleanFn СЛЕДУЮЩЕЙ итерации, теряя факт падения в общем сообщении «грязное
+    // дерево». Теперь при ненулевом коде выхода runLoop зовёт handleCrashedCoderSessionFn
+    // СРАЗУ — с issue, кодом и выводом сессии (через сторонний канал onOutput) — и честно
+    // подчиняется его решению о стопе.
+    it('#390: ненулевой код сессии → handleCrashedCoderSessionFn зовётся с issue/кодом/выводом; stop:true останавливает цикл СРАЗУ', () => {
+        const logs: string[] = [];
+        const handleCrashedCoderSessionFn = vi.fn<HandleCrashedCoderSessionFake>(() => ({
+            stop: true,
+        }));
+        const runClaudeFn = vi.fn<RunClaudeFake>((_prompt, _opts, callDeps) => {
+            (callDeps as { onOutput?: (o: string) => void } | undefined)?.onOutput?.('boom output');
+            return 1;
+        });
+        const openIssuesFn = vi.fn(() => [{ number: 9, title: 'задача', labels: [] }]);
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                // #390 доп.: НЕ терминальный phaseIndexOfFn (всегда фаза 0) — если бы стоп не
+                // сработал СРАЗУ, цикл ушёл бы на второй рабочий проход и runClaudeFn/
+                // openIssuesFn позвались бы повторно. Единственный вызов доказывает break
+                // сразу за handleCrashedCoderSessionFn, а не «случайно совпало с концом фаз».
+                phaseIndexOfFn: () => 0,
+                openIssuesFn,
+                runClaudeFn,
+                handleCrashedCoderSessionFn,
+            }),
+        );
+        expect(handleCrashedCoderSessionFn).toHaveBeenCalledTimes(1);
+        const [issueArg, codeArg, outputArg, opts] = handleCrashedCoderSessionFn.mock.calls[0];
+        expect(issueArg).toMatchObject({ number: 9 });
+        expect(codeArg).toBe(1);
+        expect(outputArg).toBe('boom output');
+        expect(opts).toMatchObject({
+            shFn: expect.any(Function),
+            logFn: expect.any(Function),
+            pushEventFn: expect.any(Function),
+        });
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        expect(openIssuesFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('#390: handleCrashedCoderSessionFn возвращает stop:false → цикл НЕ останавливается, прежнее поведение (fail-open)', () => {
+        const logs: string[] = [];
+        const handleCrashedCoderSessionFn = vi.fn(() => ({ stop: false }));
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 1);
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                once: true,
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [{ number: 9, title: 'задача', labels: [] }],
+                runClaudeFn,
+                handleCrashedCoderSessionFn,
+            }),
+        );
+        expect(handleCrashedCoderSessionFn).toHaveBeenCalledTimes(1);
+        // Дошли до штатного ONCE-стопа ПОСЛЕ блока диагностики падения — значит, ранний
+        // break из-за stop:true не сработал (handleCrashedCoderSessionFn сказал stop:false).
+        expect(logs.join('\n')).toMatch(/HITL: одна итерация/);
     });
 
     it('no-progress breaker (AFK): HEAD не сдвинулся и очередь та же → стоп, пуш', () => {
@@ -3719,6 +3857,148 @@ describe('ensureClean — чистота дерева раннера, изоли
         // (Дерево человека может быть сколь угодно грязным — до этого shFn не доходит.)
         const runnerTreeStatus = () => '';
         expect(ensureClean('итерация', { shFn: runnerTreeStatus, logFn: () => {} })).toBe(true);
+    });
+});
+
+// #390: диагностика падения кодер-сессии — сразу после ненулевого кода выхода, не
+// откладывая до ensureCleanFn следующей итерации (инцидент 28.07.2026, DEADMAN фазы 4).
+describe('handleCrashedCoderSession — падение кодер-сессии: диагностика и решение о стопе (#390)', () => {
+    const issue = { number: 42 };
+
+    it('грязное дерево после падения → stop:true, честное сообщение (issue, код, файлы, путь к логу) в лог и пуш', () => {
+        const logs: string[] = [];
+        const pushEventFn = vi.fn();
+        const saveSessionOutputFn = vi.fn();
+        const result = handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => ' M src/a.ts\n?? tmp.log',
+            logFn: (m: string) => logs.push(m),
+            pushEventFn,
+            saveSessionOutputFn,
+            cfg: {} as unknown,
+        });
+        expect(result).toEqual({ stop: true });
+        // Сообщение называет И падение (issue, код), И оставшиеся файлы.
+        expect(logs.join('\n')).toMatch(/Issue #42/);
+        expect(logs.join('\n')).toMatch(/код 1/);
+        expect(logs.join('\n')).toMatch(/src\/a\.ts/);
+        expect(logs.join('\n')).toMatch(/\.claude\/ralph\/sessions\/42-\d+\.log/);
+        // Пуш содержит то же самое сообщение (не отдельный текст).
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toBe(
+            logs.find((l) => l.includes('Issue #42') && l.includes('src/a.ts')),
+        );
+    });
+
+    it('чистое дерево после падения → stop:false, прежнее поведение (fail-open), пуш не зовётся', () => {
+        const logs: string[] = [];
+        const pushEventFn = vi.fn();
+        const result = handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => '',
+            logFn: (m: string) => logs.push(m),
+            pushEventFn,
+            saveSessionOutputFn: () => {},
+            cfg: {} as unknown,
+        });
+        expect(result).toEqual({ stop: false });
+        expect(pushEventFn).not.toHaveBeenCalled();
+        expect(logs.join('\n')).toMatch(/продолжаем/);
+    });
+
+    it('git status после падения сам упал → fail-closed stop:true (неизвестное состояние — не «чисто»)', () => {
+        const logs: string[] = [];
+        const pushEventFn = vi.fn();
+        const result = handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => {
+                throw new Error('fatal: not a git repository');
+            },
+            logFn: (m: string) => logs.push(m),
+            pushEventFn,
+            saveSessionOutputFn: () => {},
+            cfg: {} as unknown,
+        });
+        expect(result).toEqual({ stop: true });
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('сохраняет вывод сессии по пути `.claude/ralph/sessions/<issue>-<ts>.log`, секреты петли — в список редактирования', () => {
+        const saveSessionOutputFn = vi.fn();
+        handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => '',
+            logFn: () => {},
+            pushEventFn: () => {},
+            saveSessionOutputFn,
+            cfg: {} as unknown,
+        });
+        expect(saveSessionOutputFn).toHaveBeenCalledTimes(1);
+        const [filePath, output, secrets] = saveSessionOutputFn.mock.calls[0];
+        expect(filePath).toMatch(/^\.claude\/ralph\/sessions\/42-\d+\.log$/);
+        expect(output).toBe('boom output');
+        expect(Array.isArray(secrets)).toBe(true);
+    });
+
+    it('вывод сохраняется даже при ЧИСТОМ дереве — причина падения не теряется', () => {
+        const saveSessionOutputFn = vi.fn();
+        handleCrashedCoderSession(issue, 1, 'diagnostic output', {
+            shFn: () => '',
+            logFn: () => {},
+            pushEventFn: () => {},
+            saveSessionOutputFn,
+        });
+        expect(saveSessionOutputFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('в список редактирования попадает ключ АКТИВНОГО кодер-рантайма (kimi/openai по фактическому authTokenEnv), не только секреты петли', () => {
+        // Итерация могла идти под kimi/openai (coderRuntimeRunFor) — упавшая codex/kimi-сессия,
+        // процитировавшая свой env, легла бы на диск с незаредактированным ключом провайдера,
+        // если бы список был захардкожен на четыре env-имени петли. Имя env резолвим из
+        // конфига рантаймов (в т.ч. КАСТОМНЫЙ authTokenEnv), значение — из process.env.
+        const saveSessionOutputFn = vi.fn();
+        const saved = {
+            RALPH_KIMI_AUTH_TOKEN: process.env.RALPH_KIMI_AUTH_TOKEN,
+            MY_OPENAI_KEY: process.env.MY_OPENAI_KEY,
+            GH_TOKEN: process.env.GH_TOKEN,
+        };
+        process.env.RALPH_KIMI_AUTH_TOKEN = 'sk-moon-secret'; // дефолтный kimi authTokenEnv
+        process.env.MY_OPENAI_KEY = 'sk-openai-secret'; // кастомный openai authTokenEnv
+        process.env.GH_TOKEN = 'gh-secret'; // секрет петли
+        try {
+            handleCrashedCoderSession(issue, 1, 'boom output', {
+                shFn: () => '',
+                logFn: () => {},
+                pushEventFn: () => {},
+                saveSessionOutputFn,
+                cfg: { openaiRuntime: { authTokenEnv: 'MY_OPENAI_KEY' } } as unknown,
+            });
+            const secrets = saveSessionOutputFn.mock.calls[0][2] as Array<string | undefined>;
+            expect(secrets).toContain('gh-secret');
+            expect(secrets).toContain('sk-moon-secret');
+            expect(secrets).toContain('sk-openai-secret');
+        } finally {
+            for (const [k, v] of Object.entries(saved)) {
+                if (v === undefined) delete process.env[k];
+                else process.env[k] = v;
+            }
+        }
+    });
+
+    it('сбой записи вывода (ENOSPC/EACCES) НЕ роняет раннер — диагностика продолжается по git status', () => {
+        // Запись вывода — вежливая диагностика, а не инвариант: необёрнутое исключение
+        // пролетело бы сквозь runLoop наверх и убило раннер вместо честного git-разбора.
+        const logs: string[] = [];
+        const pushEventFn = vi.fn();
+        const result = handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => ' M src/a.ts', // дерево грязное после падения
+            logFn: (m: string) => logs.push(m),
+            pushEventFn,
+            saveSessionOutputFn: () => {
+                throw new Error('ENOSPC: no space left on device');
+            },
+            cfg: {} as unknown,
+        });
+        // Не бросило: git-status-разбор прошёл, грязное дерево → честный стоп.
+        expect(result).toEqual({ stop: true });
+        expect(logs.join('\n')).toMatch(/Не удалось сохранить вывод/);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -5227,13 +5507,25 @@ describe('Изоляция раннера в worktree — сценарии и м
     // и ветку фазы держат ЧУЖИЕ worktree (человек / кодер-сессии), git не отдаст один
     // ref двум деревьям, а сам факт checkout/merge/reset в общий рабочий каталог
     // утащил бы за собой правки человека — ровно то, от чего затевалась изоляция (#76).
+    //
+    // Исключение (#387): `git branch -D <ветка>` РАЗРЕШЁН — но только именно эта форма
+    // (delete). Это не занятие/сдвиг чужого ref, а удаление ЛОКАЛЬНОГО ref, который для
+    // инварианта H3 создал сам раннер (не дерево человека) и который после подтверждённого
+    // мерджа больше не нужен. `git branch -f`/`git branch <name>` (создание/force-move)
+    // по-прежнему запрещены — исключение узкое, под одну конкретную команду очистки.
     const FORBIDDEN_GIT = [
         // checkout НЕ через --detach = занятие именованной ветки (в т.ч. `git checkout main`).
         /^git checkout (?!--detach\b)/,
         /^git pull\b/,
         /^git merge\b/,
         /^git reset\b/,
-        /^git branch\b/,
+        // `git branch` разрешён ТОЛЬКО в форме `-D <ветка>` (#387, удаление своего же ref
+        // после мерджа) — любая другая форма (создание, -f, list с флагами) запрещена.
+        /^git branch(?!\s+-D\s)/,
+        // ...и даже в форме `-D` защищённые main/master удалять нельзя: исключение #387 —
+        // «свой ref ветки фазы», а не «любая ветка». git и сам откажет удалить занятую
+        // чужим worktree ветку, но барьер держит заявленную узость явно, не полагаясь на git.
+        /^git branch\s+-D\s+(?:main|master)\b/,
         /^git switch\b/,
         /^git update-ref\b/,
         /^git commit\b/,
@@ -5265,6 +5557,11 @@ describe('Изоляция раннера в worktree — сценарии и м
             ).not.toThrow();
         });
 
+        // #387: узкое исключение — удаление СВОЕГО ref веткой фазы после мерджа.
+        it('пропускает `git branch -D <ветка>` — удаление своего же ref после мерджа (#387)', () => {
+            expect(() => assertNoForbiddenGit(['git branch -D feature/m1'])).not.toThrow();
+        });
+
         it.each([
             'git checkout main',
             'git checkout feature/m1',
@@ -5273,6 +5570,12 @@ describe('Изоляция раннера в worktree — сценарии и м
             'git merge origin/main',
             'git reset --hard origin/main',
             'git branch -f main origin/main',
+            'git branch feature/new',
+            'git branch --list',
+            // #387: даже форма `-D` не открывает удаление защищённых веток — исключение
+            // узкое, только «свой ref ветки фазы».
+            'git branch -D main',
+            'git branch -D master',
             'git push origin feature/m1',
         ])('ловит нарушение: %s', (bad) => {
             expect(() => assertNoForbiddenGit([bad])).toThrow();
@@ -5407,12 +5710,29 @@ describe('Изоляция раннера в worktree — сценарии и м
             assertNoForbiddenGit(shCmds);
         });
 
-        it('локальную ветку фазы раннер только ЧИТАЕТ (rev-parse --verify), никогда не двигает', () => {
+        it('до мерджа локальную ветку фазы раннер только ЧИТАЕТ (rev-parse --verify), не двигает', () => {
             const { shCmds, deps } = mkWiring();
             expect(tryMergePhase(phase, deps)).toBe('merged');
             // Сверка HEAD==PR идёт read-only обращением к ref — не update-ref/branch -f.
             expect(shCmds).toContain("git rev-parse --verify --quiet 'refs/heads/feature/m1'");
-            expect(shCmds.some((c) => /^git (update-ref|branch)\b/.test(c))).toBe(false);
+            expect(shCmds.some((c) => /^git update-ref\b/.test(c))).toBe(false);
+            expect(shCmds.some((c) => /^git branch(?!\s+-D\s)/.test(c))).toBe(false);
+        });
+
+        // #387: ПОСЛЕ подтверждённого мерджа раннер сам чистит свой же локальный ref
+        // ветки фазы — узкое, сознательное исключение из «раннер не трогает ref фазы»
+        // (создал сам для H3, удаляет сам после мерджа), не занятие/сдвиг чужого ref.
+        it('после мерджа раннер удаляет СВОЙ локальный ref ветки фазы (`git branch -D`), #387', () => {
+            const { shCmds, deps } = mkWiring();
+            expect(tryMergePhase(phase, deps)).toBe('merged');
+            expect(shCmds).toContain('git branch -D feature/m1');
+            // Мердж случился раньше удаления ref — порядок операций важен.
+            const mergeIdx = shCmds.indexOf(
+                `gh pr merge 5 --squash --delete-branch --match-head-commit ${SHA_HEAD}`,
+            );
+            const deleteIdx = shCmds.indexOf('git branch -D feature/m1');
+            expect(mergeIdx).toBeGreaterThanOrEqual(0);
+            expect(deleteIdx).toBeGreaterThan(mergeIdx);
         });
 
         it('worktree-ограничение git (main/ветка заняты чужим деревом) хореографию НЕ ломает — раннер её и не трогает', () => {
@@ -6175,6 +6495,13 @@ describe('createOrchestrator: API-поверхность', () => {
         'refreshRunnerWorktree',
         'runnerWorktreeReady',
         'ensureRunnerWorktree',
+        // разводка лога + диагностика падения кодер-сессии (#386/#390)
+        'chooseLogPath',
+        'saveSessionOutput',
+        'handleCrashedCoderSession',
+        // барьер [ЧЕЛОВЕК]-issues (#410)
+        'isHumanIssue',
+        'excludeHumanIssues',
         // петля/гейт
         'preflight',
         'runLoop',

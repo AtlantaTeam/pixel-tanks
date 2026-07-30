@@ -32,12 +32,14 @@ test-results/
 # Ralph runtime
 .claude/ralph/ralph.state.json
 .claude/ralph/ralph.log
+.claude/ralph/ralph.dry.log
 .claude/ralph/monitor.out
 .claude/ralph/monitor.pid
 .claude/ralph/ralph.lock
 .claude/ralph/.deps-lock.sha
 .claude/ralph/review-findings.jsonl
 .claude/ralph/security-baseline-push.json
+.claude/ralph/sessions/
 
 # Ralph provisioning — реальный env с секретами (только .example в git)
 .claude/ralph/provision/ralph.env

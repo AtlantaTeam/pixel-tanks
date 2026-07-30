@@ -366,6 +366,111 @@ describe('tryMergePhase — гейт мерджа: hold/blocked/red/merged', () 
         });
         expect(res).toBe('merged-local-stale');
     });
+
+    it('#387: после подтверждённого мерджа зовёт удаление локального ref ветки фазы', () => {
+        const deleteRef = vi.fn();
+        const g = createGateRunner(makeEnv());
+        const res = tryMergeWith(g, phase, {
+            runArgvFn: () => '',
+            findOpenPrFn: () => ({ number: 9, labels: [] }),
+            checksGreenFn: () => true,
+            getVerifiedHeadFn: () => SHA,
+            deleteLocalBranchRefFn: deleteRef,
+        });
+        expect(res).toBe('merged');
+        expect(deleteRef).toHaveBeenCalledWith(phase.branch, expect.anything());
+    });
+
+    it('#387: mergePr бросил, но PR уже влит (phaseMerged=true) — предупреждение без "занятый деревом человека", ref всё равно удаляется', () => {
+        const deleteRef = vi.fn();
+        const logs: string[] = [];
+        const g = createGateRunner(makeEnv());
+        const res = tryMergeWith(g, phase, {
+            runArgvFn: () => {
+                throw new Error('gh упал');
+            },
+            logFn: (m: string) => logs.push(m),
+            findOpenPrFn: () => ({ number: 9, labels: [] }),
+            checksGreenFn: () => true,
+            getVerifiedHeadFn: () => SHA,
+            phaseMergedFn: () => true,
+            deleteLocalBranchRefFn: deleteRef,
+        });
+        expect(res).toBe('merged');
+        expect(deleteRef).toHaveBeenCalledWith(phase.branch, expect.anything());
+        const warning = logs.find((l) => l.includes('уже влит'));
+        expect(warning).toBeDefined();
+        expect(warning).not.toContain('занятый деревом человека');
+        expect(warning).toContain('созданный самим раннером для сверки H3');
+    });
+
+    it('#387: неудача удаления ref — fail-open, результат мерджа не меняется', () => {
+        const g = createGateRunner(makeEnv());
+        const res = tryMergeWith(g, phase, {
+            runArgvFn: () => '',
+            findOpenPrFn: () => ({ number: 9, labels: [] }),
+            checksGreenFn: () => true,
+            getVerifiedHeadFn: () => SHA,
+            deleteLocalBranchRefFn: () => {
+                throw new Error('не должно всплыть');
+            },
+        });
+        expect(res).toBe('merged');
+    });
+});
+
+describe('deleteLocalBranchRef — чистка локального ref после мерджа (#387)', () => {
+    it('ref существует локально → удаляет через argv git branch -D, лог с #387', () => {
+        const runArgv = vi.fn(() => '');
+        const sh = vi.fn(() => '');
+        const logs: string[] = [];
+        const g = createGateRunner(makeEnv());
+        g.deleteLocalBranchRef('feature/x', {
+            shFn: sh,
+            runArgvFn: runArgv,
+            logFn: (m: string) => logs.push(m),
+        });
+        expect(runArgv).toHaveBeenCalledWith('git', ['branch', '-D', 'feature/x']);
+        expect(logs.some((l) => l.includes('feature/x') && l.includes('#387'))).toBe(true);
+    });
+
+    it('ref локально отсутствует → не зовёт git branch -D вообще', () => {
+        const runArgv = vi.fn(() => '');
+        const sh = vi.fn(() => {
+            throw new Error('not a valid ref');
+        });
+        const g = createGateRunner(makeEnv());
+        g.deleteLocalBranchRef('feature/x', { shFn: sh, runArgvFn: runArgv });
+        expect(runArgv).not.toHaveBeenCalled();
+    });
+
+    it('git branch -D упал → fail-open, лог предупреждения, исключение не всплывает', () => {
+        const sh = vi.fn(() => '');
+        const runArgv = vi.fn(() => {
+            throw new Error('branch is checked out');
+        });
+        const logs: string[] = [];
+        const g = createGateRunner(makeEnv());
+        expect(() =>
+            g.deleteLocalBranchRef('feature/x', {
+                shFn: sh,
+                runArgvFn: runArgv,
+                logFn: (m: string) => logs.push(m),
+            }),
+        ).not.toThrow();
+        expect(logs.some((l) => l.includes('Не удалось удалить') && l.includes('feature/x'))).toBe(
+            true,
+        );
+    });
+
+    it('имя ветки не прошло safeBranch → git не трогаем вообще (anti-injection, инв. C3/7)', () => {
+        const sh = vi.fn(() => '');
+        const runArgv = vi.fn(() => '');
+        const g = createGateRunner(makeEnv({ safeBranch: () => false }));
+        g.deleteLocalBranchRef('bad branch', { shFn: sh, runArgvFn: runArgv });
+        expect(sh).not.toHaveBeenCalled();
+        expect(runArgv).not.toHaveBeenCalled();
+    });
 });
 
 // tryMergePhase со стабами побочек: sleep/park/phaseMerged по умолчанию безвредны,

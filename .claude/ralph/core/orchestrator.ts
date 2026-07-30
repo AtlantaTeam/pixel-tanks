@@ -32,7 +32,7 @@ import {
     sideEffectAttempts,
     guardSideEffect as sharedGuardSideEffect,
 } from '../shared/side-effect-guard.ts';
-import { createExec, loadJson } from './exec.ts';
+import { createExec, loadJson, chooseLogPath } from './exec.ts';
 import { createConfigProfile, isPlainObject } from './config-profile.ts';
 import { createStateLock } from './state-lock.ts';
 import type { RalphState } from './state-lock.ts';
@@ -76,6 +76,9 @@ const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
 const STATE_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.state.json');
 const LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.log');
+// #386: НЕ боевые прогоны (--dry-run и/или профиль ≠ prod) пишут сюда, не в LOG_PATH —
+// см. chooseLogPath (exec.ts) и инвариант №12.
+const DRY_LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.dry.log');
 const MONITOR_PATH = path.join(CLAUDE_DIR, 'ralph', 'runtime', 'monitor.js');
 // Путь к самому раннеру — для cmdline-сверки лока (isRalphProcess): за pid из лок-файла
 // должен стоять именно наш ralph.js (entry), а не чужой процесс, которому ОС отдала
@@ -100,6 +103,10 @@ const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
 // Гейт сверяет с ним lock PR-головы и переустанавливает зависимости при расхождении
 // (#SiaUX): фаза, добавившая зависимость, иначе гарантированно красила бы ночной гейт.
 const LOCK_MARKER_PATH = path.join(CLAUDE_DIR, 'ralph', '.deps-lock.sha');
+// #390: stdout/stderr упавших кодер-сессий — сюда, гитигнорено (.gitignore), как
+// ralph.log/ralph.state.json. Имя файла `<issue>-<ts>.log` строит handleCrashedCoderSession,
+// а саму запись (с редактированием секретов) делает saveSessionOutput (exec.ts).
+const SESSIONS_DIR = path.join(CLAUDE_DIR, 'ralph', 'sessions');
 
 // ── Типы контрактов ──────────────────────────────────────────────────────────
 // Фаза в форме, которую хранит config.phases.
@@ -399,7 +406,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // shArgv (мутации argv без шелла, #193/#252), ghJson (ретраи чтений, M3) — exec.ts.
     // Начальная цель лога — cwd-относительный LOG_PATH; main() репойнтит на абсолютный
     // путь внутри worktree раннера ещё ДО chdir (#SiaUB).
-    const { log, fail, setLogTarget, sh, shArgv, ghJson } = createExec({
+    const { log, fail, setLogTarget, sh, shArgv, ghJson, saveSessionOutput } = createExec({
         guardSideEffect,
         sleep,
         initialLogTarget: LOG_PATH,
@@ -560,6 +567,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // #376 доп.скоуп: резолвер рантайма кросс-провайдерного фолбэка — DI как остальные
             // коллабораторы (тест подменяет фейком, не завязываясь на боевой реестр адаптеров).
             coderRuntimeRunForFn = coderRuntimeRunFor,
+            // #390: сторонний канал вывода — по умолчанию no-op. Кодер-итерация runLoop
+            // подаёт сюда сборщик lastOutput (диагностика падения сессии), остальные
+            // вызовы runClaude (шаги сдачи/heal) его не передают — поведение прежнее.
+            onOutput = () => {},
         }: {
             pushEventFn?: typeof pushEvent;
             cfg?: RalphConfig;
@@ -567,6 +578,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             ensureTunnelFn?: typeof ensureTunnel;
             sleepFn?: typeof sleep;
             coderRuntimeRunForFn?: typeof coderRuntimeRunFor;
+            onOutput?: (output: string) => void;
         } = {},
     ): number {
         // #92: единая точка всех claude-сессий (кодер-итерации И шаги сдачи) — здесь же
@@ -596,7 +608,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
         for (let attempt = 0; ; attempt++) {
             const { code, output } = runClaudeOnceFn(prompt, opts);
             const limitHit = code !== 0 && API_LIMIT_RE.test(output);
-            if (!limitHit) return code;
+            if (!limitHit) {
+                onOutput(output);
+                return code;
+            }
             // Лимит основного рантайма. Кросс-провайдерный фолбэк (#376) пробуем ОДИН раз
             // за весь вызов ДО решения об ожидании: он «вместо ожидания», логически не часть
             // механизма ожидания — поэтому пробуется и при waitOnApiLimit:false (оператор,
@@ -639,7 +654,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // ожиданию основного провайдера, а НЕ отдаём чужой код как итог итерации
                     // (иначе один кривой фолбэк превращал бы переживаемый лимит в провал
                     // итерации, а в шагах сдачи — в стоп фазы).
-                    if (fb.code === 0) return fb.code;
+                    if (fb.code === 0) {
+                        onOutput(fb.output);
+                        return fb.code;
+                    }
                     log(
                         `⚠ Фолбэк-провайдер "${fallbackRoute.provider}" вернул ненулевой код ${fb.code} ` +
                             `(свой лимит / недоступен / misconfig) — перехожу к ожиданию основного рантайма.`,
@@ -647,8 +665,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 }
             }
             // Ожидание выключено оператором — после попытки фолбэка честно возвращаем код лимита.
-            if (cfg.waitOnApiLimit === false) return code;
-            if (attempt >= maxWaits) return code;
+            if (cfg.waitOnApiLimit === false) {
+                onOutput(output);
+                return code;
+            }
+            if (attempt >= maxWaits) {
+                onOutput(output);
+                return code;
+            }
             const waitMs = apiLimitWaitMs(output, cfg);
             const limitMsg = apiLimitMessage(waitMs, attempt, maxWaits);
             // pushEvent — единственный логгер события (маркер 🔔 PUSH печатается всегда,
@@ -1065,44 +1089,101 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // ── Issues ───────────────────────────────────────────────────────────────
 
+    // #410: детерминированный признак «эту задачу делает человек» — метка `human`, а не
+    // парсинг заголовка `[ЧЕЛОВЕК]` (метки не зависят от языка/опечаток в title). Такие
+    // карточки НЕ берёт кодер-сессия (иначе выполнятся на default-модели — у них по
+    // конвенции нет `complexity:*`) и, что неочевидно, НЕ блокируют сдачу фазы. Раньше
+    // защита жила только «в голове человека, который помнит не класть [ЧЕЛОВЕК]-issue в
+    // milestone фазы» — ровно тот класс «проверка только в голове», против которого в
+    // проекте заведены детерминированные барьеры (инвариант №5).
+    const HUMAN_LABEL = 'human';
+    const COMPLEXITY_PREFIX = 'complexity:';
+
+    function isHumanIssue(issue: Issue): boolean {
+        return (issue.labels || []).some((l) => l.name === HUMAN_LABEL);
+    }
+
     /**
-     * Рабочая очередь фазы: открытые issues МИНУС blocked МИНУС чужие авторы.
+     * Убирает человеческие карточки из набора issues и fail-closed отвергает конфликт
+     * замысла. Применяется И к рабочей очереди (openIssues), И к проверке сдачи фазы
+     * (allOpenIssues, C2) — ОДНОЙ функцией, чтобы обе трактовки не разъехались:
      *
+     * - Исключение из сдачи — единственное осознанное отступление от C2 («очередь пуста»
+     *   ≠ «фаза готова»): фаза с `human`-хвостом иначе НИКОГДА не смерджится и раннер
+     *   встанет намертво — «защита» превратилась бы в вечный стоп. Человеческая карточка
+     *   не является незакрытой работой агента.
+     * - Fail-closed на двусмысленности: карточка И с `human`, И с `complexity:*` — конфликт
+     *   (кто исполняет: человек или раннер?). Молчаливый выбор одной трактовки — тот же
+     *   класс «проверка в голове»; поэтому failFn, а не догадка. failFn инжектируем (как у
+     *   resolveKimiRuntime): боевой дефолт — `fail` (process.exit), тест подаёт свой.
+     */
+    function excludeHumanIssues(issues: Issue[], failFn: (msg: string) => unknown = fail): Issue[] {
+        for (const issue of issues) {
+            if (!isHumanIssue(issue)) continue;
+            const complexity = (issue.labels || [])
+                .map((l) => l.name)
+                .filter((n) => n.startsWith(COMPLEXITY_PREFIX));
+            if (complexity.length > 0) {
+                failFn(
+                    `issue #${issue.number}: одновременно метка '${HUMAN_LABEL}' и ${complexity.join(', ')} — конфликт замысла. ` +
+                        `Человеческую карточку раннер не роутит (нет исполнителя-агента), а 'complexity:*' — признак ралф-роутинга. ` +
+                        `Оставь одну из меток.`,
+                );
+            }
+        }
+        return issues.filter((i) => !isHumanIssue(i));
+    }
+
+    /**
+     * Рабочая очередь фазы: открытые issues МИНУС human МИНУС blocked МИНУС чужие авторы.
+     *
+     * - human (#410): задача человека, раннер её не исполняет (см. excludeHumanIssues).
      * - blocked: агент упёрся в ручной гейт (npm install и т.п.) — пропускаем, чтобы
      *   AFK-цикл не сжигал итерации об одну стену; label снимает человек. ВАЖНО (C2):
      *   такие issues не выпадают из фазы — сдача проверяет открытые issues БЕЗ фильтров
-     *   (allOpenIssues ниже), фаза с blocked-хвостами не мерджится.
+     *   blocked/author (allOpenIssues ниже), фаза с blocked-хвостами не мерджится.
      * - authorAllowlist (C3): репо публичный, issue может создать кто угодно, а его body
      *   попадает в bypassPermissions-сессию как инструкции — прямой канал инъекции.
      *   Чужие issues не исполняем; они остаются открытыми и сознательно блокируют сдачу
      *   фазы до триажа человеком — fail-closed вместо молчаливого игнора.
      */
     function openIssues(milestone: string): Issue[] {
+        let raw: Issue[];
         try {
-            const allow = config.authorAllowlist;
-            return (
-                ghJson<Issue[]>(
-                    `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
-                )
-                    .filter((i) => !(i.labels || []).some((l) => l.name === 'blocked'))
-                    .filter((i) => allow.includes((i.author && i.author.login) as string))
-                    // gh отдаёт новые-первыми; порядок работы — по возрастанию номера (порядок задач в плане)
-                    .sort((a, b) => a.number - b.number)
+            raw = ghJson<Issue[]>(
+                `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
             );
         } catch (e) {
             return fail(
                 `gh issue list упал (после ретраев): ${(e as Error).message}\nПроверь: gh auth status, milestone "${milestone}" существует.`,
             );
         }
+        // excludeHumanIssues — ВНЕ try/catch: его failFn (конфликт human+complexity) не
+        // должен маскироваться под «gh issue list упал».
+        const allow = config.authorAllowlist;
+        return (
+            excludeHumanIssues(raw)
+                .filter((i) => !(i.labels || []).some((l) => l.name === 'blocked'))
+                .filter((i) => allow.includes((i.author && i.author.login) as string))
+                // gh отдаёт новые-первыми; порядок работы — по возрастанию номера (порядок задач в плане)
+                .sort((a, b) => a.number - b.number)
+        );
     }
 
-    // C2: «рабочая очередь пуста» ≠ «фаза готова». Перед сдачей смотрим ВСЕ открытые
-    // issues milestone без фильтров: blocked и чужие — незакрытая работа / нерешённый
-    // триаж; мерджить фазу поверх них нельзя, следующая фаза строится на этой.
-    // Бросает исключение при недоступности gh — вызывающий обязан остановиться.
+    // C2: «рабочая очередь пуста» ≠ «фаза готова». Перед сдачей смотрим открытые issues
+    // milestone без фильтров blocked/author: blocked и чужие — незакрытая работа /
+    // нерешённый триаж; мерджить фазу поверх них нельзя, следующая фаза строится на этой.
+    // ЕДИНСТВЕННОЕ исключение — human-карточки (#410): не работа агента, иначе фаза с
+    // человеческим хвостом никогда не смерджится. Бросает исключение при недоступности gh —
+    // вызывающий обязан остановиться. Конфликт human+complexity (excludeHumanIssues) при этом
+    // НЕ пробрасывается вызывающему: его дефолтный failFn — `fail`, т.е. process.exit(1),
+    // так что процесс гаснет на месте (fail-closed на двусмысленности замысла), а не через
+    // исключение, которое вызывающий обязан перехватить.
     function allOpenIssues(milestone: string): Issue[] {
-        return ghJson<Issue[]>(
-            `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
+        return excludeHumanIssues(
+            ghJson<Issue[]>(
+                `gh issue list --milestone ${shq(milestone)} --state open --json number,title,labels,author`,
+            ),
         );
     }
 
@@ -1622,6 +1703,115 @@ export function createOrchestrator(env: OrchestratorEnv) {
             return false;
         }
         return true;
+    }
+
+    // #390 (инцидент 28.07.2026, фаза 4 #204): claude завершился с кодом 1, но дерево было
+    // грязным (сессия успела наработать файлы и не успела закоммитить). Раннер честно
+    // пошёл на следующую итерацию, там сработал общий ensureClean — но с непричастным
+    // контекстом «итерация фазы», без упоминания падения. Дальше — сценарий #386: чужой
+    // прогон дописал в ОБЩИЙ ralph.log маркер остановки, DEADMAN ушёл в режим `stopped` и
+    // похоронил живую (по факту зависшую на грязном дереве) кодер-сессию.
+    //
+    // Эта функция закрывает разрыв: при ненулевом коде ВЫХОДА проверяем дерево СРАЗУ (не
+    // откладывая до следующей итерации) и — если оно грязное — стопим цикл честным
+    // сообщением, называющим И падение (issue, код), И оставшиеся файлы, И путь к
+    // сохранённому выводу сессии. Чистое дерево — прежнее поведение (M2, fail-open):
+    // сессия могла упасть уже ПОСЛЕ успешного закрытия issue, следующая итерация продолжает.
+    //
+    // Вывод сохраняется ВСЕГДА при ненулевом коде (не только при грязном дереве) — иначе
+    // причина падения при чистом дереве осталась бы такой же невосстановимой, как раньше
+    // (issue #390, «стдаут сессии никогда не сохраняется» — фактическая причина падения
+    // диагностики в инциденте, не сам DEADMAN).
+    // #390: полный список секретов для редактирования вывода упавшей сессии. Помимо
+    // секретов петли (инвариант №11, их наследует любой кодер-процесс) включает ключ
+    // АКТИВНОГО кодер-рантайма: итерация могла идти под kimi/openai (coderRuntimeRunFor —
+    // тот же путь, чей вывод сюда и попадает), и упавшая codex/kimi-сессия, процитировавшая
+    // свой env, легла бы на диск с НЕзаредактированным ключом провайдера. Имя env резолвим
+    // из конфига рантаймов (фактический authTokenEnv: кастомный, если задан, иначе дефолт —
+    // ровно как resolveKimiRuntime/resolveOpenAIRuntime), значение берём из process.env;
+    // руками имена не перечисляем, иначе кастомный authTokenEnv утёк бы мимо списка.
+    function collectSessionSecrets(cfg: RalphConfig): Array<string | undefined> {
+        const kimiEnv =
+            typeof cfg.kimiRuntime?.authTokenEnv === 'string' &&
+            cfg.kimiRuntime.authTokenEnv.trim() !== ''
+                ? cfg.kimiRuntime.authTokenEnv
+                : KIMI_DEFAULT_TOKEN_ENV;
+        const openaiEnv =
+            typeof cfg.openaiRuntime?.authTokenEnv === 'string' &&
+            cfg.openaiRuntime.authTokenEnv.trim() !== ''
+                ? cfg.openaiRuntime.authTokenEnv
+                : OPENAI_DEFAULT_TOKEN_ENV;
+        return [
+            process.env.GH_TOKEN,
+            process.env.CLAUDE_CODE_OAUTH_TOKEN,
+            process.env.RALPH_TG_BOT_TOKEN,
+            process.env.RALPH_TG_CHAT_ID,
+            process.env[kimiEnv],
+            process.env[openaiEnv],
+        ];
+    }
+
+    function handleCrashedCoderSession(
+        issue: { number: number },
+        code: number,
+        output: string,
+        {
+            shFn = sh,
+            logFn = log,
+            pushEventFn = pushEvent,
+            saveSessionOutputFn = saveSessionOutput,
+            cfg = config,
+        }: {
+            shFn?: ShFn;
+            logFn?: LogFn;
+            pushEventFn?: typeof pushEvent;
+            saveSessionOutputFn?: typeof saveSessionOutput;
+            cfg?: RalphConfig;
+        } = {},
+    ): { stop: boolean } {
+        const sessionPath = path.join(SESSIONS_DIR, `${issue.number}-${Date.now()}.log`);
+        // #390: секреты (петля + ключ активного рантайма, инвариант №11) редактируются ДО
+        // записи на диск — тот же приём, что telegram-notifier.ts применяет к TG-токену.
+        // Запись — вежливая диагностика, а НЕ инвариант: mkdir/writeFile могут бросить
+        // (ENOSPC/EACCES), и необёрнутое исключение пролетело бы сквозь runLoop наверх и
+        // убило раннер вместо честного git-status-разбора ниже. Ловим и логируем; решение
+        // о стопе принимает только блок `git status`.
+        try {
+            saveSessionOutputFn(sessionPath, output, collectSessionSecrets(cfg));
+        } catch (e) {
+            logFn(
+                `⚠ Не удалось сохранить вывод упавшей сессии Issue #${issue.number} в ${sessionPath} ` +
+                    `(${(e as Error).message}) — диагностику продолжаем по git status.`,
+            );
+        }
+        let dirtyNow: string;
+        try {
+            dirtyNow = shFn('git status --porcelain');
+        } catch (e) {
+            // fail-closed (как ensureClean): после падения сессии неизвестное состояние
+            // дерева — это не «дерево чистое», это «не знаю» — а «не знаю» здесь стоит
+            // как под собственной грязью.
+            const crashMsg =
+                `⛔ Кодер-сессия Issue #${issue.number} упала (код ${code}), git status после падения тоже упал — ` +
+                `стоп, разбери руками: ${(e as Error).message}\n` +
+                `Вывод сессии: ${sessionPath}`;
+            logFn(crashMsg);
+            pushEventFn(crashMsg, cfg);
+            return { stop: true };
+        }
+        if (!dirtyNow) {
+            logFn(
+                `⚠ claude завершился с кодом ${code} — продолжаем (issue мог быть закрыт частично). Вывод сессии: ${sessionPath}`,
+            );
+            return { stop: false };
+        }
+        const crashMsg =
+            `⛔ Кодер-сессия Issue #${issue.number} упала (код ${code}) и оставила незакоммиченные изменения — стоп, разбери руками.\n` +
+            `Вывод сессии: ${sessionPath}\n` +
+            `Дерево:\n${dirtyNow}`;
+        logFn(crashMsg);
+        pushEventFn(crashMsg, cfg);
+        return { stop: true };
     }
 
     // Единый рецепт «обнови дерево раннера до origin/main» — в сообщениях починки и как
@@ -2206,6 +2396,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         addBlockedLabelFn?: typeof addBlockedLabel;
         runClaudeFn?: typeof runClaude;
         ensureCleanFn?: typeof ensureClean;
+        handleCrashedCoderSessionFn?: typeof handleCrashedCoderSession;
         phaseMergedFn?: (phase: { branch: string }) => boolean;
         mergedPhasePrFn?: (phase: { branch: string }) => number | null;
         advancePhaseFn?: typeof advancePhase;
@@ -2278,6 +2469,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             addBlockedLabelFn = adapters.taskSource.addBlockedLabel,
             runClaudeFn = runClaude,
             ensureCleanFn = ensureClean,
+            handleCrashedCoderSessionFn = handleCrashedCoderSession,
             phaseMergedFn = adapters.taskSource.isPhaseMerged,
             mergedPhasePrFn = adapters.taskSource.mergedPullRequestNumber,
             advancePhaseFn = advancePhase,
@@ -2405,6 +2597,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 // adapters.coderRuntime.run (дефолт runClaude). При провайдере без явного
                 // override в modelRouting это ТА ЖЕ ссылка (coderRuntimeRunFor('claude') ===
                 // adapters.coderRuntime.run при дефолтном выборе) — поведение прежнее.
+                //
+                // #390: onOutput — сторонний канал, которым runClaude(Fn) отдаёт вывод
+                // ПОСЛЕДНЕЙ попытки наружу (сам runClaudeFn возвращает только код — вывод
+                // нужен для диагностики падения, handleCrashedCoderSessionFn ниже). НЕ
+                // подменяет runClaudeOnceFn (сохраняет ссылку из реестра coderRuntime как
+                // есть — иначе identity-тесты #376 на `depsOverride.runClaudeOnceFn` сломались бы).
+                let lastOutput = '';
                 const code = runClaudeFn(
                     prompt,
                     {
@@ -2414,15 +2613,26 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     },
                     {
                         runClaudeOnceFn: coderRuntimeRunFor(issueProvider),
+                        onOutput: (output: string) => {
+                            lastOutput = output;
+                        },
                     },
                 );
-                // Кодер-итерация: ненулевой код НЕ фатален — issue остался открытым, его
-                // возьмёт следующая чистая сессия, а breaker ограничит бесконечные повторы.
-                // (В шагах СДАЧИ ниже логика противоположная — fail-closed, H2.)
-                if (code !== 0)
-                    logFn(
-                        `⚠ claude завершился с кодом ${code} — продолжаем (issue мог быть закрыт частично)`,
-                    );
+                // Кодер-итерация: ненулевой код САМ ПО СЕБЕ не фатален — issue остался
+                // открытым, его возьмёт следующая чистая сессия, а breaker ограничит
+                // бесконечные повторы. Но грязное дерево ПОСЛЕ падения — стоп СРАЗУ, не
+                // откладывая до ensureCleanFn следующей итерации (#390, см. докблок
+                // handleCrashedCoderSession). (В шагах СДАЧИ ниже логика противоположная —
+                // fail-closed, H2.)
+                if (code !== 0) {
+                    const { stop } = handleCrashedCoderSessionFn(next, code, lastOutput, {
+                        shFn,
+                        logFn,
+                        pushEventFn,
+                        cfg,
+                    });
+                    if (stop) break;
+                }
 
                 // Оценка прогресса — только в AFK (в ONCE решает человек, в DRY сессии не было).
                 // Прогресс = сдвинулся HEAD (коммиты есть) ИЛИ очередь стала короче (issue
@@ -3592,8 +3802,22 @@ export function createOrchestrator(env: OrchestratorEnv) {
         const worktreePath = resolveWorktreePath(config);
         // #SiaUB: лог репойнтим на worktree ещё ДО первой строки — монитор тейлит только
         // worktree-лог, иначе ранние события (⚙️ Профиль, создание worktree) на панели
-        // пропали бы. Только для живого прогона; DRY read-only и cwd/лог не переставляет.
-        if (!DRY) setLogTarget(path.join(worktreePath, LOG_PATH));
+        // пропали бы. #386: репойнтим ВСЕГДА, в т.ч. для DRY — иначе logTarget остаётся
+        // относительным, а process.chdir ниже (ветка runnerWorktreeReady) молча резолвит
+        // его в ТОТ ЖЕ файл, что и боевой прогон (сам chdir не читает DRY). chooseLogPath
+        // разводит боевой прогон (профиль prod, не dry) и все остальные — по абсолютному
+        // пути внутри worktree, так что результат не зависит от того, случился chdir или
+        // нет. DRY при этом остаётся read-only в смысле C1 (git/worktree/state) — просто
+        // хозяйский лог-канал больше не общий.
+        setLogTarget(
+            path.join(
+                worktreePath,
+                chooseLogPath(
+                    { dry: DRY, profileName: config.profileName },
+                    { battle: LOG_PATH, sideline: DRY_LOG_PATH },
+                ),
+            ),
+        );
 
         // Режим в лог первой строкой: разбирая утренний ralph.log, надо видеть, в каком
         // профиле шёл прогон, не сверяясь с историей команд.
@@ -3763,6 +3987,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // тоже обязаны падать guardSideEffect, если дефолт-коллаборатор не подменили.
         shArgv,
         log,
+        // #386: разводка лога боевого/не-боевого прогона — экспорт для юнита, main() не
+        // тестируется напрямую (см. докблок createOrchestrator).
+        chooseLogPath,
         sideEffectAttempts,
         closeCompletedMilestones,
         closeMilestoneByTitle,
@@ -3819,6 +4046,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
         runLoop,
         loadState,
         ensureClean,
+        // #390: экспорт для юнитов (saveSessionOutput — сама запись+редактирование секретов,
+        // handleCrashedCoderSession — диагностика падения кодер-сессии в runLoop).
+        saveSessionOutput,
+        handleCrashedCoderSession,
         parkOnOriginMain,
         gateChecksFor,
         checksGreen,
@@ -3836,6 +4067,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // переприсваивается в main()).
         getAdapterSelection: (): AdapterSelection => adapterSelection,
         resolveModelRoute,
+        // #410: барьер на [ЧЕЛОВЕК]-issues — экспорт чистых хелперов для юнитов
+        // (isHumanIssue — предикат метки, excludeHumanIssues — фильтр очереди/сдачи +
+        // fail-closed на конфликте human+complexity).
+        isHumanIssue,
+        excludeHumanIssues,
         pickModel,
         pickRuntime,
         coderRuntimeRunFor,

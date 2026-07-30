@@ -581,6 +581,42 @@ export function createGateRunner(env: GateEnv) {
         runArgvFn('gh', mergeArgs);
     }
 
+    // ── Удаление локального ref ветки фазы после мерджа (#387) ─────────────────
+    // Локальную ветку фазы создаёт САМ РАННЕР (не дерево человека) для инварианта H3 —
+    // сверка «локальный ref == голова PR» перед мерджем (checksGreen). После мерджа она
+    // не нужна и копится мусором фаза за фазой: `gh pr merge --delete-branch` иногда её
+    // не успевает/не может убрать (дерево раннера в этот момент детачено на sha PR, не
+    // стоит на branch), и тогда ref остаётся — раньше это молча объяснялось неверной
+    // причиной («занятый деревом человека», #SiaUf). Зовётся ПОСЛЕ подтверждённого
+    // мерджа (см. tryMergePhase), fail-open: неудача удаления — чистка, не инвариант,
+    // ронять цикл она не должна. Имя ветки — только через safeBranch (anti-injection,
+    // инв. C3/7), сама мутация — argv (shArgv), не строка через шелл.
+    function deleteLocalBranchRef(
+        branch: string,
+        {
+            shFn = sh,
+            runArgvFn = shArgv,
+            logFn = log,
+        }: { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn } = {},
+    ): void {
+        if (!safeBranch(branch, { logFn, where: 'deleteLocalBranchRef' })) return;
+        let exists = true;
+        try {
+            shFn(`git rev-parse --verify --quiet ${shq('refs/heads/' + branch)}`);
+        } catch {
+            exists = false;
+        }
+        if (!exists) return;
+        try {
+            runArgvFn('git', ['branch', '-D', branch]);
+            logFn(`🧹 Локальный ref ветки ${branch} удалён после мерджа фазы (#387).`);
+        } catch (e: unknown) {
+            logFn(
+                `⚠ Не удалось удалить локальный ref ветки ${branch} после мерджа (${(e as Error).message}) — не критично, продолжаем.`,
+            );
+        }
+    }
+
     // ── Гейт мерджа фазы ─────────────────────────────────────────────────────
 
     /**
@@ -625,6 +661,7 @@ export function createGateRunner(env: GateEnv) {
             sleepFn = sleep,
             parkFn = parkOnOriginMain,
             mergePrFn = mergePr,
+            deleteLocalBranchRefFn = deleteLocalBranchRef,
             getLastRedCheckFn = () => lastRedCheck,
             getVerifiedHeadFn = () => lastVerifiedHead,
             // Профиль (#80) решает состав гейта. runLoop прокидывает cfg.profileName; по
@@ -642,6 +679,7 @@ export function createGateRunner(env: GateEnv) {
             sleepFn?: SleepFn;
             parkFn?: ParkFn;
             mergePrFn?: typeof mergePr;
+            deleteLocalBranchRefFn?: typeof deleteLocalBranchRef;
             getLastRedCheckFn?: () => RedCheck | null;
             getVerifiedHeadFn?: () => string | null;
             profileName?: string;
@@ -715,12 +753,14 @@ export function createGateRunner(env: GateEnv) {
             } catch (e: unknown) {
                 try {
                     if (phaseMergedFn(phase)) {
-                        // Безобидные причины ошибки при уже влитом PR: локальный ref ветки
-                        // держит дерево человека, поэтому --delete-branch не смог удалить его
-                        // после успешного squash (#SiaUf); либо сеть оборвала ответ на success.
+                        // Безобидные причины ошибки при уже влитом PR: --delete-branch не
+                        // успел/не смог удалить локальный ref ветки, который для инварианта
+                        // H3 создал сам раннер (не дерево человека, #387/#SiaUf); либо сеть
+                        // оборвала ответ на success. Удаление ref ниже подчищает первую причину
+                        // сам раннер, независимо от того, справился ли с ней --delete-branch.
                         logFn(
                             `⚠ gh pr merge #${pr.number} вернул ошибку, но PR уже влит (частая безобидная причина — ` +
-                                `--delete-branch не удалил локальный ref, занятый деревом человека) — продолжаем.`,
+                                `--delete-branch не успел удалить локальный ref ветки, созданный самим раннером для сверки H3) — продолжаем.`,
                         );
                         mergedOk = true;
                         break;
@@ -739,6 +779,18 @@ export function createGateRunner(env: GateEnv) {
                     return 'not-merged';
                 }
             }
+        }
+        // #387: PR подтверждённо смерджен (mergedOk) — локальный ref ветки фазы больше
+        // не нужен, чистим его сами, не полагаясь на --delete-branch. Fail-open в два слоя:
+        // сама deleteLocalBranchRef глотает ошибку и логирует, а try/catch здесь — defense
+        // in depth на случай инжектированной в тестах/дефолт заменённой реализации, которая
+        // этот контракт не соблюла. Чистка не должна ронять цикл ни при каких условиях.
+        try {
+            deleteLocalBranchRefFn(phase.branch, { shFn, runArgvFn, logFn });
+        } catch (e: unknown) {
+            logFn(
+                `⚠ Удаление локального ref ветки ${phase.branch} после мерджа упало (${(e as Error).message}) — не критично, продолжаем.`,
+            );
         }
         // #77: локальный main не трогаем ВООБЩЕ — его ref держит дерево человека, git не
         // даст ни занять его вторым worktree, ни обновить из-под чужого checkout.
@@ -763,6 +815,7 @@ export function createGateRunner(env: GateEnv) {
         checksGreen,
         tryMergePhase,
         mergePr,
+        deleteLocalBranchRef,
         phaseMerged,
         mergedPhasePr,
         removeBlockedLabel,
