@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div data-faction="{{ factionAttr }}" data-intensity="{{ intensity }}" data-outcome="{{ outcomeAttr }}" style="{{ rootStyle }}">
+
+  <!-- ===== АРЕНА (сменяемый арт: небо / рельеф / танки) ===== -->
+  <div style="{{ arenaStyle }}">
+    <div style="{{ skyStyle }}"></div>
+    <div style="{{ groundStyle }}"></div>
+    <div style="{{ tankPStyle }}"></div>
+    <div style="{{ tankEStyle }}"></div>
+    <div style="{{ skinTagStyle }}">арт сменяемый · рельеф процедурный · HUD не зависит от скина</div>
+
+    <!-- зона жеста: свободная полоса между верхним HUD и палубой -->
+    <sc-if value="{{ showBand }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ bandStyle }}">
+        <span style="{{ bandLabel }}">Зона жеста</span>
+      </div>
+    </sc-if>
+
+    <!-- прицеливание рогаткой -->
+    <sc-if value="{{ isAim }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;pointer-events:none;">
+        <svg viewBox="0 0 390 500" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;">
+          <path d="M74 296 C 96 268, 120 250, 146 240" fill="none" stroke="{{ aimStroke }}" stroke-width="2" stroke-dasharray="6 8" opacity=".85"></path>
+        </svg>
+        <div style="{{ pullLine }}"></div>
+        <div style="{{ pullDot }}"></div>
+        <div style="{{ fingerRing }}"></div>
+        <div style="{{ aimChip }}">
+          <div style="display:flex;gap:14px;align-items:baseline;">
+            <span style="font-weight:700;font-size:22px;color:{{ aimStroke }};font-variant-numeric:tabular-nums;text-shadow:var(--glow-text);">47°</span>
+            <span style="font-weight:700;font-size:22px;color:var(--color-warning);font-variant-numeric:tabular-nums;text-shadow:var(--glow-text);">098</span>
+          </div>
+          <div style="font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Отпусти — выстрел</div>
+        </div>
+        <div style="{{ segHint }}">только направление · падение не показываем</div>
+      </div>
+    </sc-if>
+
+    <!-- ход бота: направление ствола без предсказания -->
+    <sc-if value="{{ isBot }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;pointer-events:none;">
+        <svg viewBox="0 0 390 500" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;">
+          <path d="M316 296 C 296 272, 278 258, 258 250" fill="none" stroke="var(--color-enemy)" stroke-width="2" stroke-dasharray="6 8" opacity=".8"></path>
+        </svg>
+        <div style="position:absolute;right:14%;bottom:36%;width:14px;height:14px;background:var(--color-enemy);box-shadow:0 0 14px var(--color-enemy);"></div>
+        <div style="position:absolute;inset:0;box-shadow:inset 0 0 0 3px var(--color-enemy),inset 0 0 40px rgba(201,0,255,.24);"></div>
+      </div>
+    </sc-if>
+
+    <!-- снаряд в полёте -->
+    <sc-if value="{{ isFlight }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;pointer-events:none;">
+        <div style="position:absolute;left:52%;top:38%;width:10px;height:10px;background:var(--color-warning);box-shadow:0 0 12px var(--color-warning);"></div>
+        <div style="position:absolute;left:26%;top:58%;width:28%;height:2px;background:linear-gradient(90deg,rgba(255,169,0,0),rgba(255,169,0,.8));transform:rotate(-26deg);transform-origin:left center;"></div>
+      </div>
+    </sc-if>
+
+    <!-- реплика Терминатора -->
+    <sc-if value="{{ isBubble }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ bubbleStyle }}" style-after="content:'';position:absolute;bottom:-9px;right:24px;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-top:9px solid var(--color-enemy);">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <svg width="14" height="14" viewBox="0 0 16 16" shape-rendering="crispEdges" style="color:var(--color-enemy);"><path d="M4 3h8v6H4zM5 10h6v3H5z" fill="none" stroke="currentColor" stroke-width="2"></path></svg>
+          <span style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--color-enemy);">Terminator</span>
+        </div>
+        <div style="font-size:12px;line-height:1.45;color:var(--color-text);">Промазал? Я подскажу: ветер слева<span style="color:var(--color-enemy);">▌</span></div>
+      </div>
+    </sc-if>
+  </div>
+
+  <!-- ===== ВЕРХНИЙ HUD: жизни, ход, телеметрия ===== -->
+  <div style="{{ topStyle }}">
+    <div style="{{ topInner }}">
+      <div style="{{ hpRowStyle }}">
+        <div style="{{ hpCardP }}">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <span style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:11px;min-width:0;">
+              <svg width="13" height="13" viewBox="0 0 16 16" shape-rendering="crispEdges" style="color:var(--color-accent-base);flex:none;"><path d="M8 2l1.8 4H14l-3.2 2.7L12 13 8 10.6 4 13l1.2-4.3L2 6h4.2z" fill="currentColor"></path></svg>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ playerName }}</span>
+            </span>
+            <span style="font-size:10px;color:var(--color-text-muted);font-variant-numeric:tabular-nums;white-space:nowrap;flex:none;">72/100</span>
+          </div>
+          <div style="height:12px;background:#0a0f0a;border:2px solid var(--color-border);"><div style="width:72%;height:100%;background:var(--color-success);"></div></div>
+        </div>
+        <div style="{{ hpCardE }}">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <span style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:11px;min-width:0;">
+              <svg width="13" height="13" viewBox="0 0 16 16" shape-rendering="crispEdges" style="color:var(--color-enemy);flex:none;"><path d="M4 3h8v6H4zM5 10h6v3H5z" fill="none" stroke="currentColor" stroke-width="2"></path></svg>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Terminator</span>
+            </span>
+            <span style="font-size:10px;color:var(--color-text-muted);font-variant-numeric:tabular-nums;white-space:nowrap;flex:none;">{{ enemyHp }}/100</span>
+          </div>
+          <div style="height:12px;background:#0a0f0a;border:2px solid var(--color-border);"><div style="{{ enemyFill }}"></div></div>
+        </div>
+      </div>
+
+      <div style="{{ turnRowStyle }}">
+        <sc-if value="{{ showTurnPill }}" hint-placeholder-val="{{ true }}">
+          <div style="{{ turnPill }}"><span style="width:8px;height:8px;background:var(--accent);box-shadow:var(--glow);"></span><span style="font-family:'DotGothic16',sans-serif;font-weight:700;font-size:13px;letter-spacing:.08em;color:var(--accent);text-shadow:var(--glow);text-transform:uppercase;white-space:nowrap;">{{ turnLabel }}</span></div>
+        </sc-if>
+        <div style="flex:1;"></div>
+        <button aria-label="Звук включён" style="{{ iconBtn }}"><svg width="16" height="16" viewBox="0 0 16 16" shape-rendering="crispEdges"><path d="M3 6h3l3-3v10L6 10H3z" fill="currentColor"></path><path d="M11 5c1.6 1.4 1.6 4.2 0 6" fill="none" stroke="currentColor" stroke-width="2"></path></svg></button>
+        <button aria-label="Пауза" style="{{ iconBtn }}"><svg width="16" height="16" viewBox="0 0 16 16" shape-rendering="crispEdges"><path d="M4 3h3v10H4zM9 3h3v10H9z" fill="currentColor"></path></svg></button>
+      </div>
+
+      <!-- ТЕЛЕМЕТРИЯ: живёт в верхнем оверлее, вне полосы рельефа -->
+      <div style="{{ telWrap }}">
+        <div style="{{ telRowA }}">
+          <div style="{{ numCell }}">
+            <span style="{{ numLabel }}">{{ angleLabel }}</span>
+            <div style="{{ numRow }}">
+              <sc-if value="{{ showTrim }}" hint-placeholder-val="{{ false }}">
+                <button aria-label="Угол меньше" style="{{ trimBtn }}">−</button>
+              </sc-if>
+              <span style="{{ numValA }}">47°</span>
+              <sc-if value="{{ showTrim }}" hint-placeholder-val="{{ false }}">
+                <button aria-label="Угол больше" style="{{ trimBtn }}">+</button>
+              </sc-if>
+            </div>
+          </div>
+          <div style="{{ numCell }}">
+            <span style="{{ numLabel }}">Сила</span>
+            <div style="{{ numRow }}">
+              <sc-if value="{{ showTrim }}" hint-placeholder-val="{{ false }}">
+                <button aria-label="Сила меньше" style="{{ trimBtn }}">−</button>
+              </sc-if>
+              <span style="{{ numValW }}">{{ powerVal }}</span>
+              <sc-if value="{{ showTrim }}" hint-placeholder-val="{{ false }}">
+                <button aria-label="Сила больше" style="{{ trimBtn }}">+</button>
+              </sc-if>
+            </div>
+          </div>
+        </div>
+        <div style="{{ telRowB }}">
+          <div style="{{ numCell }}">
+            <span style="{{ numLabel }}">Ветер</span>
+            <sc-if value="{{ windKnown }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ numRow }}">
+                <svg width="18" height="18" viewBox="0 0 16 16" shape-rendering="crispEdges" style="color:var(--color-warning);flex:none;"><path d="M2 8h10M9 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="2"></path></svg>
+                <span style="{{ numValW }}">3</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ windUnknown }}" hint-placeholder-val="{{ true }}">
+              <div style="{{ numRow }}">
+                <svg width="18" height="18" viewBox="0 0 16 16" shape-rendering="crispEdges" style="color:var(--color-warning);flex:none;"><path d="M2 8h10M9 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="2"></path></svg>
+                <div style="display:flex;gap:3px;">{{ windPips }}</div>
+              </div>
+            </sc-if>
+          </div>
+          <div style="{{ pipCell }}">
+            <div style="display:flex;flex-direction:column;gap:4px;"><span style="{{ numLabel }}">Снаряды</span><div style="display:flex;gap:4px;">{{ pipsAmmo }}</div></div>
+            <div style="display:flex;flex-direction:column;gap:4px;"><span style="{{ numLabel }}">Ходы</span><div style="display:flex;gap:4px;">{{ pipsMoves }}</div></div>
+          </div>
+        </div>
+        <sc-if value="{{ isBot }}" hint-placeholder-val="{{ false }}">
+          <div style="{{ frozenNote }}">Твои числа заморожены до конца хода соперника</div>
+        </sc-if>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== НИЖНЯЯ ПАЛУБА ===== -->
+  <div style="{{ deckStyle }}">
+    <div style="{{ deckInner }}">
+      <div style="{{ weaponWrap }}">
+        <button aria-label="Предыдущее оружие" style="{{ arrowBtn }}"><svg width="16" height="16" viewBox="0 0 16 16" shape-rendering="crispEdges"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="2"></path></svg></button>
+        <div style="{{ weaponPanel }}">
+          <svg width="22" height="22" viewBox="0 0 16 16" shape-rendering="crispEdges" style="color:{{ weaponInk }};flex:none;"><path d="M8 1l3 5v6H5V6z" fill="currentColor"></path><path d="M5 12l-2 3h10l-2-3" fill="currentColor"></path></svg>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
+            <span style="font-weight:700;font-size:14px;color:var(--color-text);white-space:nowrap;">Фугас</span>
+            <span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:{{ ammoInk }};">×{{ ammoCount }}</span>
+          </div>
+        </div>
+        <button aria-label="Следующее оружие" style="{{ arrowBtn }}"><svg width="16" height="16" viewBox="0 0 16 16" shape-rendering="crispEdges"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2"></path></svg></button>
+      </div>
+      <div style="{{ fireRow }}">
+        <button aria-label="Манёвр влево" style="{{ moveBtn }}"><svg width="16" height="16" viewBox="0 0 16 16" shape-rendering="crispEdges"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="2"></path></svg></button>
+        <button aria-label="Манёвр вправо" style="{{ moveBtn }}"><svg width="16" height="16" viewBox="0 0 16 16" shape-rendering="crispEdges"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2"></path></svg></button>
+        <button style="{{ fireBtn }}" style-active="transform:translateY(3px);box-shadow:0 0 0 #05140a;">
+          <span style="font-family:'DotGothic16',sans-serif;font-size:20px;letter-spacing:.12em;">ОГОНЬ</span>
+          <span style="font-size:9px;letter-spacing:.1em;opacity:.75;white-space:nowrap;">{{ fireSub }}</span>
+        </button>
+      </div>
+      <sc-if value="{{ showKeyHint }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ keyHint }}">
+          <span>← → угол</span><span>↑ ↓ сила</span><span>Ctrl + ← → манёвр</span><span>Space выстрел</span>
+        </div>
+      </sc-if>
+      <sc-if value="{{ isTouchHint }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ touchHint }}">Тяни по арене — отпусти, чтобы выстрелить</div>
+      </sc-if>
+    </div>
+    <sc-if value="{{ isLocked }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ lockOverlay }}">
+        <span style="width:10px;height:10px;background:var(--accent);box-shadow:var(--glow);animation:blink 1s infinite;flex:none;"></span>
+        <span style="font-family:'DotGothic16',sans-serif;font-size:15px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);text-shadow:var(--glow);">{{ lockLabel }}</span>
+      </div>
+    </sc-if>
+  </div>
+
+  <!-- ===== ТОСТ «ПАТРОНЫ КОНЧИЛИСЬ» ===== -->
+  <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+    <div role="status" style="{{ toastStyle }}">
+      <svg width="16" height="16" viewBox="0 0 16 16" shape-rendering="crispEdges" style="color:var(--color-warning);flex:none;"><path d="M8 2l6 11H2z" fill="none" stroke="currentColor" stroke-width="2"></path><path d="M8 6v3M8 11h.01" stroke="currentColor" stroke-width="2"></path></svg>
+      <span style="font-size:12px;line-height:1.4;">Патроны кончились — остался только манёвр. Ход перейдёт сопернику.</span>
+    </div>
+  </sc-if>
+
+  <!-- ===== GAME OVER ===== -->
+  <sc-if value="{{ isOver }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;z-index:20;background:rgba(4,8,4,.78);display:flex;align-items:center;justify-content:center;padding:20px;">
+      <div style="{{ dialogStyle }}">
+        <div style="font-family:'DotGothic16',sans-serif;font-size:34px;line-height:1.05;text-transform:uppercase;color:var(--accent);text-shadow:var(--glow);">{{ overTitle }}</div>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--color-text-muted);">
+          <div style="display:flex;justify-content:space-between;gap:12px;"><span>Урон нанесён</span><span style="color:var(--color-text);font-variant-numeric:tabular-nums;">128</span></div>
+          <div style="display:flex;justify-content:space-between;gap:12px;"><span>Точность</span><span style="color:var(--color-text);font-variant-numeric:tabular-nums;">62 %</span></div>
+          <div style="display:flex;justify-content:space-between;gap:12px;"><span>Выстрелов</span><span style="color:var(--color-text);font-variant-numeric:tabular-nums;">6</span></div>
+          <div style="display:flex;justify-content:space-between;gap:12px;"><span>Манёвров</span><span style="color:var(--color-text);font-variant-numeric:tabular-nums;">3 / 4</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <button style="min-height:48px;font-weight:700;font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-primary-ink);background:var(--color-primary);border:none;cursor:pointer;box-shadow:var(--edge-pixel);">Реванш</button>
+          <button style="min-height:48px;font-weight:700;font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);background:transparent;border:2px solid var(--accent);cursor:pointer;">Поделиться реплеем</button>
+          <button style="min-height:48px;font-weight:700;font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-text-muted);background:transparent;border:2px solid var(--color-border-strong);cursor:pointer;">В меню</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:390,&quot;height&quot;:844},&quot;variant&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;m&quot;,&quot;t&quot;,&quot;d&quot;,&quot;w&quot;],&quot;default&quot;:&quot;m&quot;,&quot;tsType&quot;:&quot;'m'|'t'|'d'|'w'&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;turn&quot;,&quot;aim&quot;,&quot;bot&quot;,&quot;flight&quot;,&quot;bubble&quot;,&quot;empty&quot;,&quot;over&quot;],&quot;default&quot;:&quot;turn&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;outcome&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;victory&quot;,&quot;defeat&quot;],&quot;default&quot;:&quot;victory&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;skin&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;sand&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;intensity&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;neon&quot;,&quot;calm&quot;],&quot;default&quot;:&quot;neon&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;windKnown&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;showGestureZone&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Аннотации макета&quot;},&quot;playerName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Rex Commander&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals(){
+    const v = this.props.variant || 'm';
+    const mode = v === 'd' || v === 'w' ? 'bar' : v === 't' ? 'tab' : 'mob';
+    const bar = mode === 'bar';
+    const wideMax = v === 'w' ? 'max-width:1280px;margin:0 auto;' : '';
+    const st = this.props.state || 'turn';
+    const sand = (this.props.skin || 'dark') === 'sand';
+    const isBot = st === 'bot', isFlight = st === 'flight', isOver = st === 'over', isAim = st === 'aim', isEmpty = st === 'empty';
+    const outcome = this.props.outcome || 'victory';
+    const faction = isBot || (isOver && outcome === 'defeat') ? 'enemy' : 'player';
+    const accent = faction === 'enemy' ? 'var(--color-enemy)' : 'var(--color-accent-base)';
+    const scrim = 'background:' + (sand ? 'rgba(8,12,8,.86)' : 'rgba(8,12,8,.8)') + ';box-shadow:0 0 0 1px rgba(0,0,0,.9);backdrop-filter:blur(4px);';
+    const windKnown = !!this.props.windKnown;
+    const pip = (on, color, size) => React.createElement('span', {key: Math.random(), style: {width: size + 'px', height: size + 'px', border: '2px solid ' + (on ? color : 'var(--color-border-strong)'), background: on ? color : 'transparent', opacity: on ? 1 : .5, display: 'inline-block'}});
+    const pips = (n, total, color, size) => Array.from({length: total}, (_, i) => pip(i < n, color, size || 14));
+
+    return {
+      factionAttr: faction,
+      outcomeAttr: isOver ? outcome : '',
+      intensity: this.props.intensity || 'neon',
+      isAim, isBot, isFlight, isOver, isEmpty,
+      isBubble: st === 'bubble',
+      isLocked: isBot || isFlight,
+      lockLabel: isBot ? 'Ход соперника' : 'Снаряд в полёте',
+      showTurnPill: !isOver,
+      showKeyHint: bar && !isOver,
+      isTouchHint: !bar && (st === 'turn' || isAim),
+      showBand: !!this.props.showGestureZone && !bar && (st === 'turn' || isAim),
+      showTrim: mode === 'mob' && !isBot && !isFlight,
+      windKnown, windUnknown: !windKnown,
+      windPips: pips(2, 3, 'var(--color-warning)', 10),
+      playerName: this.props.playerName || 'Rex Commander',
+
+      rootStyle: 'position:relative;width:100%;height:100%;overflow:hidden;font-family:\'JetBrains Mono\',monospace;color:var(--color-text);background:var(--color-bg);',
+      arenaStyle: 'position:absolute;left:0;right:0;overflow:hidden;' + (bar ? 'top:78px;bottom:124px;' : 'top:0;bottom:0;'),
+      skyStyle: 'position:absolute;inset:0;background:' + (sand ? 'linear-gradient(#bfe0ff,#f2e3bd)' : 'linear-gradient(#071b2e,#0a1e0d)') + ';',
+      groundStyle: 'position:absolute;left:0;right:0;bottom:0;height:32%;background:' + (sand ? 'repeating-linear-gradient(90deg,#e7c684 0 10px,#dcb96f 10px 20px)' : 'repeating-linear-gradient(90deg,#3a2a12 0 10px,#301507 10px 20px)') + ';border-top:4px solid ' + (sand ? '#c9a75c' : '#4d3a1a') + ';',
+      tankPStyle: 'position:absolute;left:16%;bottom:32%;width:34px;height:16px;background:#48ff00;box-shadow:0 3px 0 rgba(0,0,0,.5);',
+      tankEStyle: 'position:absolute;right:16%;bottom:32%;width:34px;height:16px;background:#ff4242;box-shadow:0 3px 0 rgba(0,0,0,.5);',
+      skinTagStyle: 'position:absolute;left:50%;transform:translateX(-50%);bottom:6px;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:' + (sand ? 'rgba(0,0,0,.45)' : 'rgba(233,245,230,.32)') + ';',
+
+      bandStyle: 'position:absolute;left:10px;right:10px;' + (mode === 'tab' ? 'top:218px;bottom:150px;' : 'top:242px;bottom:196px;') + 'border:2px dashed ' + accent + ';opacity:.3;pointer-events:none;',
+      bandLabel: 'position:absolute;top:6px;right:8px;font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:' + accent + ';',
+
+      aimStroke: accent,
+      pullLine: 'position:absolute;left:19%;top:' + (mode === 'tab' ? '46%' : '42%') + ';width:104px;height:2px;background:' + accent + ';transform:rotate(26deg);transform-origin:left center;box-shadow:var(--glow);',
+      pullDot: 'position:absolute;left:19%;top:' + (mode === 'tab' ? '46%' : '42%') + ';width:8px;height:8px;background:' + accent + ';box-shadow:var(--glow);',
+      fingerRing: 'position:absolute;left:40%;top:' + (mode === 'tab' ? '52%' : '48%') + ';width:56px;height:56px;border:2px dashed ' + accent + ';border-radius:50%;opacity:.7;',
+      aimChip: 'position:absolute;left:8%;top:' + (bar ? '26%' : '30%') + ';padding:8px 12px;display:flex;flex-direction:column;gap:2px;border:2px solid ' + accent + ';' + scrim,
+      segHint: 'position:absolute;left:8%;top:' + (bar ? '20%' : '24%') + ';font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-text-dim);',
+
+      topStyle: bar
+        ? 'position:absolute;top:0;left:0;right:0;z-index:6;background:var(--color-panel);border-bottom:2px solid var(--color-border);'
+        : mode === 'tab'
+          ? 'position:absolute;top:0;left:0;right:0;z-index:6;background:var(--color-panel);border-bottom:2px solid var(--color-border);'
+          : 'position:absolute;top:0;left:0;right:0;z-index:6;',
+      topInner: bar
+        ? 'height:78px;display:flex;align-items:center;gap:20px;padding:0 18px;' + wideMax
+        : mode === 'tab'
+          ? 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 16px;'
+          : 'display:flex;flex-direction:column;gap:8px;padding:calc(10px + env(safe-area-inset-top,0px)) 10px 0;',
+      hpRowStyle: 'display:flex;gap:8px;min-width:0;' + (bar ? 'flex:1;' : mode === 'tab' ? 'flex:1;min-width:420px;' : ''),
+      turnRowStyle: 'display:flex;align-items:center;gap:8px;' + (bar || mode === 'tab' ? '' : 'width:100%;'),
+      hpCardP: 'flex:1 1 180px;min-width:150px;display:flex;flex-direction:column;gap:5px;padding:7px 10px;border:2px solid ' + (faction === 'player' ? 'var(--color-accent-base)' : 'var(--color-border)') + ';' + (faction === 'player' ? 'box-shadow:var(--glow-accent),0 0 0 1px rgba(0,0,0,.9);' : '') + scrim,
+      hpCardE: 'flex:1 1 180px;min-width:150px;display:flex;flex-direction:column;gap:5px;padding:7px 10px;border:2px solid ' + (faction === 'enemy' ? 'var(--color-enemy)' : 'var(--color-border)') + ';' + (faction === 'enemy' ? 'box-shadow:var(--glow-enemy),0 0 0 1px rgba(0,0,0,.9);' : '') + scrim,
+      enemyHp: isOver && outcome === 'victory' ? 0 : 38,
+      enemyFill: 'height:100%;background:var(--color-' + (isOver && outcome === 'victory' ? 'danger' : 'warning') + ');width:' + (isOver && outcome === 'victory' ? 0 : 38) + '%;',
+      turnLabel: isBot ? 'Ход соперника' : isFlight ? 'Выстрел' : 'Твой ход',
+      turnPill: 'display:flex;align-items:center;gap:8px;padding:8px 12px;min-height:40px;border:2px solid var(--accent);box-shadow:var(--glow),0 0 0 1px rgba(0,0,0,.9);' + scrim,
+      iconBtn: 'width:44px;height:44px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--color-text);border:2px solid var(--color-border-strong);cursor:pointer;' + scrim,
+
+      telWrap: 'display:flex;' + (bar
+        ? 'align-items:center;gap:2px;'
+        : 'flex-direction:column;gap:2px;width:100%;'),
+      telRowA: 'display:flex;gap:2px;' + (bar ? '' : 'width:100%;'),
+      telRowB: 'display:flex;gap:2px;' + (bar ? '' : 'width:100%;') + (mode === 'tab' ? 'margin-top:2px;' : ''),
+      numCell: 'flex:1;min-width:' + (bar ? '96px' : '84px') + ';display:flex;flex-direction:column;gap:2px;padding:6px 10px;border:2px solid var(--color-border);' + (isBot ? 'opacity:.6;' : '') + scrim,
+      numRow: 'display:flex;align-items:center;gap:8px;',
+      frozenNote: 'padding:6px 10px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);border:2px solid var(--color-border);' + scrim,
+      trimBtn: 'width:44px;height:44px;flex:none;display:flex;align-items:center;justify-content:center;font-family:\'JetBrains Mono\',monospace;font-size:18px;font-weight:700;color:var(--color-text);background:var(--color-panel-raised);border:2px solid var(--color-border-strong);cursor:pointer;',
+      pipCell: 'display:flex;gap:14px;padding:6px 12px;border:2px solid var(--color-border);' + scrim,
+      numLabel: 'font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);white-space:nowrap;',
+      angleLabel: isBot ? 'Угол · заморожен' : 'Угол',
+      numValA: 'flex:1;text-align:center;font-weight:700;font-size:' + (bar ? '22px' : '18px') + ';color:var(--color-accent-base);text-shadow:var(--glow-text);font-variant-numeric:tabular-nums;',
+      numValW: 'flex:1;text-align:center;font-weight:700;font-size:' + (bar ? '22px' : '18px') + ';color:var(--color-warning);text-shadow:var(--glow-text);font-variant-numeric:tabular-nums;',
+      powerVal: isAim ? '098' : '064',
+      pipsAmmo: pips(isEmpty ? 0 : 3, 5, 'var(--color-accent-base)'),
+      pipsMoves: pips(isEmpty ? 2 : 2, 4, 'var(--color-warning)'),
+
+      deckStyle: bar
+        ? 'position:absolute;left:0;right:0;bottom:0;height:124px;z-index:6;background:var(--color-panel);border-top:2px solid var(--color-border);'
+        : mode === 'tab'
+          ? 'position:absolute;left:0;right:0;bottom:0;z-index:6;'
+          : 'position:absolute;left:0;right:0;bottom:0;z-index:6;background:linear-gradient(180deg,rgba(8,12,8,0),rgba(8,12,8,.92) 26%);',
+      deckInner: bar
+        ? 'height:124px;display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;padding:14px 18px;' + wideMax
+        : mode === 'tab'
+          ? 'display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding:0 16px calc(18px + env(safe-area-inset-bottom,8px));'
+          : 'display:flex;flex-direction:column;gap:8px;padding:26px 10px calc(12px + env(safe-area-inset-bottom,8px));',
+      weaponWrap: 'display:flex;align-items:stretch;gap:2px;' + (bar ? 'width:300px;' : mode === 'tab' ? 'width:280px;' : ''),
+      arrowBtn: 'width:48px;min-height:48px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--color-text);background:var(--color-surface);border:2px solid var(--color-border-strong);cursor:pointer;',
+      weaponPanel: 'flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:12px;padding:6px 14px;background:var(--color-surface);border:2px solid ' + (isEmpty ? 'var(--color-border-strong)' : accent) + ';' + (isEmpty ? 'opacity:.55;' : 'box-shadow:var(--glow);'),
+      weaponInk: isEmpty ? 'var(--color-text-dim)' : accent,
+      ammoInk: isEmpty ? 'var(--color-danger)' : 'var(--color-text-muted)',
+      ammoCount: isEmpty ? '0' : '12',
+      fireRow: 'display:flex;align-items:stretch;gap:8px;' + (bar ? 'flex:1;max-width:420px;' : mode === 'tab' ? 'width:340px;' : ''),
+      moveBtn: 'width:56px;min-height:64px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--color-text);background:var(--color-panel-raised);border:2px solid var(--color-border-strong);cursor:pointer;',
+      fireBtn: 'flex:1;min-width:0;min-height:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-weight:700;text-transform:uppercase;border:none;cursor:pointer;' + (isEmpty
+        ? 'background:var(--color-muted);color:var(--color-text-dim);'
+        : 'background:var(--color-primary);color:var(--color-primary-ink);box-shadow:var(--edge-pixel),var(--glow-primary);'),
+      fireSub: isEmpty ? 'нет снарядов' : bar ? 'space' : 'повторить 47° · ' + (isAim ? '098' : '064'),
+      keyHint: 'display:flex;gap:14px;justify-content:center;width:100%;font-size:10px;letter-spacing:.06em;color:var(--color-text-dim);',
+      touchHint: 'text-align:center;padding:6px 10px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-text-muted);border:2px solid var(--color-border);' + scrim,
+      lockOverlay: 'position:absolute;inset:0;z-index:2;background:' + (sand ? 'rgba(8,12,8,.92)' : 'rgba(8,12,8,.88)') + ';backdrop-filter:blur(3px);box-shadow:inset 0 0 0 1px rgba(0,0,0,.9);display:flex;align-items:center;justify-content:center;gap:10px;',
+
+      toastStyle: 'position:absolute;z-index:8;left:10px;right:10px;' + (bar ? 'bottom:140px;' : mode === 'tab' ? 'bottom:150px;' : 'bottom:196px;') + 'display:flex;align-items:center;gap:10px;padding:12px 14px;border:2px solid var(--color-warning);border-left:4px solid var(--color-warning);' + scrim,
+      dialogStyle: 'width:100%;max-width:340px;display:flex;flex-direction:column;gap:18px;padding:24px;background:var(--color-panel);border:4px solid var(--color-border-strong);box-shadow:0 6px 0 rgba(0,0,0,.55);',
+      overTitle: outcome === 'victory' ? 'Победа' : 'Поражение',
+      bubbleStyle: 'position:absolute;right:8%;bottom:46%;z-index:4;max-width:260px;padding:12px 14px;background:var(--color-surface);border:2px solid var(--color-enemy);box-shadow:var(--glow-enemy),0 0 0 1px rgba(0,0,0,.9);',
+    };
+  }
+}
+</script>
+</body>
+</html>

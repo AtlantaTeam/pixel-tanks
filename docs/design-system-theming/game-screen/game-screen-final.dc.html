@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --color-bg:#080c08; --color-surface:#101711; --color-panel:#18221a;
+    --color-panel-raised:#212f24; --color-border:#2c3f30; --color-border-strong:#3f5a41;
+    --color-muted:#33452f; --color-text:#e9f5e6; --color-text-muted:#a2bb9d; --color-text-dim:#728a70;
+    --color-primary:#ffc21f; --color-primary-ink:#241900;
+    --color-accent-base:#48ff00; --color-accent-ink-base:#052400;
+    --color-enemy:#c900ff; --color-enemy-ink:#1e0030;
+    --color-danger:#ff4242; --color-danger-ink:#2b0000;
+    --color-warning:#ffa900; --color-warning-ink:#2a1600;
+    --color-success:#48ff00;
+    --glow-accent:0 0 6px rgba(72,255,0,.55),0 0 18px rgba(72,255,0,.35);
+    --glow-primary:0 0 6px rgba(255,194,31,.55),0 0 18px rgba(255,169,0,.3);
+    --glow-enemy:0 0 6px rgba(201,0,255,.55),0 0 18px rgba(201,0,255,.35);
+    --glow-danger:0 0 6px rgba(255,66,66,.6),0 0 18px rgba(255,66,66,.35);
+    --glow-text:0 0 8px currentColor;
+    --edge-pixel:0 3px 0 #05140a;
+    --accent:var(--color-accent-base); --accent-ink:var(--color-accent-ink-base); --glow:var(--glow-accent);
+  }
+  [data-faction="enemy"]{--accent:var(--color-enemy);--accent-ink:var(--color-enemy-ink);--glow:var(--glow-enemy);}
+  [data-outcome="victory"]{--accent:var(--color-accent-base);--accent-ink:var(--color-accent-ink-base);--glow:var(--glow-accent);}
+  [data-outcome="defeat"]{--accent:var(--color-danger);--accent-ink:var(--color-danger-ink);--glow:var(--glow-danger);}
+  [data-intensity="calm"]{--glow-accent:0 0 0 transparent;--glow-primary:0 0 0 transparent;--glow-enemy:0 0 0 transparent;--glow-danger:0 0 0 transparent;--glow:0 0 0 transparent;--glow-text:0 0 0 transparent;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--color-bg);}
+  a{color:var(--color-accent-base);text-decoration:none;} a:hover{color:#8dff5c;}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+</style>
+</helmet>
+
+<div style="min-height:100vh;font-family:'JetBrains Mono',monospace;color:var(--color-text);background:radial-gradient(120% 90% at 50% -10%,#0e2a12 0%,#0a140b 40%,#050805 100%);padding:56px clamp(16px,4vw,40px) 120px;">
+<div style="max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:72px;">
+
+  <header style="display:flex;flex-direction:column;gap:18px;">
+    <div style="font-size:11px;letter-spacing:.32em;text-transform:uppercase;color:var(--color-accent-base);text-shadow:var(--glow-text);">Issue #280 · финализация игрового экрана</div>
+    <h1 style="margin:0;font-family:'DotGothic16',sans-serif;font-weight:700;font-size:clamp(34px,6vw,64px);line-height:.95;text-transform:uppercase;">Боевой экран<br>под реальный Canvas</h1>
+    <p style="max-width:720px;margin:0;font-size:14px;line-height:1.65;color:var(--color-text-muted);text-wrap:pretty;"><b style="color:var(--color-text);">Ревизия 2 по ревью:</b> телеметрия ушла из полосы рельефа в верхний оверлей, зона жеста обозначена и разведена с тач-целями HUD, траектория сокращена до направления, ветер стал загадкой на один выстрел, планшет получил собственную раскладку, спорные значения приведены к канону кода. Состав HUD из §09/§11 подтверждён и не переизобретается. Изменено ровно то, что требовал зазор: HP-модель вместо очков, оверлейный HUD на вертикали, оформление жеста рогатки, состояния хода бота / полёта / пустых патронов / game-over, правило контраста над любым скином арены и десктопная клавиатурная подсказка. Арена на кадрах — плейсхолдер сменяемого арта; цвета арта не участвуют в контракте HUD.</p>
+  </header>
+
+  <section style="display:flex;flex-direction:column;gap:22px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-primary);">00 — Ответ на ревью</div>
+      <h2 style="margin:0;font-family:'DotGothic16',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Вердикты по геймплейным развилкам</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:2px;">
+      <sc-for list="{{ verdicts }}" as="v" hint-placeholder-count="3">
+        <div style="background:rgba(255,194,31,.06);border:2px solid var(--color-primary);padding:18px;display:flex;flex-direction:column;gap:8px;">
+          <div style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-primary);">Пункт {{ v.n }} · вердикт</div>
+          <div style="font-weight:700;font-size:14px;line-height:1.35;">{{ v.title }}</div>
+          <div style="font-size:12px;line-height:1.55;color:var(--color-text-muted);">{{ v.body }}</div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:2px;">
+      <sc-for list="{{ fixes }}" as="f" hint-placeholder-count="13">
+        <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:14px 16px;display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;align-items:baseline;gap:8px;">
+            <span style="font-weight:700;font-size:11px;color:var(--color-accent-base);">{{ f.n }}</span>
+            <span style="font-weight:700;font-size:13px;line-height:1.3;">{{ f.t }}</span>
+          </div>
+          <div style="font-size:12px;line-height:1.55;color:var(--color-text-muted);">{{ f.d }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:22px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">A–G — Решения</div>
+      <h2 style="margin:0;font-family:'DotGothic16',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Что изменилось против §11</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:2px;">
+      <sc-for list="{{ decisions }}" as="d" hint-placeholder-count="7">
+        <div style="background:var(--color-panel);border:2px solid var(--color-border);border-left:3px solid var(--color-accent-base);padding:18px;display:flex;flex-direction:column;gap:8px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span style="font-weight:700;font-size:12px;color:var(--color-accent-base);">{{ d.tag }}</span>
+            <span style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-dim);">{{ d.topic }}</span>
+          </div>
+          <div style="font-weight:700;font-size:14px;line-height:1.35;">{{ d.title }}</div>
+          <div style="font-size:12px;line-height:1.55;color:var(--color-text-muted);">{{ d.body }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:22px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">01 — Брейкпоинты</div>
+      <h2 style="margin:0;font-family:'DotGothic16',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">390 · 768 · 1280 · 1920</h2>
+      <p style="margin:6px 0 0;max-width:680px;font-size:13px;line-height:1.6;color:var(--color-text-muted);">390 и 768 — арена во весь dvh, HUD оверлеем на затемнённых подложках. 1280 и 1920 — те же элементы, но HUD распрямляется в полосы сверху (78px) и снизу (124px), арена получает середину.</p>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start;">
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Мобильный · 390×844</span>
+        <div style="width:234px;height:506px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.6);transform-origin:top left;">
+            <dc-import name="PT-Game" variant="m" state="turn" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Планшет · 768×1024</span>
+        <div style="width:346px;height:461px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:768px;height:1024px;transform:scale(.45);transform-origin:top left;">
+            <dc-import name="PT-Game" variant="t" state="turn" hint-size="768px,1024px" style="display:block;width:100%;height:100%;"></dc-import>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Десктоп · 1280×760</span>
+        <div style="width:512px;height:304px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:1280px;height:760px;transform:scale(.4);transform-origin:top left;">
+            <dc-import name="PT-Game" variant="d" state="turn" hint-size="1280px,760px" style="display:block;width:100%;height:100%;"></dc-import>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Широкий · 1920×960</span>
+        <div style="width:518px;height:259px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:1920px;height:960px;transform:scale(.27);transform-origin:top left;">
+            <dc-import name="PT-Game" variant="w" state="turn" hint-size="1920px,960px" style="display:block;width:100%;height:100%;"></dc-import>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:22px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">02 — Состояния</div>
+      <h2 style="margin:0;font-family:'DotGothic16',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Прицел · бот · полёт · финал</h2>
+      <p style="margin:6px 0 0;max-width:680px;font-size:13px;line-height:1.6;color:var(--color-text-muted);">Все кадры — 390×844. Блокировка ввода всегда показана одинаково: палуба гасится подложкой с мигающим маркером и подписью, что именно происходит, — «нельзя», а не «залипло».</p>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;">
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Прицеливание · пунктир = аннотация</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="aim" show-gesture-zone="{{ yes }}" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Ход бота</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="bot" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Снаряд в полёте</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="flight" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Реплика Терминатора</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="bubble" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Патроны кончились</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="empty" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Game over · победа</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="over" outcome="victory" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Game over · поражение</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="over" outcome="defeat" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:22px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">03 — Контраст и режимы</div>
+      <h2 style="margin:0;font-family:'DotGothic16',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">HUD над любым скином</h2>
+      <p style="margin:6px 0 0;max-width:680px;font-size:13px;line-height:1.6;color:var(--color-text-muted);">Правило: любой HUD-элемент = подложка <b style="color:var(--color-text);">rgba(8,12,8,.80–.86)</b> + <b style="color:var(--color-text);">blur(4px)</b> + рамка 2px токеном роли + внешний контур <b style="color:var(--color-text);">0 0 0 1px rgba(0,0,0,.9)</b>. Контур — то, что держит HUD над светлым песком, blur — над мелким шумом рельефа. Цвета арта в контракт не входят.</p>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;">
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Тёмный биом · ночь</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="turn" skin="dark" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Светлый биом · песок</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="turn" skin="sand" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Спокойный HUD · calm</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="turn" intensity="calm" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Ветер раскрыт после пристрелки</span>
+        <div style="width:203px;height:439px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:390px;height:844px;transform:scale(.52);transform-origin:top left;"><dc-import name="PT-Game" variant="m" state="turn" wind-known="{{ yes }}" hint-size="390px,844px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <span style="font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text-muted);">Десктоп · клавиатурная подсказка</span>
+        <div style="width:512px;height:304px;overflow:hidden;border:2px solid var(--color-border);">
+          <div style="width:1280px;height:760px;transform:scale(.4);transform-origin:top left;"><dc-import name="PT-Game" variant="d" state="aim" hint-size="1280px,760px" style="display:block;width:100%;height:100%;"></dc-import></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:22px;">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--color-accent-base);">04 — Геометрия</div>
+      <h2 style="margin:0;font-family:'DotGothic16',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);text-transform:uppercase;">Размеры для кодирования 1:1</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:2px;">
+      <sc-for list="{{ specs }}" as="s" hint-placeholder-count="8">
+        <div style="background:var(--color-panel);border:2px solid var(--color-border);padding:16px;display:flex;flex-direction:column;gap:6px;">
+          <div style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-text-muted);">{{ s.k }}</div>
+          <div style="font-weight:700;font-size:13px;line-height:1.45;color:var(--color-accent-base);">{{ s.v }}</div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="max-width:760px;background:rgba(255,169,0,.07);border:2px solid var(--color-warning);border-left:4px solid var(--color-warning);padding:14px 16px;font-size:12px;line-height:1.6;color:var(--color-text-muted);">
+      <b style="color:var(--color-text);">Что осталось открытым:</b> кнопка ОГОНЬ и жест сосуществуют, потому что у них теперь разные роли — жест целится, ± и кнопка правят на градус. Это работает, пока доводка остаётся мелкой: если в плейтесте окажется, что игроки целятся кнопками вместо рогатки, убирать надо кнопку, а не жест. Полная дуга-подсказка сохранена как assist онбординга — если приёмка захочет её в бою по умолчанию, это отменяет пристрелку из GDD §2.4, и решать это надо на уровне гейм-дизайна, а не макета.
+    </div>
+  </section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{}">
+class Component extends DCLogic {
+  renderVals(){
+    return {
+      yes: true,
+      verdicts: [
+        {n:'3', title:'Подсказка траектории — короткий сегмент от ствола', body:'Дуга до точки падения превращает прицеливание в перетаскивание конца линии: пропадает и пристрелка, и «читаемый провал по своей вине». Показываем ~12% пути — направление и не более. Полная дуга остаётся только как assist в онбординге и первом бою, с явным выключателем в настройках. У бота траектории нет вовсе: направление ствола + вспышка выстрела, исход неизвестен до попадания.'},
+        {n:'18', title:'Ветер — направление и 3 грубых деления; точное число после первого выстрела', body:'Точное значение с первого кадра убивает пристрелку так же, как полная дуга убивает прицеливание. Но скрывать ветер весь бой — штраф за память, а не интрига: загадка живёт ровно один выстрел. После первого попадания или промаха ячейка раскрывается в «→3» до конца боя.'},
+        {n:'19', title:'Компактная доводка ± возвращается на мобилку', body:'Кнопка ОГОНЬ без контролов доводки нечестна — стрелять «по текущим числам» там было нечем. С ± на ячейках УГОЛ и СИЛА (44×44) кнопка получает собственную роль: микрокоррекция после жеста, когда тянуть заново дороже, чем поправить на градус. Подпись стала конкретной: «повторить 47° · 064».'},
+      ],
+      fixes: [
+        {n:'1', t:'Телеметрия уехала в верхний оверлей', d:'Числа и пипы больше не висят в полосе рельефа: они часть верхнего блока. Правило теперь не зависит от высоты земли — арена свободна от HUD между 242px и 182px от низа.'},
+        {n:'2', t:'Зона жеста обозначена и разведена с HUD', d:'Пунктирная рамка «ЗОНА ЖЕСТА» = единственная область старта оттяжки. Касание и кольцо пальца внутри неё, чип предпросмотра выше пальца, палуба под жестом не содержит тач-целей на пути оттяжки вниз-назад. Сам пунктир — АННОТАЦИЯ макета (проп showGestureZone, по умолчанию выключен), в прод не переносится: игрок узнаёт про жест из подсказки в палубе и из онбординга.'},
+        {n:'1·2 ревью 2', t:'Планшет 768 больше не переполняется', d:'Верх планшета разложен в два ряда: жизни + ход + кнопки, ниже телеметрия. ± с планшета убраны (доводка там не нужна — экран широкий), HP-карточки получили flex-basis 180px и min-width 150px, поэтому схлопываются последними. Подпись «числа заморожены» получила подложку и рамку по правилу E.'},
+        {n:'4', t:'Пипы больше не тематические', d:'Снаряды — accent-base, ходы — warning, фиксированными токенами (канон кода). На ходе бота мои ресурсы цвет не меняют; телеметрия гаснет до .6 и подписана «Твои числа заморожены».'},
+        {n:'5', t:'«Патроны кончились» стало непротиворечивым', d:'Ходы 2 из 4, обе кнопки манёвра активны, disabled только ОГОНЬ и селектор. Тост стоит над палубой и ничего не перекрывает.'},
+        {n:'6', t:'Лок ввода накрывает палубу целиком', d:'Плотная подложка .88 (.92 на песке) + blur(3px) поверх всей палубы, подпись по центру пустого поля, а не поверх селектора.'},
+        {n:'7', t:'Планшет получил свою раскладку', d:'Верхняя полоса-панель 76px как на десктопе, арена до самого низа, тач-кластеры разведены по нижним углам: оружие слева, манёвр и ОГОНЬ справа — под два больших пальца.'},
+        {n:'8', t:'HUD ограничен по ширине на 1920', d:'max-width 1280px по центру для обеих полос; нижняя распределена space-between, клавиатурная подсказка получила опору.'},
+        {n:'9', t:'HP-строка не ломается', d:'Формат «72/100», nowrap, имя усекается эллипсисом. Плейсхолдер игрока — ник профиля «Rex Commander» (канон §11).'},
+        {n:'10', t:'Хвост бабла смотрит на бота', d:'Хвост переехал на правую сторону (right:24px) под танк соперника.'},
+        {n:'11', t:'Финал расставил приоритеты', d:'Пилюля хода скрыта. «Реванш» — единственная залитая кнопка, «Поделиться реплеем» стал контурным accent. Статистика: «Выстрелов 6» и «Манёвров 3 / 4» вместо неверных «Ходов 14».'},
+        {n:'12', t:'Подсказка про жест по правилу E', d:'Получила подложку, контур и рамку 2px, цвет поднят до text-muted — читается и на песке.'},
+        {n:'13–17', t:'Канон взят из кода', d:'Пипы 14×14, снаряды accent / ходы warning; трек HP 12px; оружие «Фугас» из арсенала §9-E; шрифты только DotGothic16 + JetBrains Mono (Handjet и Pixelify убраны); glow-enemy .55/.35; calm гасит в «0 0 0 transparent».'},
+        {n:'20–21', t:'Мелочи', d:'Иконка звука в состоянии «включён». Имя игрока — ник профиля.'},
+      ],
+      decisions: [
+        {tag:'A', topic:'Мобильная вертикаль', title:'Весь HUD собран сверху и снизу, середина неприкосновенна', body:'Арена во весь dvh. Жизни, ход и телеметрия — единый верхний оверлей (242px), палуба — нижний (196px). Между ними пунктирная «зона жеста»: там нет ни одного HUD-элемента и ни одной тач-цели, поэтому правило держится при любой высоте процедурного рельефа, а не только при танках на 32%.'},
+        {tag:'B', topic:'Огонь против рогатки', title:'Рогатка стреляет, кнопка правит на градус', body:'Жест задаёт угол и силу одним движением. ± на ячейках УГОЛ и СИЛА (44×44, только тач) правят числа после жеста, ОГОНЬ выстреливает ими — подпись называет их прямо: «повторить 47° · 064». На клавиатуре кнопка остаётся единственным способом выстрела.'},
+        {tag:'C', topic:'Визуал оттяжки', title:'Короткий сегмент + луч + чип над пальцем', body:'От ствола — сегмент ~12% пути: направление без предсказания падения. От касания — тугой луч и кольцо пальца, всё внутри зоны жеста. Чип с числами выше пальца (палец закрывает низ-право) и не уходит под палубу. Превышение максимума: луч и чип краснеют, сила фиксируется на 100.'},
+        {tag:'D', topic:'Состояния', title:'Блокировка ввода объясняется словом', body:'Ход бота — тема enemy, рамка арены маджентой, симуляция прицела пунктиром. Полёт снаряда — палуба под подложкой с подписью «Снаряд в полёте». Оба состояния мигают маркером, чтобы читалось «сейчас нельзя», а не «залипло».'},
+        {tag:'E', topic:'Читаемость', title:'Подложка + чёрный контур + blur', body:'Единое правило для всех HUD-элементов: rgba(8,12,8,.80–.86), blur(4px), 2px рамка токеном роли и внешний контур 1px чёрного. Проверено на тёмном небе и на светлом песке — контур держит границу там, где подложка сливается.'},
+        {tag:'F', topic:'Клавиатура', title:'Подсказка живёт только в палубе десктопа', body:'Строка ← → / ↑ ↓ / Ctrl / Space — часть нижней полосы на 1280+ и появляется по (hover:hover) and (pointer:fine). На 390 и 768 её нет ни в каком виде: там вместо неё одна строка про жест.'},
+        {tag:'G', topic:'Спокойный HUD', title:'[data-intensity=calm] гасит glow, не цвет', body:'Один атрибут на корне обнуляет --glow-* и --glow-text. Цвета, рамки и иерархия остаются — экран читается так же, просто перестаёт светиться в долгой сессии.'},
+      ],
+      specs: [
+        {k:'Верхний оверлей (моб.)', v:'жизни + ход + телеметрия, ≈242px, паддинг 10px + safe-area'},
+        {k:'Зона жеста (моб.)', v:'от 242px сверху до 196px снизу, пунктир 2px, HUD-целей нет'},
+        {k:'Нижняя палуба', v:'моб. скрим 196px · планшет угловые кластеры · десктоп полоса 124px'},
+        {k:'Полосы на 1920', v:'max-width 1280px по центру, нижняя — space-between'},
+        {k:'HP-бар', v:'трек 12px, рамка 2px, success>60% / warning>30% / danger; «72/100» nowrap'},
+        {k:'Кнопка ОГОНЬ', v:'min-height 64px, primary #ffc21f, edge-pixel + glow-primary'},
+        {k:'Тач-цели', v:'стрелки 48×48, манёвр 56×64, ± доводки 44×44, иконки 44×44'},
+        {k:'HUD-числа', v:'18px моб. / 22px десктоп, tabular-nums, glow-text; угол — accent-base'},
+        {k:'Пипы', v:'14×14, рамка 2px; снаряды accent-base, ходы warning — цвет не тематический'},
+        {k:'Ветер', v:'стрелка + 3 деления 10×10 до пристрелки, точное число после'},
+        {k:'Лок ввода', v:'подложка .88 (.92 песок) + blur(3px) на всю палубу, подпись по центру'},
+        {k:'Чат-бабл', v:'right 8%, bottom 46%, max-width 260px, хвост right:24px, ~3с жизни'},
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
