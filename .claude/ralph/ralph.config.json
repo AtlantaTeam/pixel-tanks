@@ -91,8 +91,12 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Фреймворк ralph · Фаза 8: Дотипизация оболочки",
-                "branch": "feature/ralph-fw-8-typing"
+                "milestone": "Фреймворк ralph · Фаза 9: Находки прогона",
+                "branch": "feature/ralph-fw-9-findings"
+            },
+            {
+                "milestone": "Фреймворк ralph · Фаза 10: Документация и финальная валидация",
+                "branch": "feature/ralph-fw-10-docs"
             }
         ]
     },
