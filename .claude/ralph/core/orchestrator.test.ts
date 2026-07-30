@@ -84,6 +84,8 @@ const {
     runLoop,
     loadState,
     ensureClean,
+    handleCrashedCoderSession,
+    saveSessionOutput,
     parkOnOriginMain,
     gateChecksFor,
     checksGreen,
@@ -118,6 +120,14 @@ type RunClaudeFake = (
     opts: { model?: string; fallbackModel?: string; [k: string]: unknown },
     deps?: { runClaudeOnceFn?: unknown; [k: string]: unknown },
 ) => unknown;
+// #390: фейк handleCrashedCoderSession-коллаборатора (runLoop зовёт его с сырым issue,
+// кодом выхода, выводом сессии и объектом shFn/logFn/pushEventFn/cfg).
+type HandleCrashedCoderSessionFake = (
+    issue: { number: number },
+    code: number,
+    output: string,
+    opts?: { [k: string]: unknown },
+) => { stop: boolean };
 type ChecksGreenFake = (
     branch: string,
     prNumber: number,
@@ -2284,6 +2294,70 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(depsOverride!.runClaudeOnceFn).toBe(claudeRun);
     });
 
+    // #390: инцидент 28.07.2026 — раннер откладывал диагностику падения кодер-сессии до
+    // ensureCleanFn СЛЕДУЮЩЕЙ итерации, теряя факт падения в общем сообщении «грязное
+    // дерево». Теперь при ненулевом коде выхода runLoop зовёт handleCrashedCoderSessionFn
+    // СРАЗУ — с issue, кодом и выводом сессии (через сторонний канал onOutput) — и честно
+    // подчиняется его решению о стопе.
+    it('#390: ненулевой код сессии → handleCrashedCoderSessionFn зовётся с issue/кодом/выводом; stop:true останавливает цикл СРАЗУ', () => {
+        const logs: string[] = [];
+        const handleCrashedCoderSessionFn = vi.fn<HandleCrashedCoderSessionFake>(() => ({
+            stop: true,
+        }));
+        const runClaudeFn = vi.fn<RunClaudeFake>((_prompt, _opts, callDeps) => {
+            (callDeps as { onOutput?: (o: string) => void } | undefined)?.onOutput?.('boom output');
+            return 1;
+        });
+        const openIssuesFn = vi.fn(() => [{ number: 9, title: 'задача', labels: [] }]);
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                // #390 доп.: НЕ терминальный phaseIndexOfFn (всегда фаза 0) — если бы стоп не
+                // сработал СРАЗУ, цикл ушёл бы на второй рабочий проход и runClaudeFn/
+                // openIssuesFn позвались бы повторно. Единственный вызов доказывает break
+                // сразу за handleCrashedCoderSessionFn, а не «случайно совпало с концом фаз».
+                phaseIndexOfFn: () => 0,
+                openIssuesFn,
+                runClaudeFn,
+                handleCrashedCoderSessionFn,
+            }),
+        );
+        expect(handleCrashedCoderSessionFn).toHaveBeenCalledTimes(1);
+        const [issueArg, codeArg, outputArg, opts] = handleCrashedCoderSessionFn.mock.calls[0];
+        expect(issueArg).toMatchObject({ number: 9 });
+        expect(codeArg).toBe(1);
+        expect(outputArg).toBe('boom output');
+        expect(opts).toMatchObject({
+            shFn: expect.any(Function),
+            logFn: expect.any(Function),
+            pushEventFn: expect.any(Function),
+        });
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        expect(openIssuesFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('#390: handleCrashedCoderSessionFn возвращает stop:false → цикл НЕ останавливается, прежнее поведение (fail-open)', () => {
+        const logs: string[] = [];
+        const handleCrashedCoderSessionFn = vi.fn(() => ({ stop: false }));
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 1);
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                once: true,
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [{ number: 9, title: 'задача', labels: [] }],
+                runClaudeFn,
+                handleCrashedCoderSessionFn,
+            }),
+        );
+        expect(handleCrashedCoderSessionFn).toHaveBeenCalledTimes(1);
+        // Дошли до штатного ONCE-стопа ПОСЛЕ блока диагностики падения — значит, ранний
+        // break из-за stop:true не сработал (handleCrashedCoderSessionFn сказал stop:false).
+        expect(logs.join('\n')).toMatch(/HITL: одна итерация/);
+    });
+
     it('no-progress breaker (AFK): HEAD не сдвинулся и очередь та же → стоп, пуш', () => {
         const logs: string[] = [];
         const state = mkState({ noProgress: 2 }); // +1 на этой итерации = 3 = порог
@@ -3719,6 +3793,94 @@ describe('ensureClean — чистота дерева раннера, изоли
         // (Дерево человека может быть сколь угодно грязным — до этого shFn не доходит.)
         const runnerTreeStatus = () => '';
         expect(ensureClean('итерация', { shFn: runnerTreeStatus, logFn: () => {} })).toBe(true);
+    });
+});
+
+// #390: диагностика падения кодер-сессии — сразу после ненулевого кода выхода, не
+// откладывая до ensureCleanFn следующей итерации (инцидент 28.07.2026, DEADMAN фазы 4).
+describe('handleCrashedCoderSession — падение кодер-сессии: диагностика и решение о стопе (#390)', () => {
+    const issue = { number: 42 };
+
+    it('грязное дерево после падения → stop:true, честное сообщение (issue, код, файлы, путь к логу) в лог и пуш', () => {
+        const logs: string[] = [];
+        const pushEventFn = vi.fn();
+        const saveSessionOutputFn = vi.fn();
+        const result = handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => ' M src/a.ts\n?? tmp.log',
+            logFn: (m: string) => logs.push(m),
+            pushEventFn,
+            saveSessionOutputFn,
+            cfg: {} as unknown,
+        });
+        expect(result).toEqual({ stop: true });
+        // Сообщение называет И падение (issue, код), И оставшиеся файлы.
+        expect(logs.join('\n')).toMatch(/Issue #42/);
+        expect(logs.join('\n')).toMatch(/код 1/);
+        expect(logs.join('\n')).toMatch(/src\/a\.ts/);
+        expect(logs.join('\n')).toMatch(/\.claude\/ralph\/sessions\/42-\d+\.log/);
+        // Пуш содержит то же самое сообщение (не отдельный текст).
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toBe(
+            logs.find((l) => l.includes('Issue #42') && l.includes('src/a.ts')),
+        );
+    });
+
+    it('чистое дерево после падения → stop:false, прежнее поведение (fail-open), пуш не зовётся', () => {
+        const logs: string[] = [];
+        const pushEventFn = vi.fn();
+        const result = handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => '',
+            logFn: (m: string) => logs.push(m),
+            pushEventFn,
+            saveSessionOutputFn: () => {},
+            cfg: {} as unknown,
+        });
+        expect(result).toEqual({ stop: false });
+        expect(pushEventFn).not.toHaveBeenCalled();
+        expect(logs.join('\n')).toMatch(/продолжаем/);
+    });
+
+    it('git status после падения сам упал → fail-closed stop:true (неизвестное состояние — не «чисто»)', () => {
+        const logs: string[] = [];
+        const pushEventFn = vi.fn();
+        const result = handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => {
+                throw new Error('fatal: not a git repository');
+            },
+            logFn: (m: string) => logs.push(m),
+            pushEventFn,
+            saveSessionOutputFn: () => {},
+            cfg: {} as unknown,
+        });
+        expect(result).toEqual({ stop: true });
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('сохраняет вывод сессии по пути `.claude/ralph/sessions/<issue>-<ts>.log`, секреты петли — в список редактирования', () => {
+        const saveSessionOutputFn = vi.fn();
+        handleCrashedCoderSession(issue, 1, 'boom output', {
+            shFn: () => '',
+            logFn: () => {},
+            pushEventFn: () => {},
+            saveSessionOutputFn,
+            cfg: {} as unknown,
+        });
+        expect(saveSessionOutputFn).toHaveBeenCalledTimes(1);
+        const [filePath, output, secrets] = saveSessionOutputFn.mock.calls[0];
+        expect(filePath).toMatch(/^\.claude\/ralph\/sessions\/42-\d+\.log$/);
+        expect(output).toBe('boom output');
+        expect(Array.isArray(secrets)).toBe(true);
+    });
+
+    it('вывод сохраняется даже при ЧИСТОМ дереве — причина падения не теряется', () => {
+        const saveSessionOutputFn = vi.fn();
+        handleCrashedCoderSession(issue, 1, 'diagnostic output', {
+            shFn: () => '',
+            logFn: () => {},
+            pushEventFn: () => {},
+            saveSessionOutputFn,
+        });
+        expect(saveSessionOutputFn).toHaveBeenCalledTimes(1);
     });
 });
 

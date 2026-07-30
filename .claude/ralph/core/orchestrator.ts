@@ -103,6 +103,9 @@ const MONITOR_PID = path.join(CLAUDE_DIR, 'ralph', 'monitor.pid');
 // Гейт сверяет с ним lock PR-головы и переустанавливает зависимости при расхождении
 // (#SiaUX): фаза, добавившая зависимость, иначе гарантированно красила бы ночной гейт.
 const LOCK_MARKER_PATH = path.join(CLAUDE_DIR, 'ralph', '.deps-lock.sha');
+// #390: stdout/stderr упавших кодер-сессий — сюда, гитигнорено (.gitignore), как
+// ralph.log/ralph.state.json. Имя файла `<issue>-<ts>.log` строит saveCrashedSessionOutput.
+const SESSIONS_DIR = path.join(CLAUDE_DIR, 'ralph', 'sessions');
 
 // ── Типы контрактов ──────────────────────────────────────────────────────────
 // Фаза в форме, которую хранит config.phases.
@@ -402,7 +405,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // shArgv (мутации argv без шелла, #193/#252), ghJson (ретраи чтений, M3) — exec.ts.
     // Начальная цель лога — cwd-относительный LOG_PATH; main() репойнтит на абсолютный
     // путь внутри worktree раннера ещё ДО chdir (#SiaUB).
-    const { log, fail, setLogTarget, sh, shArgv, ghJson } = createExec({
+    const { log, fail, setLogTarget, sh, shArgv, ghJson, saveSessionOutput } = createExec({
         guardSideEffect,
         sleep,
         initialLogTarget: LOG_PATH,
@@ -563,6 +566,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // #376 доп.скоуп: резолвер рантайма кросс-провайдерного фолбэка — DI как остальные
             // коллабораторы (тест подменяет фейком, не завязываясь на боевой реестр адаптеров).
             coderRuntimeRunForFn = coderRuntimeRunFor,
+            // #390: сторонний канал вывода — по умолчанию no-op. Кодер-итерация runLoop
+            // подаёт сюда сборщик lastOutput (диагностика падения сессии), остальные
+            // вызовы runClaude (шаги сдачи/heal) его не передают — поведение прежнее.
+            onOutput = () => {},
         }: {
             pushEventFn?: typeof pushEvent;
             cfg?: RalphConfig;
@@ -570,6 +577,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             ensureTunnelFn?: typeof ensureTunnel;
             sleepFn?: typeof sleep;
             coderRuntimeRunForFn?: typeof coderRuntimeRunFor;
+            onOutput?: (output: string) => void;
         } = {},
     ): number {
         // #92: единая точка всех claude-сессий (кодер-итерации И шаги сдачи) — здесь же
@@ -599,7 +607,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
         for (let attempt = 0; ; attempt++) {
             const { code, output } = runClaudeOnceFn(prompt, opts);
             const limitHit = code !== 0 && API_LIMIT_RE.test(output);
-            if (!limitHit) return code;
+            if (!limitHit) {
+                onOutput(output);
+                return code;
+            }
             // Лимит основного рантайма. Кросс-провайдерный фолбэк (#376) пробуем ОДИН раз
             // за весь вызов ДО решения об ожидании: он «вместо ожидания», логически не часть
             // механизма ожидания — поэтому пробуется и при waitOnApiLimit:false (оператор,
@@ -642,7 +653,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // ожиданию основного провайдера, а НЕ отдаём чужой код как итог итерации
                     // (иначе один кривой фолбэк превращал бы переживаемый лимит в провал
                     // итерации, а в шагах сдачи — в стоп фазы).
-                    if (fb.code === 0) return fb.code;
+                    if (fb.code === 0) {
+                        onOutput(fb.output);
+                        return fb.code;
+                    }
                     log(
                         `⚠ Фолбэк-провайдер "${fallbackRoute.provider}" вернул ненулевой код ${fb.code} ` +
                             `(свой лимит / недоступен / misconfig) — перехожу к ожиданию основного рантайма.`,
@@ -650,8 +664,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 }
             }
             // Ожидание выключено оператором — после попытки фолбэка честно возвращаем код лимита.
-            if (cfg.waitOnApiLimit === false) return code;
-            if (attempt >= maxWaits) return code;
+            if (cfg.waitOnApiLimit === false) {
+                onOutput(output);
+                return code;
+            }
+            if (attempt >= maxWaits) {
+                onOutput(output);
+                return code;
+            }
             const waitMs = apiLimitWaitMs(output, cfg);
             const limitMsg = apiLimitMessage(waitMs, attempt, maxWaits);
             // pushEvent — единственный логгер события (маркер 🔔 PUSH печатается всегда,
@@ -1627,6 +1647,80 @@ export function createOrchestrator(env: OrchestratorEnv) {
         return true;
     }
 
+    // #390 (инцидент 28.07.2026, фаза 4 #204): claude завершился с кодом 1, но дерево было
+    // грязным (сессия успела наработать файлы и не успела закоммитить). Раннер честно
+    // пошёл на следующую итерацию, там сработал общий ensureClean — но с непричастным
+    // контекстом «итерация фазы», без упоминания падения. Дальше — сценарий #386: чужой
+    // прогон дописал в ОБЩИЙ ralph.log маркер остановки, DEADMAN ушёл в режим `stopped` и
+    // похоронил живую (по факту зависшую на грязном дереве) кодер-сессию.
+    //
+    // Эта функция закрывает разрыв: при ненулевом коде ВЫХОДА проверяем дерево СРАЗУ (не
+    // откладывая до следующей итерации) и — если оно грязное — стопим цикл честным
+    // сообщением, называющим И падение (issue, код), И оставшиеся файлы, И путь к
+    // сохранённому выводу сессии. Чистое дерево — прежнее поведение (M2, fail-open):
+    // сессия могла упасть уже ПОСЛЕ успешного закрытия issue, следующая итерация продолжает.
+    //
+    // Вывод сохраняется ВСЕГДА при ненулевом коде (не только при грязном дереве) — иначе
+    // причина падения при чистом дереве осталась бы такой же невосстановимой, как раньше
+    // (issue #390, «стдаут сессии никогда не сохраняется» — фактическая причина падения
+    // диагностики в инциденте, не сам DEADMAN).
+    function handleCrashedCoderSession(
+        issue: { number: number },
+        code: number,
+        output: string,
+        {
+            shFn = sh,
+            logFn = log,
+            pushEventFn = pushEvent,
+            saveSessionOutputFn = saveSessionOutput,
+            cfg = config,
+        }: {
+            shFn?: ShFn;
+            logFn?: LogFn;
+            pushEventFn?: typeof pushEvent;
+            saveSessionOutputFn?: typeof saveSessionOutput;
+            cfg?: RalphConfig;
+        } = {},
+    ): { stop: boolean } {
+        const sessionPath = path.join(SESSIONS_DIR, `${issue.number}-${Date.now()}.log`);
+        // #390: секреты петли (унаследованные claude-процессом, инвариант №11) редактируются
+        // ДО записи на диск — тот же приём, что telegram-notifier.ts применяет к TG-токену.
+        saveSessionOutputFn(sessionPath, output, [
+            process.env.GH_TOKEN,
+            process.env.CLAUDE_CODE_OAUTH_TOKEN,
+            process.env.RALPH_TG_BOT_TOKEN,
+            process.env.RALPH_TG_CHAT_ID,
+        ]);
+        let dirtyNow: string;
+        try {
+            dirtyNow = shFn('git status --porcelain');
+        } catch (e) {
+            // fail-closed (как ensureClean): после падения сессии неизвестное состояние
+            // дерева — это не «дерево чистое», это «не знаю» — а «не знаю» здесь стоит
+            // как под собственной грязью.
+            const crashMsg =
+                `⛔ Кодер-сессия Issue #${issue.number} упала (код ${code}), git status после падения тоже упал — ` +
+                `стоп, разбери руками: ${(e as Error).message}\n` +
+                `Вывод сессии: ${sessionPath}`;
+            logFn(crashMsg);
+            pushEventFn(crashMsg, cfg);
+            return { stop: true };
+        }
+        if (!dirtyNow) {
+            logFn(
+                `⚠ claude завершился с кодом ${code} — продолжаем (issue мог быть закрыт частично). Вывод сессии: ${sessionPath}`,
+            );
+            return { stop: false };
+        }
+        const crashMsg =
+            `⛔ Кодер-сессия Issue #${issue.number} упала (код ${code}) и оставила незакоммиченные изменения — стоп, разбери руками.\n` +
+            `Вывод сессии: ${sessionPath}\n` +
+            `Дерево:\n${dirtyNow}`;
+        logFn(crashMsg);
+        pushEventFn(crashMsg, cfg);
+        return { stop: true };
+    }
+
     // Единый рецепт «обнови дерево раннера до origin/main» — в сообщениях починки и как
     // команды. #SiaUk: обновление после мерджа (tryMergePhase) и после ручного мерджа
     // (runLoop) — одна и та же пара команд; держим их в ОДНОМ месте, чтобы правку
@@ -2209,6 +2303,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         addBlockedLabelFn?: typeof addBlockedLabel;
         runClaudeFn?: typeof runClaude;
         ensureCleanFn?: typeof ensureClean;
+        handleCrashedCoderSessionFn?: typeof handleCrashedCoderSession;
         phaseMergedFn?: (phase: { branch: string }) => boolean;
         mergedPhasePrFn?: (phase: { branch: string }) => number | null;
         advancePhaseFn?: typeof advancePhase;
@@ -2281,6 +2376,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             addBlockedLabelFn = adapters.taskSource.addBlockedLabel,
             runClaudeFn = runClaude,
             ensureCleanFn = ensureClean,
+            handleCrashedCoderSessionFn = handleCrashedCoderSession,
             phaseMergedFn = adapters.taskSource.isPhaseMerged,
             mergedPhasePrFn = adapters.taskSource.mergedPullRequestNumber,
             advancePhaseFn = advancePhase,
@@ -2408,6 +2504,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 // adapters.coderRuntime.run (дефолт runClaude). При провайдере без явного
                 // override в modelRouting это ТА ЖЕ ссылка (coderRuntimeRunFor('claude') ===
                 // adapters.coderRuntime.run при дефолтном выборе) — поведение прежнее.
+                //
+                // #390: onOutput — сторонний канал, которым runClaude(Fn) отдаёт вывод
+                // ПОСЛЕДНЕЙ попытки наружу (сам runClaudeFn возвращает только код — вывод
+                // нужен для диагностики падения, handleCrashedCoderSessionFn ниже). НЕ
+                // подменяет runClaudeOnceFn (сохраняет ссылку из реестра coderRuntime как
+                // есть — иначе identity-тесты #376 на `depsOverride.runClaudeOnceFn` сломались бы).
+                let lastOutput = '';
                 const code = runClaudeFn(
                     prompt,
                     {
@@ -2417,15 +2520,26 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     },
                     {
                         runClaudeOnceFn: coderRuntimeRunFor(issueProvider),
+                        onOutput: (output: string) => {
+                            lastOutput = output;
+                        },
                     },
                 );
-                // Кодер-итерация: ненулевой код НЕ фатален — issue остался открытым, его
-                // возьмёт следующая чистая сессия, а breaker ограничит бесконечные повторы.
-                // (В шагах СДАЧИ ниже логика противоположная — fail-closed, H2.)
-                if (code !== 0)
-                    logFn(
-                        `⚠ claude завершился с кодом ${code} — продолжаем (issue мог быть закрыт частично)`,
-                    );
+                // Кодер-итерация: ненулевой код САМ ПО СЕБЕ не фатален — issue остался
+                // открытым, его возьмёт следующая чистая сессия, а breaker ограничит
+                // бесконечные повторы. Но грязное дерево ПОСЛЕ падения — стоп СРАЗУ, не
+                // откладывая до ensureCleanFn следующей итерации (#390, см. докблок
+                // handleCrashedCoderSession). (В шагах СДАЧИ ниже логика противоположная —
+                // fail-closed, H2.)
+                if (code !== 0) {
+                    const { stop } = handleCrashedCoderSessionFn(next, code, lastOutput, {
+                        shFn,
+                        logFn,
+                        pushEventFn,
+                        cfg,
+                    });
+                    if (stop) break;
+                }
 
                 // Оценка прогресса — только в AFK (в ONCE решает человек, в DRY сессии не было).
                 // Прогресс = сдвинулся HEAD (коммиты есть) ИЛИ очередь стала короче (issue
@@ -3839,6 +3953,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
         runLoop,
         loadState,
         ensureClean,
+        // #390: экспорт для юнитов (saveSessionOutput — сама запись+редактирование секретов,
+        // handleCrashedCoderSession — диагностика падения кодер-сессии в runLoop).
+        saveSessionOutput,
+        handleCrashedCoderSession,
         parkOnOriginMain,
         gateChecksFor,
         checksGreen,

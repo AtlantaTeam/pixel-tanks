@@ -47,3 +47,17 @@ export function sleep(ms: number): void {
     if (!Number.isFinite(ms) || ms < 0) return;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
+
+// #390: захваченный stdout/stderr упавшей кодер-сессии может процитировать env, в
+// котором она запускалась (унаследованный процессом claude, инвариант №11), поэтому
+// перед записью на диск гоняем его через тот же приём, что уже применяет
+// telegram-notifier.ts к TG-токену — replaceAll ЗНАЧЕНИЯ секрета на '***', не паттерн.
+// Пустые/undefined секреты пропускаем (иначе replaceAll('') вставил бы '***' между
+// каждым символом строки).
+export function redactSecrets(text: string, secrets: Array<string | undefined>): string {
+    let redacted = text;
+    for (const secret of secrets) {
+        if (secret) redacted = redacted.replaceAll(secret, '***');
+    }
+    return redacted;
+}

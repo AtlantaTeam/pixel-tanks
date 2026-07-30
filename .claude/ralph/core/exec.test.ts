@@ -106,6 +106,32 @@ describe('предохранитель побочек в тестах: RALPH_NO_
 // #386: разводка лога боевого/не-боевого прогона — чужой прогон (dry-run и/или профиль
 // playground) не должен ослеплять deadman боевой петли своими маркерами остановки.
 // chooseLogPath — чистая функция, поэтому проверяется без main()/worktree/fs.
+// #390: запись stdout/stderr упавшей кодер-сессии на диск, редактируя секреты ДО записи.
+describe('saveSessionOutput (#390)', () => {
+    it('редактирует секреты и пишет через переданный writeFn', () => {
+        const writeFn = vi.fn();
+        ralph.saveSessionOutput(
+            '.claude/ralph/sessions/42-123.log',
+            'boom: token=SUPER_SECRET failed',
+            ['SUPER_SECRET'],
+            writeFn,
+        );
+        expect(writeFn).toHaveBeenCalledWith(
+            '.claude/ralph/sessions/42-123.log',
+            'boom: token=*** failed',
+        );
+    });
+
+    it('дефолтный writeFn (реальная запись на диск) — под предохранителем #138', () => {
+        expect(() =>
+            ralph.saveSessionOutput('.claude/ralph/sessions/42-123.log', 'output'),
+        ).toThrow(/RALPH_NO_SIDE_EFFECTS/);
+        expect(ralph.sideEffectAttempts.splice(0)).toEqual([
+            'saveSessionOutput(.claude/ralph/sessions/42-123.log)',
+        ]);
+    });
+});
+
 describe('chooseLogPath — куда пишет лог (#386)', () => {
     const PATHS = {
         battle: '/worktree/.claude/ralph/ralph.log',

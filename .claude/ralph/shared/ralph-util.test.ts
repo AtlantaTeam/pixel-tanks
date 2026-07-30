@@ -5,7 +5,7 @@
 // покрывают; orchestrator.test.ts держит лишь смоук ре-экспорта (тот же объект).
 import { describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';
-import { positiveIntOrDefault, shq, sleep } from './ralph-util.ts';
+import { positiveIntOrDefault, redactSecrets, shq, sleep } from './ralph-util.ts';
 
 describe('shq', () => {
     it('оборачивает значение в одинарные кавычки', () => {
@@ -85,5 +85,26 @@ describe('sleep', () => {
         const start = performance.now();
         sleep(value);
         expect(performance.now() - start).toBeLessThan(50);
+    });
+});
+
+describe('redactSecrets (#390)', () => {
+    it('заменяет каждое вхождение секрета на ***', () => {
+        const text = 'token=ghp_abc123 leaked twice: ghp_abc123 again';
+        expect(redactSecrets(text, ['ghp_abc123'])).toBe('token=*** leaked twice: *** again');
+    });
+
+    it('прогоняет несколько секретов независимо', () => {
+        const text = 'gh=SECRET1 tg=SECRET2';
+        expect(redactSecrets(text, ['SECRET1', 'SECRET2'])).toBe('gh=*** tg=***');
+    });
+
+    it('пропускает пустые/undefined секреты — не размножает *** между символами', () => {
+        const text = 'plain text';
+        expect(redactSecrets(text, [undefined, '', 'text'])).toBe('plain ***');
+    });
+
+    it('текст без совпадений возвращается как есть', () => {
+        expect(redactSecrets('no secrets here', ['SECRET'])).toBe('no secrets here');
     });
 });
