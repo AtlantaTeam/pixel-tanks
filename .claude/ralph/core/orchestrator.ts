@@ -32,7 +32,7 @@ import {
     sideEffectAttempts,
     guardSideEffect as sharedGuardSideEffect,
 } from '../shared/side-effect-guard.ts';
-import { createExec, loadJson } from './exec.ts';
+import { createExec, loadJson, chooseLogPath } from './exec.ts';
 import { createConfigProfile, isPlainObject } from './config-profile.ts';
 import { createStateLock } from './state-lock.ts';
 import type { RalphState } from './state-lock.ts';
@@ -76,6 +76,9 @@ const CLAUDE_DIR = '.claude';
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.config.json');
 const STATE_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.state.json');
 const LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.log');
+// #386: НЕ боевые прогоны (--dry-run и/или профиль ≠ prod) пишут сюда, не в LOG_PATH —
+// см. chooseLogPath (exec.ts) и инвариант №12.
+const DRY_LOG_PATH = path.join(CLAUDE_DIR, 'ralph', 'ralph.dry.log');
 const MONITOR_PATH = path.join(CLAUDE_DIR, 'ralph', 'runtime', 'monitor.js');
 // Путь к самому раннеру — для cmdline-сверки лока (isRalphProcess): за pid из лок-файла
 // должен стоять именно наш ralph.js (entry), а не чужой процесс, которому ОС отдала
@@ -3592,8 +3595,22 @@ export function createOrchestrator(env: OrchestratorEnv) {
         const worktreePath = resolveWorktreePath(config);
         // #SiaUB: лог репойнтим на worktree ещё ДО первой строки — монитор тейлит только
         // worktree-лог, иначе ранние события (⚙️ Профиль, создание worktree) на панели
-        // пропали бы. Только для живого прогона; DRY read-only и cwd/лог не переставляет.
-        if (!DRY) setLogTarget(path.join(worktreePath, LOG_PATH));
+        // пропали бы. #386: репойнтим ВСЕГДА, в т.ч. для DRY — иначе logTarget остаётся
+        // относительным, а process.chdir ниже (ветка runnerWorktreeReady) молча резолвит
+        // его в ТОТ ЖЕ файл, что и боевой прогон (сам chdir не читает DRY). chooseLogPath
+        // разводит боевой прогон (профиль prod, не dry) и все остальные — по абсолютному
+        // пути внутри worktree, так что результат не зависит от того, случился chdir или
+        // нет. DRY при этом остаётся read-only в смысле C1 (git/worktree/state) — просто
+        // хозяйский лог-канал больше не общий.
+        setLogTarget(
+            path.join(
+                worktreePath,
+                chooseLogPath(
+                    { dry: DRY, profileName: config.profileName },
+                    { battle: LOG_PATH, sideline: DRY_LOG_PATH },
+                ),
+            ),
+        );
 
         // Режим в лог первой строкой: разбирая утренний ralph.log, надо видеть, в каком
         // профиле шёл прогон, не сверяясь с историей команд.
@@ -3763,6 +3780,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // тоже обязаны падать guardSideEffect, если дефолт-коллаборатор не подменили.
         shArgv,
         log,
+        // #386: разводка лога боевого/не-боевого прогона — экспорт для юнита, main() не
+        // тестируется напрямую (см. докблок createOrchestrator).
+        chooseLogPath,
         sideEffectAttempts,
         closeCompletedMilestones,
         closeMilestoneByTitle,

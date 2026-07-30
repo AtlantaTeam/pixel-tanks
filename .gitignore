@@ -32,6 +32,7 @@ test-results/
 # Ralph runtime
 .claude/ralph/ralph.state.json
 .claude/ralph/ralph.log
+.claude/ralph/ralph.dry.log
 .claude/ralph/monitor.out
 .claude/ralph/monitor.pid
 .claude/ralph/ralph.lock

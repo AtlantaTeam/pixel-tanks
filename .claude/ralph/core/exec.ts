@@ -44,6 +44,20 @@ export function loadJson<T>(p: string, fallback: T): T {
     }
 }
 
+// #386: выбор пути лога по режиму прогона. Свежесть ralph.log — признак жизни БОЕВОЙ
+// петли (инвариант №12); чужой прогон (--dry-run и/или профиль ≠ prod — обычный
+// ритуал кодер-сессии, проверяющей правки самого раннера: playground/dry-run) не имеет
+// права писать в тот же файл — его штатные маркеры остановки (⏸/✋/🎉) переводят
+// deadman в режим stopped (порог тишины Infinity) и ослепляют сторож боевой петли
+// навсегда. Чистая функция без побочек — тестируется отдельно от main().
+export function chooseLogPath(
+    run: { dry: boolean; profileName?: string },
+    paths: { battle: string; sideline: string },
+): string {
+    const isBattle = !run.dry && run.profileName === 'prod';
+    return isBattle ? paths.battle : paths.sideline;
+}
+
 export function createExec(env: ExecEnv) {
     const { guardSideEffect, sleep, initialLogTarget } = env;
 

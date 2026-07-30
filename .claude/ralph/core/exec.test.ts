@@ -102,3 +102,39 @@ describe('предохранитель побочек в тестах: RALPH_NO_
         append.mockRestore();
     });
 });
+
+// #386: разводка лога боевого/не-боевого прогона — чужой прогон (dry-run и/или профиль
+// playground) не должен ослеплять deadman боевой петли своими маркерами остановки.
+// chooseLogPath — чистая функция, поэтому проверяется без main()/worktree/fs.
+describe('chooseLogPath — куда пишет лог (#386)', () => {
+    const PATHS = {
+        battle: '/worktree/.claude/ralph/ralph.log',
+        sideline: '/worktree/.claude/ralph/ralph.dry.log',
+    };
+
+    it('боевой прогон (профиль prod, не dry) пишет в общий ralph.log', () => {
+        expect(ralph.chooseLogPath({ dry: false, profileName: 'prod' }, PATHS)).toBe(PATHS.battle);
+    });
+
+    it('--dry-run на профиле prod пишет в отдельный лог, не в боевой', () => {
+        expect(ralph.chooseLogPath({ dry: true, profileName: 'prod' }, PATHS)).toBe(PATHS.sideline);
+    });
+
+    it('профиль playground без --dry-run пишет в отдельный лог, не в боевой', () => {
+        expect(ralph.chooseLogPath({ dry: false, profileName: 'playground' }, PATHS)).toBe(
+            PATHS.sideline,
+        );
+    });
+
+    it('профиль playground с --dry-run тоже пишет в отдельный лог', () => {
+        expect(ralph.chooseLogPath({ dry: true, profileName: 'playground' }, PATHS)).toBe(
+            PATHS.sideline,
+        );
+    });
+
+    it('профиль не задан (dry) — консервативно отдельный лог, не боевой', () => {
+        expect(ralph.chooseLogPath({ dry: false, profileName: undefined }, PATHS)).toBe(
+            PATHS.sideline,
+        );
+    });
+});
