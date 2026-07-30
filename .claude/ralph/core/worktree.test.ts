@@ -2,7 +2,7 @@
 // createWorktreeManager — что она собирает рабочие функции из синтетического env,
 // независимо от ralph.js: контракт extraction'а — модуль самодостаточен и переносим
 // (цель фазы 2), а не «работает только пока его зовёт ralph.js». Проход «через
-// ре-экспорт ralph.js» с боевым контекстом раннера — в lock-scenarios.test.js и в
+// ре-экспорт ralph.js» с боевым контекстом раннера — в lock-scenarios.test.ts и в
 // блоках в конце этого файла, перенесённых из ralph.test.js при её разнесении по
 // модульным тест-файлам (#366).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

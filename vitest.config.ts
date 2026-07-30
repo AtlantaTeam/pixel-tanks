@@ -51,9 +51,13 @@ export default defineConfig({
                     // Сверка журнала побочек — общим afterEach на весь проект, а не в
                     // одном тест-файле: include ниже покрывает и scripts/**, и будущие
                     // файлы рядом с раннером (ревью PR #141).
-                    setupFiles: ['./.claude/ralph/tests/test-setup.js'],
+                    setupFiles: ['./.claude/ralph/tests/test-setup.ts'],
                     include: [
-                        '.claude/ralph/**/*.test.{js,ts}',
+                        // .mts — явно-ESM модуль (gate-env.mts, #403): под nodenext-tsconfig
+                        // ралфа только `.mts` даёт TS-режим ESM, где легален import.meta.dirname
+                        // (провенанс allowlist от каталога модуля). В `.ts` тот же import.meta —
+                        // TS1470, а module.exports-CJS прячет экспорты от .test.ts — оба тупика.
+                        '.claude/ralph/**/*.test.{js,ts,mts}',
                         // *.config.test.ts в корне — тесты корневых конфигов (vitest.config
                         // и т.п.), по конвенции «тест рядом с модулем и по его имени».
                         '*.config.test.ts',

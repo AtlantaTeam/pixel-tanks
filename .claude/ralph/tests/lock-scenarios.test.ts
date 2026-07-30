@@ -14,14 +14,16 @@
 // «ДО любых побочек» (крит. 1 и 4) проверяем СИЛЬНЕЕ мок-ассертов: на отказных путях
 // НЕ подменяем writeFn/removeFn — оставляем боевые дефолты под предохранителем #138. Любая
 // запись/удаление тогда бросила бы и попала в журнал sideEffectAttempts, который общий
-// afterEach (test-setup.js) сверяет с пустотой. Пустой журнал = отказ физически ничего не
+// afterEach (test-setup.ts) сверяет с пустотой. Пустой журнал = отказ физически ничего не
 // тронул, а не «мок не позвался». Порядок «лок — первый шаг main(), впереди конфига/лога/
 // worktree» (крит. 1 на уровне точки входа) закреплён структурным барьером в конце файла:
 // main() не экспортируется (process.exit'ит, трогает реальный git/fs), поэтому ordering
 // проверяется по исходнику — барьер поймает рефактор, который протащит побочку перед локом.
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+// @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что в
+// orchestrator.test.ts, #366): дефолт ralph.js — ре-экспорт runtime фабрики.
 import ralph from '../ralph.js';
 
 const { acquireLock } = ralph;
@@ -32,8 +34,8 @@ const LOCK_PATH = '.claude/ralph/ralph.lock';
 const RALPH_CMDLINE = 'node\0.claude/ralph/ralph.js\0--profile\0prod\0';
 const FOREIGN_CMDLINE = 'nginx\0-g\0daemon off;\0';
 
-const enoent = (msg) => {
-    const e = new Error(msg);
+const enoent = (msg: string): NodeJS.ErrnoException => {
+    const e = new Error(msg) as NodeJS.ErrnoException;
     e.code = 'ENOENT';
     return e;
 };
@@ -42,21 +44,29 @@ const enoent = (msg) => {
 // Раздельные контракты (#243-ревью): readFn читает ТОЛЬКО лок-файл, procReadFn — ТОЛЬКО
 // /proc/<pid>/cmdline; больше не мультиплексируем по подстроке пути. killFn(pid, 0)
 // имитирует kill: живой pid → ok, мёртвый → ESRCH.
-function makeLockWorld({ lockContent = null, cmdlines = {}, livePids = [] } = {}) {
+function makeLockWorld({
+    lockContent = null,
+    cmdlines = {},
+    livePids = [],
+}: {
+    lockContent?: string | null;
+    cmdlines?: Record<string, string>;
+    livePids?: number[];
+} = {}) {
     const live = new Set(livePids.map(String));
-    const readFn = () => {
+    const readFn = (): string => {
         if (lockContent == null) throw enoent('ENOENT lock');
         return lockContent;
     };
-    const procReadFn = (p) => {
+    const procReadFn = (p: string): string => {
         const proc = String(p).match(/\/proc\/(\d+)\/cmdline/);
         const cmd = proc ? cmdlines[proc[1]] : null;
         if (cmd == null) throw enoent(`ENOENT ${p}`);
         return cmd;
     };
-    const killFn = (pid) => {
+    const killFn = (pid: number): void => {
         if (!live.has(String(pid))) {
-            const e = new Error('ESRCH');
+            const e = new Error('ESRCH') as NodeJS.ErrnoException;
             e.code = 'ESRCH';
             throw e;
         }
@@ -181,7 +191,7 @@ describe('крит. 3 — чужой процесс с переиспользо�
 describe('крит. 4 — битый/нечитаемый лок-файл: стоп с внятным сообщением, ДО побочек', () => {
     // На всех стоп-путях write/remove не подменяем — боевые дефолты под #138 докажут, что
     // стоп ничего не тронул (журнал побочек пуст).
-    const stopCase = (lockContent) => {
+    const stopCase = (lockContent: string | null) => {
         const { readFn, procReadFn, killFn } = makeLockWorld({ lockContent });
         const failFn = vi.fn();
         const ok = acquireLock({
@@ -213,8 +223,8 @@ describe('крит. 4 — битый/нечитаемый лок-файл: ст�
     it('нечитаемый файл (EACCES, не ENOENT) → стоп, не «лока нет», без побочек', () => {
         // readFn читает только лок-файл — сразу бросает EACCES (до lockAlive/procReadFn дело
         // не доходит, стоп на чтении).
-        const readFn = () => {
-            const e = new Error('EACCES: permission denied');
+        const readFn = (): never => {
+            const e = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
             e.code = 'EACCES';
             throw e;
         };
@@ -264,7 +274,7 @@ describe('крит. 5 — побочки в тестах запрещены (RAL
 
     it('весь набор отказных сценариев не сделал ни одной боевой побочки', () => {
         // Прогоняем все стоп/отказ-пути подряд с боевыми дефолтами write/remove: журнал
-        // побочек обязан остаться пустым (afterEach в test-setup.js сверит его же).
+        // побочек обязан остаться пустым (afterEach в test-setup.ts сверит его же).
         const live = makeLockWorld({
             lockContent: '4242',
             cmdlines: { 4242: RALPH_CMDLINE },
@@ -285,11 +295,10 @@ describe('крит. 1 (точка входа) — лок берётся ПЕРВ
     // этот тест (структурный барьер сильнее комментария «лок первым» — бриф надёжности).
     it('в исходнике main() acquireRunnerLock() предшествует loadJson/ensureRunnerWorktree/chdir', () => {
         // #365: main() переехал из монолита ralph.js в orchestrator.ts — барьер сканирует
-        // новый дом; сам инвариант «лок первым» не изменился.
-        const src = fs.readFileSync(
-            fileURLToPath(new URL('../core/orchestrator.ts', import.meta.url)),
-            'utf-8',
-        );
+        // новый дом; сам инвариант «лок первым» не изменился. `__dirname`, не `import.meta`
+        // (#406): tsconfig ралфа компилит .ts в CommonJS-режиме nodenext, где import.meta
+        // запрещён (TS1470, тот же приём, что в core-purity.test.ts).
+        const src = fs.readFileSync(resolve(__dirname, '../core/orchestrator.ts'), 'utf-8');
         const mainStart = src.indexOf('function main()');
         expect(mainStart).toBeGreaterThan(-1);
         const body = src.slice(mainStart);
@@ -298,7 +307,7 @@ describe('крит. 1 (точка входа) — лок берётся ПЕРВ
         // после отступа), а не любого вхождения подстроки: голый indexOf ловил бы и текст в
         // комментариях (будущий коммент с `acquireRunnerLock()` перед реальным вызовом ложно
         // удовлетворил бы барьер, а `loadJson(CONFIG_PATH` в комменте до лока — ложно уронил).
-        const codeLineIdx = (re) => {
+        const codeLineIdx = (re: RegExp): number => {
             const m = re.exec(body);
             return m ? m.index : -1;
         };
@@ -314,7 +323,7 @@ describe('крит. 1 (точка входа) — лок берётся ПЕРВ
             ['loadJson(CONFIG_PATH)', configIdx],
             ['ensureRunnerWorktree', worktreeIdx],
             ['process.chdir', chdirIdx],
-        ]) {
+        ] as const) {
             expect(idx, `${name} должен идти ПОСЛЕ acquireRunnerLock() в main()`).toBeGreaterThan(
                 lockIdx,
             );

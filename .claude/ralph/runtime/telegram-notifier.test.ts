@@ -1,5 +1,5 @@
-// Юнит-тесты telegram-notifier.js (#85). execFn всегда мокается явно — реальный
-// curl запрещён в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1, см. test-setup.js);
+// Юнит-тесты telegram-notifier.ts (#85). execFn всегда мокается явно — реальный
+// curl запрещён в тестовом окружении (RALPH_NO_SIDE_EFFECTS=1, см. test-setup.ts);
 // забытый мок ловит общий afterEach через sideEffectAttempts, а не тихо бьёт в сеть.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
@@ -7,7 +7,7 @@ import {
     telegramConfigFromEnv,
     TELEGRAM_API_BASE,
     TELEGRAM_DEFAULT_ATTEMPTS,
-} from './telegram-notifier.js';
+} from './telegram-notifier.ts';
 
 describe('telegramConfigFromEnv', () => {
     const ORIGINAL_ENV = process.env;
@@ -110,7 +110,7 @@ describe('sendTelegramMessage', () => {
 
         sendTelegramMessage(long, { token: 'T', chatId: 'C', execFn });
 
-        const textArg = execFn.mock.calls[0][1].find((a) => a.startsWith('text='));
+        const textArg = execFn.mock.calls[0][1].find((a: string) => a.startsWith('text='));
         expect(textArg.slice('text='.length).length).toBe(4096);
     });
 
@@ -123,7 +123,7 @@ describe('sendTelegramMessage', () => {
         sendTelegramMessage(text, { token: 'T', chatId: 'C', execFn });
 
         const sent = execFn.mock.calls[0][1]
-            .find((a) => a.startsWith('text='))
+            .find((a: string) => a.startsWith('text='))
             .slice('text='.length);
         expect([...sent].length).toBe(4096);
         expect(sent.endsWith('🔔')).toBe(true);
@@ -355,15 +355,13 @@ describe('sendTelegramMessage — ретраи доставки (#224)', () => {
     });
 
     it('#TFO9Q: постоянный 4xx (chat not found) НЕ ретраится — одна попытка, без синхронных пауз', () => {
-        const execFn = vi
-            .fn()
-            .mockReturnValue(
-                JSON.stringify({
-                    ok: false,
-                    error_code: 400,
-                    description: 'Bad Request: chat not found',
-                }),
-            );
+        const execFn = vi.fn().mockReturnValue(
+            JSON.stringify({
+                ok: false,
+                error_code: 400,
+                description: 'Bad Request: chat not found',
+            }),
+        );
         const logFn = vi.fn();
         const sleepFn = vi.fn();
 
@@ -430,7 +428,9 @@ describe('sendTelegramMessage — ретраи доставки (#224)', () => {
             execFn,
             logFn,
             sleepFn,
-            retryBaseMs: 'мусор',
+            // Намеренно невалидный тип — проверяем откат positiveIntOrDefault на дефолт,
+            // а не то, что вызывающий код всегда прав.
+            retryBaseMs: 'мусор' as unknown as number,
         });
 
         expect(result).toBe(true);

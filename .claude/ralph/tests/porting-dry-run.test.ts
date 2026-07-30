@@ -7,7 +7,7 @@
 // `ralph.config.json` (кроме имён моделей ревью — те часть словаря ядра, не проекта,
 // см. REVIEW_MODEL_STRENGTH в review.ts).
 //
-// createOrchestrator зовётся НАПРЯМУЮ (как в orchestrator.test.js, блок «createOrchestrator:
+// createOrchestrator зовётся НАПРЯМУЮ (как в orchestrator.test.ts, блок «createOrchestrator:
 // API-поверхность»), а не через singleton ralph.js — так фикстурный прогон получает
 // независимый config/adapters и не делит состояние с остальным сьютом.
 //
@@ -16,7 +16,7 @@
 // guardSideEffect (#138), если их не подменить явно. Каждый DI-параметр preflight/runLoop,
 // который может дойти до git/gh/claude в dry-режиме, подменён фейком — забытый дефолт
 // (в т.ч. адаптерский, `adapters.taskSource.*`) либо бросит на построении фабрики, либо
-// попадёт в общий журнал sideEffectAttempts, который сверяет afterEach (test-setup.js).
+// попадёт в общий журнал sideEffectAttempts, который сверяет afterEach (test-setup.ts).
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';

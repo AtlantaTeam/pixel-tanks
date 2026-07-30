@@ -1,8 +1,8 @@
 // Приёмочные (сценарные) тесты deadman (#150) — доказательство критериев готовности
 // фазы 1 «тишина как алерт» через ВЕСЬ конвейер детекта end-to-end, а не по кускам.
 //
-// Юнит-тесты живут рядом: deadman.test.js (#147 — классификация хвоста и порог) и
-// monitor.test.js (#148/#149 — evalDeadman/readLogTail/дедуп на замороженных числах).
+// Юнит-тесты живут рядом: deadman.test.ts (#147 — классификация хвоста и порог) и
+// monitor-panel.test.mts (#148/#149 — evalDeadman/readLogTail/дедуп на замороженных числах).
 // Здесь другой уровень: реальный файл лога на диске → readLogTail (реальный fs.stat
 // mtime) → evalDeadman → maybePushDeadman → доставка через настоящий pushEvent(), с
 // проверкой ровно тех сценариев отказа, что в критериях Issue #150:
@@ -11,13 +11,15 @@
 //   • полный живой прогон фазы → ни одного ложного пуша.
 //
 // Побочки запрещены и здесь (RALPH_NO_SIDE_EFFECTS=1 из vitest.config, guardSideEffect,
-// общий afterEach в test-setup.js): сеть/шелл/state не трогаем, доставка пуша — через
+// общий afterEach в test-setup.ts): сеть/шелл/state не трогаем, доставка пуша — через
 // инжектируемый pushFn/logFn (DI), реальный pushEvent зовём в non-prod профиле, где он
 // печатает маркер, но НЕ ходит в Telegram (проверяется отдельным assert'ом ниже).
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
-import { readLogTail, evalDeadman, maybePushDeadman } from '../runtime/monitor.js';
+// Логика панели монитора теперь на TS (#404) — импорт типизирован, @ts-expect-error не нужен.
+import { readLogTail, evalDeadman, maybePushDeadman } from '../runtime/monitor-panel.mts';
+// @ts-expect-error — JS-entry раннера без деклараций типов.
 import ralph, { pushEvent as pushEventReal } from '../ralph.js';
-import { logLine as t, makeTmpLog } from './test-helpers.js';
+import { logLine as t, makeTmpLog } from './test-helpers.ts';
 
 const MIN = 60000;
 
@@ -34,7 +36,7 @@ const GATE_THRESHOLD = 600000; // 10м
 const DEFAULT_THRESHOLD = 300000; // 5м
 
 // ── Реальный временный лог на диске (как боевой ralph.log) ────────────────────────
-// Общая фабрика (test-helpers.js): приватный tmp-каталог + writeLog + cleanup — чтобы
+// Общая фабрика (test-helpers.ts): приватный tmp-каталог + writeLog + cleanup — чтобы
 // формат/жизненный цикл временного лога жил в одном месте, а не в трёх тест-файлах.
 const { writeLog, cleanupFiles, removeDir } = makeTmpLog('ralph-deadman-scn-');
 afterEach(cleanupFiles);
@@ -45,14 +47,26 @@ afterAll(removeDir);
 // maybePushDeadman через настоящий pushEvent() с перехваченным logFn. Возвращаем всё,
 // что нужно проверить: тихо/нет, режим, был ли доставлен пуш и его текст, новый ключ
 // дедупа. Именно этот путь переживает смерть раннера — на входе только файл.
-function tick(logPath, ageMs, { prevKey = null, logSpy = vi.fn(), cfg = CFG } = {}) {
+function tick(
+    logPath: string,
+    ageMs: number,
+    {
+        prevKey = null,
+        logSpy = vi.fn(),
+        cfg = CFG,
+    }: { prevKey?: number | null; logSpy?: ReturnType<typeof vi.fn>; cfg?: typeof CFG } = {},
+) {
     const { lines, lastMtime } = readLogTail(200, logPath);
-    const now = lastMtime + ageMs;
+    // writeLog всегда создаёт реальный файл → mtime есть (readLogTail отдаёт null только
+    // при отсутствии файла, чего в этих сценариях не бывает). `!` — чтобы арифметика
+    // «сейчас = mtime + возраст» видела number, а не number | null.
+    const now = lastMtime! + ageMs;
     const deadman = evalDeadman({ now, lastMtime, lines, config: cfg });
     const key = maybePushDeadman(deadman, lastMtime, prevKey, {
         cfg,
         milestoneName: 'Наблюдаемость ralph · Фаза 1',
-        pushFn: (msg, c, opts) => pushEventReal(msg, c, { ...opts, logFn: logSpy }),
+        pushFn: (msg: string, c: unknown, opts: Record<string, unknown>) =>
+            pushEventReal(msg, c, { ...opts, logFn: logSpy }),
     });
     const pushed = logSpy.mock.calls.filter((c) => /🔔 PUSH/.test(c[0]));
     return { deadman, key, logSpy, pushedText: pushed.map((c) => c[0]) };
@@ -98,7 +112,7 @@ describe('kill -9 раннера → пуш без участия раннера
     // Раннер убит (kill -9, OOM): ralph.js больше ничего не пишет, лог замёрз. Монитор
     // detached — жив и считает тишину ПО ФАЙЛУ. Доказательство «без участия раннера»:
     // на входе tick() только путь к файлу; ни одной боевой побочки ralph.js (afterEach
-    // в test-setup.js сверяет журнал sideEffectAttempts — он обязан остаться пустым).
+    // в test-setup.ts сверяет журнал sideEffectAttempts — он обязан остаться пустым).
     it('раннер мёртв на хоз-шаге дольше дефолта → пуш из одного лишь файла', () => {
         const p = writeLog([t('🔀 Переключение на ветку feature/ralph-deadman')]);
         const r = tick(p, DEFAULT_THRESHOLD + MIN); // мёртв 6 мин > default 5 мин

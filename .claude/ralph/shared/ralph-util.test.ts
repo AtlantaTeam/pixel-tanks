@@ -1,8 +1,8 @@
 // Юнит-тесты общего util-модуля (#232): shq/positiveIntOrDefault/sleep — раньше жили
-// копиями в ralph.js и telegram-notifier.js, теперь единственный источник правды.
+// копиями в ralph.js и telegram-notifier.ts, теперь единственный источник правды.
 // Здесь же живут anti-injection round-trip-тесты shq (через реальный /bin/sh) и полный
 // негативный набор positiveIntOrDefault (#132) — тесты рядом с модулем, который они
-// покрывают; orchestrator.test.js держит лишь смоук ре-экспорта (тот же объект).
+// покрывают; orchestrator.test.ts держит лишь смоук ре-экспорта (тот же объект).
 import { describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';
 import { positiveIntOrDefault, shq, sleep } from './ralph-util.ts';

@@ -88,7 +88,7 @@ test-ratchet, project-sync и т.д.). Перенеси нужные и попр
 ## Что переносится как есть (правок кода не требует)
 
 Вся хореография `ralph.js`/`orchestrator.ts` (профили, worktree-изоляция, цикл сдачи,
-детерминированный гейт, self-heal, breaker'ы, API-лимит), `deadman.js`,
-`telegram-notifier.js`, предохранитель побочек #138, `baseline-policy.mjs`, общий
+детерминированный гейт, self-heal, breaker'ы, API-лимит), `deadman.ts`,
+`telegram-notifier.ts`, предохранитель побочек #138, `baseline-policy.mjs`, общий
 промпт-контракт `ralph.md`. (Проектную половину `ralph.project.md` и baseline — заменяешь,
 см. §7.)

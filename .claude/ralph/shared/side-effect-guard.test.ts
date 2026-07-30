@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 describe('guardSideEffect (RALPH_NO_SIDE_EFFECTS=1, дефолт проекта "ralph")', () => {
-    // Журнал общий на весь проект "ralph" (#145) — общий afterEach из test-setup.js
+    // Журнал общий на весь проект "ralph" (#145) — общий afterEach из test-setup.ts
     // валит тест на непустом sideEffectAttempts, поэтому каждая проверка сама вычищает
     // за собой через splice(0), как и остальные тесты раннера.
     it('бросает с текстом what и переданной подсказкой', async () => {

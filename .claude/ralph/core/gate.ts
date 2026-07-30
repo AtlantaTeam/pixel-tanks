@@ -12,7 +12,7 @@
 // (ralph.config.json → gate.checks/prodChecks/prodDropChecks, #204 фаза 4): ядро знает
 // только КОНТРАКТ (fail-fast порядок, дедуп base↔prod), конкретные npm-скрипты проекта —
 // в конфиге. resolveGateChecks валидирует форму fail-closed. Санация env чеков живёт в
-// отдельном gate-env.js (#188) и приходит сюда инжектируемым buildSanitizedGateEnv —
+// отдельном gate-env.mts (#188) и приходит сюда инжектируемым buildSanitizedGateEnv —
 // этот модуль её только зовёт.
 //
 // TS-модуль без билд-шага: исполняется нативным type stripping Node 24 (erasable-only
@@ -24,7 +24,7 @@
 // regex'ов). Фабрика захватывает этот контекст один раз, а возвращённые функции
 // сохраняют ПОКАЗАТЕЛЬНУЮ DI: каждая по-прежнему принимает свои коллабораторы
 // (shFn/logFn/checksGreenFn/…) параметром — ровно так их зовут существующие тесты
-// (gate.test.ts, blocked-scenarios.test.js, hold-scenarios.test.js) через ре-экспорт из
+// (gate.test.ts, blocked-scenarios.test.ts, hold-scenarios.test.ts) через ре-экспорт из
 // ralph.js. Module-level state гейта (lastRedCheck/lastVerifiedHead/lastGatePr) живёт в
 // замыкании фабрики и читается наружу геттерами — как раньше module.exports у ralph.js.
 
@@ -78,7 +78,7 @@ type ResolvedGateChecks = { base: GateCheck[]; prodChecks: GateCheck[]; prodDrop
 // module-level коллабораторы, что использует остальной раннер. safeBranch/findOpenPr/
 // ensureClean/parkOnOriginMain/updateRunnerTreeToOriginMain/syncDepsIfLockChanged/
 // formatExcerpt — уже определённые в ralph.js помощники хореографии. buildSanitizedGateEnv
-// — санация env чеков (#188/#189, отдельный gate-env.js). sleep — ожидание между
+// — санация env чеков (#188/#189, отдельный gate-env.mts). sleep — ожидание между
 // повторами мутации. dry — снимок DRY на момент создания фабрики (DRY иммутабелен,
 // ставится из argv на старте): defense-in-depth guard C1 внутри tryMergePhase. regex'ы
 // и RUNNER_TREE_FIX_HINT — константы ralph.js.

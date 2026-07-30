@@ -15,7 +15,7 @@
 // standalone-функция взять неоткуда. Фабрика захватывает этот контекст один раз, а
 // возвращённые функции сохраняют ПОКАЗАТЕЛЬНУЮ DI: каждая по-прежнему принимает свои
 // коллабораторы (shFn/existsFn/addFn/…) параметром — ровно так их зовут существующие
-// тесты (worktree.test.ts, lock-scenarios.test.js) через ре-экспорт из ralph.js.
+// тесты (worktree.test.ts, lock-scenarios.test.ts) через ре-экспорт из ralph.js.
 
 import fs from 'node:fs';
 import path from 'node:path';

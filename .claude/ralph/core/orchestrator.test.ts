@@ -4,13 +4,22 @@
 // ветковая хореография, монитор, ревью-контекст, milestones/доска), и контракт самой
 // фабрики/«тонкость» entry (створки блоки в конце файла).
 //
-// Файл — единственный тест-файл модуля orchestrator.ts (#366, один файл на модуль):
-// намеренно .js, а не .ts — дословный перенос блоков из монолитного ralph.test.js (тоже
-// .js) под tsc --strict потребовал бы переписывания моков под явные типы на ~4600 строк,
-// то есть менял бы суть сценариев, а не их расположение. .claude/ralph/tsconfig.json
-// включает только **/*.ts, поэтому файл вне периметра typecheck:ralph — как и остальные
-// тесты .js-модулей (monitor.test.js, deadman.test.js, telegram-notifier.test.js,
-// gate-env.test.js); orchestrator.ts сам по себе остаётся типизированным и проверяемым.
+// Файл — единственный тест-файл модуля orchestrator.ts (#366, один файл на модуль).
+// Переведён в .ts (#405, фаза 8 «Дотипизация оболочки»): дословный перенос блоков без
+// переписывания моков — под tsc --strict добавлены только аннотации фикстур и DI-заглушек
+// (узкие локальные типы вместо `any`), а частичные spawnSync-фейки приводятся к боевому
+// `typeof spawnSync` точечным `as unknown as SpawnSyncFn` в вызове. Число тестов и их суть
+// не менялись (перенос, не переписывание); файл теперь КОМПИЛИРУЕТСЯ typecheck:ralph
+// (tsconfig включает **/*.ts). Единственный барьер здесь — tsc: ESLint на `.claude/**` не
+// распространяется (globalIgnores в eslint.config.mjs).
+//
+// Что именно проверяет tsc, а что нет (честно, #409-ревью): поверхность ralph.js держится
+// `any` (ts-expect-error-импорт ниже), поэтому tsc сверяет ЛОКАЛЬНЫЕ аннотации — фикстуры,
+// DI-заглушки (SpawnFake/ChecksGreenFake/…), формы `mock.calls[i]` — но НЕ сигнатуры вызовов
+// боевого API: `runLoop`/`checksGreen`/`closeMilestone…` зовутся через `any`. Полная
+// типизация деструктуризации (`ralph as ReturnType<typeof createOrchestrator>`) покраснила
+// бы ~150 вызовов с генерик-коллабораторами (`GhJsonFn`) и частичными cfg/state-фейками —
+// это отдельный трек, а не правка переноса #405.
 //
 // Файл собран при разнесении монолитного ralph.test.js по модульным тест-файлам (#366):
 // блоки перенесены как есть, включая их фикстуры и комментарии.
@@ -18,7 +27,7 @@
 // Тесты детерминированы: время мокается фейк-таймерами, платформо- и TZ-независимы.
 // Побочек нет ни одной: все коллабораторы (sh/shArgv/spawn/gh/fs) инжектируются, а
 // боевые дефолты под RALPH_NO_SIDE_EFFECTS=1 громко падают на guardSideEffect (#138) —
-// общий afterEach из test-setup.js сверяет журнал попыток.
+// общий afterEach из test-setup.ts сверяет журнал попыток.
 //
 // spawnClaude тестируем через явную инъекцию фейковой spawn-функции (3-й параметр),
 // НЕ через vi.mock('node:child_process'): мок модуля на границе CJS require()
@@ -26,9 +35,20 @@
 // пробился до настоящего spawnSync и запустил живой процесс `claude` вместо фейка.
 // Явный параметр детерминирован независимо от того, как раннер загружен.
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import fs from 'node:fs';
+// @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что в
+// monitor-panel.mts / config-profile.test.ts, #366): дефолт ralph.js — ре-экспорт
+// runtime фабрики. Поверхность держим `any` СОЗНАТЕЛЬНО (не кастуем к
+// ReturnType<typeof createOrchestrator>): боевые DI-коллабораторы этого сьюта — генерик
+// `GhJsonFn` (`<T>(cmd)=>T`), частичные cfg/state-фейки и ClaudeOpts-заглушки, которые
+// #405 намеренно перенёс ДОСЛОВНО, не переписывая под строгие типы. Каст фабрики
+// покраснил бы ~150 таких вызовов разом — это отдельный крупный трек «типизация DI-моков
+// сценариев», а не правка этого переноса (см. ответ в ревью PR #409).
 import ralph from '../ralph.js';
+import type { AdapterRegistries, AdapterConfig } from '../adapters/adapters-impl.ts';
+import type { DeployOutcome } from './deploy-check.ts';
+import type { RalphState } from './state-lock.ts';
 
 // #204: состав чеков гейта переехал в ralph.config.json. gateChecksFor и tryMergePhase
 // читают ФАБРИЧНЫЙ config, который в проде ставит main() (в юнит-тестах не запускаемая).
@@ -76,19 +96,60 @@ const {
     getLastGatePr,
 } = ralph;
 
+// Узкие локальные типы фейков DI (правило проекта: no-explicit-any). Моки намеренно
+// частичны — сигнатура нужна лишь чтобы `mock.calls[i]` был кортежем нужной формы:
+// `vi.fn(() => …)` без дженерика выводит НОЛЬ-арность, и `calls[i][n]` упирается в
+// «пустой кортеж не имеет элемента n». Дженерик восстанавливает форму аргументов, не
+// меняя реализацию мока (она по-прежнему игнорирует аргументы).
+type SpawnSyncFn = typeof import('node:child_process').spawnSync;
+// Фейк spawnSync-коллаборатора (spawnClaude/runKimiOnce/runOpenAIOnce): поля opts
+// неопциональны, чтобы ассерты `opts.env.X` не спотыкались о possibly-undefined; к
+// боевому `typeof spawnSync` фейк приводится точечным `as unknown as SpawnSyncFn` в
+// вызове (частичный возврат несовместим с полным SpawnSyncReturns — намеренно).
+type SpawnFake = (
+    bin: string,
+    argv: string[],
+    opts: { shell: boolean; timeout: number; env: Record<string, string | undefined> },
+) => { status: number | null; stdout: string; stderr: string; signal: string | null };
+// Фейк runClaudeOnce-подобного DI-коллаборатора (runClaudeFn/fallbackRun): читаются
+// prompt (arg0) и opts.model/opts.fallbackModel (arg1); возврат не важен → unknown.
+type RunClaudeFake = (
+    prompt: string,
+    opts: { model?: string; fallbackModel?: string; [k: string]: unknown },
+    deps?: { runClaudeOnceFn?: unknown; [k: string]: unknown },
+) => unknown;
+type ChecksGreenFake = (
+    branch: string,
+    prNumber: number,
+    deps: { checks: Array<[string, string]>; [k: string]: unknown },
+) => unknown;
+// Фейк waitForDeployRun-коллаборатора. Боевой цикл зовёт его ТРЕМЯ аргументами:
+// waitForDeployRunFn(mergedSha, cfg, { logFn }) (orchestrator.ts:2755). Повторяем арность,
+// чтобы mock.calls[i] был 3-кортежем реального контракта (унарный тип скрыл бы calls[i][1]
+// /[2] и сделал бы обращение к ним тайп-ошибкой на живых данных). Ассерты читают только
+// calls[0][0] (sha), поэтому cfg/opts не типизируем строго → unknown.
+type WaitDeployFake = (sha: string, cfg?: unknown, opts?: { logFn?: unknown }) => unknown;
+// Фейк spawn (не spawnSync) для монитора: возвращает child-подобие, читаются
+// opts.detached/opts.stdio и argv.
+type MonitorSpawnFake = (
+    bin: string,
+    argv: string[],
+    opts: { detached: boolean; stdio: unknown; env?: Record<string, string | undefined> },
+) => { pid: number; unref: () => void; on: (...a: unknown[]) => void };
+
 // #252: git-хелперы гейта разделены на shFn (чтения) и runArgvFn (argv-мутации). Этот
 // рекордер пишет ОБА канала в один общий `cmds`, нормализуя runArgvFn в `${file} ${args}`,
 // чтобы ассерты на ПОРЯДОК команд остались осмысленными. Общий на phaseDiffFiles и
 // refreshRunnerWorktree — иначе правка формата записи требовала бы синхронных правок в двух.
-const mkCmdRecorders = (shImpl) => {
-    const cmds = [];
+const mkCmdRecorders = (shImpl?: (cmd: string) => string) => {
+    const cmds: string[] = [];
     return {
         cmds,
-        shFn: (c) => {
+        shFn: (c: string) => {
             cmds.push(c);
             return shImpl ? shImpl(c) : '';
         },
-        runArgvFn: (file, args) => {
+        runArgvFn: (file: string, args: string[]) => {
             const cmd = `${file} ${args.join(' ')}`;
             cmds.push(cmd);
             return shImpl ? shImpl(cmd) : '';
@@ -217,7 +278,7 @@ describe('spawnClaude — фактический вызов spawn-функции
     // Фейковую spawn-функцию передаём 3-м параметром явно (см. комментарий в шапке
     // файла) — production-путь (без 3-го аргумента) здесь намеренно не трогаем,
     // чтобы не дёргать настоящий claude.exe из юнит-теста.
-    let spawnFn;
+    let spawnFn: Mock;
     beforeEach(() => {
         spawnFn = vi.fn();
         // log() на пути сигнала пишет в console.log и в файл ralph.log — глушим оба
@@ -294,7 +355,7 @@ describe('spawnClaude — фактический вызов spawn-функции
 // меняется: дефолт coderRuntime остаётся claude, его сценарии выше зелёные.
 describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
     // Боевой fail уходит в process.exit; в тестах инжектируем бросающий, чтобы увидеть стоп.
-    const throwingFail = (msg) => {
+    const throwingFail = (msg: string) => {
         throw new Error(msg);
     };
 
@@ -399,7 +460,7 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
     });
 
     describe('runKimiOnce — смоук: кодер-сессия стартует и выдаёт дифф', () => {
-        let runtime;
+        let runtime: ReturnType<typeof buildRuntime>;
         const savedToken = process.env.RALPH_KIMI_AUTH_TOKEN;
 
         beforeEach(() => {
@@ -422,14 +483,18 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
         });
 
         it('спавнит `claude` с моделью Kimi и env Moonshot, возвращает дифф, токен НЕ в argv', () => {
-            const spawnFn = vi.fn(() => ({
+            const spawnFn = vi.fn<SpawnFake>(() => ({
                 status: 0,
                 stdout: 'diff --git a/f b/f\n+добавлено',
                 stderr: '',
                 signal: null,
             }));
 
-            const res = runtime.runKimiOnce('тестовая задача', { maxTurns: 5 }, spawnFn);
+            const res = runtime.runKimiOnce(
+                'тестовая задача',
+                { maxTurns: 5 },
+                spawnFn as unknown as SpawnSyncFn,
+            );
 
             expect(res).toEqual({ code: 0, output: 'diff --git a/f b/f\n+добавлено\n' });
             expect(spawnFn).toHaveBeenCalledTimes(1);
@@ -447,9 +512,14 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
         });
 
         it('НЕ подмешивает общий claude fallbackModel в Kimi-сессию (research, риск #3)', () => {
-            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'ok',
+                stderr: '',
+                signal: null,
+            }));
             // REAL_CONFIG.fallbackModel = claude-opus-4-8 — он не должен утечь в argv Kimi.
-            runtime.runKimiOnce('x', { maxTurns: 1 }, spawnFn);
+            runtime.runKimiOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv).not.toContain('--fallback-model');
         });
@@ -459,8 +529,17 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
         // без route-модели падает на config.model), НЕ должно уехать `claude --model
         // claude-opus-4-8` против Moonshot — рантайм обязан отбросить его и взять kimiRuntime.model.
         it('#393: claude-имя opts.model БЕЗ modelProvider отбрасывается → argv берёт kimiRuntime.model', () => {
-            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
-            runtime.runKimiOnce('сессия сдачи', { model: 'claude-opus-4-8', maxTurns: 5 }, spawnFn);
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'ok',
+                stderr: '',
+                signal: null,
+            }));
+            runtime.runKimiOnce(
+                'сессия сдачи',
+                { model: 'claude-opus-4-8', maxTurns: 5 },
+                spawnFn as unknown as SpawnSyncFn,
+            );
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv[argv.indexOf('--model') + 1]).toBe('kimi-k2-0711-preview');
             expect(argv.join(' ')).not.toContain('claude-opus-4-8');
@@ -469,11 +548,16 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
         // #393: тот же класс, но модель пришла ИЗ МАРШРУТА с тегом modelProvider:'kimi'
         // (route явно выбрал провайдера kimi + свою модель) — её раннер применяет.
         it('#393: opts.model с modelProvider:"kimi" применяется (модель маршрута Moonshot)', () => {
-            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'ok',
+                stderr: '',
+                signal: null,
+            }));
             runtime.runKimiOnce(
                 'кодер-итерация',
                 { model: 'kimi-k2-turbo-preview', maxTurns: 5, modelProvider: 'kimi' },
-                spawnFn,
+                spawnFn as unknown as SpawnSyncFn,
             );
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv[argv.indexOf('--model') + 1]).toBe('kimi-k2-turbo-preview');
@@ -482,11 +566,16 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
         // #393: тег ЧУЖОГО провайдера (openai) к kimi-рантайму модель тоже не пускает —
         // применяется только собственный тег провайдера.
         it('#393: opts.model с чужим modelProvider:"openai" отбрасывается kimi-рантаймом', () => {
-            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'ok',
+                stderr: '',
+                signal: null,
+            }));
             runtime.runKimiOnce(
                 'x',
                 { model: 'gpt-5-codex', maxTurns: 5, modelProvider: 'openai' },
-                spawnFn,
+                spawnFn as unknown as SpawnSyncFn,
             );
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv[argv.indexOf('--model') + 1]).toBe('kimi-k2-0711-preview');
@@ -500,7 +589,7 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
 // меняется: дефолт coderRuntime остаётся claude, его сценарии выше зелёные.
 describe('OpenAI-рантайм (#374) — codex exec, отдельный бинарь', () => {
     // Боевой fail уходит в process.exit; в тестах инжектируем бросающий, чтобы увидеть стоп.
-    const throwingFail = (msg) => {
+    const throwingFail = (msg: string) => {
         throw new Error(msg);
     };
 
@@ -662,7 +751,7 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
     });
 
     describe('spawnCodex — фактический вызов spawn-функции (граница anti-RCE защиты)', () => {
-        let spawnFn;
+        let spawnFn: Mock;
         beforeEach(() => {
             spawnFn = vi.fn();
             vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -714,7 +803,7 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
     });
 
     describe('runOpenAIOnce — смоук: кодер-сессия стартует и выдаёт дифф', () => {
-        let runtime;
+        let runtime: ReturnType<typeof buildRuntime>;
         const savedToken = process.env.OPENAI_API_KEY;
 
         beforeEach(() => {
@@ -737,14 +826,18 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
         });
 
         it('спавнит `codex` с моделью OpenAI и ключом в env, возвращает дифф, ключ НЕ в argv', () => {
-            const spawnFn = vi.fn(() => ({
+            const spawnFn = vi.fn<SpawnFake>(() => ({
                 status: 0,
                 stdout: 'diff --git a/f b/f\n+добавлено',
                 stderr: '',
                 signal: null,
             }));
 
-            const res = runtime.runOpenAIOnce('тестовая задача', { maxTurns: 5 }, spawnFn);
+            const res = runtime.runOpenAIOnce(
+                'тестовая задача',
+                { maxTurns: 5 },
+                spawnFn as unknown as SpawnSyncFn,
+            );
 
             expect(res).toEqual({ code: 0, output: 'diff --git a/f b/f\n+добавлено\n' });
             expect(spawnFn).toHaveBeenCalledTimes(1);
@@ -761,8 +854,13 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
         });
 
         it('НЕ тащит Claude-флаги --max-turns/--fallback-model в codex argv (риск #3)', () => {
-            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
-            runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn);
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'ok',
+                stderr: '',
+                signal: null,
+            }));
+            runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv).not.toContain('--max-turns');
             expect(argv).not.toContain('--fallback-model');
@@ -772,11 +870,16 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
         // либо кодер-итерация на config.model) НЕ должно уехать `codex -m claude-opus-4-8` —
         // рантайм обязан отбросить его и взять openaiRuntime.model.
         it('#393: claude-имя opts.model БЕЗ modelProvider отбрасывается → argv берёт openaiRuntime.model', () => {
-            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'ok',
+                stderr: '',
+                signal: null,
+            }));
             runtime.runOpenAIOnce(
                 'сессия сдачи',
                 { model: 'claude-opus-4-8', maxTurns: 5 },
-                spawnFn,
+                spawnFn as unknown as SpawnSyncFn,
             );
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex');
@@ -785,11 +888,16 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
 
         // #393: модель ИЗ МАРШРУТА с тегом modelProvider:'openai' — применяется.
         it('#393: opts.model с modelProvider:"openai" применяется (модель маршрута OpenAI)', () => {
-            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'ok',
+                stderr: '',
+                signal: null,
+            }));
             runtime.runOpenAIOnce(
                 'кодер-итерация',
                 { model: 'gpt-5-codex-mini', maxTurns: 5, modelProvider: 'openai' },
-                spawnFn,
+                spawnFn as unknown as SpawnSyncFn,
             );
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex-mini');
@@ -797,11 +905,16 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
 
         // #393: чужой тег (kimi) к codex-рантайму модель не пускает.
         it('#393: opts.model с чужим modelProvider:"kimi" отбрасывается codex-рантаймом', () => {
-            const spawnFn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', signal: null }));
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'ok',
+                stderr: '',
+                signal: null,
+            }));
             runtime.runOpenAIOnce(
                 'x',
                 { model: 'kimi-k2-0711-preview', maxTurns: 5, modelProvider: 'kimi' },
-                spawnFn,
+                spawnFn as unknown as SpawnSyncFn,
             );
             const [, argv] = spawnFn.mock.calls[0];
             expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex');
@@ -815,20 +928,24 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
 // runKimiOnce/runOpenAIOnce-смоуков): к спавну кодер-сессии они не относятся и не должны
 // наследовать его beforeEach со спаями/env.
 describe('buildAdapters — выбор coderRuntime из config.adapters (#373/#374)', () => {
-    const throwingFail = (msg) => {
+    const throwingFail = (msg: string) => {
         throw new Error(msg);
     };
-    const fakeRegistries = () => ({
-        taskSource: { github: { x: 1 } },
-        gate: { npm: { x: 1 } },
-        notifier: { telegram: { x: 1 } },
-        deployCheck: { 'github-actions': { x: 1 } },
-        coderRuntime: {
-            claude: { run: () => ({ code: 0, output: 'claude' }) },
-            kimi: { run: () => ({ code: 0, output: 'kimi' }) },
-            openai: { run: () => ({ code: 0, output: 'openai' }) },
-        },
-    });
+    // Реестр-заглушка: реальны только coderRuntime.run (их output и сторожит тест), прочие
+    // швы — сентинелы { x: 1 }, к выбору coderRuntime не относятся. `as unknown as` — цена
+    // намеренно частичного фейка (полный реестр строит adapters-impl.test.ts).
+    const fakeRegistries = () =>
+        ({
+            taskSource: { github: { x: 1 } },
+            gate: { npm: { x: 1 } },
+            notifier: { telegram: { x: 1 } },
+            deployCheck: { 'github-actions': { x: 1 } },
+            coderRuntime: {
+                claude: { run: () => ({ code: 0, output: 'claude' }) },
+                kimi: { run: () => ({ code: 0, output: 'kimi' }) },
+                openai: { run: () => ({ code: 0, output: 'openai' }) },
+            },
+        }) as unknown as AdapterRegistries;
 
     it('coderRuntime:kimi в конфиге даёт Kimi-адаптер из реестра', () => {
         const runtime = buildRuntime();
@@ -902,15 +1019,15 @@ describe('pickModel/pickRuntime — provider-aware роутинг по label iss
     // Фикстура: НОВЫЙ orchestrator (createOrchestrator напрямую, как в блоках Kimi/OpenAI
     // выше) — pickModel/pickRuntime читают ФАБРИЧНЫЙ config (setConfigForTests), не делят
     // состояние с REAL_CONFIG общего singleton'а `ralph`.
-    function routingRuntime(modelRouting) {
+    function routingRuntime(modelRouting: unknown) {
         const runtime = buildRuntime();
         runtime.setConfigForTests({ ...REAL_CONFIG, modelRouting });
         return runtime;
     }
-    const issueWithLabels = (labels) => ({
+    const issueWithLabels = (labels: string[]) => ({
         number: 1,
         title: 't',
-        labels: labels.map((name) => ({ name })),
+        labels: labels.map((name: string) => ({ name })),
     });
 
     it('label с объектной записью {provider, model} — pickModel/pickRuntime читают именно её', () => {
@@ -963,7 +1080,7 @@ describe('runClaude — #376 доп.скоуп: кросс-провайдерн�
 
     it('лимит основного рантайма → один пробный запуск другим провайдером ДО ожидания; успех — sleep/pushEvent не зовутся', () => {
         const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
-        const fallbackRun = vi.fn(() => ({ code: 0, output: 'diff from kimi' }));
+        const fallbackRun = vi.fn<RunClaudeFake>(() => ({ code: 0, output: 'diff from kimi' }));
         const coderRuntimeRunForFn = vi.fn((provider) => {
             expect(provider).toBe('kimi');
             return fallbackRun;
@@ -1005,7 +1122,10 @@ describe('runClaude — #376 доп.скоуп: кросс-провайдерн�
 
     it('фолбэк тоже упёрся в лимит → переходим к обычному ожиданию основного рантайма (фолбэк пробуется РОВНО раз за вызов)', () => {
         const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
-        const fallbackRun = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
+        const fallbackRun = vi.fn<RunClaudeFake>(() => ({
+            code: 1,
+            output: 'session limit resets 11am',
+        }));
         const coderRuntimeRunForFn = vi.fn(() => fallbackRun);
         const pushEventFn = vi.fn();
         const sleepFn = vi.fn();
@@ -1040,7 +1160,10 @@ describe('runClaude — #376 доп.скоуп: кросс-провайдерн�
         // неё не подходит, и «фолбэк тоже упёрся в лимит» для них недостижимо. Теперь любой
         // ненулевой код фолбэка → штатное ожидание основного провайдера.
         const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
-        const fallbackRun = vi.fn(() => ({ code: 127, output: 'codex: command not found' }));
+        const fallbackRun = vi.fn<RunClaudeFake>(() => ({
+            code: 127,
+            output: 'codex: command not found',
+        }));
         const coderRuntimeRunForFn = vi.fn(() => fallbackRun);
         const pushEventFn = vi.fn();
         const sleepFn = vi.fn();
@@ -1073,7 +1196,7 @@ describe('runClaude — #376 доп.скоуп: кросс-провайдерн�
         // Ревью-thread: return по waitOnApiLimit===false раньше срабатывал ДО фолбэк-ветки.
         // Оператор, выключивший ожидание, всё ещё может хотеть кросс-провайдерную попытку.
         const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
-        const fallbackRun = vi.fn(() => ({ code: 0, output: 'diff from kimi' }));
+        const fallbackRun = vi.fn<RunClaudeFake>(() => ({ code: 0, output: 'diff from kimi' }));
         const coderRuntimeRunForFn = vi.fn(() => fallbackRun);
         const sleepFn = vi.fn();
 
@@ -1101,7 +1224,7 @@ describe('runClaude — #376 доп.скоуп: кросс-провайдерн�
 
     it('фолбэк не помог + waitOnApiLimit:false → честно возвращаем код лимита, без ожидания', () => {
         const runClaudeOnceFn = vi.fn(() => ({ code: 1, output: 'session limit resets 11am' }));
-        const fallbackRun = vi.fn(() => ({ code: 127, output: 'codex not found' }));
+        const fallbackRun = vi.fn<RunClaudeFake>(() => ({ code: 127, output: 'codex not found' }));
         const coderRuntimeRunForFn = vi.fn(() => fallbackRun);
         const sleepFn = vi.fn();
 
@@ -1423,7 +1546,7 @@ describe('preflight — валидация конфига/среды и подг
     // инжектируются в preflight (дефолты из module-level ONCE/DRY/RESUBMIT), поэтому их
     // ветки (грязное дерево, свип milestones, бюджет итераций) тестируются явно, а не
     // зависят от того, с какими аргументами запущен vitest.
-    const throwingFail = (msg) => {
+    const throwingFail = (msg: string) => {
         throw new Error(msg);
     };
     const fakeState = () => ({ count: 0, milestone: 'M1', submitted: false, noProgress: 0 });
@@ -1651,7 +1774,7 @@ describe('preflight — валидация конфига/среды и подг
     // (не git-репо / gh не авторизован / грязное дерево) были непокрыты.
 
     // shFn, который бросает только на команде, содержащей needle (иначе — чистый вывод).
-    const shThrowingOn = (needle) => (cmd) => {
+    const shThrowingOn = (needle: string) => (cmd: string) => {
         if (cmd.includes(needle)) throw new Error(`fail: ${cmd}`);
         return '';
     };
@@ -1702,7 +1825,7 @@ describe('preflight — валидация конфига/среды и подг
     it('грязное дерево при dry=false → fail «Рабочее дерево грязное»', () => {
         const deps = okDeps({
             loadStateFn: fakeState,
-            shFn: (cmd) => (cmd.includes('status --porcelain') ? ' M src/x.ts' : ''),
+            shFn: (cmd: string) => (cmd.includes('status --porcelain') ? ' M src/x.ts' : ''),
             dry: false,
         });
         expect(() => preflight(validCfg(), deps)).toThrow(/Рабочее дерево грязное/);
@@ -1711,7 +1834,7 @@ describe('preflight — валидация конфига/среды и подг
     it('грязное дерево при dry=true → НЕ падает (dry-run read-only, правки не требуются)', () => {
         const deps = okDeps({
             loadStateFn: fakeState,
-            shFn: (cmd) => (cmd.includes('status --porcelain') ? ' M src/x.ts' : ''),
+            shFn: (cmd: string) => (cmd.includes('status --porcelain') ? ' M src/x.ts' : ''),
             dry: true,
             // При dry=true свип milestones тоже пропускается — closeMilestonesFn не зовётся.
             closeMilestonesFn: () => {
@@ -1792,13 +1915,13 @@ describe('preflight — валидация конфига/среды и подг
 
     it('#165 --deploy-resolved без активного блока → флаг проигнорирован, не падает', () => {
         const state = { count: 0, milestone: 'M1', submitted: false, noProgress: 0 };
-        const logs = [];
+        const logs: string[] = [];
         expect(() =>
             preflight(
                 validCfg(),
                 okDeps({
                     loadStateFn: () => state,
-                    logFn: (m) => logs.push(m),
+                    logFn: (m: string) => logs.push(m),
                     deployResolved: true,
                 }),
             ),
@@ -1823,7 +1946,30 @@ describe('runLoop — основной while-цикл: итерации коде
     // ни диска. Терминация цикла: phaseIndexOfFn по умолчанию — счётчик, отдающий
     // валидный индекс на 1-м проходе и «за концом» на 2-м, поэтому любой сценарий с
     // continue гарантированно упирается в ветку «все фазы завершены» и не зациклится.
-    const mkState = (o = {}) => ({
+    // Локальный тип state цикла ДЕРИВИРУЕТСЯ из боевого RalphState (state-lock.ts), а не
+    // переобъявляется: так добавленное туда поле (reReviewPending и т.п.) не разъедется с
+    // фикстурой молча. Обязательными оставляем счётчики, которые mkState всегда задаёт;
+    // deployBlock сужаем до формы, читаемой сценариями (в RalphState он `unknown`).
+    // Индекс-сигнатура `[k: string]: unknown` держит перенос дословным — mkState({ любое:
+    // … }) остаётся валидным, как в прежнем .js, где state был нетипизирован; ЦЕНА её —
+    // отключение проверки опечаток в ключах фикстур (tsc не поймает `submited: true`),
+    // сознательный размен ради дословности переноса.
+    type FakeState = Partial<RalphState> & {
+        count: number;
+        milestone: string;
+        submitted: boolean;
+        noProgress: number;
+        gateHeals: number;
+        blockedHeals: number;
+        deployBlock?: {
+            milestone?: string;
+            conclusion?: string;
+            status?: string;
+            reason?: string;
+        } | null;
+        [k: string]: unknown;
+    };
+    const mkState = (o: Partial<FakeState> = {}): FakeState => ({
         count: 0,
         milestone: 'M1',
         submitted: false,
@@ -1851,12 +1997,12 @@ describe('runLoop — основной while-цикл: итерации коде
     });
     // Дефолтные зависимости «пустого зелёного» прохода. logFn собирает строки в
     // переданный массив (assert по тексту веток). Любой сценарий переопределяет нужное.
-    const deps = (logs, o = {}) => {
+    const deps = (logs: string[], o: Record<string, unknown> = {}) => {
         let idxCalls = 0;
         return {
             once: false,
             dry: false,
-            logFn: (m) => logs.push(m),
+            logFn: (m: string) => logs.push(m),
             shFn: () => '',
             // #193: обновление дерева раннера после мерджа идёт через argv-коллаборатор.
             runArgvFn: () => '',
@@ -1923,10 +2069,15 @@ describe('runLoop — основной while-цикл: итерации коде
             ...o,
         };
     };
-    const ctx = (state, o = {}) => ({ state, maxIterations: 10, maxTurns: 200, ...o });
+    const ctx = (state: unknown, o: Record<string, unknown> = {}) => ({
+        state,
+        maxIterations: 10,
+        maxTurns: 200,
+        ...o,
+    });
 
     it('фаза не резолвится (все пройдены) → лог «все фазы завершены» и выход', () => {
-        const logs = [];
+        const logs: string[] = [];
         runLoop(validCfg(), ctx(mkState()), deps(logs, { phaseIndexOfFn: () => 99 }));
         expect(logs.join('\n')).toMatch(/Все фазы завершены/);
     });
@@ -1938,7 +2089,7 @@ describe('runLoop — основной while-цикл: итерации коде
     // хендлер тут же прислал бы ему SIGTERM). Сценарий с continue даёт один рабочий
     // проход и один терминальный → ровно 1 проверка монитора.
     it('#151: ensureMonitorAlive зовётся на рабочем проходе цикла (AFK, не только на старте)', () => {
-        const logs = [];
+        const logs: string[] = [];
         const ensureMonitorAliveFn = vi.fn(() => null);
         runLoop(
             validCfg(),
@@ -1952,7 +2103,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#151: ensureMonitorAlive получает профиль, путь конфига раннера и logFn', () => {
-        const logs = [];
+        const logs: string[] = [];
         const ensureMonitorAliveFn = vi.fn(() => null);
         // Рабочий проход (idx 0), затем ensureClean=false → break сразу за проверкой
         // монитора: до неё цикл доходит, дальше — нет.
@@ -1977,7 +2128,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#151: dry=true → ensureMonitorAlive НЕ зовётся (read-only, монитор в dry не поднимается)', () => {
-        const logs = [];
+        const logs: string[] = [];
         const ensureMonitorAliveFn = vi.fn(() => null);
         runLoop(
             validCfg(),
@@ -1988,10 +2139,10 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('breaker maxIterations (AFK): count>=лимит → сброс count, saveState, стоп, пуш', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({ count: 10 });
         const saveStateFn = vi.fn();
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const pushEventFn = vi.fn();
         runLoop(
             validCfg(),
@@ -2009,7 +2160,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('грязное дерево между итерациями (ensureClean=false, dry=false) → стоп до issues', () => {
-        const logs = [];
+        const logs: string[] = [];
         const openIssuesFn = vi.fn(() => []);
         runLoop(
             validCfg(),
@@ -2021,9 +2172,9 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('кодер-итерация в ONCE: одна claude-сессия нужной моделью и стоп', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState();
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         runLoop(
             validCfg(),
             ctx(state),
@@ -2049,9 +2200,9 @@ describe('runLoop — основной while-цикл: итерации коде
     // передаёт runClaudeFn третьим аргументом рантайм ИМЕННО этого провайдера из реестра
     // coderRuntime (ralph.coderRuntimeRunFor), а не статический дефолт.
     it('#376: кодер-итерация резолвит рантайм по pickRuntimeFn (провайдер → run из реестра coderRuntime)', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState();
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const kimiRun = ralph.coderRuntimeRunFor('kimi');
         runLoop(
             validCfg(),
@@ -2075,7 +2226,7 @@ describe('runLoop — основной while-цикл: итерации коде
             maxTurns: 200,
             modelProvider: 'kimi',
         });
-        expect(depsOverride.runClaudeOnceFn).toBe(kimiRun);
+        expect(depsOverride!.runClaudeOnceFn).toBe(kimiRun);
         expect(logs.join('\n')).toMatch(/модель: kimi-k2-0711-preview \(kimi\)/);
     });
 
@@ -2086,9 +2237,9 @@ describe('runLoop — основной while-цикл: итерации коде
     // отбросит claude-имя. Проверяем на уровне цикла: opts НЕ содержит modelProvider, а рантайм
     // резолвится kimi (сам drop покрыт юнитом runKimiOnce выше).
     it('#393: статический kimi + маршрут без модели → opts.model=cfg.model БЕЗ тега modelProvider (claude-имя не уедет)', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState();
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const kimiRun = ralph.coderRuntimeRunFor('kimi');
         runLoop(
             validCfg(),
@@ -2107,15 +2258,15 @@ describe('runLoop — основной while-цикл: итерации коде
         // Модель — общий cfg.model (claude-имя), тега провайдера НЕТ: не-Claude рантайм её отбросит.
         expect(opts.model).toBe('claude-coder');
         expect(opts).not.toHaveProperty('modelProvider');
-        expect(depsOverride.runClaudeOnceFn).toBe(kimiRun);
+        expect(depsOverride!.runClaudeOnceFn).toBe(kimiRun);
     });
 
     // Провайдер БЕЗ явного override в modelRouting (дефолтный роутинг, как до #376) должен
     // резолвиться на claude — статический adapters.coderRuntime текущего прогона.
     it('#376: pickRuntime без override даёт claude (обратная совместимость дефолтного роутинга)', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState();
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const claudeRun = ralph.coderRuntimeRunFor('claude');
         runLoop(
             validCfg(),
@@ -2130,11 +2281,11 @@ describe('runLoop — основной while-цикл: итерации коде
             }),
         );
         const [, , depsOverride] = runClaudeFn.mock.calls[0];
-        expect(depsOverride.runClaudeOnceFn).toBe(claudeRun);
+        expect(depsOverride!.runClaudeOnceFn).toBe(claudeRun);
     });
 
     it('no-progress breaker (AFK): HEAD не сдвинулся и очередь та же → стоп, пуш', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({ noProgress: 2 }); // +1 на этой итерации = 3 = порог
         const pushEventFn = vi.fn();
         runLoop(
@@ -2155,7 +2306,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('пустая очередь, но открыты blocked/чужие issues → сдача отложена, гейт не зовётся', () => {
-        const logs = [];
+        const logs: string[] = [];
         const tryMergePhaseFn = vi.fn(() => 'merged');
         runLoop(
             validCfg(),
@@ -2172,8 +2323,8 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('фаза уже смерджена (идемпотентность, AFK): fetch + detach origin/main, advancePhase, дальше', () => {
-        const logs = [];
-        const shCmds = [];
+        const logs: string[] = [];
+        const shCmds: string[] = [];
         const advancePhaseFn = vi.fn();
         runLoop(
             validCfg(),
@@ -2184,7 +2335,7 @@ describe('runLoop — основной while-цикл: итерации коде
                 allOpenIssuesFn: () => [],
                 phaseMergedFn: () => true,
                 // #193: обновление дерева раннера — argv, нормализуем в строку.
-                runArgvFn: (file, args) => {
+                runArgvFn: (file: string, args: string[]) => {
                     shCmds.push(`${file} ${args.join(' ')}`);
                     return '';
                 },
@@ -2202,7 +2353,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#237 фаза уже смерджена → recordReviewFindings зовётся с номером PR из mergedPhasePr', () => {
-        const logs = [];
+        const logs: string[] = [];
         const recordReviewFindingsFn = vi.fn();
         runLoop(
             validCfg(),
@@ -2221,7 +2372,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#237 фаза уже смерджена, номер PR не определён → предупреждение, запись не зовётся', () => {
-        const logs = [];
+        const logs: string[] = [];
         const recordReviewFindingsFn = vi.fn();
         runLoop(
             validCfg(),
@@ -2240,8 +2391,8 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('фаза смерджена при dry=true → advancePhase есть, но БЕЗ мутаций git (checkout/pull не зовутся)', () => {
-        const logs = [];
-        const shCmds = [];
+        const logs: string[] = [];
+        const shCmds: string[] = [];
         const advancePhaseFn = vi.fn();
         runLoop(
             validCfg(),
@@ -2251,12 +2402,12 @@ describe('runLoop — основной while-цикл: итерации коде
                 openIssuesFn: () => [],
                 allOpenIssuesFn: () => [],
                 phaseMergedFn: () => true,
-                shFn: (c) => {
+                shFn: (c: string) => {
                     shCmds.push(c);
                     return '';
                 },
                 // #193: dry не должен звать argv-мутации обновления дерева — фиксируем и их.
-                runArgvFn: (file, args) => {
+                runArgvFn: (file: string, args: string[]) => {
                     shCmds.push(`${file} ${args.join(' ')}`);
                     return '';
                 },
@@ -2269,8 +2420,8 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('submitted=true → сразу к гейту, без PR/ревью/правок', () => {
-        const logs = [];
-        const runClaudeFn = vi.fn(() => 0);
+        const logs: string[] = [];
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const tryMergePhaseFn = vi.fn(() => 'not-merged');
         runLoop(
             validCfg(),
@@ -2321,7 +2472,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('полная сдача → гейт merged → закрыть milestone + advancePhase + пуш «готова к релизу»', () => {
-        const logs = [];
+        const logs: string[] = [];
         const closeMilestoneByTitleFn = vi.fn();
         const advancePhaseFn = vi.fn();
         const tryMergePhaseFn = vi.fn(() => 'merged');
@@ -2354,8 +2505,8 @@ describe('runLoop — основной while-цикл: итерации коде
     // явным опции.fallbackModel, а не через общий cfg.fallbackModel/noFallback (M8).
     // Факт использования фолбэка обязан быть виден в логе (issue #221, критерий 1).
     it('#221: основное ревью получает fallbackModel из review.fallback, видно в логе', () => {
-        const logs = [];
-        const runClaudeFn = vi.fn(() => 0);
+        const logs: string[] = [];
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         runLoop(
             validCfg({
                 fallbackModel: 'claude-sonnet-5', // общий фолбэк — НЕ должен утечь в ревью
@@ -2383,7 +2534,7 @@ describe('runLoop — основной while-цикл: итерации коде
     // review.fallback вообще не задан — pickReviewFallbackModel дефолтит на
     // review.default, а НЕ на cfg.fallbackModel.
     it('#221: без review.fallback общий cfg.fallbackModel в ревью не попадает — дефолт на review.default', () => {
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         runLoop(
             validCfg({
                 fallbackModel: 'claude-sonnet-5',
@@ -2427,7 +2578,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#87 prod: гейт merged → деплой-плейсхолдер вызван, loop останавливается (не берёт следующую фазу)', () => {
-        const logs = [];
+        const logs: string[] = [];
         const closeMilestoneByTitleFn = vi.fn();
         const advancePhaseFn = vi.fn();
         const tryMergePhaseFn = vi.fn(() => 'merged');
@@ -2462,9 +2613,12 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#163 prod: после merged раннер дожидается итога deploy-workflow на смердженном sha', () => {
-        const logs = [];
+        const logs: string[] = [];
         const mergedShaOfFn = vi.fn(() => 'a'.repeat(40));
-        const waitForDeployRunFn = vi.fn(() => ({ status: 'completed', conclusion: 'success' }));
+        const waitForDeployRunFn = vi.fn<WaitDeployFake>(() => ({
+            status: 'completed',
+            conclusion: 'success',
+        }));
         runLoop(
             validCfg({ profileName: 'prod' }),
             ctx(mkState()),
@@ -2488,8 +2642,8 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#163 prod: сбой получения sha/итога деплоя не роняет loop — логируется и стоп перед деплоем', () => {
-        const logs = [];
-        const waitForDeployRunFn = vi.fn();
+        const logs: string[] = [];
+        const waitForDeployRunFn = vi.fn<WaitDeployFake>();
         runLoop(
             validCfg({ profileName: 'prod' }),
             ctx(mkState()),
@@ -2515,7 +2669,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#164 prod: зелёный workflow (conclusion success) → healthcheck прода зовётся', () => {
-        const logs = [];
+        const logs: string[] = [];
         const checkProdHealthFn = vi.fn(() => ({ ok: true, status: 200, url: 'u' }));
         runLoop(
             validCfg({ profileName: 'prod' }),
@@ -2536,7 +2690,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#164 prod: упавший workflow (conclusion failure) → healthcheck НЕ зовётся, красный итог уже сигнал сам по себе', () => {
-        const logs = [];
+        const logs: string[] = [];
         const checkProdHealthFn = vi.fn();
         runLoop(
             validCfg({ profileName: 'prod' }),
@@ -2557,7 +2711,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#164 prod: недосмотренный workflow (status timeout) → healthcheck НЕ зовётся', () => {
-        const logs = [];
+        const logs: string[] = [];
         const checkProdHealthFn = vi.fn();
         runLoop(
             validCfg({ profileName: 'prod' }),
@@ -2578,8 +2732,8 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#165 prod: упавший workflow → барьер в state.deployBlock + пуш с sha и итогом, стоп', () => {
-        const logs = [];
-        const saved = [];
+        const logs: string[] = [];
+        const saved: Array<Record<string, unknown>> = [];
         const pushEventFn = vi.fn();
         const state = mkState();
         runLoop(
@@ -2593,7 +2747,7 @@ describe('runLoop — основной while-цикл: итерации коде
                 pickReviewModelFn: () => 'none',
                 runClaudeFn: () => 0,
                 tryMergePhaseFn: () => 'merged',
-                saveStateFn: (s) => saved.push({ ...s }),
+                saveStateFn: (s: Record<string, unknown>) => saved.push({ ...s }),
                 waitForDeployRunFn: () => ({
                     status: 'completed',
                     conclusion: 'failure',
@@ -2609,13 +2763,13 @@ describe('runLoop — основной while-цикл: итерации коде
         // пуш с sha и итогом workflow — критерий #165
         const redPush = pushEventFn.mock.calls.find((c) => /деплой красный/.test(c[0]));
         expect(redPush).toBeTruthy();
-        expect(redPush[0]).toMatch(/aaaaaaaa/); // укороченный sha
-        expect(redPush[0]).toMatch(/failure/);
+        expect(redPush![0]).toMatch(/aaaaaaaa/); // укороченный sha
+        expect(redPush![0]).toMatch(/failure/);
         expect(logs.join('\n')).toMatch(/стоп: деплой красный/);
     });
 
     it('#165 prod: недосмотренный workflow (timeout) → тоже барьер + пуш', () => {
-        const logs = [];
+        const logs: string[] = [];
         const pushEventFn = vi.fn();
         const state = mkState();
         runLoop(
@@ -2642,7 +2796,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#165 prod: зелёный workflow + здоровый прод → барьера НЕТ, красного пуша нет', () => {
-        const logs = [];
+        const logs: string[] = [];
         const pushEventFn = vi.fn();
         const state = mkState();
         runLoop(
@@ -2695,7 +2849,7 @@ describe('runLoop — основной while-цикл: итерации коде
             }),
         );
         expect(state.deployBlock).toBeTruthy();
-        expect(state.deployBlock.reason).toMatch(/прод не отвечает/);
+        expect(state.deployBlock!.reason).toMatch(/прод не отвечает/);
         expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
     });
 
@@ -2720,12 +2874,12 @@ describe('runLoop — основной while-цикл: итерации коде
             }),
         );
         expect(state.deployBlock).toMatchObject({ status: 'error' });
-        expect(state.deployBlock.reason).toMatch(/ошибка проверки деплоя/);
+        expect(state.deployBlock!.reason).toMatch(/ошибка проверки деплоя/);
         expect(pushEventFn.mock.calls.some((c) => /деплой красный/.test(c[0]))).toBe(true);
     });
 
     it('#87 playground: гейт merged → деплой-плейсхолдер НЕ зовётся, мердж остаётся финалом (continue как раньше)', () => {
-        const logs = [];
+        const logs: string[] = [];
         const tryMergePhaseFn = vi.fn(() => 'merged');
         const deployPhaseFn = vi.fn();
         runLoop(
@@ -2750,7 +2904,7 @@ describe('runLoop — основной while-цикл: итерации коде
         // Undefined-дефолт покрыт тестом #87 выше; здесь — явный true. Документация
         // обещает «не задан ЛИБО true», и регрессию при будущей правке условия `!== false`
         // поймает именно явный кейс (undefined его не отличит от прочих falsy-путей).
-        const logs = [];
+        const logs: string[] = [];
         const phaseIndexOfFn = vi.fn(() => 0);
         runLoop(
             validCfg({ profileName: 'prod', haltBeforeDeploy: true }),
@@ -2773,7 +2927,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#249 prod: haltBeforeDeploy=false + зелёный пост-мердж деплой → фазы катятся подряд без рестарта', () => {
-        const logs = [];
+        const logs: string[] = [];
         // Счётчик-замыкание (как дефолтный deps.phaseIndexOfFn): фаза 0, затем 1, затем
         // «за концом» массива → break. Прозрачнее самоссылки на mock.calls.length.
         let i = 0;
@@ -2813,7 +2967,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#249 prod: haltBeforeDeploy=false, но пост-мердж деплой красный → трек всё равно стопорится (fail-closed)', () => {
-        const logs = [];
+        const logs: string[] = [];
         const phaseIndexOfFn = vi.fn(() => 0);
         const pushEventFn = vi.fn();
         runLoop(
@@ -2854,7 +3008,7 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('шаг создания PR упал (код≠0) → fail-closed стоп, гейт не зовётся', () => {
-        const logs = [];
+        const logs: string[] = [];
         const tryMergePhaseFn = vi.fn(() => 'merged');
         runLoop(
             validCfg(),
@@ -2873,14 +3027,14 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('#217: гейт blocked → чини-сессия + повторное ревью раннером, снятие метки раннером, инкремент', () => {
-        const logs = [];
+        const logs: string[] = [];
         // lastReviewModel — модель, поставившая блок (её и подымет планка).
         const state = mkState({
             submitted: true,
             blockedHeals: 0,
             lastReviewModel: 'claude-opus-4-8',
         });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const removeBlockedLabelFn = vi.fn();
         runLoop(
             validCfg({ blockedHealAttempts: 3 }),
@@ -2913,9 +3067,9 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('гейт blocked, бюджет исчерпан → стоп без чини-сессии, сброс счётчика, пуш человеку', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({ submitted: true, blockedHeals: 3 });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const pushEventFn = vi.fn();
         runLoop(
             validCfg({ blockedHealAttempts: 3 }),
@@ -2947,13 +3101,13 @@ describe('runLoop — основной while-цикл: итерации коде
     // #216: prod (с включённым разбором) блокер запускает чини-сессию, а не немедленный
     // стоп человеку. Тестируем именно поведение при profileName='prod' + ненулевом лимите.
     it('#216: prod с включённым разбором → блокер запускает разбор+повторное ревью, человека не зовём', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({
             submitted: true,
             blockedHeals: 0,
             lastReviewModel: 'claude-opus-4-8',
         });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const pushEventFn = vi.fn();
         runLoop(
             validCfg({ blockedHealAttempts: 3, profileName: 'prod' }),
@@ -2978,13 +3132,13 @@ describe('runLoop — основной while-цикл: итерации коде
     // #216: счётчик не в памяти процесса — новое значение уходит в state ДО чини-сессии,
     // поэтому перезапуск раннера посреди разбора его не обнулит (loadState прочитает 2).
     it('#216: инкремент blockedHeals персистится через saveState (переживает перезапуск)', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({
             submitted: true,
             blockedHeals: 1,
             lastReviewModel: 'claude-opus-4-8',
         });
-        const saved = [];
+        const saved: Array<Record<string, unknown>> = [];
         runLoop(
             validCfg({ blockedHealAttempts: 3 }),
             ctx(state),
@@ -2995,7 +3149,7 @@ describe('runLoop — основной while-цикл: итерации коде
                 tryMergePhaseFn: () => 'blocked',
                 pickReviewModelFn: () => 'claude-opus-4-8',
                 runClaudeFn: () => 0,
-                saveStateFn: (s) => saved.push({ ...s }),
+                saveStateFn: (s: Record<string, unknown>) => saved.push({ ...s }),
             }),
         );
         expect(saved.some((s) => s.blockedHeals === 2)).toBe(true);
@@ -3006,7 +3160,7 @@ describe('runLoop — основной while-цикл: итерации коде
     // поставило. Без сброса чередование «блок → чисто → блок» набирало бы «три подряд»
     // и зря дёргало человека. Считаем ПОДРЯД идущие блок-ревью, а не круги вообще.
     it('#216: чистое повторное ревью (red-checks) обнуляет blockedHeals — чередование не копит счётчик', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({ submitted: true, blockedHeals: 2 });
         runLoop(
             validCfg({ blockedHealAttempts: 3, gateHealAttempts: 2 }),
@@ -3034,7 +3188,7 @@ describe('runLoop — основной while-цикл: итерации коде
     // и это надо назвать явно: номер PR + модель ревью, чтобы человек не тратил время
     // разбираясь, что вообще произошло.
     it('#218: гейт red-checks после разбора blocked → пуш «снят автоматически» с PR и моделью ревью', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({
             submitted: true,
             blockedHeals: 2,
@@ -3068,7 +3222,7 @@ describe('runLoop — основной while-цикл: итерации коде
     // чисто и гейт домерджил фазу СРАЗУ, минуя red-checks. Пуш о снятом блокере
     // должен уйти отдельно от пуша «фаза смерджена» — это два разных события.
     it('#218: гейт merged после разбора blocked → отдельный пуш «снят автоматически» с PR и моделью ревью', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({
             submitted: true,
             blockedHeals: 1,
@@ -3107,9 +3261,9 @@ describe('runLoop — основной while-цикл: итерации коде
     // #222: hold — человеческий стоп-кран. Гейт стоп + пуш, БЕЗ чини-сессий, БЕЗ
     // повторного ревью, счётчики blockedHeals/gateHeals не трогаются.
     it('#222: гейт hold → стоп + пуш с номером PR, ни одной сессии не запущено', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({ submitted: true, blockedHeals: 0, gateHeals: 0 });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const removeBlockedLabelFn = vi.fn();
         const pushEventFn = vi.fn();
         runLoop(
@@ -3143,7 +3297,7 @@ describe('runLoop — основной while-цикл: итерации коде
     // поставил метку параллельно), пуш «блокер снят автоматически» НЕ должен уйти —
     // мы не знаем, снят ли фактически blocked, гейт вообще до него не дошёл.
     it('#222: гейт hold при blockedHeals > 0 НЕ шлёт «снят автоматически», счётчик не трогается', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({
             submitted: true,
             blockedHeals: 2,
@@ -3175,9 +3329,9 @@ describe('runLoop — основной while-цикл: итерации коде
     // конфиге 0», а «чини-сессия не запускается вовсе». Регресс `?? 3` → `|| 3` ловится
     // только так. profileName взят произвольный — важно само значение 0, не имя профиля.
     it('blockedHealAttempts=0 (разбор выключен явно) → блокер сразу человеку, чини-сессия НЕ зовётся, пуш уходит', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({ submitted: true, blockedHeals: 0 });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const pushEventFn = vi.fn();
         runLoop(
             validCfg({ blockedHealAttempts: 0, profileName: 'prod' }),
@@ -3205,13 +3359,13 @@ describe('runLoop — основной while-цикл: итерации коде
     // правок дифф «подешевел» и pickReviewModel даёт haiku. Повторное ревью обязано
     // идти на fable, НЕ на haiku — иначе эскалацию обходят удешевлением ревьюера.
     it('#217: повторное ревью не слабее поставившей блок — haiku-кандидат поднят до fable-планки', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({
             submitted: true,
             blockedHeals: 0,
             lastReviewModel: 'claude-fable-5', // блок поставила fable
         });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         runLoop(
             validCfg({ blockedHealAttempts: 3 }),
             ctx(state),
@@ -3241,13 +3395,13 @@ describe('runLoop — основной while-цикл: итерации коде
     // прямо противореча контракту (CLAUDE.md инв. 6). Повторное ревью при 'none' идёт
     // моделью планки, но БЕЗ фолбэка.
     it('#221: явное review.fallback "none" — повторное ревью без фолбэка, планка его не повышает', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({
             submitted: true,
             blockedHeals: 0,
             lastReviewModel: 'claude-fable-5',
         });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         runLoop(
             validCfg({
                 blockedHealAttempts: 3,
@@ -3272,9 +3426,9 @@ describe('runLoop — основной while-цикл: итерации коде
     // #217: судить блок нечем (review: none и планки нет) — fail-closed, PR человеку.
     // Без этой ветки метку сняли бы «на слово» и фаза уехала бы в main без ревью.
     it('#217: нет ревью-модели для повторного ревью → fail-closed, человек, не мерджим', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({ submitted: true, blockedHeals: 0, lastReviewModel: null });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const pushEventFn = vi.fn();
         const removeBlockedLabelFn = vi.fn();
         runLoop(
@@ -3303,13 +3457,13 @@ describe('runLoop — основной while-цикл: итерации коде
     // между блоком и мерджем раннер ОБЯЗАТЕЛЬНО снимает метку сам и гоняет повторное
     // ревью. Мердж наступает только следующим гейтом, после ревью раннера.
     it('#217: метка снята кодером сама → мердж только после повторного ревью раннером', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({
             submitted: true,
             blockedHeals: 0,
             lastReviewModel: 'claude-opus-4-8',
         });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const removeBlockedLabelFn = vi.fn();
         const advancePhaseFn = vi.fn();
         // 1-й гейт — blocked; 2-й (после повторного ревью) — merged.
@@ -3343,9 +3497,9 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('гейт red-checks → чини-сессия гейта с деталями чека из getLastRedCheck', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({ submitted: true, gateHeals: 0 });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         runLoop(
             validCfg({ gateHealAttempts: 2 }),
             ctx(state),
@@ -3376,11 +3530,11 @@ describe('runLoop — основной while-цикл: итерации коде
     // thread (off-by-one): gateHeals инкрементируется ДО проверки и равен номеру ЗАПУСКАЕМОЙ
     // попытки; условие `> afterAttempts` даёт ровно «после afterAttempts неудач», а не на них.
     it('гейт red-checks: healEscalation — эскалация на попытке afterAttempts+1 (ПОСЛЕ afterAttempts неудач)', () => {
-        const logs = [];
+        const logs: string[] = [];
         // gateHeals:2 → эта попытка станет 3-й (afterAttempts+1): первые 2 были на дешёвой,
         // эскалация — после 2 неудачных.
         const state = mkState({ submitted: true, gateHeals: 2 });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         const kimiRun = ralph.coderRuntimeRunFor('kimi');
         runLoop(
             validCfg({
@@ -3412,16 +3566,16 @@ describe('runLoop — основной while-цикл: итерации коде
         // #393: модель эскалации пришла ИЗ route.model ⇒ помечена провайдером эскалации,
         // чтобы не-Claude рантайм её применил (а не отбросил как чужую claude-имя).
         expect(opts.modelProvider).toBe('kimi');
-        expect(depsOverride.runClaudeOnceFn).toBe(kimiRun);
+        expect(depsOverride!.runClaudeOnceFn).toBe(kimiRun);
         expect(logs.join('\n')).toMatch(/эскалация → kimi\/kimi-k2-0711-preview/);
     });
 
     it('гейт red-checks: РОВНО на afterAttempts-й попытке эскалации ещё НЕТ (граница off-by-one)', () => {
-        const logs = [];
+        const logs: string[] = [];
         // gateHeals:1 → эта попытка станет 2-й = afterAttempts. `2 > 2` ложно → без эскалации:
         // afterAttempts-я попытка ещё дешёвая, эскалация только со следующей.
         const state = mkState({ submitted: true, gateHeals: 1 });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         runLoop(
             validCfg({
                 gateHealAttempts: 5,
@@ -3453,9 +3607,9 @@ describe('runLoop — основной while-цикл: итерации коде
     });
 
     it('гейт red-checks: healEscalation задан, но afterAttempts ещё не достигнут → heal на cfg.model, без эскалации', () => {
-        const logs = [];
+        const logs: string[] = [];
         const state = mkState({ submitted: true, gateHeals: 0 });
-        const runClaudeFn = vi.fn(() => 0);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
         runLoop(
             validCfg({
                 gateHealAttempts: 5,
@@ -3486,12 +3640,12 @@ describe('runLoop — основной while-цикл: итерации коде
         // healRoute===null → runClaudeOnceFn:undefined — реальный runClaude сам упал бы
         // на дефолт adapters.coderRuntime.run (деструктуризация); мок фиксирует именно
         // «override не передан», не разворачивая дефолт за него.
-        expect(depsOverride.runClaudeOnceFn).toBeUndefined();
+        expect(depsOverride!.runClaudeOnceFn).toBeUndefined();
         expect(logs.join('\n')).not.toMatch(/эскалация/);
     });
 
     it('гейт not-merged (нечинимая причина) → PR оставлен человеку, стоп', () => {
-        const logs = [];
+        const logs: string[] = [];
         runLoop(
             validCfg(),
             ctx(mkState({ submitted: true })),
@@ -3509,16 +3663,18 @@ describe('runLoop — основной while-цикл: итерации коде
 
 describe('ensureClean — чистота дерева раннера, изолированная от дерева человека (#78)', () => {
     it('чистое дерево (git status пуст) → true', () => {
-        const logs = [];
-        expect(ensureClean('итерация', { shFn: () => '', logFn: (m) => logs.push(m) })).toBe(true);
+        const logs: string[] = [];
+        expect(
+            ensureClean('итерация', { shFn: () => '', logFn: (m: string) => logs.push(m) }),
+        ).toBe(true);
         expect(logs).toEqual([]);
     });
 
     it('грязное дерево (git status непуст) → false, лог с контекстом и выводом status', () => {
-        const logs = [];
+        const logs: string[] = [];
         const ok = ensureClean('гейт мерджа', {
             shFn: () => ' M src/a.ts\n?? tmp.log',
-            logFn: (m) => logs.push(m),
+            logFn: (m: string) => logs.push(m),
         });
         expect(ok).toBe(false);
         expect(logs.join('\n')).toMatch(/Грязное рабочее дерево \(гейт мерджа\)/);
@@ -3526,12 +3682,12 @@ describe('ensureClean — чистота дерева раннера, изоли
     });
 
     it('git status упал (не git-репо/сломан) → false (fail-closed), лог об ошибке', () => {
-        const logs = [];
+        const logs: string[] = [];
         const ok = ensureClean('итерация', {
             shFn: () => {
                 throw new Error('fatal: not a git repository');
             },
-            logFn: (m) => logs.push(m),
+            logFn: (m: string) => logs.push(m),
         });
         expect(ok).toBe(false);
         expect(logs.join('\n')).toMatch(/git status упал/);
@@ -3543,9 +3699,9 @@ describe('ensureClean — чистота дерева раннера, изоли
         // (pre-push) в env торчит GIT_DIR, и `git` в подпроцессе теста бьёт по НАСТОЯЩЕМУ
         // репозиторию, а не по tmp — проверено больно. Конвенция файла — DI-моки; сам
         // per-worktree характер команды закреплён этой ассертой.
-        const cmds = [];
+        const cmds: string[] = [];
         ensureClean('итерация', {
-            shFn: (c) => {
+            shFn: (c: string) => {
                 cmds.push(c);
                 return '';
             },
@@ -3576,22 +3732,22 @@ describe('ветковая хореография в worktree раннера (#7
 
     describe('parkOnOriginMain — парковка дерева раннера', () => {
         it('паркует detached на origin/main через argv (#193), НЕ занимая ветку main', () => {
-            const calls = [];
+            const calls: Array<[string, string[]]> = [];
             parkOnOriginMain({
-                runArgvFn: (file, args) => calls.push([file, args]),
+                runArgvFn: (file: string, args: string[]) => calls.push([file, args]),
                 logFn: () => {},
             });
             expect(calls).toEqual([['git', ['checkout', '--detach', 'origin/main']]]);
         });
 
         it('best-effort: сбой checkout не бросает, только лог', () => {
-            const logs = [];
+            const logs: string[] = [];
             expect(() =>
                 parkOnOriginMain({
                     runArgvFn: () => {
                         throw new Error('нет origin/main');
                     },
-                    logFn: (m) => logs.push(m),
+                    logFn: (m: string) => logs.push(m),
                 }),
             ).not.toThrow();
             expect(logs.join('\n')).toMatch(/origin\/main/);
@@ -3602,11 +3758,14 @@ describe('ветковая хореография в worktree раннера (#7
         // Фабрика шаблонного зелёного окружения. Запись команд — всегда в обёртке
         // (shCmds наполняется при любом сценарии); сценарий переопределяет только
         // ПОВЕДЕНИЕ команд через shImpl (вернуть/бросить) — одну грань за раз.
-        const mkDeps = ({ shImpl, ...rest } = {}) => {
-            const shCmds = [];
+        const mkDeps = ({
+            shImpl,
+            ...rest
+        }: { shImpl?: (cmd: string) => string; [k: string]: unknown } = {}) => {
+            const shCmds: string[] = [];
             const parkFn = vi.fn();
             const deps = {
-                shFn: (cmd) => {
+                shFn: (cmd: string) => {
                     shCmds.push(cmd);
                     if (shImpl) return shImpl(cmd);
                     if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
@@ -3615,7 +3774,7 @@ describe('ветковая хореография в worktree раннера (#7
                 // #193: git fetch/checkout идут через argv-коллаборатор (execFile без
                 // шелла). Нормализуем в строку и пишем в тот же shCmds/shImpl, чтобы
                 // сценарии (throw на 'git fetch') и ассерты остались прежними по смыслу.
-                runArgvFn: (file, args) => {
+                runArgvFn: (file: string, args: string[]) => {
                     const cmd = `${file} ${args.join(' ')}`;
                     shCmds.push(cmd);
                     return shImpl ? shImpl(cmd) : '';
@@ -3660,9 +3819,9 @@ describe('ветковая хореография в worktree раннера (#7
             // дают одну строку. Здесь отдельный рекордер сохраняет argv МАССИВОМ: значение
             // с пробелом осталось бы ОДНИМ элементом, и шелл его не разложил бы. Это и есть
             // структурная защита от shell-инъекции, ради которой фаза перешла на argv.
-            const argvCalls = [];
+            const argvCalls: Array<[string, string[]]> = [];
             const { deps } = mkDeps({
-                runArgvFn: (file, args) => {
+                runArgvFn: (file: string, args: string[]) => {
                     argvCalls.push([file, args]);
                     return '';
                 },
@@ -3685,7 +3844,7 @@ describe('ветковая хореография в worktree раннера (#7
 
         it('#SiaTz: голова НЕ фиксируется, если гейт упал до зелёного финала (fetch)', () => {
             const { deps } = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd.startsWith('git fetch')) throw new Error('сеть');
                     return '';
                 },
@@ -3696,7 +3855,7 @@ describe('ветковая хореография в worktree раннера (#7
 
         it('H3 в worktree: локальная ветка (общий ref кодер-сессий) != голова PR → false, чеки не гонялись', () => {
             const { shCmds, parkFn, deps } = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd.startsWith('git rev-parse --verify')) return SHA_B;
                     return '';
                 },
@@ -3709,7 +3868,7 @@ describe('ветковая хореография в worktree раннера (#7
 
         it('локальной ветки нет (rev-parse падает) — не фатально: чеки идут на PR-голове', () => {
             const { shCmds, deps } = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd.startsWith('git rev-parse --verify'))
                         throw new Error('unknown revision');
                     return '';
@@ -3722,7 +3881,7 @@ describe('ветковая хореография в worktree раннера (#7
         it('git fetch упал → false fail-closed, до gh и чеков не дошли', () => {
             const ghJsonFn = vi.fn();
             const { shCmds, parkFn, deps } = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd.startsWith('git fetch')) throw new Error('сеть умерла');
                     return '';
                 },
@@ -3746,7 +3905,7 @@ describe('ветковая хореография в worktree раннера (#7
 
         it('красный чек → false, lastRedCheck заполнен именем чека, дерево припарковано', () => {
             const { parkFn, deps } = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
                     if (cmd === 'npm run lint')
                         throw Object.assign(new Error('lint упал'), {
@@ -3765,7 +3924,7 @@ describe('ветковая хореография в worktree раннера (#7
         it('lastRedCheck сбрасывается В НАЧАЛЕ прогона: сбой fetch не маскируется под red-checks прошлого раунда', () => {
             // Раунд 1: красный чек — lastRedCheck заполнен.
             const red = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
                     if (cmd === 'npm run build') throw new Error('build упал');
                     return '';
@@ -3776,7 +3935,7 @@ describe('ветковая хореография в worktree раннера (#7
             // Раунд 2: гейт падает ДО чеков (fetch) — старый red-check не должен выжить,
             // иначе tryMergePhase запустил бы чини-сессию по устаревшей ошибке.
             const fetchFail = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd.startsWith('git fetch')) throw new Error('сеть');
                     return '';
                 },
@@ -3805,15 +3964,19 @@ describe('ветковая хореография в worktree раннера (#7
         // остальных чеков в shImpl проверять не нужно — они и так возвращают ''.
         // Толстые = прод-чеки, которых нет в playground (prod дедупит базовый `test`
         // в пользу coverage, поэтому берём разницу по имени, а не slice по длине).
-        const playgroundNames = new Set(gateChecksFor('playground').map(([n]) => n));
-        const thickChecks = gateChecksFor('prod').filter(([n]) => !playgroundNames.has(n));
+        const playgroundNames = new Set(
+            gateChecksFor('playground').map(([n]: [string, string]) => n),
+        );
+        const thickChecks = gateChecksFor('prod').filter(
+            ([n]: [string, string]) => !playgroundNames.has(n),
+        );
 
-        it.each(thickChecks)(
+        it.each<[string, string]>(thickChecks)(
             '#84: красный прод-чек %s блокирует так же, как базовый (fail-closed на каждом толстом чеке)',
             (name, cmd) => {
                 const { deps } = mkDeps({
                     checks: gateChecksFor('prod'),
-                    shImpl: (c) => {
+                    shImpl: (c: string) => {
                         if (c.startsWith('git rev-parse --verify')) return SHA_A;
                         if (c === cmd) throw new Error(`${name} упал`);
                         return '';
@@ -3832,18 +3995,26 @@ describe('ветковая хореография в worktree раннера (#7
 
             // Как mkDeps, но фиксирует и второй аргумент shFn (opts) — чтобы отличить
             // чек (санированный env) от git-команды (env не подменён).
-            const mkEnvDeps = ({ buildGateEnvFn, syncDepsFn, ...rest } = {}) => {
-                const calls = [];
+            const mkEnvDeps = ({
+                buildGateEnvFn,
+                syncDepsFn,
+                ...rest
+            }: {
+                buildGateEnvFn?: (...a: unknown[]) => unknown;
+                syncDepsFn?: (...a: unknown[]) => unknown;
+                [k: string]: unknown;
+            } = {}) => {
+                const calls: Array<[string, unknown]> = [];
                 const parkFn = vi.fn();
                 const deps = {
-                    shFn: (cmd, opts) => {
+                    shFn: (cmd: string, opts?: unknown) => {
                         calls.push([cmd, opts]);
                         if (cmd.startsWith('git rev-parse --verify')) return SHA_A;
                         return '';
                     },
                     // #193: git fetch/checkout — argv, наследуют полный env (opts undefined).
                     // Нормализуем в строку и пишем в тот же calls, чтобы optsOf их находил.
-                    runArgvFn: (file, args, opts) => {
+                    runArgvFn: (file: string, args: string[], opts?: unknown) => {
                         calls.push([`${file} ${args.join(' ')}`, opts]);
                         return '';
                     },
@@ -3860,7 +4031,7 @@ describe('ветковая хореография в worktree раннера (#7
             it('чеки идут с санированным env, git-команды — с полным (env не подменён)', () => {
                 const { calls, deps } = mkEnvDeps();
                 expect(checksGreen('feature/m1', 42, deps)).toBe(true);
-                const optsOf = (needle) =>
+                const optsOf = (needle: string) =>
                     calls.find(([cmd]) => cmd === needle || cmd.startsWith(needle))?.[1];
                 // Чек — с санированным env из buildGateEnvFn.
                 expect(optsOf('npm run build')).toEqual({ env: SANITIZED });
@@ -3891,7 +4062,8 @@ describe('ветковая хореография в worktree раннера (#7
     });
 
     describe('gateChecksFor — состав гейта по профилю (#80), из боевого конфига (#204)', () => {
-        const names = (checks) => checks.map(([name]) => name);
+        const names = (checks: Array<[string, string]>) =>
+            checks.map(([name]: [string, string]) => name);
         // #204: состав чеков переехал в ralph.config.json. Раньше эти ассерты пинили хардкод
         // в gate.ts; теперь они сторожат ШИПНУТЫЙ конфиг — фабричный config засеян боевым
         // выше (setConfigForTests), gateChecksFor читает его через getConfig().
@@ -3985,7 +4157,7 @@ describe('ветковая хореография в worktree раннера (#7
         });
 
         it('#81: e2e-чек гоняется в детерминированном headless-режиме (CI=1)', () => {
-            const [name, cmd] = gateChecksFor('prod').find(([n]) => n === 'e2e');
+            const [name, cmd] = gateChecksFor('prod').find(([n]: [string, string]) => n === 'e2e');
             expect(name).toBe('e2e');
             // CI=1 переводит Playwright в гейт-режим: forbidOnly + свежий webServer +
             // retries. Без него `.only` протащил бы подмножество как зелёный гейт.
@@ -4008,10 +4180,10 @@ describe('ветковая хореография в worktree раннера (#7
             // gh number практически всегда integer, но `--flag`-образное значение gh
             // распарсил бы как флаг: фильтр `/^\d+$/` на входе закрывает канал структурно
             // (тот самый класс, ради которого фаза перешла на argv). Fail-closed.
-            const logs = [];
+            const logs: string[] = [];
             const pr = findOpenPr('feature/m1', {
                 ghJsonFn: () => [{ number: '--delete-branch', labels: [] }],
-                logFn: (m) => logs.push(m),
+                logFn: (m: string) => logs.push(m),
             });
             expect(pr).toBeNull();
             expect(logs.join('\n')).toMatch(/не похож на целое/);
@@ -4039,19 +4211,22 @@ describe('ветковая хореография в worktree раннера (#7
         // Зелёное окружение по умолчанию: открытый PR без blocked, зелёные чеки,
         // мердж и пост-мердж git проходят. Сценарии переопределяют одну грань;
         // поведение sh-команд — через shImpl, запись в shCmds всегда в обёртке.
-        const mkDeps = ({ shImpl, ...rest } = {}) => {
-            const shCmds = [];
+        const mkDeps = ({
+            shImpl,
+            ...rest
+        }: { shImpl?: (cmd: string) => string; [k: string]: unknown } = {}) => {
+            const shCmds: string[] = [];
             const parkFn = vi.fn();
             const deps = {
                 dry: false,
-                shFn: (cmd) => {
+                shFn: (cmd: string) => {
                     shCmds.push(cmd);
                     return shImpl ? shImpl(cmd) : '';
                 },
                 // #193: gh pr merge и пост-мердж git fetch/checkout — argv (execFile без
                 // шелла). Нормализуем в строку в тот же shCmds/shImpl: сценарии (throw на
                 // 'git fetch origin main') и ассерты остаются прежними по смыслу.
-                runArgvFn: (file, args) => {
+                runArgvFn: (file: string, args: string[]) => {
                     const cmd = `${file} ${args.join(' ')}`;
                     shCmds.push(cmd);
                     return shImpl ? shImpl(cmd) : '';
@@ -4088,21 +4263,21 @@ describe('ветковая хореография в worktree раннера (#7
         });
 
         it('#80: прокидывает в checksGreen набор чеков по профилю (prod → толстый)', () => {
-            const checksGreenFn = vi.fn(() => true);
+            const checksGreenFn = vi.fn<ChecksGreenFake>(() => true);
             const { deps } = mkDeps({ checksGreenFn });
             expect(tryMergePhase(phase, { ...deps, profileName: 'prod' })).toBe('merged');
             const optsArg = checksGreenFn.mock.calls[0][2];
-            expect(optsArg.checks.map(([name]) => name)).toEqual(
-                gateChecksFor('prod').map(([name]) => name),
+            expect(optsArg.checks.map(([name]: [string, string]) => name)).toEqual(
+                gateChecksFor('prod').map(([name]: [string, string]) => name),
             );
         });
 
         it('#80: без profileName (вне цикла) → базовый набор', () => {
-            const checksGreenFn = vi.fn(() => true);
+            const checksGreenFn = vi.fn<ChecksGreenFake>(() => true);
             const { deps } = mkDeps({ checksGreenFn });
             expect(tryMergePhase(phase, deps)).toBe('merged');
-            expect(checksGreenFn.mock.calls[0][2].checks.map(([n]) => n)).toEqual(
-                gateChecksFor('playground').map(([n]) => n),
+            expect(checksGreenFn.mock.calls[0][2].checks.map(([n]: [string, string]) => n)).toEqual(
+                gateChecksFor('playground').map(([n]: [string, string]) => n),
             );
         });
 
@@ -4121,10 +4296,10 @@ describe('ветковая хореография в worktree раннера (#7
             // элементами, шелл к ним не прикасается (структурная защита #193), а не
             // квотированием. Пост-мердж git тоже раздельными элементами.
             const sha = 'd'.repeat(40);
-            const argvCalls = [];
+            const argvCalls: Array<[string, string[]]> = [];
             const { deps } = mkDeps({
                 getVerifiedHeadFn: () => sha,
-                runArgvFn: (file, args) => {
+                runArgvFn: (file: string, args: string[]) => {
                     argvCalls.push([file, args]);
                     return '';
                 },
@@ -4147,7 +4322,7 @@ describe('ветковая хореография в worktree раннера (#7
 
         it('пост-мердж fetch/detach упал → merged-local-stale (PR влит, дерево раннера отстало)', () => {
             const { deps } = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd === 'git fetch origin main') throw new Error('сеть');
                     return '';
                 },
@@ -4156,7 +4331,7 @@ describe('ветковая хореография в worktree раннера (#7
         });
 
         it('PR с label blocked → blocked, чеки не гонялись', () => {
-            const checksGreenFn = vi.fn();
+            const checksGreenFn = vi.fn<ChecksGreenFake>();
             const { deps } = mkDeps({
                 findOpenPrFn: () => ({ number: 5, labels: [{ name: 'blocked' }] }),
                 checksGreenFn,
@@ -4167,7 +4342,7 @@ describe('ветковая хореография в worktree раннера (#7
 
         // #222: hold — человеческий стоп-кран, раннер его не снимает никогда.
         it('#222: PR с label hold → hold, чеки не гонялись', () => {
-            const checksGreenFn = vi.fn();
+            const checksGreenFn = vi.fn<ChecksGreenFake>();
             const { deps } = mkDeps({
                 findOpenPrFn: () => ({ number: 5, labels: [{ name: 'hold' }] }),
                 checksGreenFn,
@@ -4179,7 +4354,7 @@ describe('ветковая хореография в worktree раннера (#7
         // #222 критерий 3: hold и blocked одновременно на PR → hold сильнее, стоп без
         // разбора (негативный тест — blocked НЕ должен взять верх).
         it('#222: PR с label hold И blocked одновременно → hold (сильнее), не blocked', () => {
-            const checksGreenFn = vi.fn();
+            const checksGreenFn = vi.fn<ChecksGreenFake>();
             const { deps } = mkDeps({
                 findOpenPrFn: () => ({
                     number: 5,
@@ -4238,7 +4413,7 @@ describe('ветковая хореография в worktree раннера (#7
         it('мердж упал дважды и PR не влит → not-merged, парковка на origin/main', () => {
             const sleepFn = vi.fn();
             const { shCmds, parkFn, deps } = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd.startsWith('gh pr merge')) throw new Error('merge отвергнут');
                     return '';
                 },
@@ -4253,7 +4428,7 @@ describe('ветковая хореография в worktree раннера (#7
 
         it('мердж «упал», но phaseMerged подтверждает влитие → продолжаем как merged', () => {
             const { deps } = mkDeps({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd.startsWith('gh pr merge')) throw new Error('оборванный ответ');
                     return '';
                 },
@@ -4378,7 +4553,7 @@ describe('acquireRunnerLock — взятие лока первым шагом ma
 
 describe('startMonitor — авто-спавн панели прогресса (#74)', () => {
     const deps = (over = {}) => ({
-        spawnFn: vi.fn(() => ({ pid: 4242, unref: vi.fn(), on: vi.fn() })),
+        spawnFn: vi.fn<MonitorSpawnFake>(() => ({ pid: 4242, unref: vi.fn(), on: vi.fn() })),
         logFn: vi.fn(),
         readPidFn: () => 0,
         writePidFn: vi.fn(),
@@ -4436,8 +4611,8 @@ describe('startMonitor — авто-спавн панели прогресса (
     it('монитор от прошлого прогона живой → подхватываем его, второй не поднимаем', () => {
         const d = deps({
             readPidFn: () => 99,
-            aliveFn: (pid) => pid === 99,
-            isMonitorFn: (pid) => pid === 99,
+            aliveFn: (pid: number) => pid === 99,
+            isMonitorFn: (pid: number) => pid === 99,
         });
         // Возвращаем сироту как {pid} — stopMonitor заглушит его при выходе раннера.
         expect(startMonitor(d)).toEqual({ pid: 99 });
@@ -4510,8 +4685,8 @@ describe('stopMonitor — остановка монитора при выход�
     });
 
     it('если группу убить не вышло — падаем обратно на одиночный pid', () => {
-        const calls = [];
-        const killFn = vi.fn((pid) => {
+        const calls: number[] = [];
+        const killFn = vi.fn((pid: number) => {
             calls.push(pid);
             if (pid < 0) throw new Error('EPERM');
         });
@@ -4565,8 +4740,8 @@ describe('adoptMonitor — подбор монитора-сироты от пр�
         const got = adoptMonitor({
             logFn: vi.fn(),
             readPidFn: () => 77,
-            aliveFn: (pid) => pid === 77,
-            isMonitorFn: (pid) => pid === 77,
+            aliveFn: (pid: number) => pid === 77,
+            isMonitorFn: (pid: number) => pid === 77,
         });
         expect(got).toEqual({ pid: 77 });
     });
@@ -4676,7 +4851,7 @@ describe('adoptMonitor — подбор монитора-сироты от пр�
 describe('listMonitorPids — все живые monitor.js сканом /proc, не по pid-файлу (#235)', () => {
     it('фильтрует нечисловые записи /proc и оставляет только monitor.js', () => {
         const readdirFn = () => ['1', '77', 'self', 'net', '200'];
-        const isMonitorFn = (pid) => pid === 77 || pid === 200;
+        const isMonitorFn = (pid: number) => pid === 77 || pid === 200;
         expect(listMonitorPids({ readdirFn, isMonitorFn })).toEqual([77, 200]);
     });
 
@@ -4805,7 +4980,7 @@ describe('sweepOrphanMonitors — уборка сирот-мониторов м�
         const got = sweepOrphanMonitors({
             profile: 'prod',
             listPidsFn: () => [500],
-            ppidFn: (pid) => (pid === 500 ? 4242 : 1), // родитель жив — не сирота
+            ppidFn: (pid: number) => (pid === 500 ? 4242 : 1), // родитель жив — не сирота
             readCmdlineFn: () => 'node\0.claude/ralph/runtime/monitor.js\0--profile\0prod\0',
             stopFn,
             writePidFn,
@@ -4860,8 +5035,8 @@ describe('ensureMonitorAlive — взаимный контроль раннер�
             ensureMonitorAlive({
                 logFn,
                 readPidFn: () => 77,
-                aliveFn: (pid) => pid === 77,
-                isMonitorFn: (pid) => pid === 77,
+                aliveFn: (pid: number) => pid === 77,
+                isMonitorFn: (pid: number) => pid === 77,
                 startMonitorFn,
             }),
         ).toBe(null);
@@ -4933,8 +5108,8 @@ describe('ensureMonitorAlive — взаимный контроль раннер�
         let pidFile = 111;
         let alive = true;
         const readPidFn = () => pidFile;
-        const aliveFn = (pid) => pid === pidFile && alive;
-        const isMonitorFn = (pid) => pid === pidFile;
+        const aliveFn = (pid: number) => pid === pidFile && alive;
+        const isMonitorFn = (pid: number) => pid === pidFile;
         const startMonitorFn = vi.fn(() => {
             pidFile = 222; // тот же эффект, что у настоящего startMonitor: writePidFn
             alive = true;
@@ -5006,7 +5181,7 @@ describe('ensureMonitorAlive — взаимный контроль раннер�
     it('#151: монитор переподнят посреди прогона → exit глушит НОВОГО, ссылка обновлена', () => {
         // Связка main(): захваченная ссылка monitor + обёртка, обновляющая её.
         let monitor = { pid: 111 }; // старый монитор, поднятый на старте
-        const ensureWrapped = (o) => {
+        const ensureWrapped = (o: unknown) => {
             const fresh = ensureMonitorAlive(o);
             if (fresh) monitor = fresh;
             return fresh;
@@ -5028,7 +5203,7 @@ describe('ensureMonitorAlive — взаимный контроль раннер�
         stopMonitor(monitor, {
             killFn,
             rmPidFn,
-            isMonitorFn: (pid) => pid === 222, // живой по этому pid — именно новый монитор
+            isMonitorFn: (pid: number) => pid === 222, // живой по этому pid — именно новый монитор
             logFn: vi.fn(),
         });
         expect(killFn).toHaveBeenCalledWith(-222, 'SIGTERM'); // глушим нового, а не сиротим
@@ -5064,7 +5239,7 @@ describe('Изоляция раннера в worktree — сценарии и м
         /^git commit\b/,
         /^git push\b/, // пуш ветки — забота кодер-сессии, не гейта раннера
     ];
-    const assertNoForbiddenGit = (cmds) => {
+    const assertNoForbiddenGit = (cmds: string[]) => {
         for (const cmd of cmds.filter((c) => c.startsWith('git '))) {
             for (const re of FORBIDDEN_GIT) {
                 expect(re.test(cmd), `запрещённая git-команда в дереве раннера: "${cmd}"`).toBe(
@@ -5116,7 +5291,7 @@ describe('Изоляция раннера в worktree — сценарии и м
             const runner = { porcelain: '' }; // выделенное дерево раннера
             const human = { porcelain: '' }; // дерево человека на ветке main (для наглядности)
             // shFn раннера: git исполняется в дереве раннера, видит только его состояние.
-            const runnerSh = (cmd) => {
+            const runnerSh = (cmd: string) => {
                 if (cmd === 'git status --porcelain') return runner.porcelain;
                 return '';
             };
@@ -5125,9 +5300,9 @@ describe('Изоляция раннера в worktree — сценарии и м
 
         it('человек редактирует, затем коммитит в main посреди прогона — раннер зелёный на каждой проверке', () => {
             const w = mkTwoWorktrees();
-            const logs = [];
-            const clean = (ctx) =>
-                ensureClean(ctx, { shFn: w.runnerSh, logFn: (m) => logs.push(m) });
+            const logs: string[] = [];
+            const clean = (ctx: string) =>
+                ensureClean(ctx, { shFn: w.runnerSh, logFn: (m: string) => logs.push(m) });
 
             // Итерация 1: раннер проверяет чистоту перед сессией — своё дерево пусто.
             expect(clean('итерация 1')).toBe(true);
@@ -5153,10 +5328,10 @@ describe('Изоляция раннера в worktree — сценарии и м
             // ensureClean обязан её увидеть и остановить следующую итерацию.
             const w = mkTwoWorktrees();
             w.runner.porcelain = ' M src/runner-half-work.ts';
-            const logs = [];
-            expect(ensureClean('итерация', { shFn: w.runnerSh, logFn: (m) => logs.push(m) })).toBe(
-                false,
-            );
+            const logs: string[] = [];
+            expect(
+                ensureClean('итерация', { shFn: w.runnerSh, logFn: (m: string) => logs.push(m) }),
+            ).toBe(false);
             expect(logs.join('\n')).toMatch(/Грязное рабочее дерево/);
         });
     });
@@ -5168,12 +5343,12 @@ describe('Изоляция раннера в worktree — сценарии и м
         // Единый рекордер git-команд для ОБЕИХ функций: checksGreen (внутренние deps)
         // и tryMergePhase пишут в один shCmds — так инвариант проверяется на ПОЛНОЙ
         // хореографии гейта, а не по частям. shImpl задаёт поведение конкретных команд.
-        const mkWiring = ({ shImpl } = {}) => {
-            const shCmds = [];
+        const mkWiring = ({ shImpl }: { shImpl?: (cmd: string) => string | undefined } = {}) => {
+            const shCmds: string[] = [];
             // Общий рекордер для sh (строки) и argv-мутаций (#193): нормализуем argv в
             // ту же строковую форму, чтобы инвариант проверялся на ПОЛНОЙ хореографии
             // одним списком shCmds, а shImpl задавал поведение по строке команды.
-            const record = (cmd) => {
+            const record = (cmd: string) => {
                 shCmds.push(cmd);
                 if (shImpl) {
                     const r = shImpl(cmd);
@@ -5182,9 +5357,9 @@ describe('Изоляция раннера в worktree — сценарии и м
                 if (cmd.startsWith('git rev-parse --verify')) return SHA_HEAD; // локалка == PR
                 return '';
             };
-            const shFn = (cmd) => record(cmd);
+            const shFn = (cmd: string) => record(cmd);
             // git fetch/checkout и gh pr merge теперь идут argv-каналом (#193).
-            const runArgvFn = (file, args) => record(`${file} ${args.join(' ')}`);
+            const runArgvFn = (file: string, args: string[]) => record(`${file} ${args.join(' ')}`);
             const detachOriginMain = () =>
                 runArgvFn('git', ['checkout', '--detach', 'origin/main']);
             const deps = {
@@ -5195,7 +5370,7 @@ describe('Изоляция раннера в worktree — сценарии и м
                 ensureCleanFn: () => true,
                 findOpenPrFn: () => ({ number: 5, labels: [] }),
                 // РЕАЛЬНЫЙ checksGreen, пишущий в тот же shCmds и видящий ту же PR-голову.
-                checksGreenFn: (branch, prNumber) =>
+                checksGreenFn: (branch: string, prNumber: number) =>
                     checksGreen(branch, prNumber, {
                         shFn,
                         runArgvFn,
@@ -5246,7 +5421,7 @@ describe('Изоляция раннера в worktree — сценарии и м
             // никогда на это не натыкаться — весь путь идёт детачем, поэтому throw
             // ниже не срабатывает и гейт доходит до merged.
             const { shCmds, deps } = mkWiring({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (/^git checkout (?!--detach\b)/.test(cmd) || cmd.startsWith('git switch')) {
                         throw new Error(
                             "fatal: 'main' is already checked out at '/root/pixel-tanks'",
@@ -5261,7 +5436,7 @@ describe('Изоляция раннера в worktree — сценарии и м
 
         it('красный чек в реальном checksGreen → red-checks, дерево припарковано детачем на origin/main', () => {
             const { shCmds, deps } = mkWiring({
-                shImpl: (cmd) => {
+                shImpl: (cmd: string) => {
                     if (cmd === 'npm run test --silent') {
                         throw Object.assign(new Error('vitest упал'), {
                             stdout: '1 failed',
@@ -5384,10 +5559,10 @@ describe('phaseDiffFiles — какая именно git-команда уход
     });
 
     it('#252: fetch уходит раздельными элементами argv (branch не в шелл-строке)', () => {
-        const argvCalls = [];
+        const argvCalls: Array<[string, string[]]> = [];
         phaseDiffFiles('feature/x', {
             shFn: () => '',
-            runArgvFn: (file, args) => {
+            runArgvFn: (file: string, args: string[]) => {
                 argvCalls.push([file, args]);
                 return '';
             },
@@ -5408,13 +5583,13 @@ describe('phaseDiffFiles — какая именно git-команда уход
     });
 
     it('падение fetch не роняет сдачу — null и предупреждение в лог', () => {
-        const logs = [];
+        const logs: string[] = [];
         const files = phaseDiffFiles('feature/x', {
             shFn: () => '',
             runArgvFn: () => {
                 throw new Error('fatal: could not read from remote');
             },
-            logFn: (m) => logs.push(m),
+            logFn: (m: string) => logs.push(m),
         });
         expect(files).toBe(null);
         expect(logs.join('\n')).toMatch(/дифф/i);
@@ -5458,9 +5633,9 @@ describe('phaseDiffFiles — не-ASCII пути и пустой дифф (#132)
     const { phaseDiffFiles, matchRiskPaths } = ralph;
 
     it('core.quotePath=false — кириллический путь приходит как есть и матчится зоной', () => {
-        const cmds = [];
+        const cmds: string[] = [];
         const files = phaseDiffFiles('feature/x', {
-            shFn: (c) => {
+            shFn: (c: string) => {
                 cmds.push(c);
                 return c.includes('diff') ? 'src/payload/коллекции/пользователи.ts' : '';
             },
@@ -5475,21 +5650,21 @@ describe('phaseDiffFiles — не-ASCII пути и пустой дифф (#132)
     });
 
     it('пустой дифф пишет предупреждение — это аномалия, а не «зоны не задеты»', () => {
-        const logs = [];
+        const logs: string[] = [];
         const files = phaseDiffFiles('feature/x', {
             shFn: () => '',
             runArgvFn: () => '',
-            logFn: (m) => logs.push(m),
+            logFn: (m: string) => logs.push(m),
         });
         expect(files).toEqual([]);
         expect(logs.join('\n')).toMatch(/пуст/i);
     });
 
     it('ветка не задана — отдельное сообщение, не «небезопасное имя»', () => {
-        const logs = [];
-        expect(phaseDiffFiles(undefined, { shFn: () => '', logFn: (m) => logs.push(m) })).toBe(
-            null,
-        );
+        const logs: string[] = [];
+        expect(
+            phaseDiffFiles(undefined, { shFn: () => '', logFn: (m: string) => logs.push(m) }),
+        ).toBe(null);
         expect(logs.join('\n')).toMatch(/не задана/i);
         expect(logs.join('\n')).not.toMatch(/небезопасн/i);
     });
@@ -5501,7 +5676,7 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
     // #252: fetch внутри phaseDiffFiles — теперь argv-мутация; noArgv — общий
     // «успешный» стаб, когда сценарий не проверяет саму фазу fetch.
     const noArgv = () => '';
-    const shOk = (diffBody) => (cmd) => {
+    const shOk = (diffBody: string) => (cmd: string) => {
         if (cmd.includes('--name-only')) return 'src/a.ts\nsrc/b.ts';
         return diffBody;
     };
@@ -5544,7 +5719,7 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
 
     it('сбой текста диффа не роняет ревью — остаётся список файлов и совет', () => {
         const ctx = reviewDiffContext('feature/x', {
-            shFn: (cmd) => {
+            shFn: (cmd: string) => {
                 if (cmd.includes('--name-only')) return 'src/a.ts';
                 throw new Error('git diff умер');
             },
@@ -5567,14 +5742,14 @@ describe('reviewDiffContext — дифф в промпт ревью (#133)', () 
     });
 
     it('имя ветки уходит в git заквотированным (диф-чтение) и argv-элементом (fetch)', () => {
-        const cmds = [];
-        const argvCalls = [];
+        const cmds: string[] = [];
+        const argvCalls: Array<[string, string[]]> = [];
         reviewDiffContext('feature/x', {
-            shFn: (c) => {
+            shFn: (c: string) => {
                 cmds.push(c);
                 return c.includes('--name-only') ? 'src/a.ts' : 'дифф';
             },
-            runArgvFn: (file, args) => {
+            runArgvFn: (file: string, args: string[]) => {
                 argvCalls.push([file, args]);
                 return '';
             },
@@ -5614,7 +5789,7 @@ describe('runLoop → промпт ревью получает контекст 
 
     // Сдача фазы: issues кончились → PR → ревью → правки. Ловим все промпты.
     const runWithReview = (over = {}) => {
-        const prompts = [];
+        const prompts: string[] = [];
         let idxCalls = 0;
         runLoop(
             cfg(),
@@ -5631,7 +5806,7 @@ describe('runLoop → промпт ревью получает контекст 
                 pickModelFn: () => 'claude-picked',
                 pickRuntimeFn: () => 'claude',
                 pickReviewModelFn: () => 'claude-reviewer',
-                runClaudeFn: (prompt) => {
+                runClaudeFn: (prompt: string) => {
                     prompts.push(prompt);
                     return 0;
                 },
@@ -5659,17 +5834,17 @@ describe('runLoop → промпт ревью получает контекст 
 
     it('дифф собирается ОДИН раз и переиспользуется выбором модели и контекстом', () => {
         let diffCalls = 0;
-        const seen = {};
+        const seen: Record<string, unknown> = {};
         runWithReview({
             phaseDiffFilesFn: () => {
                 diffCalls++;
                 return ['src/a.ts'];
             },
-            pickReviewModelFn: (_m, _b, opts) => {
+            pickReviewModelFn: (_m: unknown, _b: unknown, opts?: { files?: string[] }) => {
                 seen.pick = opts?.files;
                 return 'claude-reviewer';
             },
-            reviewDiffContextFn: (_b, opts) => {
+            reviewDiffContextFn: (_b: unknown, opts?: { files?: string[] }) => {
                 seen.ctx = opts?.files;
                 return '\n\nМАРКЕР-КОНТЕКСТА-ДИФФА';
             },
@@ -5709,9 +5884,9 @@ describe('safeBranch — argument injection через имя ветки (#135)'
     });
 
     it('ветка-опция не доходит до git', () => {
-        const cmds = [];
+        const cmds: string[] = [];
         const files = phaseDiffFiles('--upload-pack=evil', {
-            shFn: (c) => {
+            shFn: (c: string) => {
                 cmds.push(c);
                 return '';
             },
@@ -5730,7 +5905,7 @@ describe('sliceWholeChars — обрезка не рубит суррогатн�
         // невалидный код-юнит.
         const diff = 'a'.repeat(9) + '💥' + 'b'.repeat(100);
         const ctx = reviewDiffContext('feature/x', {
-            shFn: (c) => (c.includes('--name-only') ? 'src/a.ts' : diff),
+            shFn: (c: string) => (c.includes('--name-only') ? 'src/a.ts' : diff),
             runArgvFn: () => '',
             logFn: () => {},
             limit: 10,
@@ -5749,12 +5924,12 @@ describe('closeMilestoneByTitle — закрытие milestone сразу пос
     const { closeMilestoneByTitle } = ralph;
 
     it('находит открытый milestone по title и закрывает через argv', () => {
-        const argvCalls = [];
-        const logs = [];
+        const argvCalls: Array<[string, string[]]> = [];
+        const logs: string[] = [];
         closeMilestoneByTitle('Фаза X', {
             ghJsonFn: () => [{ number: 7, title: 'Фаза X' }],
-            runArgvFn: (file, args) => argvCalls.push([file, args]),
-            logFn: (m) => logs.push(m),
+            runArgvFn: (file: string, args: string[]) => argvCalls.push([file, args]),
+            logFn: (m: string) => logs.push(m),
         });
         expect(argvCalls).toContainEqual([
             'gh',
@@ -5774,13 +5949,13 @@ describe('closeMilestoneByTitle — закрытие milestone сразу пос
     });
 
     it('сбой чтения/мутации — fail-open, только лог', () => {
-        const logs = [];
+        const logs: string[] = [];
         expect(() =>
             closeMilestoneByTitle('Фаза X', {
                 ghJsonFn: () => {
                     throw new Error('gh boom');
                 },
-                logFn: (m) => logs.push(m),
+                logFn: (m: string) => logs.push(m),
             }),
         ).not.toThrow();
         expect(logs.join('\n')).toMatch(/свип подберёт/);
@@ -5791,18 +5966,18 @@ describe('closeCompletedMilestones — свип хвостов прошлых ф
     const { closeCompletedMilestones } = ralph;
 
     it('milestone с закрытыми issues и смерджённым PR фазы — закрывает через argv', () => {
-        const argvCalls = [];
-        const logs = [];
+        const argvCalls: Array<[string, string[]]> = [];
+        const logs: string[] = [];
         closeCompletedMilestones({
             // Milestone выпал из config.phases (старая фаза) — совпадение по
             // заголовку PR "feat: <milestone>", как его создаёт сам раннер.
             cfg: { phases: [] },
-            ghJsonFn: (cmd) =>
+            ghJsonFn: (cmd: string) =>
                 cmd.includes('milestones')
                     ? [{ number: 9, title: 'Фаза X', open_issues: 0, closed_issues: 3 }]
                     : [{ title: 'feat: Фаза X', headRefName: 'feature/x' }],
-            runArgvFn: (file, args) => argvCalls.push([file, args]),
-            logFn: (m) => logs.push(m),
+            runArgvFn: (file: string, args: string[]) => argvCalls.push([file, args]),
+            logFn: (m: string) => logs.push(m),
         });
         expect(argvCalls).toContainEqual([
             'gh',
@@ -5814,7 +5989,7 @@ describe('closeCompletedMilestones — свип хвостов прошлых ф
     it('milestone с открытыми issues — пропускается, без мутации', () => {
         const runArgvFn = vi.fn();
         closeCompletedMilestones({
-            ghJsonFn: (cmd) =>
+            ghJsonFn: (cmd: string) =>
                 cmd.includes('milestones')
                     ? [{ number: 9, title: 'Фаза X', open_issues: 2, closed_issues: 1 }]
                     : [],
@@ -5828,7 +6003,7 @@ describe('closeCompletedMilestones — свип хвостов прошлых ф
         const runArgvFn = vi.fn();
         closeCompletedMilestones({
             cfg: { phases: [] },
-            ghJsonFn: (cmd) =>
+            ghJsonFn: (cmd: string) =>
                 cmd.includes('milestones')
                     ? [{ number: 9, title: 'Фаза X', open_issues: 0, closed_issues: 3 }]
                     : [],
@@ -5839,13 +6014,13 @@ describe('closeCompletedMilestones — свип хвостов прошлых ф
     });
 
     it('сбой чтения данных для свипа — fail-open, только лог', () => {
-        const logs = [];
+        const logs: string[] = [];
         expect(() =>
             closeCompletedMilestones({
                 ghJsonFn: () => {
                     throw new Error('gh boom');
                 },
-                logFn: (m) => logs.push(m),
+                logFn: (m: string) => logs.push(m),
             }),
         ).not.toThrow();
         expect(logs.join('\n')).toMatch(/свипа milestones/);
@@ -5855,27 +6030,27 @@ describe('closeCompletedMilestones — свип хвостов прошлых ф
 describe('syncProjectBoard', () => {
     // #252: мутация — через argv (runArgvFn), не строкой через шелл.
     it('зовёт скрипт синка через argv и логирует последнюю строку его вывода', () => {
-        const argvCalls = [];
-        const logs = [];
+        const argvCalls: Array<[string, string[]]> = [];
+        const logs: string[] = [];
         ralph.syncProjectBoard(
-            (file, args) => {
+            (file: string, args: string[]) => {
                 argvCalls.push([file, args]);
                 return 'шум\n✅ project-sync: доска в порядке\n';
             },
-            (m) => logs.push(m),
+            (m: string) => logs.push(m),
         );
         expect(argvCalls).toEqual([['node', ['scripts/project-sync.mjs']]]);
         expect(logs[0]).toContain('доска в порядке');
     });
 
     it('не бросает, когда синк упал — фаза уже смерджена, ронять её нельзя', () => {
-        const logs = [];
+        const logs: string[] = [];
         expect(() =>
             ralph.syncProjectBoard(
                 () => {
                     throw new Error('HTTP 401\nвторая строка');
                 },
-                (m) => logs.push(m),
+                (m: string) => logs.push(m),
             ),
         ).not.toThrow();
         expect(logs[0]).toContain('HTTP 401');
@@ -6028,7 +6203,9 @@ describe('createOrchestrator: API-поверхность', () => {
 
     it('возвращает все ключи прежнего module.exports ralph.js (плюс main)', () => {
         const runtime = buildRuntime();
-        const missing = REQUIRED_API.filter((key) => runtime[key] === undefined);
+        const missing = REQUIRED_API.filter(
+            (key) => (runtime as Record<string, unknown>)[key] === undefined,
+        );
         expect(missing).toEqual([]);
     });
 
@@ -6044,6 +6221,7 @@ describe('createOrchestrator: API-поверхность', () => {
     it('ре-экспорт ralph.js отдаёт тот же контракт (import не запускает main)', async () => {
         // import сам по себе — проверка «main не запущен»: запуск main() из тестового
         // процесса упал бы на guardSideEffect/acquireLock или ушёл в process.exit.
+        // @ts-expect-error — JS-entry раннера без деклараций типов (см. импорт в шапке).
         const ralphModule = await import('../ralph.js');
         const missing = REQUIRED_API.filter((key) => ralphModule.default[key] === undefined);
         expect(missing).toEqual([]);
@@ -6071,7 +6249,7 @@ describe('createOrchestrator: набор швов адаптеров (#369)', ()
 
     it('deployCheck.classifyOutcome — та же чистая классификация (GREEN только зелёный+здоровый)', () => {
         const { deployCheck } = buildRuntime().getAdapters();
-        const green = {
+        const green: DeployOutcome = {
             status: 'completed',
             conclusion: 'success',
             sha: 'b'.repeat(40),
@@ -6092,7 +6270,7 @@ describe('createOrchestrator: набор швов адаптеров (#369)', ()
         expect(typeof runtime.resolveAdapterSelection).toBe('function');
         // resolveAdapterSelection fail-closed на неизвестном шве.
         expect(() =>
-            runtime.resolveAdapterSelection({ nope: 'x' }, (m) => {
+            runtime.resolveAdapterSelection({ nope: 'x' } as unknown as AdapterConfig, (m) => {
                 throw new Error(m);
             }),
         ).toThrow();

@@ -3,7 +3,7 @@
 // ожидание deploy-workflow (#163), HTTP-healthcheck прода (#164) и классификация итога
 // (#165) — собраны одним связным модулем, а ralph.js пользуется только его API. Поведение
 // НЕ меняется — это извлечение, не переписывание: формат сообщений (deployWaitMessage —
-// единственный источник строки, которую парсит DEPLOY_WAIT_RE в deadman.js), ретраи,
+// единственный источник строки, которую парсит DEPLOY_WAIT_RE в deadman.ts), ретраи,
 // таймауты и fail-closed классификация — всё как было.
 //
 // Что собрано здесь:
@@ -11,7 +11,7 @@
 //   (сам деплой уже делает CI по факту пуша в main, раннер его не дублирует);
 // - mergedShaOf — sha squash-мерджа PR с ретраем на транзиентный mergeCommit:null;
 // - deployWaitMessage — единственный источник формата строки ожидания (контракт с
-//   deadman.js, синхронность закреплена тестом deadman.test.js);
+//   deadman.ts, синхронность закреплена тестом deadman.test.ts);
 // - waitForDeployRun — поллинг gh run list до completed/timeout/not-found;
 // - probeHttpStatus / checkProdHealth — HTTP-healthcheck главной страницы прода;
 // - isWorkflowGreen / classifyDeployOutcome — единый предикат «зелёно» и fail-closed
@@ -157,12 +157,12 @@ export function createDeployCheckModule(env: DeployCheckEnv) {
     }
 
     // #TFO89: единственный источник формата строки ожидания пост-мердж деплоя. Её парсит
-    // DEPLOY_WAIT_RE в deadman.js (режим deploywait, порог = таймаут ожидания + запас):
+    // DEPLOY_WAIT_RE в deadman.ts (режим deploywait, порог = таймаут ожидания + запас):
     // цикл опроса ниже за ~20 мин не пишет в лог ни строки, и без своего режима deadman
     // увёл бы классификацию к default (5 мин) → ложный DEADMAN-пуш на каждом prod-мердже
     // (нарушение инварианта 10 и критерия PRD «ноль ложных пушей»). N (таймаут в минутах)
     // захватывается тем же способом, что «Жду N мин» у apiLimitMessage; синхронность
-    // формата и regex закреплена тестом (deadman.test.js: deployWaitMessage ↔ DEPLOY_WAIT_RE).
+    // формата и regex закреплена тестом (deadman.test.ts: deployWaitMessage ↔ DEPLOY_WAIT_RE).
     function deployWaitMessage(workflow: string, sha: string, timeoutMs: number): string {
         return (
             `⏳ Пост-мердж: жду итог deploy-workflow «${workflow}» на sha ${String(sha).slice(0, 8)} ` +

@@ -19,9 +19,10 @@
     конфиг фазы 5 уехал в чужой docs-PR (#144), потому что ветку резали от локального main.
 
     > ⚠️ **Исключение — `gate-env-allowlist.json` (санация env чеков гейта, #188).** В
-    > отличие от `ralph.config.json`, allowlist читается по `__dirname` — то есть из
+    > отличие от `ralph.config.json`, allowlist читается по `import.meta.dirname`
+    > (`gate-env.mts` — явно-ESM, #403) — то есть из
     > **launch-дерева** (`/root/pixel-tanks`), а НЕ из worktree раннера на `origin/main`
-    > (провенанс — в докблоке `gate-env.js`). Поэтому смердженная правка списка **не
+    > (провенанс — в докблоке `gate-env.mts`). Поэтому смердженная правка списка **не
     > действует, пока в launch-дереве не сделан `git pull`**: после мерджа PR, трогающего
     > allowlist, обнови launch-дерево (`git -C /root/pixel-tanks pull --ff-only origin main`)
     > — иначе гейт санирует по старому списку (например, режет переменную, которую только
@@ -70,7 +71,8 @@ tmux send-keys -t work:3 'node .claude/ralph/runtime/monitor.js --profile prod -
 ```
 
 Монитор запускать **из дерева раннера** (`/root/pixel-tanks-ralph`): он берёт
-`ralph.log` и state от `__dirname`. `--config` — абсолютный путь конфига из дерева
+`ralph.log` и state от `import.meta.dirname` (в `monitor-panel.mts` — .mts/ESM, #404).
+`--config` — абсолютный путь конфига из дерева
 человека, тот самый файл, по которому идёт раннер. Второй экземпляр монитора безопасен:
 он read-only и pid-файла не трогает (раннер поднимает свой detached-экземпляр сам).
 
@@ -115,7 +117,7 @@ endpoint Moonshot (research: `docs/ralph-mini-framework/research.md`): выбо�
 (не светится в `/proc/*/cmdline`); каналы Claude-аутентификации в Kimi-сессии снимаются,
 чтобы CLI не ушёл на `api.anthropic.com` мимо Moonshot.
 
-**Смоук вручную** (детерминированная проверка проводки — в `orchestrator.test.js`, блок
+**Смоук вручную** (детерминированная проверка проводки — в `orchestrator.test.ts`, блок
 «Kimi-рантайм»; ниже — живой прогон против Moonshot):
 
 ```bash
@@ -166,7 +168,7 @@ codex читает его из окружения процесса. Аппрув
 `codex exec` при запросе аппрува падает); песочница `danger-full-access` штатна, т.к.
 раннер крутится в изолированном worktree (инвариант №3), и нужна для git/npm.
 
-**Смоук вручную** (детерминированная проверка проводки — в `orchestrator.test.js`, блок
+**Смоук вручную** (детерминированная проверка проводки — в `orchestrator.test.ts`, блок
 «OpenAI-рантайм»; ниже — живой прогон против OpenAI):
 
 ```bash

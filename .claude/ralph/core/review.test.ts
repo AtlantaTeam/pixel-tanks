@@ -10,7 +10,7 @@
 // matchRiskPaths/phaseDiffFiles инжектируются заглушками: pickReviewModel лишь ДЕЛЕГИРУЕТ
 // им сопоставление зоны риска и сбор диффа, поэтому здесь тестируется его проводка
 // (эскалирует, когда matchRiskPaths вернул хит), а не сам глоб-матчинг — тот покрыт своим
-// describe в orchestrator.test.js.
+// describe в orchestrator.test.ts.
 import { describe, it, expect, vi } from 'vitest';
 import type { ReviewEnv } from './review.ts';
 import { createReviewModule } from './review.ts';

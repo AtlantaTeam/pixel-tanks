@@ -101,7 +101,7 @@ describe('SEVERITY_LEVELS', () => {
 });
 
 // fetchPrComments: DI через spawnFn — реальный gh в тестах запрещён (#138, RALPH_NO_SIDE_EFFECTS=1
-// в общем test-setup.js), поэтому spawnSync подменяется целиком.
+// в общем test-setup.ts), поэтому spawnSync подменяется целиком.
 describe('fetchPrComments', () => {
     it('некорректный номер PR — throw, не «пустой список»', () => {
         expect(() => fetchPrComments(0)).toThrow(/номер PR/);

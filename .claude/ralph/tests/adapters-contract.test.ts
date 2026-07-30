@@ -6,9 +6,9 @@
 //     buildAdapters) — тоже фейками;
 //   - здесь — ОДИН и тот же набор поведенческих ассертов на интерфейс прогоняется
 //     против ДВУХ реализаций подряд: минимального in-memory фейка (realizability) и
-//     БОЕВОЙ логики текущих адаптеров (gate.ts/deploy-check.ts/telegram-notifier.js/
+//     БОЕВОЙ логики текущих адаптеров (gate.ts/deploy-check.ts/telegram-notifier.ts/
 //     orchestrator.ts) с подменённым на границе I/O (sh/ghJson/execFn/spawnFn — то же
-//     DI, что и в gate.test.ts/deploy-check.test.ts/telegram-notifier.test.js).
+//     DI, что и в gate.test.ts/deploy-check.test.ts/telegram-notifier.test.ts).
 //   Так проверяется именно КОНТРАКТ: свойство держится независимо от того, кто за
 //   интерфейсом стоит — ручной фейк или реальный npm/GitHub/Telegram/Claude-адаптер.
 //
@@ -47,8 +47,7 @@ import { createDeployCheckModule } from '../core/deploy-check.ts';
 // Боевой POSIX-квотер без побочек — тот же, что импортируют соседние тесты; локальная
 // копия молча разъехалась бы с ним при правке экранирования.
 import { shq } from '../shared/ralph-util.ts';
-// @ts-expect-error — JS-модуль без деклараций типов (тот же приём, что telegram-notifier.test.js).
-import { sendTelegramMessage } from '../runtime/telegram-notifier.js';
+import { sendTelegramMessage } from '../runtime/telegram-notifier.ts';
 // @ts-expect-error — JS-entry раннера без деклараций типов (тот же приём, что gate.test.ts
 // и deploy-check.test.ts): findOpenPr/closeMilestoneByTitle/syncProjectBoard/buildClaudeArgs/
 // spawnClaude живут только на боевой поверхности ralph.js.
@@ -457,8 +456,8 @@ function buildFakeNotifier(fail: boolean): { adapter: NotifierAdapter; sent: str
     };
 }
 
-// Боевая логика: sendTelegramMessage реальный (telegram-notifier.js), execFn подменён —
-// та же граница DI, что telegram-notifier.test.js.
+// Боевая логика: sendTelegramMessage реальный (telegram-notifier.ts), execFn подменён —
+// та же граница DI, что telegram-notifier.test.ts.
 function buildRealNotifier(fail: boolean): { adapter: NotifierAdapter; sent: string[] } {
     const sent: string[] = [];
     const execFn = (_file: string, args: string[]): string => {
@@ -507,7 +506,7 @@ function registerNotifierContract(
 
 registerNotifierContract('фейк (in-memory)', buildFakeNotifier);
 registerNotifierContract(
-    'боевая логика (telegram-notifier.js, execFn подменён)',
+    'боевая логика (telegram-notifier.ts, execFn подменён)',
     buildRealNotifier,
 );
 
@@ -621,7 +620,7 @@ function buildFakeRuntime(result: { code: number; output: string }): CoderRuntim
 }
 
 // Боевая логика: buildClaudeArgs + spawnClaude (ralph.js), spawnFn подменён — та же граница
-// DI, что и в orchestrator.test.js (явная инъекция, НЕ vi.mock('node:child_process')).
+// DI, что и в orchestrator.test.ts (явная инъекция, НЕ vi.mock('node:child_process')).
 function buildRealRuntime(spawnResult: {
     status: number | null;
     stdout: string;

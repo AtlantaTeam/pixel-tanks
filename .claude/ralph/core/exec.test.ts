@@ -28,7 +28,7 @@ describe('#195: тесты изменённых вызовов гейта на a
         // RALPH_NO_SIDE_EFFECTS=1 запрещает реальный execFileSync. Зовём НАСТОЯЩУЮ
         // ralph.shArgv (не голый идентификатор — иначе ReferenceError замаскировал бы
         // отсутствие вызова), сверяем и throw, и формат записи журнала #138 — иначе
-        // общий afterEach из test-setup.js уронил бы прогон на непустом sideEffectAttempts.
+        // общий afterEach из test-setup.ts уронил бы прогон на непустом sideEffectAttempts.
         expect(() => ralph.shArgv('echo', ['hello'])).toThrow();
         expect(ralph.sideEffectAttempts.splice(0)).toEqual(['shArgv(echo hello)']);
     });

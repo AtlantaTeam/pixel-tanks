@@ -11,8 +11,9 @@
  *      криптичной ошибки в глубине зависимостей (инвариант №1 — fail-closed);
  *   2) парсинг CLI-флагов режима и передача argv фабрике;
  *   3) запуск main() под guard require.main === module и ре-экспорт API-поверхности
- *      (module.exports = runtime) — на ней сидят orchestrator.test.js, сценарные тесты и
- *      monitor.js, ровно как на прежнем монолите.
+ *      (module.exports = runtime) — на ней сидят orchestrator.test.ts, сценарные тесты и
+ *      monitor-panel.mts (тонкий entry monitor.js её больше не импортирует — #404),
+ *      ровно как на прежнем монолите.
  *
  * Запуск:
  *   node .claude/ralph/ralph.js             AFK: до maxIterations итераций, авто-мердж фаз
@@ -49,10 +50,10 @@ if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
 const { createOrchestrator } = require('./core/orchestrator.ts');
 // Мост к JS-соседям: их require остаётся в entry, фабрика получает функции готовыми —
 // orchestrator.ts при импорте не тянет env/сеть, а тесты передают фейки
-// (см. orchestrator.test.js). telegram-notifier.js самостоятелен (не require ralph.js —
+// (см. orchestrator.test.ts). telegram-notifier.ts самостоятелен (не require ralph.js —
 // цикл), предохранитель #138 у него общий через side-effect-guard.ts.
-const { sendTelegramMessage, telegramConfigFromEnv } = require('./runtime/telegram-notifier.js');
-const { buildSanitizedGateEnv } = require('./gate-env.js');
+const { sendTelegramMessage, telegramConfigFromEnv } = require('./runtime/telegram-notifier.ts');
+const { buildSanitizedGateEnv } = require('./gate-env.mts');
 
 // Флаги режима — прежние module-level ONCE/DRY/RESET/RESUBMIT/DEPLOY_RESOLVED монолита.
 // --deploy-resolved (#165): снятие барьера красного пост-мердж деплоя — только человек,
@@ -106,7 +107,7 @@ const runtime = createOrchestrator({
 });
 
 // Прежняя API-поверхность module.exports монолита (плюс main) — контракт закреплён
-// orchestrator.test.js (REQUIRED_API): пропавший ключ = молча сломанный тест или монитор.
+// orchestrator.test.ts (REQUIRED_API): пропавший ключ = молча сломанный тест или монитор.
 module.exports = runtime;
 
 // Сборка фабрики чистая (не запускает петлю и не трогает процесс) — require/import

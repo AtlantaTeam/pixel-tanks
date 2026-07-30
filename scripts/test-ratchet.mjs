@@ -7,10 +7,11 @@ import path from 'node:path';
 import { collectTestsJson, countTests } from './test-count.mjs';
 import { fetchOriginMain } from './security-audit.mjs';
 
-// telegram-notifier.js — CommonJS-модуль раннера (#85), самостоятельный: он не тянет
-// ralph.js и уже носит собственный guardSideEffect, поэтому в тестах побочка не улетит.
+// telegram-notifier.ts — ESM-модуль раннера (#85), Node грузит его через require(esm) на
+// Node ≥24; самостоятельный: он не тянет ralph.js и уже носит собственный guardSideEffect,
+// поэтому в тестах побочка не улетит.
 const { sendTelegramMessage } = createRequire(import.meta.url)(
-    '../.claude/ralph/runtime/telegram-notifier.js',
+    '../.claude/ralph/runtime/telegram-notifier.ts',
 );
 
 // #156: храповик числа тестов — гейт-чек, краснящий гейт, когда число собранных unit-тестов

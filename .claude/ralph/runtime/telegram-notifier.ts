@@ -7,7 +7,7 @@
 // тот же паттерн, что и GH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN).
 //
 // Вызов Telegram Bot API — curl через execFileSync (argv-массив), тот же anti-RCE
-// паттерн, что и probeEgress/restartTunnel в ralph.js (#92/#98): текст сообщения
+// паттерн, что и probeEgress/restartTunnel в tunnel-check.ts (#92/#98): текст сообщения
 // приходит из данных, которые пишет кто угодно (заголовок issue с публичного
 // GitHub), --data-urlencode кодирует его без участия шелла. parse_mode сознательно
 // не задаём: Markdown/HTML-режимы Telegram требуют экранирования спецсимволов в
@@ -21,58 +21,77 @@
 //
 // Ретраи (#224): один транзиентный сетевой чих не должен терять громкое событие
 // (API-лимит, blocked, breaker, красный деплой). Паттерн — как у `ghJson` в
-// ralph.js: нарастающая пауза `retryBaseMs × номер попытки`, дефолт 3 попытки.
+// core/exec.ts: нарастающая пауза `retryBaseMs × номер попытки`, дефолт 3 попытки.
 // sleepFn инжектируется (как sleepFn у checkProdHealth/ensureTunnel) — тесты не
 // ждут реальные секунды. Если все попытки исчерпаны — fail-open сохраняется
 // (возвращаем false, не бросаем), но в лог уходит заметная строка с полным
 // текстом события, чтобы его можно было найти при разборе постфактум.
+//
+// TS-модуль без билд-шага: исполняется нативным type stripping Node 24 (erasable-only
+// синтаксис — только аннотации типов, ни enum, ни namespace, ни parameter properties).
+// Модуль самостоятелен (не require/import ядро — ralph.js/orchestrator.ts): требуется
+// одинаково через require() из CJS-entry (ralph.js) и через createRequire из
+// .mjs-скриптов гейта (security-audit.mjs, test-ratchet.mjs) — циклической
+// зависимости на ядро тут нет, предохранитель и журнал берутся из
+// shared/side-effect-guard.ts (#145).
 
-const { execFileSync } = require('node:child_process');
+import { execFileSync } from 'node:child_process';
+import { positiveIntOrDefault, sleep as realSleep } from '../shared/ralph-util.ts';
+import {
+    sideEffectAttempts,
+    guardSideEffect as sharedGuardSideEffect,
+} from '../shared/side-effect-guard.ts';
 
-const TELEGRAM_API_BASE = 'https://api.telegram.org';
+export const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
 // Telegram режет sendMessage на 4096 символах: более длинный текст вернёт 400, и
 // fail-open молча съест уведомление. Обрезаем заранее — заголовок issue в событии
 // вполне может однажды перевалить лимит.
 const TELEGRAM_MAX_TEXT = 4096;
 
-const TELEGRAM_DEFAULT_ATTEMPTS = 3;
-const TELEGRAM_RETRY_BASE_MS = 5000;
+export const TELEGRAM_DEFAULT_ATTEMPTS = 3;
+export const TELEGRAM_RETRY_BASE_MS = 5000;
 
-// #232: sleep/positiveIntOrDefault вынесены в общий util-модуль без побочек (копия
-// жила и здесь, и в ralph.js — правка в одной не доезжала до другой, ревью PR #231);
-// не требует ralph.js, тот же приём, что и side-effect-guard.ts ниже. Не заведены под
-// guardSideEffect: как и sleepFn в ralph.js, sleep — DI ради скорости тестов, а не
-// граница anti-RCE — забытый мок делает тест медленным, а не боевым.
-// Сознательное ужесточение (#132): локальная копия прощала строку через Number(value)
-// (attempts: '5' → 5), общая — строгая typeof number ('5' → дефолт). Для текущих
-// вызовов безопасно (attempts/retryBaseMs передают только тесты), строгая семантика
-// правильнее; будущему потребителю из конфига число слать числом, не строкой.
-const { positiveIntOrDefault, sleep: realSleep } = require('../shared/ralph-util.ts');
+export { sideEffectAttempts };
 
-// Тот же предохранитель, что #138 в ralph.js (см. комментарий там), но модуль
-// самостоятельный: require('../ralph.js') отсюда создал бы циклическую зависимость,
-// как только ralph.js подключит этот модуль в pushEvent (#86). #145: сам предохранитель
-// (NO_SIDE_EFFECTS/sideEffectAttempts/guardSideEffect) вынесен в side-effect-guard.ts —
-// журнал общий на ralph.js/telegram-notifier.js/security-audit.mjs, test-setup.js
-// сверяет один.
-const {
-    sideEffectAttempts,
-    guardSideEffect: sharedGuardSideEffect,
-} = require('../shared/side-effect-guard.ts');
+type ExecFn = (file: string, args: string[], opts?: Record<string, unknown>) => string;
+type LogFn = (msg: string) => void;
+type SleepFn = (ms: number) => void;
 
-function guardSideEffect(what) {
+type TelegramConfig = {
+    token: string;
+    chatId: string;
+};
+
+type AttemptSendResult = {
+    ok: boolean;
+    reason: string;
+    retryAfterMs?: number;
+    retriable?: boolean;
+};
+
+type SendOptions = {
+    token?: string;
+    chatId?: string;
+    execFn?: ExecFn;
+    logFn?: LogFn;
+    sleepFn?: SleepFn;
+    attempts?: number;
+    retryBaseMs?: number;
+};
+
+function guardSideEffect(what: string): void {
     sharedGuardSideEffect(what, 'Подмени execFn в опциях sendTelegramMessage.');
 }
 
-function realExecFn(...args) {
+const realExecFn: ExecFn = (...args) => {
     guardSideEffect(`telegram execFileSync(${args[0]})`);
-    return execFileSync(...args);
-}
+    return (execFileSync as ExecFn)(...args);
+};
 
 // Читает секреты строго из env — ralph.config.json коммитится в гит, там
 // токену/chat_id не место.
-function telegramConfigFromEnv() {
+export function telegramConfigFromEnv(): TelegramConfig {
     return {
         token: (process.env.RALPH_TG_BOT_TOKEN || '').trim(),
         chatId: (process.env.RALPH_TG_CHAT_ID || '').trim(),
@@ -81,7 +100,19 @@ function telegramConfigFromEnv() {
 
 // Один HTTP-запрос к Bot API. Не бросает — возвращает {ok, reason}, reason
 // заполнен только при ok=false (для лога попытки/финального отказа).
-function attemptSend({ execFn, curlConfig, finalChatId, finalToken, safeText }) {
+function attemptSend({
+    execFn,
+    curlConfig,
+    finalChatId,
+    finalToken,
+    safeText,
+}: {
+    execFn: ExecFn;
+    curlConfig: string;
+    finalChatId: string;
+    finalToken: string;
+    safeText: string;
+}): AttemptSendResult {
     try {
         const raw = execFn(
             'curl',
@@ -109,7 +140,11 @@ function attemptSend({ execFn, curlConfig, finalChatId, finalToken, safeText }) 
             { encoding: 'utf-8', input: curlConfig, stdio: ['pipe', 'pipe', 'pipe'] },
         );
 
-        let parsed;
+        // Ответ Telegram — недоверенные данные из сети: JSON.parse даёт `any`, поэтому
+        // держим его как unknown и сужаем ПО МЕСТУ (как `cfg: unknown` в deadman.ts), а не
+        // утверждаем форму, которую рантайм не проверял. Все обращения ниже толерантны к
+        // мусору (Number()/typeof), так что поведение не меняется — вопрос честности типа.
+        let parsed: unknown;
         try {
             parsed = JSON.parse(raw);
         } catch {
@@ -118,14 +153,20 @@ function attemptSend({ execFn, curlConfig, finalChatId, finalToken, safeText }) 
                 reason: `не удалось разобрать ответ API — ${String(raw).slice(0, 200)}`,
             };
         }
-        if (!parsed.ok) {
-            const code = Number(parsed.error_code);
-            const desc = parsed.description || 'без описания';
+        const res: Record<string, unknown> =
+            parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+        if (!res.ok) {
+            const code = Number(res.error_code);
+            const desc = (typeof res.description === 'string' && res.description) || 'без описания';
             // 429 (rate-limit) — транзиентно, но Telegram сам подсказывает паузу в
             // parameters.retry_after (сек). Уважаем её: фиксированные 5с могли бы повторно
             // упереться в лимит. retryAfterMs !== undefined перекрывает нарастающую паузу.
             if (code === 429) {
-                const ra = parsed.parameters && Number(parsed.parameters.retry_after);
+                const params = res.parameters;
+                const ra =
+                    params && typeof params === 'object'
+                        ? Number((params as Record<string, unknown>).retry_after)
+                        : NaN;
                 return {
                     ok: false,
                     reason: `API rate-limit (429) — ${desc}`,
@@ -146,25 +187,27 @@ function attemptSend({ execFn, curlConfig, finalChatId, finalToken, safeText }) 
             return { ok: false, reason: `API отклонил сообщение — ${desc}` };
         }
         return { ok: true, reason: '' };
-    } catch (e) {
+    } catch (e: unknown) {
         // execFileSync при непустом exit-коде кладёт ПЕРВОЙ строкой e.message всю
         // команду (`Command failed: curl …`). URL с токеном теперь уходит в stdin, а
         // не в argv, но редактируем на всякий случай: лог тейлится монитором и
         // копируется в чат — секрету там не место. Пустой токен сюда не доходит
         // (ранний return выше в sendTelegramMessage), поэтому replaceAll не схлопнет
         // всю строку.
-        const firstLine = String(e.message).split('\n')[0].replaceAll(finalToken, '***');
+        const firstLine = String((e as Error).message)
+            .split('\n')[0]
+            .replaceAll(finalToken, '***');
         return { ok: false, reason: `отправка не удалась — ${firstLine}` };
     }
 }
 
-// execFn инжектируется (как probeEgress/restartTunnel в ralph.js) — юнит-тесты
+// execFn инжектируется (как probeEgress/restartTunnel в tunnel-check.ts) — юнит-тесты
 // мокают сам вызов curl, не реальную сеть/токен. logFn — куда пишутся
 // предупреждения о недоставке; по умолчанию no-op, модуль не обязан знать про
 // ralph.log (вызывающий код передаёт свой log()). sleepFn/attempts/retryBaseMs —
 // ретраи с нарастающей паузой (#224), см. докблок модуля.
-function sendTelegramMessage(
-    text,
+export function sendTelegramMessage(
+    text: string,
     {
         token,
         chatId,
@@ -173,8 +216,8 @@ function sendTelegramMessage(
         sleepFn = realSleep,
         attempts = TELEGRAM_DEFAULT_ATTEMPTS,
         retryBaseMs = TELEGRAM_RETRY_BASE_MS,
-    } = {},
-) {
+    }: SendOptions = {},
+): boolean {
     const envCfg = telegramConfigFromEnv();
     const finalToken = token ?? envCfg.token;
     const finalChatId = chatId ?? envCfg.chatId;
@@ -235,12 +278,3 @@ function sendTelegramMessage(
     logFn(`⚠ ПУШ НЕ ДОСТАВЛЕН: ${String(text)}`);
     return false;
 }
-
-module.exports = {
-    sendTelegramMessage,
-    telegramConfigFromEnv,
-    TELEGRAM_API_BASE,
-    TELEGRAM_DEFAULT_ATTEMPTS,
-    TELEGRAM_RETRY_BASE_MS,
-    sideEffectAttempts,
-};

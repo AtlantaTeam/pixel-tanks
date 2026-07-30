@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
     DEFAULT_ALLOWLIST_PATH,
     normalizeAllowlist,
@@ -7,15 +9,15 @@ import {
     isAllowed,
     sanitizeEnv,
     buildSanitizedGateEnv,
-} from './gate-env.js';
+} from './gate-env.mts';
 
 // #188: allowlist-санация env чеков гейта. Тесты гоняют чистые функции на ФИКСТУРАХ
 // (фейковый env, инжектированный readFileFn) — настоящие process.env/файлы не читаются,
 // поэтому в гейте зелёные и секрет не утаскивают.
 
 // Ошибка чтения с кодом — как её бросает fs.readFileSync (ENOENT/EACCES).
-function fsError(code) {
-    const e = new Error(`${code}: fake`);
+function fsError(code: string): NodeJS.ErrnoException {
+    const e: NodeJS.ErrnoException = new Error(`${code}: fake`);
     e.code = code;
     return e;
 }
@@ -126,7 +128,7 @@ describe('sanitizeEnv — allowlist, а не blocklist (#188)', () => {
         const out = sanitizeEnv(env, a);
         expect(out.PATH).toBe('/usr/bin');
         expect('__proto__' in out).toBe(false);
-        expect({}.polluted).toBeUndefined();
+        expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     });
 });
 
@@ -161,6 +163,35 @@ describe('buildSanitizedGateEnv — обёртка загрузка+санаци
         });
         expect(out.PATH).toBe('/usr/bin');
         expect('GH_TOKEN' in out).toBe(false);
+    });
+});
+
+// #403: провенанс — DEFAULT_ALLOWLIST_PATH обязан указывать на каталог МОДУЛЯ
+// (import.meta.dirname), а не на cwd. Это свойство держит барьер #209: код проверяемого
+// PR не подменит список санации своего же гейта, потому что раннер читает его из
+// launch-дерева, а не из детаченного worktree. Барьер, а не только ручная проверка:
+// «упрощение» до process.cwd()/пути от конфига сразу покраснит этот тест.
+describe('провенанс DEFAULT_ALLOWLIST_PATH — от каталога модуля, не от cwd (#403)', () => {
+    // Тест лежит РЯДОМ с gate-env.mts (оба в .claude/ralph/), поэтому каталог теста и есть
+    // каталог модуля. Ждём ТОЧНОГО равенства — только оно ловит регрессию вида
+    // path.join(process.cwd(), '.claude/ralph/gate-env-allowlist.json'): она прошла бы обе
+    // мягкие проверки (endsWith / «не cwd+имя файла»), т.к. под vitest cwd — корень репо и
+    // путь от cwd совпал бы с путём от каталога модуля. Но во время гейта cwd — worktree на
+    // PR-голове, и allowlist читался бы из кода проверяемого PR (провенанс #209 сломан).
+    const HERE = path.dirname(fileURLToPath(import.meta.url));
+    const EXPECTED = path.join(HERE, 'gate-env-allowlist.json');
+
+    it('точное равенство с путём от каталога самого модуля', () => {
+        expect(path.isAbsolute(DEFAULT_ALLOWLIST_PATH)).toBe(true);
+        expect(DEFAULT_ALLOWLIST_PATH).toBe(EXPECTED);
+    });
+
+    it('не зависит от cwd: не строится от process.cwd()', () => {
+        // Дополнительная явная проверка «не от cwd»: даже наивную форму cwd+имя файла
+        // (когда корень репо совпал бы с каталогом модуля лишь случайно) точное равенство
+        // выше уже отсекает, но оставляем как читаемую формулировку инварианта.
+        expect(DEFAULT_ALLOWLIST_PATH).not.toBe(path.join(process.cwd(), 'gate-env-allowlist.json'));
+        expect(path.dirname(DEFAULT_ALLOWLIST_PATH).endsWith(path.join('.claude', 'ralph'))).toBe(true);
     });
 });
 
