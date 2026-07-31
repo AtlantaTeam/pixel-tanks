@@ -35,6 +35,12 @@ AAAA (`2a03:6f00:a::2:d005`, запись id `88987353`) оставлена на
 1. Убедиться, что образ жив: `list_images` → `a3c41a28-4f86-4d3a-ac8e-a3c3fe662bf3`,
    `status=created`. Если образа нет — восстанавливать нечего, идти в
    `.claude/ralph/provision/README.md` (провижн с нуля).
+   Заодно проверить, что уцелели floating IP (`list_floating_ips` → `186.246.7.204`,
+   `is_bound=false`) и A-запись (`get_domain_dns_records("pixeltanks.ru")` → A на этот адрес).
+   При удалении сервера панель предупреждает, что «домены будут отвязаны от IP сервера» —
+   имеется в виду привязка внутри панели, DNS-запись должна остаться. Если A-запись всё же
+   пропала — создать заново: `create_dns_record(fqdn="pixeltanks.ru", type="A",
+value="186.246.7.204")`.
 2. `create_server` (two-step confirm, billable ~1800 ₽/мес) — **сервер поднимается под
    существующий floating IP, а не наоборот**:
     - `name`: `ralph-prod`
