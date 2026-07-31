@@ -18,8 +18,60 @@
 | Floating IP   | `186.246.7.204`, id `ef646603-254e-44d9-aca9-4eb6f2592922` — НЕ трогать |
 | Пресет / зона | `preset_id=4803`, `msk-1` (ru-3)                                        |
 
-DNS не трогали, кроме AAAA (IPv6 удалена — сайт IPv4-only, floating IP её не покрывает).
-A-запись `pixeltanks.ru` → floating IP, restore по DNS нулевой.
+**DNS при сворачивании не трогали вообще.** A-запись `pixeltanks.ru` → floating IP
+`186.246.7.204`, он за аккаунтом остаётся → restore по A-записи нулевой.
+
+AAAA (`2a03:6f00:a::2:d005`, запись id `88987353`) оставлена намеренно — пока сервера нет,
+сайт всё равно лежит, вреда от неё ноль. Но **floating IP покрывает только IPv4**: у нового
+сервера IPv6 будет другой, и старая AAAA станет чёрной дырой (браузеры по Happy Eyeballs
+сначала пробуют IPv6, ловят таймаут, потом падают на IPv4 — сайт «тормозит на ровном месте»).
+Поэтому после restore AAAA обязательно обновить — шаг 5 инструкции ниже.
+
+### Инструкция локальному агенту: развернуть VDS из образа
+
+Работает через Timeweb MCP. Полная процедура и проверки — `docs/deploy/vds-fold-restore.md`,
+раздел «Развернуть»; ниже — готовые параметры, чтобы ничего не выяснять заново.
+
+1. Убедиться, что образ жив: `list_images` → `a3c41a28-4f86-4d3a-ac8e-a3c3fe662bf3`,
+   `status=created`. Если образа нет — восстанавливать нечего, идти в
+   `.claude/ralph/provision/README.md` (провижн с нуля).
+2. `create_server` (two-step confirm, billable ~1800 ₽/мес) — **сервер поднимается под
+   существующий floating IP, а не наоборот**:
+    - `name`: `ralph-prod`
+    - `image_id`: `a3c41a28-4f86-4d3a-ac8e-a3c3fe662bf3` (ОС из образа, `os_id` НЕ передавать)
+    - `preset_id`: `4803` (Cloud MSK 80 — 4CPU / 8GB / 80GB)
+    - `availability_zone`: **`msk-1`**, локация `ru-3` — обязано совпадать с зоной floating IP
+      (`list_floating_ips` → `availability_zone`). Зона другая → `bind_floating_ip` не сработает,
+      адрес `186.246.7.204` не привяжется, придётся удалять сервер и создавать заново.
+    - `project_id`: `46271`
+    - `ssh_keys_ids`: `[137295, 290665]` (`lyapindm@yandex.ru`, `work_notebook`)
+    - `is_backups`: `false`
+3. Дождаться `status=on` (`list_servers`), взять новый `server_id`.
+4. **Привязать floating IP** — адрес сохранён специально, домен смотрит на него:
+   `bind_floating_ip(ip_id="ef646603-254e-44d9-aca9-4eb6f2592922", resource_id=<новый server_id>,
+resource_type="server")`. Проверить: `list_floating_ips` → `is_bound=true`,
+   `bound_to.resource_id` = новый id; `list_servers` → `public_ipv4=186.246.7.204`.
+   **A-запись не трогать** — она уже указывает на этот адрес.
+5. **Обновить AAAA** на IPv6 нового сервера: взять `get_server(<новый id>)` →
+   `networks[].ips[type=ipv6]`, затем `update_dns_record(fqdn="pixeltanks.ru",
+record_id=88987353, type="AAAA", value=<новый IPv6>)`. Пропустить этот шаг — сайт будет
+   тормозить у IPv6-клиентов (таймаут на мёртвый адрес перед fallback на IPv4).
+6. SSH `root@186.246.7.204` (адрес тот же). Туннель `ss-local`/`privoxy` и env стартуют сами
+   (`Restart=always`), проверить:
+    ```bash
+    curl -x http://127.0.0.1:8118 https://api.ipify.org   # egress вне РФ (Франкфурт)
+    claude -p 'Ответь одним словом: OK'                    # → OK через туннель
+    curl -s -o /dev/null -w '%{http_code}\n' https://pixeltanks.ru   # 200
+    ```
+    Токены за простой могли протухнуть: `CLAUDE_CODE_OAUTH_TOKEN` —
+    `.claude/ralph/provision/update-token.sh`, `GH_TOKEN` — руками в `/root/ralph.env`.
+7. Запустить раннер по `.claude/ralph/RUNBOOK.md` (профиль `prod`, `--reset`).
+8. Когда сервер поднят и проверен — **удалить образ** в панели, чтобы не платить за хранение
+   (~20 ₽/мес). Перед следующим сворачиванием снимается свежий.
+
+Чего НЕ делать: не удалять floating IP (потеряется адрес → правка DNS и ожидание TTL);
+не поднимать сервер из `os_id` вместо `image_id` (получится голая Ubuntu без ralph, туннеля и
+прод-БД); не создавать сервер в зоне, отличной от `msk-1`.
 
 ## Заряженный трек (ждёт запуска после отпуска)
 

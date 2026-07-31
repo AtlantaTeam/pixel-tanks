@@ -21,9 +21,10 @@
 Цена за это — 180 ₽/мес за сам floating IP в простое. Против экономии 1800 ₽/мес на
 сервере — берём, ради вечного адреса и нуля возни с DNS.
 
-> Живём на **IPv4**. В DNS есть AAAA-запись (IPv6) — floating IP её не покрывает, при
-> пересоздании сервера IPv6 будет другой. **AAAA удалить** (см. шаг сворачивания) — сайт
-> IPv4-only, restore тогда нулевой по DNS. MX/TXT(SPF) для почты не трогаем.
+> Floating IP покрывает только **IPv4**. AAAA-запись (IPv6) при пересоздании сервера
+> протухает — адрес будет другой. При сворачивании её **не трогаем** (сайт и так лежит,
+> вреда ноль), но при restore **обязательно обновляем** на новый IPv6 — иначе IPv6-клиенты
+> ловят таймаут на мёртвый адрес перед fallback на IPv4. MX/TXT(SPF) для почты не трогаем.
 
 ## Постоянные факты (server id меняется, остальное — нет)
 
@@ -57,7 +58,7 @@
    Дождаться `status=created` через `get_image` / `list_images` (`progress=100`).
    Старый образ прошлого сервера можно удалить, чтобы не платить дважды.
 4. **Записать новый `image_id`** в `.claude/state/HANDOFF.md` и память проекта.
-5. **Удалить AAAA-запись** `pixeltanks.ru` (IPv6) — панель «Домены» или `delete_dns_record`.
+5. **DNS не трогать** — ни A (floating IP переживает сервер), ни AAAA (обновим при restore).
 6. **Удалить сервер** — **только через панель** https://timeweb.cloud/my/servers.
    MCP `delete_server` не поддерживается.
 7. **НЕ трогать** floating IP и образ — они и держат быстрый restore.
@@ -66,9 +67,12 @@
 
 1. `create_server` из образа: `image_id=<из HANDOFF>` (вместо `os_id`), тот же
    `preset_id=4803`, зона `msk-1`, `ssh_keys_ids`, `is_backups=false`. ОС и окружение — из образа.
+   Зона **обязана совпадать** с зоной floating IP: в чужой зоне привязка не сработает.
 2. `bind_floating_ip(ip_id=ef646603-…, resource_id=<новый server id>, resource_type=server)`.
-   **DNS не трогаем** — `186.246.7.204` уже в A-записи.
-3. SSH на сервер (тот же адрес). Туннель (`ss-local`/`privoxy`, `Restart=always`) и env
+   **A-запись не трогаем** — `186.246.7.204` уже в ней.
+3. **Обновить AAAA** на IPv6 нового сервера: `get_server` → `networks[].ips[type=ipv6]`, затем
+   `update_dns_record(fqdn=pixeltanks.ru, record_id=88987353, type=AAAA, value=<новый IPv6>)`.
+4. SSH на сервер (тот же адрес). Туннель (`ss-local`/`privoxy`, `Restart=always`) и env
    поднимаются сами — проверить:
     ```bash
     curl -x http://127.0.0.1:8118 https://api.ipify.org   # egress вне РФ (Франкфурт)
@@ -78,7 +82,7 @@
     Если токены протухли за простой: `CLAUDE_CODE_OAUTH_TOKEN` — через
     `.claude/ralph/provision/update-token.sh`, `GH_TOKEN` — руками в `ralph.env`
     (см. provision README, «Ротация headless-токена»).
-4. **Запустить ralph** по RUNBOOK — перезапуск заодно активирует непрерывный prod
+5. **Запустить ralph** по RUNBOOK — перезапуск заодно активирует непрерывный prod
    (флаг `haltBeforeDeploy:false` уже в main, читается на старте).
 
 ## Проверить, что развернулось верно
