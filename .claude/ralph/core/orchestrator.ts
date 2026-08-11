@@ -1565,6 +1565,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         dry = DRY,
         readFn = readSessionRequests,
         writeFn = writeSessionRequests,
+        removeFn = removeSessionRequests,
         taskSource = adapters.taskSource,
         logFn = log,
         pushEventFn = pushEvent,
@@ -1577,6 +1578,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         dry?: boolean;
         readFn?: () => string | null;
         writeFn?: (text: string) => void;
+        removeFn?: () => void;
         taskSource?: TaskSourceAdapter;
         logFn?: typeof log;
         pushEventFn?: typeof pushEvent;
@@ -1721,15 +1723,21 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 return { applied: i, failed: true };
             }
         }
-        // Тот же класс отказа на успешном пути: не очистившийся файл применится повторно
+        // #62: файл УДАЛЯЕТСЯ, а не опустошается. Пустой остаток остаётся untracked-файлом
+        // в дереве раннера и валит СЛЕДУЮЩИЙ запуск проверкой чистоты дерева — а однажды
+        // остановил и сам гейт мерджа. Держать чистоту дерева `.gitignore`'ом нельзя: ветка
+        // фазы живёт всю фазу и отрезана ДО правки игнор-листа, значит в её дереве строки
+        // ещё нет (поймано на полигоне трижды подряд).
+        // Тот же класс отказа, что ниже по стеку: не удалившийся файл применится повторно
         // следующей итерацией и продублирует комментарии. Стоп петли из-за этого не нужен
         // — нужен сигнал человеку, пока дублей ещё немного.
         try {
-            writeFn('');
+            removeFn();
         } catch (e) {
             pushEventFn(
-                `⚠ Ralph: намерения применены (${String(requests.length)}), но файл ${REQUESTS_PATH} не очистился — ` +
-                    `${(e as Error).message}. Убери его руками, иначе следующая итерация применит их повторно.`,
+                `⚠ Ralph: намерения применены (${String(requests.length)}), но файл ${REQUESTS_PATH} не удалился — ` +
+                    `${(e as Error).message}. Убери его руками, иначе следующая итерация применит их повторно ` +
+                    'и остановится на грязном дереве.',
                 cfg,
                 { logFn },
             );
@@ -1752,6 +1760,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
     function writeSessionRequests(text: string): void {
         guardSideEffect(`writeSessionRequests(${REQUESTS_PATH})`);
         fs.writeFileSync(REQUESTS_PATH, text);
+    }
+
+    // #62: удаление применённого запроса. `force: true` — отсутствие файла не ошибка:
+    // сессия могла ничего не просить, а до сюда мы доходим и когда файл уже унесли руками.
+    function removeSessionRequests(): void {
+        guardSideEffect(`removeSessionRequests(${REQUESTS_PATH})`);
+        fs.rmSync(REQUESTS_PATH, { force: true });
     }
 
     // ── Роутинг моделей по сложности ─────────────────────────────────────────
