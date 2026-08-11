@@ -52,6 +52,11 @@ function makeEnv(over: Partial<GateEnv> = {}): GateEnv {
         ghJson: () => {
             throw new Error('ghJson не подменён в тесте');
         },
+        // #49: голову PR читает ШОВ форжа, а не гейт. Дефолт падает, как и остальные
+        // побочки: тест, забывший подменить шов, обязан краснеть, а не идти в боевой `gh`.
+        prHeadSha: () => {
+            throw new Error('prHeadSha не подменён в тесте');
+        },
         safeBranch: () => true,
         findOpenPr: () => null,
         ensureClean: () => true,
@@ -174,7 +179,7 @@ describe('checksGreen — прогон шагов на голове PR (#77)', (
         const ok = g.checksGreen('feature/x', 7, {
             shFn: sh,
             runArgvFn: runArgv,
-            ghJsonFn: (() => ({ headRefOid: SHA })) as GateEnv['ghJson'],
+            prHeadShaFn: () => SHA,
             syncDepsFn: syncDeps,
             checks: [['lint', 'npm run lint']],
         });
@@ -199,7 +204,7 @@ describe('checksGreen — прогон шагов на голове PR (#77)', (
         const ok = g.checksGreen('feature/x', 7, {
             shFn: sh,
             runArgvFn: () => '',
-            ghJsonFn: (() => ({ headRefOid: SHA })) as GateEnv['ghJson'],
+            prHeadShaFn: () => SHA,
             syncDepsFn: () => {},
             checks: [['test', 'npm run test']],
         });
@@ -227,7 +232,7 @@ describe('checksGreen — прогон шагов на голове PR (#77)', (
         const ok = g.checksGreen('feature/x', 7, {
             shFn: sh,
             runArgvFn: () => '',
-            ghJsonFn: (() => ({ headRefOid: SHA })) as GateEnv['ghJson'],
+            prHeadShaFn: () => SHA,
             buildGateEnvFn: () => {
                 throw new Error('битый allowlist');
             },
@@ -247,7 +252,7 @@ describe('checksGreen — прогон шагов на голове PR (#77)', (
         const ok = g.checksGreen('feature/x', 7, {
             shFn: sh,
             runArgvFn: () => '',
-            ghJsonFn: (() => ({ headRefOid: SHA })) as GateEnv['ghJson'],
+            prHeadShaFn: () => SHA,
             syncDepsFn: syncDeps,
             checks: [['lint', 'npm run lint']],
         });
@@ -256,16 +261,57 @@ describe('checksGreen — прогон шагов на голове PR (#77)', (
         expect(park).toHaveBeenCalledTimes(1);
     });
 
-    it('headRefOid не похож на sha → fail-closed', () => {
+    it('шов отдал не-sha → fail-closed', () => {
         const park = vi.fn();
         const g = createGateRunner(makeEnv({ parkOnOriginMain: park }));
         const ok = g.checksGreen('feature/x', 7, {
             shFn: () => '',
             runArgvFn: () => '',
-            ghJsonFn: (() => ({ headRefOid: 'not-a-sha' })) as GateEnv['ghJson'],
+            prHeadShaFn: () => 'not-a-sha',
             checks: [['lint', 'npm run lint']],
         });
         expect(ok).toBe(false);
+        expect(park).toHaveBeenCalledTimes(1);
+    });
+
+    // #49: голову PR гейт спрашивает у ШВА форжа, а не исполняет команду сам. На площадке
+    // без `gh` прежний inline-вызов давал три ретрая и `not-merged` — фаза не мерджилась
+    // никогда. Тест держит именно маршрут: env.ghJson (боевой `gh`) в этом пути не зовётся.
+    it('#49: голова PR читается через шов, gh из гейта не зовётся', () => {
+        const ghJson = vi.fn(() => {
+            throw new Error('гейт не имеет права ходить в форж сам');
+        });
+        const g = createGateRunner(
+            makeEnv({ ghJson: ghJson as unknown as GateEnv['ghJson'], prHeadSha: () => SHA }),
+        );
+        const ok = g.checksGreen('feature/x', 7, {
+            shFn: () => '',
+            runArgvFn: () => '',
+            syncDepsFn: () => {},
+            checks: [['lint', 'npm run lint']],
+        });
+        expect(ok).toBe(true);
+        expect(g.getVerifiedHead()).toBe(SHA);
+        expect(ghJson).not.toHaveBeenCalled();
+    });
+
+    // Fail-closed: «не смогли прочитать голову» ≠ «голова та же». Мердж отменяется, дерево
+    // паркуется — ровно как при упавшем fetch.
+    it('#49: шов чтения головы бросил → false, чеки не гонятся, парковка', () => {
+        const park = vi.fn();
+        const syncDeps = vi.fn();
+        const g = createGateRunner(makeEnv({ parkOnOriginMain: park }));
+        const ok = g.checksGreen('feature/x', 7, {
+            shFn: () => '',
+            runArgvFn: () => '',
+            syncDepsFn: syncDeps,
+            prHeadShaFn: () => {
+                throw new Error('форж недоступен');
+            },
+            checks: [['lint', 'npm run lint']],
+        });
+        expect(ok).toBe(false);
+        expect(syncDeps).not.toHaveBeenCalled();
         expect(park).toHaveBeenCalledTimes(1);
     });
 });
@@ -348,6 +394,112 @@ describe('tryMergePhase — гейт мерджа: hold/blocked/red/merged', () 
             SHA,
         ]);
         expect(updateTree).toHaveBeenCalledTimes(1);
+    });
+
+    // #49: шов чтения головы приходит из runLoop (adapters.taskSource.pullRequestHeadSha) и
+    // обязан доехать до checksGreen. Без этого прокидывания подмена шва в конфиге меняла бы
+    // мердж, но не прогон чеков — «тихий дефолт» ровно того класса, что и барьер #415.
+    it('#49: prHeadShaFn прокидывается в checksGreen', () => {
+        const g = createGateRunner(makeEnv());
+        const seam = () => SHA;
+        const checksGreenFn = vi.fn(() => true);
+        const res = tryMergeWith(g, phase, {
+            findOpenPrFn: () => ({ number: 9, labels: [] }),
+            checksGreenFn: checksGreenFn as unknown as typeof g.checksGreen,
+            getVerifiedHeadFn: () => SHA,
+            prHeadShaFn: seam,
+        });
+        expect(res).toBe('merged');
+        expect(checksGreenFn).toHaveBeenCalledWith(
+            'feature/x',
+            9,
+            expect.objectContaining({ prHeadShaFn: seam }),
+        );
+    });
+
+    // #53: у площадки мердж АСИНХРОННЫЙ — `POST /pulls/{n}/merge` отдаёт `operation_id` и
+    // `scheduled`, а не свершившийся факт. Петля же сразу фетчила origin/main и считала фазу
+    // сданной: при непрерывном режиме (haltBeforeDeploy: false) следующая фаза могла
+    // стартовать от ДО-мерджевого main, и вся её работа легла бы мимо только что влитого кода.
+    it('#53: мердж принят, но подтверждения нет → merge-unconfirmed, дерево не трогаем', () => {
+        const updateTree = vi.fn();
+        const park = vi.fn();
+        const g = createGateRunner(makeEnv({ updateRunnerTreeToOriginMain: updateTree }));
+        const res = tryMergeWith(g, phase, {
+            findOpenPrFn: () => ({ number: 9, labels: [] }),
+            checksGreenFn: () => true,
+            getVerifiedHeadFn: () => SHA,
+            // Форж принял мердж (mergePr не бросил), но фазу смердженной не показывает.
+            phaseMergedFn: () => false,
+            mergeConfirmAttempts: 3,
+            parkFn: park,
+        });
+        expect(res).toBe('merge-unconfirmed');
+        // Главное: origin/main НЕ фетчится и дерево не переезжает — иначе следующая фаза
+        // строилась бы поверх непонятно чего.
+        expect(updateTree).not.toHaveBeenCalled();
+        expect(park).toHaveBeenCalled();
+    });
+
+    it('#53: подтверждение пришло со второй попытки → merged', () => {
+        const updateTree = vi.fn();
+        const g = createGateRunner(makeEnv({ updateRunnerTreeToOriginMain: updateTree }));
+        let calls = 0;
+        const res = tryMergeWith(g, phase, {
+            findOpenPrFn: () => ({ number: 9, labels: [] }),
+            checksGreenFn: () => true,
+            getVerifiedHeadFn: () => SHA,
+            // Первый ответ — «ещё не видно» (операция в очереди), второй — подтверждение.
+            phaseMergedFn: () => ++calls > 1,
+            mergeConfirmAttempts: 3,
+        });
+        expect(res).toBe('merged');
+        expect(updateTree).toHaveBeenCalledTimes(1);
+    });
+
+    // #53-ревью: сбой ЧТЕНИЯ подтверждения — не ответ «не смерджено». Без try/catch внутри
+    // цикла исключение форжа улетало бы наружу: вызов tryMergePhase в runLoop не обёрнут, и
+    // петля упала бы целиком — без пуша и без парковки дерева. Мутация «убрать catch»
+    // раньше переживала весь сьют.
+    it('#53: форж бросает на каждой сверке → merge-unconfirmed, петля не падает', () => {
+        const park = vi.fn();
+        const updateTree = vi.fn();
+        const g = createGateRunner(makeEnv({ updateRunnerTreeToOriginMain: updateTree }));
+        const res = tryMergeWith(g, phase, {
+            findOpenPrFn: () => ({ number: 9, labels: [] }),
+            checksGreenFn: () => true,
+            getVerifiedHeadFn: () => SHA,
+            phaseMergedFn: () => {
+                throw new Error('форж недоступен');
+            },
+            mergeConfirmAttempts: 2,
+            parkFn: park,
+        });
+        expect(res).toBe('merge-unconfirmed');
+        expect(updateTree).not.toHaveBeenCalled();
+        expect(park).toHaveBeenCalled();
+    });
+
+    // #53-ревью: сверка ВНУТРИ ретрая обязана быть такой же терпеливой, как после успешного
+    // мерджа. Иначе оборванный ответ на принятый POST + асинхронная очередь форжа = повтор
+    // принятой операции, то есть задвоение мерджа.
+    it('#53: оборванный ответ + подтверждение со второй попытки → мердж НЕ повторяется', () => {
+        const g = createGateRunner(makeEnv());
+        const mergePrFn = vi.fn(() => {
+            throw new Error('сеть оборвала ответ');
+        });
+        let asked = 0;
+        const res = tryMergeWith(g, phase, {
+            findOpenPrFn: () => ({ number: 9, labels: [] }),
+            checksGreenFn: () => true,
+            getVerifiedHeadFn: () => SHA,
+            mergePrFn,
+            // Первый ответ — «ещё не вижу» (операция в очереди), второй — подтверждение.
+            phaseMergedFn: () => ++asked > 1,
+            mergeConfirmAttempts: 3,
+        });
+        expect(res).toBe('merged');
+        expect(mergePrFn).toHaveBeenCalledTimes(1);
     });
 
     it('merge прошёл, обновление дерева упало → merged-local-stale', () => {
@@ -486,7 +638,11 @@ function tryMergeWith(
         ensureCleanFn: () => true,
         sleepFn: () => {},
         parkFn: () => {},
-        phaseMergedFn: () => false,
+        // #53: дефолт «форж подтверждает мердж» — после принятого мерджа гейт спрашивает
+        // ЭТУ же функцию («фаза смерджена?»), и для сценариев про успешный мердж честный
+        // ответ именно такой. Сценарии, где мердж НЕ прошёл, задают false явно — там это
+        // и есть предмет проверки.
+        phaseMergedFn: () => true,
         ...over,
     });
 }

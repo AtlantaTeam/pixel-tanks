@@ -36,6 +36,10 @@ type LogFn = (msg: string) => void;
 // fail() боевой уходит в process.exit(1); тестовый может бросить/вернуть — потому unknown.
 type FailFn = (msg: string) => unknown;
 type GhJsonFn = <T = unknown>(cmd: string, attempts?: number) => T;
+// #49: sha головы PR — операция ФОРЖА (метод `pullRequestHeadSha` шва TaskSourceAdapter),
+// а не гейта. Fail-closed по контракту шва: не смогли прочитать — бросает, а не отдаёт
+// пустую строку.
+type PrHeadShaFn = (prNumber: number) => string;
 type SafeBranchFn = (branch: string, opts?: { logFn?: LogFn; where?: string }) => boolean;
 type SleepFn = (ms: number) => void;
 type FormatExcerptFn = (raw: string) => string;
@@ -89,6 +93,10 @@ export type GateEnv = {
     log: LogFn;
     fail: FailFn;
     ghJson: GhJsonFn;
+    // #49: чтение головы PR — через шов форжа, как и findOpenPr. Дефолт для checksGreen
+    // приходит контекстом (в composition root это GitHub-реализация), а мердж-путь
+    // прокидывает сюда метод выбранного адаптера — см. tryMergePhase.
+    prHeadSha: PrHeadShaFn;
     safeBranch: SafeBranchFn;
     findOpenPr: FindOpenPrFn;
     ensureClean: EnsureCleanFn;
@@ -219,6 +227,7 @@ export function createGateRunner(env: GateEnv) {
         log,
         fail,
         ghJson,
+        prHeadSha,
         safeBranch,
         findOpenPr,
         ensureClean,
@@ -387,7 +396,12 @@ export function createGateRunner(env: GateEnv) {
             // argv — shell-инъекция закрыта структурно, а не квотированием shq(). Чтение
             // (git rev-parse) остаётся на shFn — оно не мутация (обоснование — #194).
             runArgvFn = shArgv,
-            ghJsonFn = ghJson,
+            // #49: голову PR отдаёт ШОВ форжа, а не гейт. Раньше здесь стоял inline-вызов
+            // `gh pr view --json headRefOid` — операция форжа, застрявшая внутри гейта: на
+            // площадке без `gh` она давала три ретрая и 'not-merged' НАВСЕГДА, то есть
+            // мердж-путь был мёртв целиком. Дефолт — из контекста фабрики; мердж-путь
+            // прокидывает сюда метод выбранного адаптера через tryMergePhase.
+            prHeadShaFn = prHeadSha,
             logFn = log,
             parkFn = parkOnOriginMain,
             syncDepsFn = syncDepsIfLockChanged,
@@ -402,7 +416,7 @@ export function createGateRunner(env: GateEnv) {
         }: {
             shFn?: ShFn;
             runArgvFn?: ShArgvFn;
-            ghJsonFn?: GhJsonFn;
+            prHeadShaFn?: PrHeadShaFn;
             logFn?: LogFn;
             parkFn?: ParkFn;
             syncDepsFn?: SyncDepsFn;
@@ -446,9 +460,7 @@ export function createGateRunner(env: GateEnv) {
         }
         let remoteHead: string;
         try {
-            remoteHead = ghJsonFn<{ headRefOid: string }>(
-                `gh pr view ${shq(prNumber)} --json headRefOid`,
-            ).headRefOid;
+            remoteHead = prHeadShaFn(prNumber);
         } catch (e: unknown) {
             logFn(
                 `⛔ Не смог получить голову PR #${prNumber}: ${(e as Error).message} — авто-мердж отменён.`,
@@ -456,9 +468,12 @@ export function createGateRunner(env: GateEnv) {
             parkFn();
             return false;
         }
+        // Формат проверяем ЗДЕСЬ, хотя шов и обязан отдавать голову либо бросать: sha уходит
+        // в argv `git checkout --detach` и в `--match-head-commit`, и доверять этот путь
+        // добросовестности реализации шва (в т.ч. будущей, чужого форжа) нельзя (инв. C3/7).
         if (!SHA40_RE.test(String(remoteHead))) {
             logFn(
-                `⛔ headRefOid PR #${prNumber} не похож на sha коммита ('${remoteHead}') — авто-мердж отменён.`,
+                `⛔ Голова PR #${prNumber} не похожа на sha коммита ('${remoteHead}') — авто-мердж отменён.`,
             );
             parkFn();
             return false;
@@ -622,6 +637,13 @@ export function createGateRunner(env: GateEnv) {
     /**
      * Гейт мерджа фазы. Возвращает:
      *   'merged'             — смерджено, дерево раннера на свежем origin/main → к следующей фазе;
+     *   'merge-unconfirmed'  — форж ПРИНЯЛ мердж, но не подтвердил его (#53). У площадки
+     *                          мердж асинхронный: `POST /pulls/{n}/merge` отдаёт
+     *                          operation_id и статус `scheduled`, а не свершившийся факт.
+     *                          Раньше петля сразу фетчила origin/main и считала фазу сданной —
+     *                          в непрерывном режиме следующая фаза могла строиться от
+     *                          ДО-мерджевого main. «Не подтверждён» ≠ «не смерджен»: повторять
+     *                          мердж нельзя, продолжать тоже, поэтому отдельный исход и стоп;
      *   'merged-local-stale' — PR СМЕРДЖЕН, но fetch/detach origin/main упал (H4). Раньше
      *                          merge и пост-мердж шаги жили в одном try, и лог ВРАЛ
      *                          «мердж не удался» при уже влитом PR — состояние надо
@@ -657,6 +679,11 @@ export function createGateRunner(env: GateEnv) {
             ensureCleanFn = ensureClean,
             findOpenPrFn = findOpenPr,
             checksGreenFn = checksGreen,
+            // #49: шов чтения головы PR приходит от runLoop вместе с findOpenPrFn/mergePrFn —
+            // и обязан доехать до checksGreen. Иначе подмена taskSource меняла бы мердж, но
+            // не прогон чеков: чеки продолжили бы спрашивать голову у GitHub («тихий дефолт»,
+            // инвариант №1, тот же класс, ради которого стоит барьер #415).
+            prHeadShaFn = prHeadSha,
             phaseMergedFn = phaseMerged,
             sleepFn = sleep,
             parkFn = parkOnOriginMain,
@@ -667,6 +694,13 @@ export function createGateRunner(env: GateEnv) {
             // Профиль (#80) решает состав гейта. runLoop прокидывает cfg.profileName; по
             // умолчанию (undefined) — только база, безопасный дефолт вне цикла.
             profileName = undefined,
+            // #53: сколько раз спросить форж «фаза уже смерджена?» после принятого мерджа и
+            // с какой паузой. Значения скромные не случайно: у синхронного форжа (GitHub)
+            // первый же ответ — подтверждение, и цена проверки нулевая; у асинхронного речь
+            // о секундах очереди, а не о минутах. Параметрами, а не константами, — тесты
+            // обязаны проходить без реальных пауз (правило «время — параметр»).
+            mergeConfirmAttempts = 6,
+            mergeConfirmDelayMs = 5_000,
         }: {
             dry?: boolean;
             shFn?: ShFn;
@@ -675,6 +709,7 @@ export function createGateRunner(env: GateEnv) {
             ensureCleanFn?: EnsureCleanFn;
             findOpenPrFn?: FindOpenPrFn;
             checksGreenFn?: typeof checksGreen;
+            prHeadShaFn?: PrHeadShaFn;
             phaseMergedFn?: (phase: { branch: string }) => boolean;
             sleepFn?: SleepFn;
             parkFn?: ParkFn;
@@ -683,8 +718,17 @@ export function createGateRunner(env: GateEnv) {
             getLastRedCheckFn?: () => RedCheck | null;
             getVerifiedHeadFn?: () => string | null;
             profileName?: string;
+            mergeConfirmAttempts?: number;
+            mergeConfirmDelayMs?: number;
         } = {},
-    ): 'merged' | 'merged-local-stale' | 'hold' | 'blocked' | 'red-checks' | 'not-merged' {
+    ):
+        | 'merged'
+        | 'merge-unconfirmed'
+        | 'merged-local-stale'
+        | 'hold'
+        | 'blocked'
+        | 'red-checks'
+        | 'not-merged' {
         // #218: сброс СРАЗУ, тем же приёмом, что checksGreen сбрасывает lastRedCheck/
         // lastVerifiedHead — раунд, упавший ДО findOpenPr (dry/грязное дерево), не должен
         // оставлять номер PR прошлого раунда для текста пуша «блокер снят автоматически».
@@ -718,7 +762,12 @@ export function createGateRunner(env: GateEnv) {
             logFn(`⛔ Гейт: PR #${pr.number} помечен 'blocked'.`);
             return 'blocked';
         }
-        if (!checksGreenFn(phase.branch, pr.number, { checks: gateChecksFor(profileName) })) {
+        if (
+            !checksGreenFn(phase.branch, pr.number, {
+                checks: gateChecksFor(profileName),
+                prHeadShaFn,
+            })
+        ) {
             const redCheck = getLastRedCheckFn();
             if (redCheck) {
                 logFn(`⛔ Гейт: чек ${redCheck.name} красный на PR #${pr.number}.`);
@@ -745,6 +794,26 @@ export function createGateRunner(env: GateEnv) {
         // --match-head-commit при валидном sha (#SiaTz). Ретрай и сверку phaseMerged держит
         // ЭТА функция (оркестрация), не примитив. runArgvFn прокинут насквозь — тесты видят
         // тот же вызов `gh pr merge …`, что и раньше.
+        // #53-ревью: ОДИН вопрос «мердж дошёл?» — одно терпение. Раньше сверка внутри
+        // ретрая была мгновенной (один вызов), а после успешного POST — терпеливой (6×5с).
+        // На асинхронном форже это давало худший из исходов: ответ оборвала сеть, операция
+        // в очереди честно отвечает «не вижу», и ретрай ПОВТОРЯЛ принятый мердж — то самое
+        // задвоение, которое эта же правка объявляет недопустимым. Теперь обе точки зовут
+        // один помощник: сбой чтения — сгоревшая попытка, а не ответ «не смерджено».
+        const mergeConfirmed = (): boolean => {
+            for (let attempt = 1; attempt <= mergeConfirmAttempts; attempt++) {
+                try {
+                    if (phaseMergedFn(phase)) return true;
+                } catch (e: unknown) {
+                    logFn(
+                        `⚠ Подтверждение мерджа PR #${pr.number}: форж не ответил (${String((e as Error).message).split('\n')[0]}).`,
+                    );
+                }
+                if (attempt < mergeConfirmAttempts) sleepFn(mergeConfirmDelayMs);
+            }
+            return false;
+        };
+
         let mergedOk = false;
         for (let attempt = 1; attempt <= 2 && !mergedOk; attempt++) {
             try {
@@ -752,7 +821,7 @@ export function createGateRunner(env: GateEnv) {
                 mergedOk = true;
             } catch (e: unknown) {
                 try {
-                    if (phaseMergedFn(phase)) {
+                    if (mergeConfirmed()) {
                         // Безобидные причины ошибки при уже влитом PR: --delete-branch не
                         // успел/не смог удалить локальный ref ветки, который для инварианта
                         // H3 создал сам раннер (не дерево человека, #387/#SiaUf); либо сеть
@@ -779,6 +848,23 @@ export function createGateRunner(env: GateEnv) {
                     return 'not-merged';
                 }
             }
+        }
+        // #53: форж ПРИНЯЛ мердж — это ещё не «смерджено». У площадки операция асинхронная
+        // (`scheduled` + operation_id), и `git fetch origin main` сразу после ответа может
+        // прийти на ДО-мерджевый main. Спрашиваем сам форж, пока он не подтвердит.
+        //
+        // Fail-closed и БЕЗ повтора мерджа: повторять принятую операцию нельзя (задвоение),
+        // продолжать по неподтверждённой — тоже (следующая фаза легла бы мимо влитого кода).
+        // Поэтому отдельный исход и стоп: разбирает человек, а рестарт увидит фазу
+        // смердженной веткой phaseMerged, если операция всё-таки дошла.
+        if (!mergeConfirmed()) {
+            logFn(
+                `⛔ Гейт: мердж PR #${pr.number} принят форжем, но за ${mergeConfirmAttempts} попыток не подтверждён — ` +
+                    `дерево раннера НЕ обновляем и следующую фазу не начинаем. Проверь PR руками: если он влит, ` +
+                    `перезапуск увидит фазу смердженной и продолжит сам.`,
+            );
+            parkFn();
+            return 'merge-unconfirmed';
         }
         // #387: PR подтверждённо смерджен (mergedOk) — локальный ref ветки фазы больше
         // не нужен, чистим его сами, не полагаясь на --delete-branch. Fail-open в два слоя:

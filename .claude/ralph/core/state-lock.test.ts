@@ -12,6 +12,12 @@ import { createStateLock } from './state-lock.ts';
 // перенесены из ralph.test.js как есть и ходят через его ре-экспорт (#366).
 import ralph from '../ralph.js';
 
+// Платформенное: тест опирается на POSIX-механизмы, которых на Windows нет
+// (/proc/<pid>/cmdline, пути соседнего worktree, /bin/sh). Раннер живёт на
+// Linux-VPS, поэтому пометка, а не вторая реализация — грабля 7 в
+// docs/ralph-runner/portability-log.md. Снять вместе с платформенным швом.
+const itPosix = it.skipIf(process.platform === 'win32');
+
 const { isRalphProcess, lockAlive, writeLock, removeLock, releaseLockIfOurs } = ralph;
 
 // Синтетический env: пути-заглушки, отдельный (не общий #138) guardSideEffect, чтобы тест
@@ -284,7 +290,7 @@ describe('acquireLock — fail-closed взятие через инжектиро
 });
 
 describe('isRalphProcess — за pid действительно наш ralph.js (#176)', () => {
-    it('в /proc/<pid>/cmdline есть путь ralph.js → это наш раннер', () => {
+    itPosix('в /proc/<pid>/cmdline есть путь ralph.js → это наш раннер', () => {
         const readFn = vi.fn(() => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0');
         expect(isRalphProcess(4242, readFn)).toBe(true);
         expect(readFn).toHaveBeenCalledWith('/proc/4242/cmdline', 'utf-8');
@@ -320,7 +326,7 @@ describe('isRalphProcess — за pid действительно наш ralph.js
 describe('lockAlive — держит ли лок живой раннер (#176)', () => {
     const ralphCmdline = () => 'node\0.claude/ralph/ralph.js\0--profile\0prod\0';
 
-    it('номер занят И cmdline — наш ralph.js → лок жив', () => {
+    itPosix('номер занят И cmdline — наш ralph.js → лок жив', () => {
         expect(lockAlive(4242, { killFn: () => undefined, procReadFn: ralphCmdline })).toBe(true);
     });
 
@@ -568,7 +574,7 @@ describe('acquireLock — pid-reuse, гонка реклейма и битый �
     });
 
     // Побочки взятия лока запрещены до вердикта: при живом локе НИ writeFn, НИ removeFn.
-    it('на любом отказном пути state/git не трогаются (writeFn/removeFn не зовутся)', () => {
+    itPosix('на любом отказном пути state/git не трогаются (writeFn/removeFn не зовутся)', () => {
         const live = deps({ readFn: () => '4242', procReadFn: ralphCmdline });
         acquireLock(live);
         expect(live.writeFn).not.toHaveBeenCalled();

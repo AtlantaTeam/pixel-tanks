@@ -25,9 +25,12 @@
  * Только чтение: gh-запросы + чтение файлов. Ничего не мутирует (инвариант №12).
  */
 
+// node:url — встроенный модуль, его статический импорт проверку версии ниже не обходит.
+import { pathToFileURL } from 'node:url';
+
 // #232/#404: логика панели — в .mts-модуле, его исполняет нативный type stripping Node 24
 // (проект стандартизует Node 24, engines в package.json это фиксирует). На Node <24
-// первый же require('*.mts') упал бы криптичным ERR_UNKNOWN_FILE_EXTENSION в глубине
+// первый же импорт '*.mts' упал бы криптичным ERR_UNKNOWN_FILE_EXTENSION в глубине
 // зависимостей; отсекаем раньше внятным сообщением (fail-closed). Как в ralph.js: пишем в
 // stderr и выходим напрямую — fail() ядра сюда ещё нельзя грузить.
 const nodeMajor = Number(process.versions.node.split('.')[0]);
@@ -38,10 +41,11 @@ if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
     process.exit(1);
 }
 
-const { main } = require('./monitor-panel.mts');
+// Динамический import, а не статический: статический поднялся бы выше проверки версии.
+const { main } = await import('./monitor-panel.mts');
 
-// Гейт require.main === module — как в ralph.js: панель запускается ТОЛЬКО при прямом
-// `node monitor.js` (tmux/спавн раннера). При случайном require (будущий импорт, глоб
-// тест-раннера) выполнятся лишь объявления, но не побочки панели — gh-запросы и
-// бесконечный setInterval. Стоит одну строку, снимает целый класс тихого запуска.
-if (require.main === module) main();
+// Гейт «запущен напрямую» — как в ralph.js: панель стартует ТОЛЬКО при прямом
+// `node monitor.js` (tmux/спавн раннера). При случайном импорте (глоб тест-раннера)
+// выполнятся лишь объявления, но не побочки панели — gh-запросы и бесконечный
+// setInterval. Стоит одну строку, снимает целый класс тихого запуска.
+if (import.meta.url === (process.argv[1] ? pathToFileURL(process.argv[1]).href : null)) main();

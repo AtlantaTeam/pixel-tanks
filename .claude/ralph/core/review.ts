@@ -30,7 +30,12 @@
 // `cfg = config` обязан читать ЖИВОЙ config в момент вызова, а не снимок undefined с момента
 // сборки фабрики. Ленивый геттас закрывает этот разрыв (тот же приём, что state-lock.ts).
 
-type ExecOpts = { env?: NodeJS.ProcessEnv };
+// Тип комментария — из контракта швов, а не свой: счёт находок читает ровно то, что шов
+// отдаёт, и вторая копия формы разъехалась бы с ним молча. Импорт только типовой —
+// зависимость идёт «ядро → абстракция», как ей и положено.
+import type { ReviewComment } from '../adapters/adapters.ts';
+
+type ExecOpts = { env?: NodeJS.ProcessEnv; input?: string };
 type ShFn = (cmd: string, opts?: ExecOpts) => string;
 type ShArgvFn = (file: string, args: string[], opts?: ExecOpts) => string;
 type ShqFn = (value: unknown) => string;
@@ -42,6 +47,15 @@ type GhJsonFn = (cmd: string, attempts?: number) => unknown;
 type FailFn = (msg: string) => unknown;
 type IsPlainObjectFn = (v: unknown) => v is Record<string, unknown>;
 type MatchRiskPathsFn = (files: unknown, patterns: unknown) => string | null;
+// #37: метки ВСЕХ задач фазы (любого статуса) — плоским списком имён. Приходит из шва
+// `TaskSourceAdapter.listMilestoneLabels`, а не из `gh` в ядре: «какие метки у задач
+// фазы» — вопрос к трекеру, и знать, чем он отвечает, ядру не положено.
+type MilestoneLabelsFn = (milestone: string) => string[];
+// #37: комментарии PR — тоже из шва (`TaskSourceAdapter.listPullRequestComments`). Раньше
+// за ними ходил сам счётчик находок, зная и форж, и форму его ответа; теперь он получает
+// готовую ленту и остаётся чистой считалкой severity.
+type PrCommentsFn = (prNumber: number) => ReviewComment[];
+
 type PhaseDiffFilesFn = (
     branch: string,
     opts?: { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn },
@@ -53,6 +67,9 @@ type ReviewConfig = {
     fallback?: string;
     escalateOn?: unknown;
     escalateOnPaths?: unknown;
+    // Порядок сил моделей по возрастанию. Не задан — DEFAULT_REVIEW_MODEL_STRENGTH.
+    // unknown, а не string[]: значение приходит из чужого JSON и валидируется на старте.
+    modelStrength?: unknown;
 };
 // Конфиг раннера в части, интересной ревью. Легаси-поле reviewModel — прежний плоский
 // ключ до появления блока review (pickReviewModel деградирует на него).
@@ -75,6 +92,8 @@ export type ReviewEnv = {
     isPlainObject: IsPlainObjectFn;
     matchRiskPaths: MatchRiskPathsFn;
     phaseDiffFiles: PhaseDiffFilesFn;
+    milestoneLabels: MilestoneLabelsFn;
+    prComments: PrCommentsFn;
 };
 
 export function createReviewModule(env: ReviewEnv) {
@@ -89,6 +108,8 @@ export function createReviewModule(env: ReviewEnv) {
         isPlainObject,
         matchRiskPaths,
         phaseDiffFiles,
+        milestoneLabels,
+        prComments,
     } = env;
 
     // Модель ревью фазы. Дефолт — review.default (opus).
@@ -100,9 +121,9 @@ export function createReviewModule(env: ReviewEnv) {
     // с bypassPermissions). Метки как триггер сохранены для обратной совместимости,
     // но в конфиге по умолчанию пусты.
     //
-    // Ошибка получения диффа/меток — не фатальна: ревьюим дефолтной моделью. Это
-    // по-прежнему полноценное ревью плюс гейт мерджа впереди, а fail-closed стоп тут
-    // дал бы ложные ночные простои.
+    // Ошибка получения ДИФФА — не фатальна: ревьюим дефолтной моделью (полноценное ревью
+    // плюс гейт мерджа впереди; fail-closed стоп тут дал бы ложные ночные простои). А вот
+    // ошибка чтения МЕТОК фазы с #37 ведёт к эскалации, а не к деградации — см. ниже.
     function pickReviewModel(
         milestone: string,
         branch: string,
@@ -112,6 +133,7 @@ export function createReviewModule(env: ReviewEnv) {
             shFn = sh,
             runArgvFn = shArgv,
             logFn = log,
+            milestoneLabelsFn = milestoneLabels,
             files: known,
         }: {
             cfg?: ReviewCfg;
@@ -119,6 +141,7 @@ export function createReviewModule(env: ReviewEnv) {
             shFn?: ShFn;
             runArgvFn?: ShArgvFn;
             logFn?: LogFn;
+            milestoneLabelsFn?: MilestoneLabelsFn;
             files?: string[] | null;
         } = {},
     ): string | undefined {
@@ -139,20 +162,22 @@ export function createReviewModule(env: ReviewEnv) {
 
         const escalateOn = Array.isArray(review.escalateOn) ? review.escalateOn : [];
         if (escalateOn.length) {
-            let all: Array<{ labels?: Array<{ name?: string }> }> = [];
+            let labels: string[];
             try {
-                all = ghJsonFn(
-                    `gh issue list --milestone ${shq(milestone)} --state all --json labels --limit 100`,
-                ) as Array<{ labels?: Array<{ name?: string }> }>;
+                labels = milestoneLabelsFn(milestone);
             } catch (e) {
+                // #37: НЕ деградируем на default. «Не смогли узнать, есть ли в фазе
+                // сложная задача» — это не «сложных задач нет», а прежнее поведение
+                // отдавало ровно такую подмену: сбой чтения тихо ослаблял ревью там, где
+                // строгость и нужна. Цена ошибки в сторону эскалации — минуты сильной
+                // модели; в другую сторону — непойманный дефект в смердженной фазе.
                 logFn(
-                    `⚠ Не смог получить labels фазы для выбора ревью-модели: ${(e as Error).message}`,
+                    `⚠ Не смог прочитать метки задач фазы (${(e as Error).message}) — эскалирую ревью: ` +
+                        'неизвестность считаем зоной риска.',
                 );
+                return escalatedModel();
             }
-            const hasComplex = all.some((i) =>
-                (i.labels || []).some((l) => escalateOn.includes(l.name)),
-            );
-            if (hasComplex) {
+            if (labels.some((name) => escalateOn.includes(name))) {
                 logFn('🔺 Ревью эскалировано: в фазе есть issue с меткой из review.escalateOn.');
                 return escalatedModel();
             }
@@ -212,16 +237,68 @@ export function createReviewModule(env: ReviewEnv) {
     // требует, чтобы review.default/escalated входили в этот список — сюда неизвестная
     // модель-ревьюер попасть уже не может (новый id модели в конфиге = fail на старте, а
     // не тихая инверсия планки в момент разбора).
-    const REVIEW_MODEL_STRENGTH = [
+    // ВСТРОЕННЫЙ ДЕФОЛТ, а не единственный источник правды: список моделей — данные,
+    // которые устаревают с каждым релизом, и держать их в коде значит требовать правки
+    // ядра от каждого проекта (грабля 3 журнала переносимости). Проект задаёт свой
+    // порядок в `review.modelStrength`; барьер от этого не слабеет — список по-прежнему
+    // закрытый, меняется лишь его происхождение.
+    const DEFAULT_REVIEW_MODEL_STRENGTH = [
         'claude-haiku-4-5-20251001',
         'claude-sonnet-5',
         'claude-opus-4-8',
         'claude-fable-5',
     ];
 
-    // Ранг силы модели ревью (индекс в REVIEW_MODEL_STRENGTH). Неизвестная/пустая → -1.
-    function reviewModelRank(model: unknown): number {
-        return REVIEW_MODEL_STRENGTH.indexOf(model as string);
+    // Действующий порядок сил: из конфига либо встроенный дефолт. Форму валидирует
+    // assertReviewModelStrength — сюда значение приходит уже проверенным на старте, но
+    // функция обязана быть безопасной и до валидации (её зовёт сам валидатор).
+    function reviewModelStrength(cfg: ReviewCfg = getConfig()): string[] {
+        // Опциональная цепочка обязательна: до main() module-level config пуст, а планку
+        // спрашивают и раньше (сценарные прогоны, монитор). Раньше вопрос не вставал —
+        // список был константой и конфига не касался.
+        const raw = cfg?.review?.modelStrength;
+        return Array.isArray(raw) && raw.length > 0
+            ? (raw as string[])
+            : DEFAULT_REVIEW_MODEL_STRENGTH;
+    }
+
+    // Ранг силы модели ревью (индекс в действующем списке). Неизвестная/пустая → -1.
+    // cfg параметром, а не только через getConfig(): валидация конфига профиля идёт ДО
+    // того, как этот конфиг станет текущим, и ранг там обязан считаться по проверяемому
+    // списку, иначе профиль сверялся бы с чужой планкой.
+    function reviewModelRank(model: unknown, cfg?: ReviewCfg): number {
+        return reviewModelStrength(cfg).indexOf(model as string);
+    }
+
+    // Fail-closed на форме списка. Тихий откат к дефолту здесь был бы худшим исходом:
+    // автор конфига заказал одну планку, а барьер судил бы по другой — и заметить это
+    // можно было бы только по итогам ревью, которое уже случилось (инвариант №1).
+    function assertReviewModelStrength(
+        cfg: ReviewCfg,
+        profileName: string,
+        failFn: FailFn,
+    ): unknown {
+        const raw = cfg.review?.modelStrength;
+        if (raw === undefined || raw === null) return true; // не задан — дефолт
+        const where = `ralph.config.json (профиль "${profileName}"): review.modelStrength`;
+        if (!Array.isArray(raw) || raw.length === 0) {
+            return failFn(`${where} должен быть непустым массивом моделей от слабой к сильной.`);
+        }
+        const seen = new Set<string>();
+        for (const item of raw) {
+            if (typeof item !== 'string' || item.trim() === '') {
+                return failFn(
+                    `${where}: каждый элемент — непустая строка с идентификатором модели.`,
+                );
+            }
+            if (seen.has(item)) {
+                return failFn(
+                    `${where}: "${item}" встречается дважды — ранг модели стал бы неоднозначным.`,
+                );
+            }
+            seen.add(item);
+        }
+        return true;
     }
 
     // #223: fail-closed на старте — все модели ревью конфига обязаны быть известны планке.
@@ -242,14 +319,21 @@ export function createReviewModule(env: ReviewEnv) {
     ): unknown {
         const review = cfg.review;
         if (!isPlainObject(review)) return true; // review не задан — планке нечего проверять
+
+        // Форма списка — ПЕРВОЙ: дальше по нему считаются ранги, и кривой список дал бы
+        // не отказ, а бессмысленное сравнение.
+        const strengthCheck = assertReviewModelStrength(cfg as ReviewCfg, profileName, failFn);
+        if (strengthCheck !== true) return strengthCheck;
+
+        const strength = reviewModelStrength(cfg as ReviewCfg);
         for (const key of ['default', 'escalated', 'fallback'] as const) {
             const model = review[key];
             if (model === undefined || model === null || model === 'none') continue;
-            if (reviewModelRank(model) === -1) {
+            if (reviewModelRank(model, cfg as ReviewCfg) === -1) {
                 return failFn(
                     `ralph.config.json (профиль "${profileName}"): review.${key} = "${model}" не входит в REVIEW_MODEL_STRENGTH. ` +
                         `Планка повторного ревью (#217) сравнивает модели по этому списку; незнакомая модель-ревьюер инвертировала бы барьер (блок сильнейшей судила бы слабейшая). ` +
-                        `Добавь модель в REVIEW_MODEL_STRENGTH в review.ts или поправь конфиг. Известные: ${REVIEW_MODEL_STRENGTH.join(', ')}.`,
+                        `Добавь модель в review.modelStrength своего конфига или поправь конфиг. Известные: ${strength.join(', ')}.`,
                 );
             }
         }
@@ -261,12 +345,13 @@ export function createReviewModule(env: ReviewEnv) {
         if (
             hasFallback &&
             review.default &&
-            reviewModelRank(fallback) < reviewModelRank(review.default)
+            reviewModelRank(fallback, cfg as ReviewCfg) <
+                reviewModelRank(review.default, cfg as ReviewCfg)
         ) {
             return failFn(
                 `ralph.config.json (профиль "${profileName}"): review.fallback = "${fallback}" слабее review.default = "${review.default}". ` +
                     `Фолбэк ревью (#221) не может ослаблять ревью ниже базовой планки — иначе overload тихо подменяет ревьюера на более слабого. ` +
-                    `Известные модели по рангу: ${REVIEW_MODEL_STRENGTH.join(', ')}.`,
+                    `Известные модели по рангу: ${strength.join(', ')}.`,
             );
         }
         return true;
@@ -294,12 +379,20 @@ export function createReviewModule(env: ReviewEnv) {
     // и логины авторов уходят отдельными элементами argv — shq() больше не нужен для
     // закрытия инъекции (аргументы структурно не разбираются шеллом), но фильтр
     // authorAllowlist на пустые/нестроковые значения остаётся.
+    //
+    // #37: КОММЕНТАРИИ ЧИТАЕТ ШОВ, а не скрипт. Раньше скрипт ходил в форж сам (`gh api`),
+    // и на площадке без его CLI каждый вызов падал бы, а журнал молча оставался пустым:
+    // вызов fail-open, петля цела, метрика ревью исчезла без единого сигнала. Теперь лента
+    // приходит сюда через шов и уходит счётчику на stdin — argv для неё не годится, предел
+    // одного аргумента у ядра ОС жёсткий, а обрезанная лента дала бы заниженный счёт вместо
+    // отказа.
     function recordReviewFindings(
         phase: Phase,
         prNumber: number,
         authorAllowlist: unknown = [],
         runArgvFn: ShArgvFn = shArgv,
         logFn: LogFn = log,
+        prCommentsFn: PrCommentsFn = prComments,
     ): void {
         if (!Number.isInteger(prNumber) || prNumber <= 0) {
             logFn(`⚠ Журнал находок: номер PR неизвестен, запись пропущена.`);
@@ -310,13 +403,54 @@ export function createReviewModule(env: ReviewEnv) {
         const authors = (Array.isArray(authorAllowlist) ? authorAllowlist : []).filter(
             (a) => typeof a === 'string' && a.trim(),
         );
+        // Шов fail-closed, а вся запись в журнал — fail-open: сбой чтения гасим здесь, но
+        // ЗАПИСЬ при этом не делаем вовсе. Записать в журнал нули после непрочитанного
+        // ревью хуже пропуска: пропуск виден дырой в ряду фаз, а нули читаются как факт.
+        let comments: ReviewComment[];
         try {
-            const out = runArgvFn('node', [
-                'scripts/review-findings-journal.mjs',
-                String(prNumber),
-                phase.milestone,
-                ...authors,
-            ]);
+            comments = prCommentsFn(prNumber);
+        } catch (e) {
+            const why = String((e as Error)?.message ?? e).split('\n')[0];
+            logFn(
+                `⚠ Не смог прочитать комментарии PR #${String(prNumber)} (${why}) — ` +
+                    'записи о находках не будет: ноль находок и непрочитанное ревью в журнале неразличимы.',
+            );
+            return;
+        }
+        // «Ревью прошло, комментариев ноль» — легитимно ровно один раз в жизни (идеальный
+        // PR) и подозрительно всегда: так же выглядит ревью-сессия, которая до форжа не
+        // достучалась. Красным это не делаем — фаза уже смерджена, ронять петлю ради
+        // косметики метрики нельзя (инвариант №1 про fail-open косметики), — но след в
+        // логе обязан быть, иначе тихий ноль не отличить от честного.
+        if (comments.length === 0) {
+            logFn(
+                `⚠ Журнал находок: у PR #${String(prNumber)} нет ни одного комментария — ` +
+                    'проверь, что ревью-сессия их действительно оставляет.',
+            );
+        } else if (authors.length > 0 && !comments.some((c) => authors.includes(c.author ?? ''))) {
+            // Тот же молчаливый ноль с другого конца: комментарии есть, но фильтр доверенных
+            // авторов выкосит все до одного, и в журнал уйдут нули. Так выглядит allowlist,
+            // заданный в терминах ДРУГОГО форжа: у GitHub автор — `user.login`, у SourceCraft
+            // — `author.slug`, и совпадать они не обязаны. Считать при этом продолжаем (фильтр
+            // сторожит публичный репозиторий и ослаблять его нельзя), но молчать нельзя тоже.
+            const seen = [...new Set(comments.map((c) => c.author ?? ''))].slice(0, 5).join(', ');
+            logFn(
+                `⚠ Журнал находок: у PR #${String(prNumber)} ${String(comments.length)} комментариев, ` +
+                    `но ни один автор не входит в authorAllowlist (ждём: ${authors.join(', ')}; ` +
+                    `в ленте: ${seen}) — счёт будет нулевым. Похоже, allowlist задан в терминах другого форжа.`,
+            );
+        }
+        try {
+            const out = runArgvFn(
+                'node',
+                [
+                    'scripts/review-findings-journal.mjs',
+                    String(prNumber),
+                    phase.milestone,
+                    ...authors,
+                ],
+                { input: JSON.stringify(comments) },
+            );
             logFn(`📊 Находки ревью зафиксированы в журнале: ${String(out).trim()}`);
         } catch (e) {
             const why = String((e as Error)?.message ?? e).split('\n')[0];
@@ -327,7 +461,10 @@ export function createReviewModule(env: ReviewEnv) {
     return {
         pickReviewModel,
         pickReviewFallbackModel,
-        REVIEW_MODEL_STRENGTH,
+        // Прежнее имя сохранено: на нём сидит REQUIRED_API и монитор. Теперь это
+        // встроенный дефолт, а действующий список отдаёт reviewModelStrength(cfg).
+        REVIEW_MODEL_STRENGTH: DEFAULT_REVIEW_MODEL_STRENGTH,
+        reviewModelStrength,
         reviewModelRank,
         assertKnownReviewModels,
         strongerReviewModel,

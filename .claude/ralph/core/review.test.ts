@@ -44,6 +44,16 @@ function makeEnv(over: Partial<ReviewEnv> = {}): ReviewEnv {
             v !== null && typeof v === 'object' && !Array.isArray(v),
         matchRiskPaths: () => null,
         phaseDiffFiles: () => [],
+        // #37: метки задач фазы приходят из шва, а не из `gh` в ядре. Дефолт громкий —
+        // как у побочек выше: тест, дошедший сюда без override, обязан краснеть.
+        milestoneLabels: () => {
+            throw new Error('milestoneLabels не подменён в тесте');
+        },
+        // #37: комментарии PR — тоже из шва. Дефолт громкий по той же причине: запись в
+        // журнал без подменённого чтения означала бы поход в настоящий форж.
+        prComments: () => {
+            throw new Error('prComments не подменён в тесте');
+        },
         ...over,
     };
 }
@@ -97,27 +107,43 @@ describe('pickReviewModel — эскалация ревью (#130)', () => {
     it('escalateOn всё ещё работает, если его осознанно заполнили', () => {
         const cfg = { review: { ...CFG.review, escalateOn: ['complexity:expert'] } };
         const { pickReviewModel } = createReviewModule(
-            makeEnv({ ghJson: () => [{ labels: [{ name: 'complexity:expert' }] }] }),
+            makeEnv({ milestoneLabels: () => ['complexity:expert', 'area:devops'] }),
         );
         const model = pickReviewModel('Фаза X', 'feature/x', { cfg, files: ['src/app/page.tsx'] });
         expect(model).toBe('claude-fable-5');
     });
 
-    it('сбой gh при получении labels не роняет выбор — ревью дефолтной моделью + предупреждение', () => {
+    it('#37 метки фазы читаются ЧЕРЕЗ ШОВ, а не командой форжа в ядре', () => {
+        // Прежде здесь стоял прямой `gh issue list`: на площадке без `gh` он падал в
+        // catch, и ревью зоны риска тихо доставалось слабой модели.
+        const cfg = { review: { ...CFG.review, escalateOn: ['complexity:expert'] } };
+        const ghJson = vi.fn(() => []);
+        const milestoneLabels = vi.fn(() => ['complexity:expert']);
+        const { pickReviewModel } = createReviewModule(makeEnv({ ghJson, milestoneLabels }));
+        pickReviewModel('Фаза X', 'feature/x', { cfg, files: ['src/app/page.tsx'] });
+        expect(milestoneLabels).toHaveBeenCalledWith('Фаза X');
+        expect(ghJson).not.toHaveBeenCalled();
+    });
+
+    it('#37 сбой чтения меток фазы → ЭСКАЛИРУЕМ, а не тихо ревьюим слабее', () => {
+        // Прежнее поведение (деградация на default) — тихая потеря строгости ровно там,
+        // где она нужна: «не смогли узнать, есть ли в фазе сложная задача» это не
+        // «сложных задач нет». Цена ошибки в сторону эскалации — минуты сильной модели,
+        // в другую сторону — непойманный дефект.
         const cfg = { review: { ...CFG.review, escalateOn: ['complexity:expert'] } };
         const logs: string[] = [];
+        const milestoneLabels = vi.fn(() => {
+            throw new Error('форж недоступен');
+        });
         const { pickReviewModel } = createReviewModule(
-            makeEnv({
-                log: (m) => logs.push(m),
-                ghJson: () => {
-                    throw new Error('gh API error');
-                },
-                matchRiskPaths: () => null,
-            }),
+            makeEnv({ log: (m) => logs.push(m), milestoneLabels, matchRiskPaths: () => null }),
         );
         const model = pickReviewModel('Фаза X', 'feature/x', { cfg, files: ['src/app/page.tsx'] });
-        expect(model).toBe('claude-opus-4-8');
-        expect(logs.join('\n')).toMatch(/labels/i);
+        // Эскалация именно ПО ОТКАЗУ чтения: без этого ассерта тест остался бы зелёным и
+        // в мире, где меток не спрашивают вовсе, а эскалируют по какой-то другой причине.
+        expect(milestoneLabels).toHaveBeenCalledWith('Фаза X');
+        expect(model).toBe('claude-fable-5');
+        expect(logs.join('\n')).toMatch(/метк/i);
     });
 
     it('зона риска, но review.escalated не задан — деградация на default + предупреждение', () => {
@@ -316,23 +342,177 @@ describe('assertKnownReviewModels — fail-closed планка моделей р
     });
 });
 
+// Порядок сил моделей — ДАННЫЕ проекта, а не константа ядра: каждый релиз моделей иначе
+// требовал бы правки review.ts в каждом форке (грабля 3 журнала переносимости). Барьер
+// #217/#223 при этом не ослабляется — список по-прежнему закрытый, просто его источник
+// теперь конфиг с встроенным дефолтом.
+describe('review.modelStrength — планка задаётся конфигом (переносимость)', () => {
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+
+    it('модель из конфигурного списка принимается, хотя её нет во встроенном дефолте', () => {
+        const { assertKnownReviewModels } = createReviewModule(makeEnv());
+        const cfg = {
+            review: {
+                modelStrength: ['claude-haiku-4-5-20251001', 'claude-neo-9'],
+                default: 'claude-neo-9',
+            },
+        };
+        expect(assertKnownReviewModels(cfg, 'prod', boom)).toBe(true);
+    });
+
+    it('порядок из конфига определяет ранг: фолбэк слабее default → стоп', () => {
+        const { assertKnownReviewModels } = createReviewModule(makeEnv());
+        const cfg = {
+            review: {
+                modelStrength: ['claude-weak', 'claude-strong'],
+                default: 'claude-strong',
+                fallback: 'claude-weak',
+            },
+        };
+        expect(() => assertKnownReviewModels(cfg, 'prod', boom)).toThrow(
+            /review\.fallback.*claude-weak.*слабее.*review\.default/s,
+        );
+    });
+
+    it('без modelStrength действует встроенный дефолт', () => {
+        const { assertKnownReviewModels, reviewModelStrength } = createReviewModule(makeEnv());
+        expect(
+            assertKnownReviewModels({ review: { default: 'claude-opus-4-8' } }, 'prod', boom),
+        ).toBe(true);
+        expect(reviewModelStrength({})).toContain('claude-fable-5');
+    });
+
+    // Fail-closed, а не «молча возьмём дефолт»: кривой список — это опечатка в конфиге,
+    // и тихий откат к дефолту дал бы планку, которой автор конфига не заказывал.
+    it.each([
+        ['не массив', 'claude-opus-4-8'],
+        ['пустой массив', []],
+        ['нестроковый элемент', ['claude-opus-4-8', 42]],
+        ['пустая строка', ['claude-opus-4-8', '  ']],
+        ['дубли', ['claude-opus-4-8', 'claude-opus-4-8']],
+    ])('кривой modelStrength (%s) → стоп на старте', (_name, bad) => {
+        const { assertKnownReviewModels } = createReviewModule(makeEnv());
+        expect(() =>
+            assertKnownReviewModels(
+                { review: { modelStrength: bad, default: 'claude-opus-4-8' } },
+                'prod',
+                boom,
+            ),
+        ).toThrow(/review\.modelStrength/);
+    });
+});
+
 describe('recordReviewFindings — best-effort вызов журнала находок (#169)', () => {
+    const COMMENTS = [{ body: '🔴 [blocker] дыра', isSummary: false, author: 'alice' }];
+
     it('валидный PR → зовёт журнал с номером, milestone и доверенными авторами', () => {
         const shArgv = vi.fn(() => 'ok');
-        const { recordReviewFindings } = createReviewModule(makeEnv({ shArgv }));
+        const { recordReviewFindings } = createReviewModule(
+            makeEnv({ shArgv, prComments: () => COMMENTS }),
+        );
         recordReviewFindings({ milestone: 'M1' }, 42, ['alice', 'bob']);
-        expect(shArgv).toHaveBeenCalledWith('node', [
-            'scripts/review-findings-journal.mjs',
-            '42',
-            'M1',
-            'alice',
-            'bob',
+        expect(shArgv.mock.calls[0].slice(0, 2)).toEqual([
+            'node',
+            ['scripts/review-findings-journal.mjs', '42', 'M1', 'alice', 'bob'],
         ]);
+    });
+
+    // #37: лента уходит на stdin, а не в argv. Предел одного аргумента у ядра ОС жёсткий,
+    // и обрезанная лента дала бы тихо заниженный счёт вместо отказа.
+    it('лента комментариев уходит счётчику на stdin, а не в argv', () => {
+        const shArgv = vi.fn((_file: string, _args: string[], _opts?: { input?: string }) => 'ok');
+        const { recordReviewFindings } = createReviewModule(
+            makeEnv({ shArgv, prComments: () => COMMENTS }),
+        );
+        recordReviewFindings({ milestone: 'M1' }, 42, ['alice']);
+        expect(JSON.parse(String(shArgv.mock.calls[0][2]?.input))).toEqual(COMMENTS);
+        expect(shArgv.mock.calls[0][1].join(' ')).not.toContain('blocker');
+    });
+
+    it('комментарии читаются ШВОМ по номеру PR, а не добываются журналом', () => {
+        const seen: number[] = [];
+        const { recordReviewFindings } = createReviewModule(
+            makeEnv({
+                shArgv: () => 'ok',
+                prComments: (pr: number) => {
+                    seen.push(pr);
+                    return COMMENTS;
+                },
+            }),
+        );
+        recordReviewFindings({ milestone: 'M1' }, 42);
+        expect(seen).toEqual([42]);
+    });
+
+    // Ключевое свойство #37: сбой ЧТЕНИЯ и «находок нет» обязаны различаться. Запись нулей
+    // после непрочитанного ревью хуже пропуска — пропуск виден дырой в ряду фаз, а нули
+    // читаются как факт.
+    it('сбой чтения комментариев → записи НЕТ вовсе, а не нули в журнале', () => {
+        const shArgv = vi.fn(() => 'ok');
+        const logs: string[] = [];
+        const { recordReviewFindings } = createReviewModule(
+            makeEnv({
+                shArgv,
+                log: (m) => logs.push(m),
+                prComments: () => {
+                    throw new Error('форж недоступен');
+                },
+            }),
+        );
+        expect(() => recordReviewFindings({ milestone: 'M1' }, 42)).not.toThrow();
+        expect(shArgv).not.toHaveBeenCalled();
+        expect(logs.join('\n')).toMatch(/не смог прочитать комментарии/i);
+    });
+
+    it('ревью прошло, а комментариев ноль → запись есть, но в логе предупреждение', () => {
+        const shArgv = vi.fn(() => 'ok');
+        const logs: string[] = [];
+        const { recordReviewFindings } = createReviewModule(
+            makeEnv({ shArgv, log: (m) => logs.push(m), prComments: () => [] }),
+        );
+        recordReviewFindings({ milestone: 'M1' }, 42);
+        // Красным это не делаем — фаза уже смерджена; но тихим тоже: так же выглядит
+        // ревью-сессия, которая до форжа не достучалась.
+        expect(shArgv).toHaveBeenCalledTimes(1);
+        expect(logs.join('\n')).toMatch(/нет ни одного комментария/i);
+    });
+
+    it('комментарии есть, но ни один автор не доверенный → предупреждение в лог', () => {
+        // Тот же молчаливый ноль с другого конца: у GitHub автор — `user.login`, у
+        // SourceCraft — `author.slug`. Allowlist в терминах чужого форжа выкосит всю ленту,
+        // и в журнал уйдут нули, неотличимые от честного «находок нет».
+        const logs: string[] = [];
+        const { recordReviewFindings } = createReviewModule(
+            makeEnv({
+                shArgv: () => 'ok',
+                log: (m) => logs.push(m),
+                prComments: () => [{ body: '🔴 [blocker] дыра', isSummary: false, author: 'dev' }],
+            }),
+        );
+        recordReviewFindings({ milestone: 'M1' }, 42, ['Pelmenya']);
+        expect(logs.join('\n')).toMatch(/ни один автор не входит в authorAllowlist/i);
+    });
+
+    it('автор ленты в allowlist — предупреждения нет', () => {
+        const logs: string[] = [];
+        const { recordReviewFindings } = createReviewModule(
+            makeEnv({
+                shArgv: () => 'ok',
+                log: (m) => logs.push(m),
+                prComments: () => COMMENTS,
+            }),
+        );
+        recordReviewFindings({ milestone: 'M1' }, 42, ['alice']);
+        expect(logs.join('\n')).not.toMatch(/authorAllowlist/i);
     });
 
     it('authorAllowlist фильтрует пустые/нестроковые значения (#237)', () => {
         const shArgv = vi.fn((_file: string, _args: string[]) => 'ok');
-        const { recordReviewFindings } = createReviewModule(makeEnv({ shArgv }));
+        const { recordReviewFindings } = createReviewModule(
+            makeEnv({ shArgv, prComments: () => COMMENTS }),
+        );
         recordReviewFindings({ milestone: 'M1' }, 7, ['alice', '', '  ', 123, null] as unknown[]);
         expect(shArgv.mock.calls[0][1]).toEqual([
             'scripts/review-findings-journal.mjs',
@@ -362,6 +542,7 @@ describe('recordReviewFindings — best-effort вызов журнала нах�
                     throw new Error('journal write failed');
                 },
                 log: (m) => logs.push(m),
+                prComments: () => COMMENTS,
             }),
         );
         expect(() => recordReviewFindings({ milestone: 'M1' }, 42)).not.toThrow();

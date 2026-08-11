@@ -29,16 +29,20 @@
  * Монитор поднимается сам (кроме --dry-run) и глушится при выходе; панель —
  * `tail -f .claude/ralph/monitor.out`.
  *
- * Архитектура петли, инварианты C1–C4/H2–H4/M1–M8, безопасность (C3), роутинг моделей,
+ * Архитектура петли, инварианты C1–C5/H2–H4/M1–M8, безопасность (C3), роутинг моделей,
  * breaker'ы и API-лимит документированы докблоками в orchestrator.ts и модулях —
  * entry их не дублирует, чтобы у каждого правила остался один источник правды.
  */
 
 // #232: ядро — TS-модули без билд-шага, их исполняет нативный type stripping Node 24
 // (проект стандартизует Node 24, engines в package.json это фиксирует). На Node <24
-// первый же require('*.ts') упал бы криптичным ERR_UNKNOWN_FILE_EXTENSION в глубине
+// первый же импорт '*.ts' упал бы криптичным ERR_UNKNOWN_FILE_EXTENSION в глубине
 // зависимостей; отсекаем раньше внятным сообщением (fail-closed). fail() живёт в
 // оркестраторе, который сюда ещё нельзя грузить, — пишем в stderr и выходим напрямую.
+// Статический импорт здесь безопасен и намеренно единственный: node:url — встроенный
+// модуль, его загрузка не зависит от type stripping и проверку версии ниже не обходит.
+import { pathToFileURL } from 'node:url';
+
 const nodeMajor = Number(process.versions.node.split('.')[0]);
 if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
     console.error(
@@ -47,13 +51,19 @@ if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
     process.exit(1);
 }
 
-const { createOrchestrator } = require('./core/orchestrator.ts');
-// Мост к JS-соседям: их require остаётся в entry, фабрика получает функции готовыми —
+// Загрузка ядра — ДИНАМИЧЕСКИМ import, а не статическим: статический поднимается наверх
+// и выполнился бы ДО проверки версии выше, вернув криптичный отказ вместо внятного
+// (ровно то, ради чего проверка и стоит первой). `await` на верхнем уровне легален —
+// модуль ESM.
+const { createOrchestrator } = await import('./core/orchestrator.ts');
+// Мост к соседям: их загрузка остаётся в entry, фабрика получает функции готовыми —
 // orchestrator.ts при импорте не тянет env/сеть, а тесты передают фейки
-// (см. orchestrator.test.ts). telegram-notifier.ts самостоятелен (не require ralph.js —
-// цикл), предохранитель #138 у него общий через side-effect-guard.ts.
-const { sendTelegramMessage, telegramConfigFromEnv } = require('./runtime/telegram-notifier.ts');
-const { buildSanitizedGateEnv } = require('./gate-env.mts');
+// (см. orchestrator.test.ts). telegram-notifier.ts самостоятелен (не импортирует
+// ralph.js — цикл), предохранитель #138 у него общий через side-effect-guard.ts.
+const { sendTelegramMessage, telegramConfigFromEnv } = await import(
+    './runtime/telegram-notifier.ts'
+);
+const { buildSanitizedGateEnv } = await import('./gate-env.mts');
 
 // Флаги режима — прежние module-level ONCE/DRY/RESET/RESUBMIT/DEPLOY_RESOLVED монолита.
 // --deploy-resolved (#165): снятие барьера красного пост-мердж деплоя — только человек,
@@ -106,15 +116,32 @@ const runtime = createOrchestrator({
     external: { sendTelegramMessage, telegramConfigFromEnv, buildSanitizedGateEnv },
 });
 
-// Прежняя API-поверхность module.exports монолита (плюс main) — контракт закреплён
-// orchestrator.test.ts (REQUIRED_API): пропавший ключ = молча сломанный тест или монитор.
-module.exports = runtime;
+// Прежняя API-поверхность монолита (плюс main) — контракт закреплён orchestrator.test.ts
+// (REQUIRED_API): пропавший ключ = молча сломанный тест или монитор. Панель монитора и
+// сценарные тесты берут поверхность одним объектом.
+export default runtime;
 
-// Сборка фабрики чистая (не запускает петлю и не трогает процесс) — require/import
-// файла в юнит-тестах безопасен, как и раньше: петля стартует только под guard. Проверку
-// флагов держим ПОД guard'ом: на require из теста process.argv — это argv раннера тестов,
-// его валидировать нельзя (иначе тест-раннер упал бы на своих же флагах).
-if (require.main === module) {
+// Именованные экспорты — не украшение, а восстановление контракта, который в CommonJS
+// давался даром: `module.exports = runtime` позволял делать
+// `import { apiLimitMessage } from './ralph.js'` через interop. В ESM экспорты статичны,
+// и такой импорт молча вернул бы undefined — «apiLimitMessage is not a function» уже в
+// рантайме, а не на границе.
+//
+// Список ровно тот, что импортируется именованно (инвариант №10: формат строк лога —
+// контракт между entry и deadman.ts, их синхронность закреплена тестом). Расширять по
+// факту нового именованного импорта, а не про запас.
+export const { apiLimitMessage, deployWaitMessage, pushEvent } = runtime;
+
+// Сборка фабрики чистая (не запускает петлю и не трогает процесс) — импорт файла в
+// юнит-тестах безопасен, как и раньше: петля стартует только под guard. Проверку флагов
+// держим ПОД guard'ом: при импорте из теста process.argv — это argv раннера тестов, его
+// валидировать нельзя (иначе тест-раннер упал бы на своих же флагах).
+//
+// ESM-эквивалент `require.main === module`: сравнение URL этого модуля с путём, которым
+// запущен процесс. pathToFileURL обязателен — на Windows голый путь `C:\…` не совпал бы
+// с `file:///C:/…` никогда, и петля не стартовала бы вовсе.
+const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
+if (import.meta.url === entryUrl) {
     assertKnownFlags(argv);
     runtime.main();
 }

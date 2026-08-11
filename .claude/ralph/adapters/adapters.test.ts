@@ -45,13 +45,44 @@ function makeFakeTaskSource(seed: {
         !(i.labels ?? []).some((l) => l.name === 'blocked') &&
         allowlist.includes((i.author && i.author.login) ?? '');
     const adapter: TaskSourceAdapter = {
+        // checkAuth (#35) и listMilestoneLabels (#37) — часть контракта шва: фейк обязан
+        // их реализовывать, иначе интерфейс «реализуем» только на бумаге.
+        checkAuth: () => {},
+        listMilestoneLabels: (milestone) =>
+            (seed.issues?.[milestone] ?? []).flatMap((i) => (i.labels ?? []).map((l) => l.name)),
+        // #37: комментарии PR — тоже часть контракта шва. Фейку хватает одной ленты:
+        // проверяется реализуемость формы, а не раскладка по поверхностям форжа.
+        getIssue: (number) => ({ number, title: 'задача', body: 'тело' }),
+        createPullRequest: ({ branch }) => {
+            calls.push(`create-pr:${branch}`);
+            return 7;
+        },
+        commentOnPullRequest: (prNumber, input) => {
+            calls.push(`pr-comment:${String(prNumber)}:${input.anchor?.path ?? '-'}`);
+        },
+        listPullRequestComments: (prNumber) => [
+            {
+                body: `🔴 [blocker] находка в #${String(prNumber)}`,
+                isSummary: false,
+                author: 'ok-author',
+            },
+        ],
         listReadyIssues: (milestone) =>
             (seed.issues?.[milestone] ?? [])
                 .filter(isReady)
                 .slice()
                 .sort((a, b) => a.number - b.number),
         listAllOpenIssues: (milestone) => (seed.issues?.[milestone] ?? []).slice(),
+        // #39: у фейка «карточки любого статуса» = наличие ключа в seed.issues. Ключ
+        // есть, а массив пуст — milestone заведён без задач, фаза не начата.
+        hasAnyIssues: (milestone) => (seed.issues?.[milestone] ?? []).length > 0,
         findOpenPullRequest: (branch) => seed.prs?.[branch] ?? null,
+        // #49: голова PR. У фейка — фиксированная sha: интерфейс обязан быть реализуем
+        // без форжа вообще, иначе он описывает `gh`, а не контракт.
+        pullRequestHeadSha: (prNumber) => {
+            calls.push(`head-sha:${prNumber}`);
+            return 'a'.repeat(40);
+        },
         isPhaseMerged: (phase) => (seed.merged?.[phase.branch] ?? null) !== null,
         mergedPullRequestNumber: (phase) => seed.merged?.[phase.branch] ?? null,
         mergePullRequest: (prNumber, headSha) => {
@@ -65,6 +96,21 @@ function makeFakeTaskSource(seed: {
         },
         closeMilestone: (title) => {
             calls.push(`close-ms:${title}`);
+        },
+        // #40: намерения кодер-сессии. У фейка — журнал вызовов: интерфейс обязан быть
+        // реализуем без форжа вообще, иначе он описывает не контракт, а `gh`.
+        commentOnIssue: (issue, body) => {
+            calls.push(`comment:${issue}:${body}`);
+        },
+        closeIssue: (issue) => {
+            calls.push(`close-issue:${issue}`);
+        },
+        blockIssue: (issue) => {
+            calls.push(`block-issue:${issue}`);
+        },
+        createIssue: ({ title, labels }) => {
+            calls.push(`create-issue:${title}:${labels.join(',')}`);
+            return 101;
         },
         syncBoard: () => {
             calls.push('sync-board');
@@ -118,6 +164,9 @@ function makeFakeDeployCheck(seed: {
     health?: HealthResult;
 }): DeployCheckAdapter {
     return {
+        // #51: фейк моделирует проект С деплоем — иначе половина его же ассертов
+        // («красный при незелёном workflow») проверяла бы недостижимый путь.
+        isEnabled: () => true,
         mergedShaOf: (prNumber) => {
             if (!seed.sha) throw new Error(`нет sha мерджа для PR ${prNumber}`);
             return seed.sha;
@@ -183,6 +232,29 @@ describe('TaskSourceAdapter — контракт источника задач',
     it('listAllOpenIssues НЕ фильтрует (C2: blocked и чужие тоже считаются)', () => {
         const { adapter } = makeFakeTaskSource({ issues: { [milestone]: issues } });
         expect(adapter.listAllOpenIssues(milestone)).toHaveLength(4);
+    });
+
+    // #39: интерфейс обязан позволять отличить «фаза не начата» от «фаза сделана» —
+    // открытая очередь пуста в обоих случаях.
+    it('hasAnyIssues отличает milestone без единой задачи от milestone с задачами', () => {
+        const { adapter } = makeFakeTaskSource({ issues: { [milestone]: issues, Пустая: [] } });
+        expect(adapter.hasAnyIssues(milestone)).toBe(true);
+        expect(adapter.hasAnyIssues('Пустая')).toBe(false);
+    });
+
+    // #40: интерфейс обязан выражать намерения сессии, не зная про форж.
+    it('намерения сессии выражаются интерфейсом: комментарий, закрытие, blocked, новая карточка', () => {
+        const { adapter, calls } = makeFakeTaskSource({});
+        adapter.commentOnIssue(7, 'что сделано');
+        adapter.closeIssue(7);
+        adapter.blockIssue(9);
+        expect(adapter.createIssue({ title: 'т', body: 'б', labels: ['area:devops'] })).toBe(101);
+        expect(calls).toEqual([
+            'comment:7:что сделано',
+            'close-issue:7',
+            'block-issue:9',
+            'create-issue:т:area:devops',
+        ]);
     });
 
     it('findOpenPullRequest возвращает null, когда PR нет', () => {

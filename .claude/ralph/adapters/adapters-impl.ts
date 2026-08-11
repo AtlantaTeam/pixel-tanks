@@ -29,12 +29,16 @@
 
 import type {
     CoderRuntimeAdapter,
+    IssueDetails,
     DeployCheckAdapter,
     GateAdapter,
     Issue,
     NotifierAdapter,
+    NewPullRequest,
+    NewReviewComment,
     PullRequest,
     RalphAdapters,
+    ReviewComment,
     RunOptions,
     RunResult,
     TaskSourceAdapter,
@@ -55,20 +59,25 @@ export const ADAPTER_DEFAULTS = {
 // Швы в каноничном порядке — единственный источник имён (итерируется резолвером и сборкой).
 export const ADAPTER_SEAMS = Object.keys(ADAPTER_DEFAULTS) as Array<keyof typeof ADAPTER_DEFAULTS>;
 
-// #415: швы, чей МЕРДЖ-ПУТЬ ещё не проведён через `switch(adapters)`. `tryMergePhase` берёт
-// `findOpenPr`/`checksGreen`/`mergePr` напрямую из замыкания gate.ts, поэтому недефолтная
-// реализация этих швов была бы принята конфигом, прошла бы resolveAdapterSelection,
-// buildAdapters и контрактный сьют #370 — а мердж молча продолжил бы гонять npm-гейт против
-// GitHub (класс «тихий дефолт», инвариант №1). До фазы 10 от этого защищала лишь бедность
-// реестра (по одной реализации на шов): второе имя отвергал buildAdapters как
-// незарегистрированное. Защита исчезла бы в момент регистрации второго гейта — то есть ровно
-// при переносе на не-npm стек, главном сценарии README. Поэтому запрет живёт барьером, а не
-// абзацем в доке (инвариант №5).
+// #415: швы, чей МЕРДЖ-ПУТЬ ещё не проведён через `switch(adapters)`. Недефолтная
+// реализация такого шва была бы принята конфигом, прошла бы resolveAdapterSelection,
+// buildAdapters и контрактный сьют #370 — а мердж молча продолжил бы гонять дефолт
+// (класс «тихий дефолт», инвариант №1). Раньше от этого защищала лишь бедность реестра
+// (по одной реализации на шов): второе имя отвергал buildAdapters как незарегистрированное.
+// Защита исчезла бы в момент регистрации второй реализации — то есть ровно при переносе на
+// другой стек, главном сценарии README. Поэтому запрет живёт барьером, а не абзацем в доке
+// (инвариант №5).
 //
-// СНЯТИЕ: когда `tryMergePhase` действительно получит checksGreenFn/mergePrFn/findOpenPrFn из
-// `adapters.*` — убрать шов отсюда (правка ровно в одном месте) и заодно снять оговорки
-// «граница фазы 5» в README и докблоке `RalphConfig.adapters`.
-export const MERGE_PATH_BOUND_SEAMS = ['taskSource', 'gate'] as const satisfies ReadonlyArray<
+// `taskSource` СНЯТ: composition root (orchestrator.ts) передаёт в `tryMergePhase`
+// `findOpenPrFn`/`mergePrFn`/`phaseMergedFn` из `adapters.taskSource`, то есть недефолтная
+// реализация действительно доезжает до мердж-пути, а не подменяется молча.
+//
+// `gate` ОСТАЁТСЯ: состав чеков (`gateChecksFor`) и их прогон (`checksGreen`) петля
+// по-прежнему берёт у гейта напрямую, мимо `adapters.gate`. Принять `gate: 'cargo'`
+// значило бы соврать — чеки всё равно пошли бы через npm. СНЯТИЕ: провести прогон чеков
+// через `adapters.gate.runChecks` (он уже отдаёт `{green, verifiedHead, redCheck}` одним
+// объектом вместо boolean плюс двух геттеров состояния) и убрать шов отсюда.
+export const MERGE_PATH_BOUND_SEAMS = ['gate'] as const satisfies ReadonlyArray<
     keyof typeof ADAPTER_DEFAULTS
 >;
 
@@ -141,12 +150,12 @@ export function resolveAdapterSelection(
         // попало бы в выбор, а сообщение об ошибке говорило бы о нём как о принятом.
         if (v !== ADAPTER_DEFAULTS[seam] && isMergePathBound(seam)) {
             failFn(
-                `adapters.${seam}: '${v}' — свап этого шва пока не поддержан. Мердж-путь ` +
-                    `(tryMergePhase → findOpenPr/checksGreen/mergePr) берёт функции напрямую ` +
-                    `из gate.ts, а не из adapters.${seam}, поэтому выбранная реализация не ` +
-                    `участвовала бы в сдаче фазы: чеки и мердж продолжили бы идти через ` +
+                `adapters.${seam}: '${v}' — свап этого шва пока не поддержан. Прогон чеков ` +
+                    `(tryMergePhase → gateChecksFor/checksGreen) берёт функции напрямую из ` +
+                    `gate.ts, а не из adapters.${seam}, поэтому выбранная реализация не ` +
+                    `участвовала бы в сдаче фазы: чеки продолжили бы идти через ` +
                     `'${ADAPTER_DEFAULTS[seam]}'. Это «тихий дефолт» (инвариант №1), поэтому ` +
-                    `конфиг отвергается. Подробности — «граница фазы 5» в .claude/ralph/README.md; ` +
+                    `конфиг отвергается. Подробности — «свапаемость швов» в .claude/ralph/README.md; ` +
                     `свапаемые сегодня швы: ${ADAPTER_SEAMS.filter((s) => !isMergePathBound(s)).join(', ')}.`,
             );
         }
@@ -163,23 +172,66 @@ export function resolveAdapterSelection(
 
 // Форж GitHub: issues/PR/мердж/метки/milestone/доска (orchestrator.ts + gate.ts).
 export type GithubTaskSourceFns = {
+    // `gh auth status` — единственная форма «форж авторизован» у GitHub CLI.
+    checkAuth: () => void;
     openIssues: (milestone: string) => Issue[];
     allOpenIssues: (milestone: string) => Issue[];
+    hasAnyIssues: (milestone: string) => boolean;
+    milestoneLabels: (milestone: string) => string[];
+    // #37: комментарии PR одной лентой. Раскладку по трём поверхностям GitHub делает сама
+    // боевая функция — маппер, как и везде здесь, только раскладывает имена.
+    prComments: (prNumber: number) => ReviewComment[];
+    // #50: карточка целиком — её читает петля и кладёт сессии в промпт.
+    getIssue: (number: number) => IssueDetails;
+    // #45: комментарий в PR от имени раннера — ревью-сессия в форж не ходит.
+    commentOnPr: (prNumber: number, input: NewReviewComment) => void;
+    // #46: PR фазы заводит раннер, а не сессия.
+    createPr: (input: NewPullRequest) => number | null;
     findOpenPr: (branch: string) => PullRequest | null;
+    // #49: голова PR для гейта — `gh pr view --json headRefOid`. Гейт её больше не читает
+    // сам: команда форжа внутри гейта делала мердж-путь непроходимым везде, где `gh` нет.
+    prHeadSha: (prNumber: number) => string;
     phaseMerged: (phase: { branch: string }) => boolean;
     mergedPhasePr: (phase: { branch: string }) => number | null;
-    mergePr: (prNumber: number, headSha?: string | null) => void;
+    // Третий параметр — DI-канал исполнения, как в `TaskSourceAdapter.mergePullRequest`.
+    // Он здесь не для галочки: по ЭТОМУ типу пишется следующая реализация шва, и без
+    // него компилятор не подскажет, что канал надо поддержать. Сам параметр опционален,
+    // так что старые реализации остаются валидными.
+    mergePr: (
+        prNumber: number,
+        headSha?: string | null,
+        opts?: { runArgvFn?: (file: string, args: string[]) => string },
+    ) => void;
     addBlockedLabel: (branch: string) => void;
     removeBlockedLabel: (branch: string) => void;
     closeMilestoneByTitle: (title: string) => void;
     syncProjectBoard: () => void;
+    // #40: применение намерений кодер-сессии. Имена боевых функций совпадают с методами
+    // интерфейса — сдвига здесь нет, и это не повод их не перечислять: маппер обязан
+    // ломаться компиляцией, когда шов обзавёлся методом, а реализация нет.
+    commentOnIssue: (issue: number, body: string) => void;
+    closeIssue: (issue: number) => void;
+    blockIssue: (issue: number) => void;
+    createIssue: (input: {
+        title: string;
+        body: string;
+        labels: readonly string[];
+    }) => number | null;
 };
 
 export function createGithubTaskSource(fns: GithubTaskSourceFns): TaskSourceAdapter {
     return {
+        checkAuth: fns.checkAuth,
         listReadyIssues: fns.openIssues,
         listAllOpenIssues: fns.allOpenIssues,
+        hasAnyIssues: fns.hasAnyIssues,
+        listMilestoneLabels: fns.milestoneLabels,
+        getIssue: fns.getIssue,
+        listPullRequestComments: fns.prComments,
+        commentOnPullRequest: fns.commentOnPr,
+        createPullRequest: fns.createPr,
         findOpenPullRequest: fns.findOpenPr,
+        pullRequestHeadSha: fns.prHeadSha,
         isPhaseMerged: fns.phaseMerged,
         mergedPullRequestNumber: fns.mergedPhasePr,
         mergePullRequest: fns.mergePr,
@@ -187,6 +239,10 @@ export function createGithubTaskSource(fns: GithubTaskSourceFns): TaskSourceAdap
         removeBlockedLabel: fns.removeBlockedLabel,
         closeMilestone: fns.closeMilestoneByTitle,
         syncBoard: fns.syncProjectBoard,
+        commentOnIssue: fns.commentOnIssue,
+        closeIssue: fns.closeIssue,
+        blockIssue: fns.blockIssue,
+        createIssue: fns.createIssue,
     };
 }
 
@@ -222,10 +278,37 @@ export type GithubActionsDeployFns = {
 
 export function createGithubActionsDeploy(fns: GithubActionsDeployFns): DeployCheckAdapter {
     return {
+        // Деплой у этой реализации есть по определению: она и есть его проверка.
+        isEnabled: () => true,
         mergedShaOf: fns.mergedShaOf,
         waitForDeployRun: fns.waitForDeployRun,
         checkHealth: fns.checkProdHealth,
         classifyOutcome: fns.classifyDeployOutcome,
+    };
+}
+
+// «Деплоя нет» (#51) — не заглушка на будущее, а полноправная реализация шва для проектов,
+// где пост-мердж релиза не существует. Ровно как `syncBoard` у SourceCraft: осознанный
+// no-op, а не недоделка.
+//
+// Методы проверки БРОСАЮТ, а не возвращают выдуманный зелёный вердикт. Тихий `{red:false}`
+// был бы худшим исходом из возможных: петля решила бы, что релиз проверен, хотя проверять
+// нечем, — и это ровно тот «тихий дефолт», против которого стоит инвариант №1. Ядро
+// спрашивает `isEnabled()` ПЕРВЫМ и до этих методов не доходит; если дошло — сломана
+// проводка, и отказ обязан быть громким, а не молчаливым.
+export function createNoDeployCheck(): DeployCheckAdapter {
+    const absent = (what: string): never => {
+        throw new Error(
+            `Деплоя в проекте нет (adapters.deployCheck: 'none') — ${what} спрашивать не у кого. ` +
+                'Ядро обязано было проверить isEnabled() перед вызовом.',
+        );
+    };
+    return {
+        isEnabled: () => false,
+        mergedShaOf: () => absent('sha мерджа для деплоя'),
+        waitForDeployRun: () => absent('итог деплой-воркфлоу'),
+        checkHealth: () => absent('здоровье прода'),
+        classifyOutcome: () => absent('вердикт деплоя'),
     };
 }
 

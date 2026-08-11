@@ -26,6 +26,12 @@ import { resolve } from 'node:path';
 // orchestrator.test.ts, #366): дефолт ralph.js — ре-экспорт runtime фабрики.
 import ralph from '../ralph.js';
 
+// Платформенное: тест опирается на POSIX-механизмы, которых на Windows нет
+// (/proc/<pid>/cmdline, пути соседнего worktree, /bin/sh). Раннер живёт на
+// Linux-VPS, поэтому пометка, а не вторая реализация — грабля 7 в
+// docs/ralph-runner/portability-log.md. Снять вместе с платформенным швом.
+const itPosix = it.skipIf(process.platform === 'win32');
+
 const { acquireLock } = ralph;
 
 const LOCK_PATH = '.claude/ralph/ralph.lock';
@@ -75,34 +81,37 @@ function makeLockWorld({
 }
 
 describe('крит. 1 — второй запуск при ЖИВОМ первом: отказ ДО любых побочек', () => {
-    it('живой раннер держит лок (kill 0 + наш cmdline) → отказ, сообщение с pid и путём', () => {
-        const { readFn, procReadFn, killFn } = makeLockWorld({
-            lockContent: '4242',
-            cmdlines: { 4242: RALPH_CMDLINE },
-            livePids: [4242],
-        });
-        const failFn = vi.fn();
-        // writeFn/removeFn НЕ передаём — боевые дефолты под guardSideEffect (#138). Отказной
-        // путь не должен их звать; если позовёт — журнал побочек не будет пуст и afterEach
-        // уронит тест.
-        const ok = acquireLock({
-            lockPath: LOCK_PATH,
-            pid: 777,
-            readFn,
-            procReadFn,
-            killFn,
-            logFn: vi.fn(),
-            failFn,
-        });
-        expect(ok).toBe(false);
-        expect(failFn).toHaveBeenCalledTimes(1);
-        const msg = failFn.mock.calls[0][0];
-        expect(msg).toContain('4242'); // pid держателя
-        expect(msg).toContain(LOCK_PATH); // путь лок-файла
-        // Побочек не было — журнал #138 пуст (сильнее «мок не позвался»: боевой дефолт бы
-        // бросил И записал попытку).
-        expect(ralph.sideEffectAttempts).toEqual([]);
-    });
+    itPosix(
+        'живой раннер держит лок (kill 0 + наш cmdline) → отказ, сообщение с pid и путём',
+        () => {
+            const { readFn, procReadFn, killFn } = makeLockWorld({
+                lockContent: '4242',
+                cmdlines: { 4242: RALPH_CMDLINE },
+                livePids: [4242],
+            });
+            const failFn = vi.fn();
+            // writeFn/removeFn НЕ передаём — боевые дефолты под guardSideEffect (#138). Отказной
+            // путь не должен их звать; если позовёт — журнал побочек не будет пуст и afterEach
+            // уронит тест.
+            const ok = acquireLock({
+                lockPath: LOCK_PATH,
+                pid: 777,
+                readFn,
+                procReadFn,
+                killFn,
+                logFn: vi.fn(),
+                failFn,
+            });
+            expect(ok).toBe(false);
+            expect(failFn).toHaveBeenCalledTimes(1);
+            const msg = failFn.mock.calls[0][0];
+            expect(msg).toContain('4242'); // pid держателя
+            expect(msg).toContain(LOCK_PATH); // путь лок-файла
+            // Побочек не было — журнал #138 пуст (сильнее «мок не позвался»: боевой дефолт бы
+            // бросил И записал попытку).
+            expect(ralph.sideEffectAttempts).toEqual([]);
+        },
+    );
 });
 
 describe('крит. 2 — запуск после kill -9 первого: без ручных действий (автоснятие сироты)', () => {
@@ -166,26 +175,29 @@ describe('крит. 3 — чужой процесс с переиспользо�
 
     // Негативная пара к криту 1: тот же ЖИВОЙ pid, но за ним НАШ ralph.js → отказ. Разница
     // между «занять лок» и «отказать» — ровно cmdline-сверка, а не только kill(0).
-    it('контраст: тот же живой pid с НАШИМ cmdline → отказ (cmdline решает, не kill 0)', () => {
-        const { readFn, procReadFn, killFn } = makeLockWorld({
-            lockContent: '4242',
-            cmdlines: { 4242: RALPH_CMDLINE },
-            livePids: [4242],
-        });
-        const failFn = vi.fn();
-        const ok = acquireLock({
-            lockPath: LOCK_PATH,
-            pid: 777,
-            readFn,
-            procReadFn,
-            killFn,
-            logFn: vi.fn(),
-            failFn,
-        });
-        expect(ok).toBe(false);
-        expect(failFn).toHaveBeenCalledTimes(1);
-        expect(ralph.sideEffectAttempts).toEqual([]);
-    });
+    itPosix(
+        'контраст: тот же живой pid с НАШИМ cmdline → отказ (cmdline решает, не kill 0)',
+        () => {
+            const { readFn, procReadFn, killFn } = makeLockWorld({
+                lockContent: '4242',
+                cmdlines: { 4242: RALPH_CMDLINE },
+                livePids: [4242],
+            });
+            const failFn = vi.fn();
+            const ok = acquireLock({
+                lockPath: LOCK_PATH,
+                pid: 777,
+                readFn,
+                procReadFn,
+                killFn,
+                logFn: vi.fn(),
+                failFn,
+            });
+            expect(ok).toBe(false);
+            expect(failFn).toHaveBeenCalledTimes(1);
+            expect(ralph.sideEffectAttempts).toEqual([]);
+        },
+    );
 });
 
 describe('крит. 4 — битый/нечитаемый лок-файл: стоп с внятным сообщением, ДО побочек', () => {
@@ -272,7 +284,7 @@ describe('крит. 5 — побочки в тестах запрещены (RAL
         expect(process.env.RALPH_NO_SIDE_EFFECTS).toBe('1');
     });
 
-    it('весь набор отказных сценариев не сделал ни одной боевой побочки', () => {
+    itPosix('весь набор отказных сценариев не сделал ни одной боевой побочки', () => {
         // Прогоняем все стоп/отказ-пути подряд с боевыми дефолтами write/remove: журнал
         // побочек обязан остаться пустым (afterEach в test-setup.ts сверит его же).
         const live = makeLockWorld({
