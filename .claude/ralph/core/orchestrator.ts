@@ -43,7 +43,7 @@ import { createWorktreeManager } from './worktree.ts';
 import { createReviewModule } from './review.ts';
 import { createGateRunner, resolveGateChecks } from './gate.ts';
 import { createDeployCheckModule } from './deploy-check.ts';
-import { parseSessionRequests } from './session-requests.ts';
+import { parseSessionRequests, serializeSessionRequest } from './session-requests.ts';
 // #45: тексты промптов сессий — отдельным модулем, чтобы барьер чистоты мог их грепать
 // (в самом оркестраторе команды `gh` законны — там живёт реализация форжа GitHub).
 import {
@@ -1293,14 +1293,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
             throw new Error(`Комментарии PR: некорректный номер (${JSON.stringify(prNumber)}).`);
         }
         const surfaces: Array<{ endpoint: string; isSummary: boolean }> = [
-            {
-                endpoint: `repos/{owner}/{repo}/issues/${String(prNumber)}/comments`,
-                isSummary: false,
-            },
-            {
-                endpoint: `repos/{owner}/{repo}/pulls/${String(prNumber)}/comments`,
-                isSummary: false,
-            },
+            { endpoint: `repos/{owner}/{repo}/issues/${String(prNumber)}/comments`, isSummary: false },
+            { endpoint: `repos/{owner}/{repo}/pulls/${String(prNumber)}/comments`, isSummary: false },
             { endpoint: `repos/{owner}/{repo}/pulls/${String(prNumber)}/reviews`, isSummary: true },
         ];
         const out: ReviewComment[] = [];
@@ -1536,7 +1530,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // номер — карточка ВСЁ РАВНО создана, поэтому null, а не исключение: откатывать
     // нечего, а падение здесь заставило бы петлю повторить создание и наплодить дубли.
     function createIssue(
-        { title, body, labels: names }: { title: string; body: string; labels: readonly string[] },
+        {
+            title,
+            body,
+            labels: names,
+        }: { title: string; body: string; labels: readonly string[] },
         { runArgvFn = shArgv }: { runArgvFn?: typeof shArgv } = {},
     ): number | null {
         const args = ['issue', 'create', '--title', title, '--body', body];
@@ -1633,10 +1631,38 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                 '(либо его нет, либо их несколько — петля не гадает, в какой писать)',
                         );
                     }
-                    taskSource.commentOnPullRequest(pr.number, {
-                        body: req.comment,
-                        ...(req.kind === 'pr-comment' && req.anchor ? { anchor: req.anchor } : {}),
-                    });
+                    const anchor = req.kind === 'pr-comment' ? req.anchor : undefined;
+                    if (anchor) {
+                        // #64: форж принимает inline-комментарий ТОЛЬКО на строку, входящую
+                        // в дифф PR (GitHub на прочие отвечает 422). Для ревью это штатный
+                        // случай — «комментарий рядом протух» относится к строке, которую PR
+                        // не трогал. Раньше такой отказ валил весь батч и останавливал цикл
+                        // сдачи: на полигоне один `nit` встал поперёк фазы и повторялся
+                        // детерминированно, потому что каждое новое ревью якорь генерировало
+                        // заново. Замечание важнее способа его доставки: не вышло якорем —
+                        // кладём сводкой, дописав место в текст.
+                        try {
+                            taskSource.commentOnPullRequest(pr.number, {
+                                body: req.comment,
+                                anchor,
+                            });
+                        } catch (anchorErr) {
+                            const where = `${anchor.path}:${String(anchor.line)}`;
+                            // Второй отказ НЕ глушится: он означает, что замечание не легло
+                            // вовсе, и это уже общий fail-closed ниже по стеку.
+                            taskSource.commentOnPullRequest(pr.number, {
+                                body: `${where} — ${req.comment}`,
+                            });
+                            // Громко: молча подменённый способ доставки — «тихий дефолт»
+                            // (инвариант №1). Человек должен видеть, что якорь не принят.
+                            logFn(
+                                `⚠ Якорь ${where} форж не принял (${(anchorErr as Error).message}) — ` +
+                                    'замечание легло сводкой с указанием места.',
+                            );
+                        }
+                    } else {
+                        taskSource.commentOnPullRequest(pr.number, { body: req.comment });
+                    }
                     if (req.kind === 'pr-block') {
                         // Метку ставит РАННЕР, снимает тоже он и только по итогу повторного
                         // ревью (#217): сессия просит блок, но снять его сама не может —
@@ -1669,7 +1695,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 }
             } catch (e) {
                 const tail = requests.slice(i);
-                const text = `${tail.map((r) => JSON.stringify(r)).join('\n')}\n`;
+                // #64: сериализуем ТОЙ ЖЕ формой, которую читает parseSessionRequests.
+                // `JSON.stringify` отдавал нормализованный вид (`anchor: {path, line}`), а
+                // парсер ждёт плоские `path`/`line` — при повторе якорь молча терялся.
+                const text = `${tail.map(serializeSessionRequest).join('\n')}\n`;
                 // Запись хвоста — тоже побочка, и она умеет отказывать (диск, права).
                 // Исключение отсюда вылетело бы из runLoop и убило процесс раннера БЕЗ
                 // единого сигнала — худший исход. Поэтому не сохранившийся хвост уходит
@@ -2770,10 +2799,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // #51: требование держится на посылке «деплой есть». Её и проверяем сначала —
             // иначе барьер вынуждает вписать в конфиг заведомую ложь, лишь бы пройти старт.
             const healthUrl = cfg.deployCheck && cfg.deployCheck.healthUrl;
-            if (
-                deployEnabledFn() &&
-                (typeof healthUrl !== 'string' || !/^https?:\/\//.test(healthUrl))
-            )
+            if (deployEnabledFn() && (typeof healthUrl !== 'string' || !/^https?:\/\//.test(healthUrl)))
                 failFn(
                     'Профиль prod: deployCheck.healthUrl не задан или не http(s)-адрес — пост-мердж ' +
                         'healthcheck (#164) в prod обязателен, иначе каждая смердженная фаза даёт красный ' +
@@ -3407,6 +3433,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     break;
                 }
 
+
                 // #45: намерения сессий по PR — это ВЕРДИКТ, а не косметика. Гейт читает
                 // метки PR и комментарии, а не файл-запрос: не применённое намерение
                 // означает, что блока для гейта нет, и фаза уедет в main с дефектом,
@@ -3473,9 +3500,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     try {
                         const existingPr = findOpenPrFn(phase.branch);
                         if (existingPr) {
-                            logFn(
-                                `⏭ PR #${String(existingPr.number)} ветки ${phase.branch} уже открыт — создавать не нужно.`,
-                            );
+                            logFn(`⏭ PR #${String(existingPr.number)} ветки ${phase.branch} уже открыт — создавать не нужно.`);
                         } else {
                             const created = createPrFn({
                                 branch: phase.branch,
@@ -3756,10 +3781,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                     health = checkProdHealthFn(cfg, { logFn });
                                 }
                                 // #369: классификация — через шов деплой-проверки (та же функция).
-                                const verdict = adapters.deployCheck.classifyOutcome(
-                                    outcome,
-                                    health,
-                                );
+                                const verdict = adapters.deployCheck.classifyOutcome(outcome, health);
                                 if (verdict.red) {
                                     block = {
                                         milestone: phase.milestone,
@@ -4168,13 +4190,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         .map(([, cmd]) => cmd)
                         .join(', ');
                     const healCode = runClaudeFn(
-                        buildGateHealPrompt({
-                            branch: phase.branch,
-                            checkName: redCheck.name,
-                            checkCmd: redCheck.cmd,
-                            excerpt: redCheck.excerpt,
-                            gateCmdList,
-                        }),
+                        buildGateHealPrompt({ branch: phase.branch, checkName: redCheck.name, checkCmd: redCheck.cmd, excerpt: redCheck.excerpt, gateCmdList }),
                         {
                             model: healRoute?.model ?? cfg.model,
                             maxTurns,

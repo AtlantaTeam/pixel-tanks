@@ -7284,6 +7284,109 @@ describe('applySessionRequests: намерения сессии применяе
         expect(written.join('')).toMatch(/pr-comment/);
     });
 
+    // #64: форж отвергает inline-комментарий на строку ВНЕ диффа PR (GitHub — 422
+    // Validation Failed). Для ревью это штатный случай: «комментарий рядом протух» —
+    // замечание к строке, которую PR не трогал. Поймано на полигоне: один такой `nit`
+    // остановил весь цикл сдачи, и повторялось это детерминированно, потому что каждое
+    // новое ревью якорь генерировало заново.
+    it('#64 якорь форж не принял → замечание ложится сводкой, сдача продолжается', () => {
+        const { ts, calls } = prTaskSource({
+            commentOnPullRequest: (n: number, input: { body: string; anchor?: unknown }) => {
+                if (input.anchor) throw new Error('gh: Validation Failed (HTTP 422)');
+                calls.push(`pr-comment:${n}:null:${input.body}`);
+            },
+        });
+        const logFn = vi.fn();
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () =>
+                line({ kind: 'pr-comment', comment: '⚪ [nit] протух', path: 'e2e/a.spec.ts', line: 119 }),
+            writeFn: () => {},
+            taskSource: ts,
+            logFn,
+            pushEventFn: () => {},
+        });
+        // Замечание НЕ потеряно: место переехало в текст, раз якорем его не выразить.
+        expect(calls).toEqual(['pr-comment:55:null:e2e/a.spec.ts:119 — ⚪ [nit] протух']);
+        expect(res.failed).toBe(false);
+        expect(res.applied).toBe(1);
+        // Деградация громкая: молча подменённый способ доставки — «тихий дефолт».
+        // Место в логе — не украшение: человек читает пуш и должен понять, к какой строке
+        // относилось замечание, раз якорем этого больше не выразить.
+        const logged = logFn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).toMatch(/якор/i);
+        expect(logged).toContain('e2e/a.spec.ts:119');
+    });
+
+    it('#64 НЕГАТИВНЫЙ: сводка тоже не легла → fail-closed, как прежде', () => {
+        const { ts } = prTaskSource({
+            commentOnPullRequest: () => {
+                throw new Error('форж недоступен');
+            },
+        });
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () =>
+                line({ kind: 'pr-comment', comment: 'замечание', path: 'src/a.ts', line: 4 }),
+            writeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn: () => {},
+        });
+        expect(res.failed).toBe(true);
+    });
+
+    // Деградация — только для замечаний. `pr-block` несёт ВЕРДИКТ ревью: не легло —
+    // мерджить нельзя, и петля обязана встать (иначе фаза уедет в main с дефектом).
+    it('#64 отказ по pr-block по-прежнему останавливает сдачу', () => {
+        const { ts } = prTaskSource({
+            commentOnPullRequest: () => {
+                throw new Error('gh: Validation Failed (HTTP 422)');
+            },
+        });
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => line({ kind: 'pr-block', comment: 'красный e2e' }),
+            writeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn: () => {},
+        });
+        expect(res.failed).toBe(true);
+    });
+
+    // #64, вторая часть: хвост сохранялся `JSON.stringify` уже НОРМАЛИЗОВАННОГО намерения
+    // (`anchor: {path, line}`), а парсер читает ПЛОСКИЕ `path`/`line`. При повторе якорь
+    // молча терялся — замечание к строке становилось сводкой.
+    it('#64 хвост сериализуется в форме, которую читает свой же парсер', () => {
+        const { ts } = prTaskSource({
+            commentOnPullRequest: () => {
+                throw new Error('форж недоступен');
+            },
+        });
+        const written: string[] = [];
+        ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () =>
+                line({ kind: 'pr-comment', comment: 'замечание', path: 'src/a.ts', line: 42 }),
+            writeFn: (text: string) => written.push(text),
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn: () => {},
+        });
+        const tail = JSON.parse(written.join('').trim());
+        expect(tail).toMatchObject({ kind: 'pr-comment', path: 'src/a.ts', line: 42 });
+        expect(tail.anchor).toBeUndefined();
+    });
+
     it('файла нет — тишина: ни вызовов шва, ни пуша', () => {
         const { ts, calls } = fakeTaskSource();
         const pushEventFn = vi.fn();

@@ -67,10 +67,7 @@ function asRecord(value: unknown, lineNo: number): Record<string, unknown> {
 // уедет значение, которого никто не проверял.
 function issueNumber(value: unknown, lineNo: number): number {
     if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-        fail(
-            lineNo,
-            `номер карточки должен быть целым положительным, пришло ${JSON.stringify(value)}`,
-        );
+        fail(lineNo, `номер карточки должен быть целым положительным, пришло ${JSON.stringify(value)}`);
     }
     return value;
 }
@@ -202,4 +199,21 @@ export function parseSessionRequests(
                 'Снятие hold и blocked, одобрение ревью и мердж намерениями сессии не являются.',
         );
     });
+}
+
+/**
+ * Сериализует намерение обратно в строку JSONL — так, как его читает `parseSessionRequests`.
+ *
+ * Нужна, потому что хвост неприменённого батча пишется на диск и читается СЛЕДУЮЩИМ
+ * прогоном тем же парсером. Наивный `JSON.stringify` отдавал НОРМАЛИЗОВАННУЮ форму
+ * (`anchor: {path, line}`), а парсер ждёт ПЛОСКИЕ `path`/`line` — якорь молча терялся,
+ * и замечание к строке возвращалось сводкой (#64). Здесь форма разворачивается обратно:
+ * запись и чтение обязаны сходиться, иначе round-trip врёт.
+ */
+export function serializeSessionRequest(req: TSessionRequest): string {
+    if (req.kind === 'pr-comment' && req.anchor) {
+        const { anchor, ...rest } = req;
+        return JSON.stringify({ ...rest, path: anchor.path, line: anchor.line });
+    }
+    return JSON.stringify(req);
 }
