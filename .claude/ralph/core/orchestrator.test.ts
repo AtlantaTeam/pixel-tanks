@@ -7208,6 +7208,7 @@ describe('applySessionRequests: намерения сессии применяе
                     line: 42,
                 }),
             writeFn: () => {},
+            removeFn: () => {},
             taskSource: ts,
             logFn: () => {},
             pushEventFn: () => {},
@@ -7224,6 +7225,7 @@ describe('applySessionRequests: намерения сессии применяе
             dry: false,
             readFn: () => line({ kind: 'pr-block', comment: 'сборка красная' }),
             writeFn: () => {},
+            removeFn: () => {},
             taskSource: ts,
             logFn: () => {},
             pushEventFn: () => {},
@@ -7243,6 +7245,7 @@ describe('applySessionRequests: намерения сессии применяе
             dry: false,
             readFn: () => line({ kind: 'pr-block', comment: 'сборка красная' }),
             writeFn: () => {},
+            removeFn: () => {},
             taskSource: ts,
             logFn: () => {},
             pushEventFn,
@@ -7258,6 +7261,7 @@ describe('applySessionRequests: намерения сессии применяе
             dry: false,
             readFn: () => line({ kind: 'pr-comment', comment: 'замечание' }),
             writeFn: () => {},
+            removeFn: () => {},
             taskSource: ts,
             logFn: () => {},
             pushEventFn: () => {},
@@ -7275,6 +7279,7 @@ describe('applySessionRequests: намерения сессии применяе
             dry: false,
             readFn: () => line({ kind: 'pr-comment', comment: 'замечание' }),
             writeFn: (text: string) => written.push(text),
+            removeFn: () => {},
             taskSource: ts,
             logFn: () => {},
             pushEventFn: () => {},
@@ -7304,6 +7309,7 @@ describe('applySessionRequests: намерения сессии применяе
             readFn: () =>
                 line({ kind: 'pr-comment', comment: '⚪ [nit] протух', path: 'e2e/a.spec.ts', line: 119 }),
             writeFn: () => {},
+            removeFn: () => {},
             taskSource: ts,
             logFn,
             pushEventFn: () => {},
@@ -7333,6 +7339,7 @@ describe('applySessionRequests: намерения сессии применяе
             readFn: () =>
                 line({ kind: 'pr-comment', comment: 'замечание', path: 'src/a.ts', line: 4 }),
             writeFn: () => {},
+            removeFn: () => {},
             taskSource: ts,
             logFn: () => {},
             pushEventFn: () => {},
@@ -7354,6 +7361,7 @@ describe('applySessionRequests: намерения сессии применяе
             dry: false,
             readFn: () => line({ kind: 'pr-block', comment: 'красный e2e' }),
             writeFn: () => {},
+            removeFn: () => {},
             taskSource: ts,
             logFn: () => {},
             pushEventFn: () => {},
@@ -7378,6 +7386,7 @@ describe('applySessionRequests: намерения сессии применяе
             readFn: () =>
                 line({ kind: 'pr-comment', comment: 'замечание', path: 'src/a.ts', line: 42 }),
             writeFn: (text: string) => written.push(text),
+            removeFn: () => {},
             taskSource: ts,
             logFn: () => {},
             pushEventFn: () => {},
@@ -7406,9 +7415,10 @@ describe('applySessionRequests: намерения сессии применяе
         expect(res.applied).toBe(0);
     });
 
-    it('комментарий и закрытие применяются по порядку, файл очищается', () => {
+    it('комментарий и закрытие применяются по порядку, файл удаляется', () => {
         const { ts, calls } = fakeTaskSource();
         const written: string[] = [];
+        let removed = 0;
         const res = ralph.applySessionRequests({
             cfg: CFG,
             dry: false,
@@ -7418,15 +7428,21 @@ describe('applySessionRequests: намерения сессии применяе
                     line({ kind: 'close', issue: 7, comment: 'сделано: A и Б' }),
                 ].join('\n'),
             writeFn: (text: string) => written.push(text),
+            removeFn: () => {
+                removed += 1;
+            },
             taskSource: ts,
             logFn: () => {},
             pushEventFn: () => {},
         });
         expect(calls).toEqual(['comment:7:сделано: A и Б', 'comment:7:сделано: A и Б', 'close:7']);
         expect(res.applied).toBe(2);
-        // Файл очищен ровно один раз: неочищенный запрос применился бы повторно на
-        // следующей итерации и наплодил дубли комментариев.
-        expect(written).toEqual(['']);
+        // #62: файл УДАЛЯЕТСЯ, а не опустошается. Пустой остаток — untracked-файл в дереве
+        // раннера, и он валит следующий запуск проверкой чистоты, а однажды остановил и
+        // сам гейт мерджа. `.gitignore` этот класс не закрывает: ветка фазы отрезана ДО
+        // правки игнор-листа, и в её дереве строки ещё нет.
+        expect(written).toEqual([]);
+        expect(removed).toBe(1);
     });
 
     it('blocked: метка на карточке и комментарий, что нужно от человека', () => {
@@ -7436,6 +7452,7 @@ describe('applySessionRequests: намерения сессии применяе
             dry: false,
             readFn: () => line({ kind: 'block', issue: 9, comment: 'нужен npm install руками' }),
             writeFn: () => {},
+            removeFn: () => {},
             taskSource: ts,
             logFn: () => {},
             pushEventFn: () => {},
@@ -7457,6 +7474,7 @@ describe('applySessionRequests: намерения сессии применяе
                     labels: ['complexity:low', 'area:devops'],
                 }),
             writeFn: () => {},
+            removeFn: () => {},
             taskSource: ts,
             logFn: (m: string) => logs.push(m),
             pushEventFn: () => {},
