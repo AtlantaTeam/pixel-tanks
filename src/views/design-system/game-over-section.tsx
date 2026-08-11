@@ -7,17 +7,17 @@ import { GameOverDialog } from '@/widgets/game-over-dialog';
  *  показываем СТАТИЧНО (`dialogVariant="static"` — в потоке, без `fixed` и без
  *  кражи фокуса, как `PauseSection`), а очки задаём через `preview` БЕЗ мутации
  *  боевого `useGameStore`. Так три исхода сосуществуют независимо и попадают в
- *  бейзлайн как реальный контент, а не пустые боксы. */
+ *  бейзлайн как реальный контент, а не пустые боксы. Значения — HP сторон. */
 const OUTCOMES = [
-    { key: 'victory', label: 'Победа', playerPoints: 30, enemyPoints: 10 },
-    { key: 'defeat', label: 'Поражение', playerPoints: 10, enemyPoints: 30 },
-    { key: 'draw', label: 'Ничья', playerPoints: 20, enemyPoints: 20 },
+    { key: 'victory', label: 'Победа', player: 30, enemy: 10 },
+    { key: 'defeat', label: 'Поражение', player: 10, enemy: 30 },
+    { key: 'draw', label: 'Ничья', player: 20, enemy: 20 },
 ] as const;
 
 export function GameOverSection() {
     return (
         <div className="flex flex-col gap-8">
-            {OUTCOMES.map(({ key, label, playerPoints, enemyPoints }) => (
+            {OUTCOMES.map(({ key, label, player, enemy }) => (
                 <div key={key} className="flex flex-col gap-3">
                     <h3 className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
                         {label}
@@ -29,7 +29,7 @@ export function GameOverSection() {
                     <div role="region" aria-label={`Экран конца боя — ${label}`} className="p-6">
                         <GameOverDialog
                             dialogVariant="static"
-                            preview={{ playerPoints, enemyPoints }}
+                            preview={{ player, enemy }}
                             titleId={`game-over-title-${key}`}
                         />
                     </div>

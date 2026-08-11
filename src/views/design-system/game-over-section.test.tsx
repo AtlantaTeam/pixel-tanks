@@ -7,16 +7,7 @@ describe('GameOverSection', () => {
     beforeEach(() => {
         // Сбрасываем боевой стор к покою: секция не должна от него зависеть,
         // но и не должна ловить хвост чужого теста в том же файле-синглтоне.
-        useGameStore.setState({
-            isGameOver: false,
-            playerPoints: 0,
-            enemyPoints: 0,
-            finalPlayerPoints: null,
-            finalEnemyPoints: null,
-            battleSeed: null,
-            battleField: null,
-            replayMoves: [],
-        });
+        useGameStore.getState().resetGame();
     });
 
     it('renders all three outcomes as static previews with their scores', () => {
@@ -48,7 +39,6 @@ describe('GameOverSection', () => {
 
         const state = useGameStore.getState();
         expect(state.isGameOver).toBe(false);
-        expect(state.finalPlayerPoints).toBeNull();
-        expect(state.finalEnemyPoints).toBeNull();
+        expect(state.finalHp).toBeNull();
     });
 });

@@ -20,8 +20,8 @@ export function GameControls() {
     const power = useGameStore((s) => s.power);
     const angle = useGameStore((s) => s.angle);
     const moves = useGameStore((s) => s.moves);
-    const playerPoints = useGameStore((s) => s.playerPoints);
-    const enemyPoints = useGameStore((s) => s.enemyPoints);
+    const playerHp = useGameStore((s) => s.hp.player);
+    const enemyHp = useGameStore((s) => s.hp.enemy);
     const weapons = useGameStore((s) => s.weapons);
     const selectedWeapon = useGameStore((s) => s.selectedWeapon);
 
@@ -31,10 +31,10 @@ export function GameControls() {
 
     const { isMuted, toggle: toggleMute } = useMuteState();
 
-    // Счёт и ходы обновляются в сторе скачком (попадание, ход) — HUD плавно
+    // HP и ходы обновляются в сторе скачком (попадание, ход) — HUD плавно
     // дотягивает отображаемое число к нему, а не дёргается мгновенно.
-    const displayedPlayerPoints = Math.round(useAnimatedValue(playerPoints));
-    const displayedEnemyPoints = Math.round(useAnimatedValue(enemyPoints));
+    const displayedPlayerHp = Math.round(useAnimatedValue(playerHp));
+    const displayedEnemyHp = Math.round(useAnimatedValue(enemyHp));
     const displayedMoves = Math.round(useAnimatedValue(moves));
 
     return (
@@ -55,7 +55,7 @@ export function GameControls() {
                 <div className="flex flex-col items-center gap-2">
                     <div className="font-ui text-xs text-text-muted">Игрок</div>
                     <div className="font-ui text-hud-xl text-primary tabular-nums [text-shadow:var(--glow-text)]">
-                        {displayedPlayerPoints}
+                        {displayedPlayerHp}
                     </div>
                 </div>
 
@@ -94,7 +94,7 @@ export function GameControls() {
                 <div className="flex flex-col items-center gap-2">
                     <div className="font-ui text-xs text-text-muted">{BOT_NAME}</div>
                     <div className="font-ui text-hud-xl text-danger tabular-nums [text-shadow:var(--glow-text)]">
-                        {displayedEnemyPoints}
+                        {displayedEnemyHp}
                     </div>
                 </div>
             </div>

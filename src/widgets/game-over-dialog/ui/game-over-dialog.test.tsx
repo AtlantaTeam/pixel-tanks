@@ -13,10 +13,10 @@ vi.mock('@/features/daily-challenge', async () => {
 
 const submitMock = vi.mocked(submitDailyScore);
 
-function setGameOver(playerPoints: number, enemyPoints: number) {
+function setGameOver(player: number, enemy: number) {
     // Через реальное действие стора (не сырой setState), чтобы сработала
-    // фиксация снимка на переходе false→true (#337).
-    useGameStore.setState({ isGameOver: false, playerPoints, enemyPoints });
+    // фиксация снимка HP на переходе false→true (#337).
+    useGameStore.setState({ isGameOver: false, hp: { player, enemy } });
     useGameStore.getState().setGameOver(true);
 }
 
@@ -24,16 +24,7 @@ describe('GameOverDialog', () => {
     beforeEach(() => {
         submitMock.mockClear();
         window.sessionStorage.clear();
-        useGameStore.setState({
-            isGameOver: false,
-            playerPoints: 0,
-            enemyPoints: 0,
-            finalPlayerPoints: null,
-            finalEnemyPoints: null,
-            battleSeed: null,
-            battleField: null,
-            replayMoves: [],
-        });
+        useGameStore.getState().resetGame();
     });
 
     it('shows the score when the game is over', () => {
@@ -140,18 +131,18 @@ describe('GameOverDialog', () => {
         expect(screen.queryByRole('button', { name: /Поделиться боем/i })).not.toBeInTheDocument();
     });
 
-    it('keeps the finished game outcome stable when the store points still change (#337)', () => {
+    it('keeps the finished game outcome stable when the store HP still changes (#337)', () => {
         setGameOver(5, 10);
         const { container } = render(<GameOverDialog seed="42" />);
 
         expect(screen.getByText('Поражение')).toBeInTheDocument();
         expect(container.querySelector('[data-outcome="defeat"]')).not.toBeNull();
 
-        // Очки последних кадров боя «оседают» после того, как isGameOver уже
+        // Кадры последнего попадания «оседают» после того, как isGameOver уже
         // true (root-cause #337) — заголовок и исход зафиксированного попапа
         // не должны на это реагировать.
         act(() => {
-            useGameStore.setState({ playerPoints: 10, enemyPoints: 10 });
+            useGameStore.setState({ hp: { player: 10, enemy: 10 } });
         });
 
         expect(screen.getByText('Поражение')).toBeInTheDocument();

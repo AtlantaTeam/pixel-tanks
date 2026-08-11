@@ -86,7 +86,7 @@ async function expectGameOverDialog(page: Page): Promise<void> {
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 30_000 });
     await expect(dialog).toContainText(/Победа!|Поражение|Ничья/);
-    await expect(dialog).toContainText('Счёт:');
+    await expect(dialog).toContainText('HP:');
 }
 
 test.describe('бой только клавиатурой', () => {

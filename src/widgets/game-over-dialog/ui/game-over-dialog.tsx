@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { isDailySeed, ShareDailyResultButton, submitDailyScore } from '@/features/daily-challenge';
-import { useGameStore } from '@/features/game-engine';
+import { deriveOutcome, useGameStore } from '@/features/game-engine';
 import { ShareReplayButton } from '@/features/replays';
 import { BOT_NAME } from '@/shared/config';
 import { ThemeScope, type TOutcome } from '@/shared/lib/theme';
@@ -21,7 +21,7 @@ type TGameOverDialogProps = {
      *  гасятся и все привязанные к бою ветки (daily-блок, «Поделиться боем»):
      *  срез статичен и не должен внезапно показать их, если в этой же сессии
      *  сначала сыграли бой, а потом ушли на витрину. */
-    preview?: { playerPoints: number; enemyPoints: number };
+    preview?: { player: number; enemy: number };
     /** id заголовка (`aria-labelledby`). По умолчанию `'game-over-title'`; на
      *  витрине несколько диалогов на одной странице — нужен уникальный, иначе id
      *  дублируется в DOM. */
@@ -61,24 +61,24 @@ export function GameOverDialog({
     titleId = 'game-over-title',
 }: TGameOverDialogProps = {}) {
     const isGameOver = useGameStore((s) => s.isGameOver);
-    const livePlayerPoints = useGameStore((s) => s.playerPoints);
-    const liveEnemyPoints = useGameStore((s) => s.enemyPoints);
-    const finalPlayerPoints = useGameStore((s) => s.finalPlayerPoints);
-    const finalEnemyPoints = useGameStore((s) => s.finalEnemyPoints);
+    const liveHp = useGameStore((s) => s.hp);
+    const finalHp = useGameStore((s) => s.finalHp);
     // Снимок фиксируется один раз на переходе isGameOver false→true
     // (useGameStore.setGameOver) — пока бой идёт, снимка нет, и заголовок
-    // читает живые очки (#337). В режиме `preview` (витрина) очки заданы пропом,
+    // читает живой HP (#337). В режиме `preview` (витрина) HP задан пропом,
     // а стор не читаем и не трогаем.
     const open = preview ? true : isGameOver;
-    const playerPoints = preview ? preview.playerPoints : (finalPlayerPoints ?? livePlayerPoints);
-    const enemyPoints = preview ? preview.enemyPoints : (finalEnemyPoints ?? liveEnemyPoints);
+    const playerHp = preview ? preview.player : (finalHp?.player ?? liveHp.player);
+    const enemyHp = preview ? preview.enemy : (finalHp?.enemy ?? liveHp.enemy);
     const battleSeed = useGameStore((s) => s.battleSeed);
     const battleField = useGameStore((s) => s.battleField);
     const replayMoves = useGameStore((s) => s.replayMoves);
     const resetGame = useGameStore((s) => s.resetGame);
     const submittedRef = useRef(false);
 
-    const points = Math.max(0, playerPoints);
+    // Счёт «Боя дня» — остаток HP игрока (лидерборд переезжает на HP-модель
+    // отдельной issue фазы; здесь берём осмысленное число, а не мёртвое поле).
+    const points = Math.max(0, playerHp);
 
     useEffect(() => {
         if (!isGameOver || !seed || !isDailySeed(seed) || submittedRef.current) return;
@@ -94,13 +94,18 @@ export function GameOverDialog({
             });
     }, [isGameOver, seed, points]);
 
+    // Исход выводится из HP (не из очков): у кого HP больше — тот победил.
+    const battleOutcome = deriveOutcome(playerHp, enemyHp);
     const winnerText =
-        playerPoints > enemyPoints ? 'Победа!' : playerPoints < enemyPoints ? 'Поражение' : 'Ничья';
+        battleOutcome === 'victory'
+            ? 'Победа!'
+            : battleOutcome === 'defeat'
+              ? 'Поражение'
+              : 'Ничья';
     // Исход задаёт тему диалога (token-spec §6): победа красит акцент в зелёный,
     // поражение — в danger. Заголовок читает --accent, поэтому меняется без правки
     // Dialog/Panel — переключение темы на предке через ThemeScope. Ничья нейтральна.
-    const outcome: TOutcome | undefined =
-        playerPoints > enemyPoints ? 'victory' : playerPoints < enemyPoints ? 'defeat' : undefined;
+    const outcome: TOutcome | undefined = battleOutcome === 'draw' ? undefined : battleOutcome;
     const isDaily = Boolean(seed && isDailySeed(seed));
     // В режиме `preview` (витрина) стор в покое не гарантирован — если игрок
     // сыграл бой и затем открыл /design-system в той же сессии, battleSeed и
@@ -129,7 +134,7 @@ export function GameOverDialog({
                     {winnerText}
                 </h2>
                 <p className="font-ui text-body mt-4 text-text-muted">
-                    Счёт: {playerPoints} — {enemyPoints}
+                    HP: {playerHp} — {enemyHp}
                 </p>
                 {showBattleBound && isDaily && seed ? (
                     <div className="mt-2">

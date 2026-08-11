@@ -8,7 +8,6 @@ import { useGameStore } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
 import { dealWeapons } from '../../lib/weapons';
 import { createFxRandom } from '../../lib/fx-random';
-import { resolvePointsDelta } from '../../lib/score';
 import { calculateDragAim } from '../../lib/drag-aim';
 import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
@@ -46,8 +45,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const increasePower = useGameStore((s) => s.increasePower);
     const increaseAngle = useGameStore((s) => s.increaseAngle);
     const decrementMoves = useGameStore((s) => s.decrementMoves);
-    const increasePlayerPoints = useGameStore((s) => s.increasePlayerPoints);
-    const increaseEnemyPoints = useGameStore((s) => s.increaseEnemyPoints);
+    const applyDamage = useGameStore((s) => s.applyDamage);
     const setWeapons = useGameStore((s) => s.setWeapons);
     const selectWeapon = useGameStore((s) => s.selectWeapon);
     const removeWeaponById = useGameStore((s) => s.removeWeaponById);
@@ -73,9 +71,10 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             canvasRef,
             allWeapons,
             {
-                onPointsCalc: (event) => {
-                    const { isPlayer, delta } = resolvePointsDelta(event);
-                    (isPlayer ? increasePlayerPoints : increaseEnemyPoints)(delta);
+                // Попадание снимает урон оружия с HP того танка, в который попали
+                // (HP-модель, GDD §2.5): левый танк — игрок, правый — бот.
+                onPointsCalc: ({ hittedIsLeft, power }) => {
+                    applyDamage(hittedIsLeft ? 'player' : 'enemy', power);
                 },
                 onGameOverCheck: ({ leftWeapons, rightWeapons }) => {
                     if (!leftWeapons && !rightWeapons && !game.isFireMode) {

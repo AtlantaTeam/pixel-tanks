@@ -123,7 +123,7 @@ for (const viewport of VIEWPORTS) {
             const dialog = page.getByRole('dialog');
             await expect(dialog).toBeVisible({ timeout: 30_000 });
             await expect(dialog).toContainText(/Победа!|Поражение|Ничья/);
-            await expect(dialog).toContainText('Счёт:');
+            await expect(dialog).toContainText('HP:');
 
             await page.screenshot({
                 path: `screenshots/touch-battle-${viewport.name}.png`,
