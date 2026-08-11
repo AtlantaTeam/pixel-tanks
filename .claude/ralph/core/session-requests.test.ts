@@ -6,7 +6,11 @@
 // (C3). Всё, что придёт неожиданной формой, обязано быть отказом на разборе — до того,
 // как из него соберётся мутация форжа.
 import { describe, expect, it } from 'vitest';
-import { MAX_SESSION_REQUESTS, parseSessionRequests } from './session-requests.ts';
+import {
+    MAX_SESSION_REQUESTS,
+    parseSessionRequests,
+    serializeSessionRequest,
+} from './session-requests.ts';
 
 const ALLOWLIST = ['complexity:low', 'complexity:high', 'area:devops'];
 const opts = { labelAllowlist: ALLOWLIST };
@@ -96,9 +100,7 @@ describe('parseSessionRequests — разбор намерений кодер-с
 
     it('НЕГАТИВНЫЙ: pr-block без причины — отказ', () => {
         // Метка без объяснения оставляет и человека, и чини-сессию гадать, что блокирует.
-        expect(() => parseSessionRequests(line({ kind: 'pr-block' }), opts)).toThrow(
-            /комментарий/i,
-        );
+        expect(() => parseSessionRequests(line({ kind: 'pr-block' }), opts)).toThrow(/комментарий/i);
     });
 
     it('НЕГАТИВНЫЙ: снятия блока намерением не существует', () => {
@@ -228,5 +230,41 @@ describe('parseSessionRequests — разбор намерений кодер-с
         for (const raw of ['[]', '"строка"', '42', 'null']) {
             expect(() => parseSessionRequests(raw, opts)).toThrow();
         }
+    });
+});
+
+// #64: хвост неприменённого батча пишется на диск и читается СЛЕДУЮЩИМ прогоном тем же
+// парсером. Пока хвост сериализовался наивным JSON.stringify, он уезжал в нормализованной
+// форме (`anchor: {path, line}`), которой парсер не понимает, — якорь молча терялся, и
+// замечание к строке возвращалось сводкой. Запись и чтение обязаны сходиться.
+describe('serializeSessionRequest: round-trip записи и чтения хвоста (#64)', () => {
+    const opts = { labelAllowlist: ['complexity:low', 'area:devops'] };
+
+    it('якорь переживает запись и повторное чтение', () => {
+        const [parsed] = parseSessionRequests(
+            JSON.stringify({ kind: 'pr-comment', comment: 'тут', path: 'src/a.ts', line: 42 }),
+            opts,
+        );
+        const [again] = parseSessionRequests(serializeSessionRequest(parsed), opts);
+        expect(again).toEqual(parsed);
+        expect(again).toMatchObject({ anchor: { path: 'src/a.ts', line: 42 } });
+    });
+
+    it('намерения без якоря переживают round-trip как есть', () => {
+        const raw = [
+            JSON.stringify({ kind: 'comment', issue: 7, comment: 'что выяснилось' }),
+            JSON.stringify({ kind: 'close', issue: 7, comment: 'что сделано' }),
+            JSON.stringify({ kind: 'pr-comment', comment: 'сводка прохода' }),
+            JSON.stringify({ kind: 'pr-block', comment: 'чем блокируется' }),
+            JSON.stringify({
+                kind: 'new-issue',
+                title: 'заголовок',
+                body: 'симптом, причина, критерий',
+                labels: ['complexity:low', 'area:devops'],
+            }),
+        ].join('\n');
+        const parsed = parseSessionRequests(raw, opts);
+        const again = parseSessionRequests(parsed.map(serializeSessionRequest).join('\n'), opts);
+        expect(again).toEqual(parsed);
     });
 });
