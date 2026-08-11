@@ -31,11 +31,18 @@ export const Scores: CollectionConfig = {
             hasMany: false,
         },
         {
+            // Производная метрика боя (урон + остаток HP + точность), а НЕ сырой
+            // HP — считает `computeLeaderboardPoints` (game-engine, решение #422).
+            // Тип и границы (0..MAX_SCORE_POINTS) при переезде на HP-модель не
+            // менялись, поэтому миграция прод-БД не нужна.
             name: 'points',
             type: 'number',
             required: true,
             min: 0,
             max: MAX_SCORE_POINTS,
+            admin: {
+                description: 'Очки лидерборда за бой (производная метрика: урон/точность/HP)',
+            },
         },
         {
             name: 'opponent',

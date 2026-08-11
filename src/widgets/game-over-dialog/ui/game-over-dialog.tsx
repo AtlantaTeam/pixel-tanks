@@ -3,7 +3,13 @@
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { isDailySeed, ShareDailyResultButton, submitDailyScore } from '@/features/daily-challenge';
-import { deriveOutcome, useGameStore } from '@/features/game-engine';
+import {
+    computeBattleStats,
+    computeLeaderboardPoints,
+    deriveOutcome,
+    MOVE_BUDGET,
+    useGameStore,
+} from '@/features/game-engine';
 import { ShareReplayButton } from '@/features/replays';
 import { BOT_NAME } from '@/shared/config';
 import { ThemeScope, type TOutcome } from '@/shared/lib/theme';
@@ -17,11 +23,13 @@ type TGameOverDialogProps = {
     dialogVariant?: 'modal' | 'static';
     /** Витрина: показать конкретный исход, НЕ мутируя боевой `useGameStore` —
      *  три среза (победа/поражение/ничья) сосуществуют независимо. Диалог
-     *  считается открытым, а очки берутся отсюда, а не из стора. В этом режиме
-     *  гасятся и все привязанные к бою ветки (daily-блок, «Поделиться боем»):
-     *  срез статичен и не должен внезапно показать их, если в этой же сессии
-     *  сначала сыграли бой, а потом ушли на витрину. */
-    preview?: { player: number; enemy: number };
+     *  считается открытым, а HP и статистика берутся отсюда, а не из стора.
+     *  `shots`/`hits`/`maneuvers` необязательны (по умолчанию 0) — задаются, чтобы
+     *  витрина показала непустую статистику. В этом режиме гасятся и все
+     *  привязанные к бою ветки (daily-блок, «Поделиться боем»): срез статичен и не
+     *  должен внезапно показать их, если в этой же сессии сначала сыграли бой, а
+     *  потом ушли на витрину. */
+    preview?: { player: number; enemy: number; shots?: number; hits?: number; maneuvers?: number };
     /** id заголовка (`aria-labelledby`). По умолчанию `'game-over-title'`; на
      *  витрине несколько диалогов на одной странице — нужен уникальный, иначе id
      *  дублируется в DOM. */
@@ -70,15 +78,35 @@ export function GameOverDialog({
     const open = preview ? true : isGameOver;
     const playerHp = preview ? preview.player : (finalHp?.player ?? liveHp.player);
     const enemyHp = preview ? preview.enemy : (finalHp?.enemy ?? liveHp.enemy);
+    const shotsFired = useGameStore((s) => s.shotsFired);
+    const hits = useGameStore((s) => s.hits);
+    const moves = useGameStore((s) => s.moves);
     const battleSeed = useGameStore((s) => s.battleSeed);
     const battleField = useGameStore((s) => s.battleField);
     const replayMoves = useGameStore((s) => s.replayMoves);
     const resetGame = useGameStore((s) => s.resetGame);
     const submittedRef = useRef(false);
 
-    // Счёт «Боя дня» — остаток HP игрока (лидерборд переезжает на HP-модель
-    // отдельной issue фазы; здесь берём осмысленное число, а не мёртвое поле).
-    const points = Math.max(0, playerHp);
+    // Статистика боя (handoff «Game over»): урон, точность, выстрелы, манёвры.
+    // Совершено манёвров = бюджет − остаток. В preview (витрина) входы приходят
+    // пропом, в бою — из стора; HP берём из снимка finalHp (#337).
+    const stats = computeBattleStats({
+        playerHp,
+        enemyHp,
+        shots: preview ? (preview.shots ?? 0) : shotsFired,
+        hits: preview ? (preview.hits ?? 0) : hits,
+        maneuvers: preview ? (preview.maneuvers ?? 0) : MOVE_BUDGET - moves,
+    });
+    const statRows: { label: string; value: string }[] = [
+        { label: 'Урон', value: String(stats.damage) },
+        { label: 'Точность', value: `${stats.accuracy} %` },
+        { label: 'Выстрелов', value: String(stats.shots) },
+        { label: 'Манёвров', value: `${stats.maneuvers} / ${stats.maneuverBudget}` },
+    ];
+
+    // Очки лидерборда «Боя дня» — производная метрика (урон + остаток HP +
+    // точность), а не сырой HP (решение #422). Формула — в `computeLeaderboardPoints`.
+    const points = computeLeaderboardPoints(stats);
 
     useEffect(() => {
         if (!isGameOver || !seed || !isDailySeed(seed) || submittedRef.current) return;
@@ -133,9 +161,18 @@ export function GameOverDialog({
                 >
                     {winnerText}
                 </h2>
-                <p className="font-ui text-body mt-4 text-text-muted">
-                    HP: {playerHp} — {enemyHp}
-                </p>
+                {/* Статистика боя — четыре строки space-between, значения
+                    tabular-nums (handoff «Game over»): Урон, Точность %,
+                    Выстрелов, Манёвров X / 4. «Ходов N» из старого макета неверно:
+                    бюджет манёвра — 4 хода на матч (GDD §2.3). */}
+                <dl className="font-ui text-body mt-4 flex flex-col gap-1.5 text-left text-text-muted">
+                    {statRows.map(({ label, value }) => (
+                        <div key={label} className="flex items-baseline justify-between gap-4">
+                            <dt className="uppercase tracking-[0.08em]">{label}</dt>
+                            <dd className="tabular-nums text-text">{value}</dd>
+                        </div>
+                    ))}
+                </dl>
                 {showBattleBound && isDaily && seed ? (
                     <div className="mt-2">
                         <p className="font-ui text-label text-text-muted uppercase tracking-[0.12em]">

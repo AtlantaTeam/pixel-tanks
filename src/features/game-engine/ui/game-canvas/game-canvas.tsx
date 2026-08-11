@@ -46,6 +46,8 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const increaseAngle = useGameStore((s) => s.increaseAngle);
     const decrementMoves = useGameStore((s) => s.decrementMoves);
     const applyDamage = useGameStore((s) => s.applyDamage);
+    const recordPlayerShot = useGameStore((s) => s.recordPlayerShot);
+    const recordPlayerHit = useGameStore((s) => s.recordPlayerHit);
     const setWeapons = useGameStore((s) => s.setWeapons);
     const selectWeapon = useGameStore((s) => s.selectWeapon);
     const removeWeaponById = useGameStore((s) => s.removeWeaponById);
@@ -73,8 +75,11 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             {
                 // Попадание снимает урон оружия с HP того танка, в который попали
                 // (HP-модель, GDD §2.5): левый танк — игрок, правый — бот.
-                onPointsCalc: ({ hittedIsLeft, power }) => {
+                onPointsCalc: ({ hittedIsLeft, leftActive, power }) => {
                     applyDamage(hittedIsLeft ? 'player' : 'enemy', power);
+                    // Попадание игрока по противнику — для точности game-over.
+                    // leftActive → стрелял игрок; !hittedIsLeft → задет бот (не самострел).
+                    if (leftActive && !hittedIsLeft) recordPlayerHit();
                 },
                 onGameOverCheck: ({ leftWeapons, rightWeapons }) => {
                     if (!leftWeapons && !rightWeapons && !game.isFireMode) {
@@ -212,6 +217,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                         !game.leftTank.dx
                     ) {
                         recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
+                        recordPlayerShot();
                         game.onFire(selectedWeapon);
                         removeWeaponById(selectedWeapon.id);
                     }
@@ -230,6 +236,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         increaseAngle,
         recordMove,
         recordFire,
+        recordPlayerShot,
     ]);
 
     const fireSelectedWeapon = () => {
@@ -246,6 +253,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         )
             return;
         recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
+        recordPlayerShot();
         game.onFire(selectedWeapon);
         removeWeaponById(selectedWeapon.id);
     };

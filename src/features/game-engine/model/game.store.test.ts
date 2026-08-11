@@ -209,17 +209,42 @@ describe('game.store — фаза хода', () => {
         useGameStore.getState().fire();
 
         expect(useGameStore.getState().phase).toBe('flight');
-        expect(useGameStore.getState().shotsFired).toBe(0);
+    });
+});
+
+describe('game.store — статистика боя (выстрелы и попадания)', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
     });
 
-    it('считает выстрелы игрока', () => {
-        useGameStore.getState().startGame();
-
-        useGameStore.getState().fire();
-        useGameStore.getState().setPhase('aiming');
-        useGameStore.getState().fire();
+    it('recordPlayerShot считает выстрелы игрока', () => {
+        useGameStore.getState().recordPlayerShot();
+        useGameStore.getState().recordPlayerShot();
 
         expect(useGameStore.getState().shotsFired).toBe(2);
+    });
+
+    it('recordPlayerHit считает попадания игрока', () => {
+        useGameStore.getState().recordPlayerShot();
+        useGameStore.getState().recordPlayerShot();
+        useGameStore.getState().recordPlayerHit();
+
+        expect(useGameStore.getState().shotsFired).toBe(2);
+        expect(useGameStore.getState().hits).toBe(1);
+    });
+
+    it('startGame и resetGame обнуляют выстрелы и попадания', () => {
+        useGameStore.getState().recordPlayerShot();
+        useGameStore.getState().recordPlayerHit();
+
+        useGameStore.getState().startGame();
+        expect(useGameStore.getState().shotsFired).toBe(0);
+        expect(useGameStore.getState().hits).toBe(0);
+
+        useGameStore.getState().recordPlayerShot();
+        useGameStore.getState().resetGame();
+        expect(useGameStore.getState().shotsFired).toBe(0);
+        expect(useGameStore.getState().hits).toBe(0);
     });
 });
 

@@ -27,11 +27,16 @@ describe('GameOverDialog', () => {
         useGameStore.getState().resetGame();
     });
 
-    it('shows the score when the game is over', () => {
+    it('shows the battle stats when the game is over', () => {
         setGameOver(10, 5);
         render(<GameOverDialog seed="42" />);
 
-        expect(screen.getByText(/10.*5/)).toBeInTheDocument();
+        // Урон = MAX_HP − enemyHp = 100 − 5 = 95; манёвры из полного бюджета.
+        expect(screen.getByText('Урон')).toBeInTheDocument();
+        expect(screen.getByText('95')).toBeInTheDocument();
+        expect(screen.getByText('Точность')).toBeInTheDocument();
+        expect(screen.getByText('Выстрелов')).toBeInTheDocument();
+        expect(screen.getByText('0 / 4')).toBeInTheDocument();
     });
 
     it('switches the theme to victory when the player wins', () => {
@@ -76,24 +81,40 @@ describe('GameOverDialog', () => {
         expect(screen.getByRole('button', { name: /Поделиться/i })).toBeInTheDocument();
     });
 
-    it('submits the daily score exactly once for a daily seed', () => {
+    it('submits the derived leaderboard score once for a daily seed', () => {
         setGameOver(30, 10);
         render(<GameOverDialog seed="daily-2026-07-19" />);
 
+        // Производная метрика (#422): урон 90 + остаток HP 30 + точность 0 = 120,
+        // а не сырой остаток HP (30).
         expect(submitMock).toHaveBeenCalledTimes(1);
         expect(submitMock).toHaveBeenCalledWith({
             seed: 'daily-2026-07-19',
-            points: 30,
+            points: 120,
             opponent: 'Terminator',
         });
     });
 
-    it('clamps negative player points to zero before submitting', () => {
+    it('folds accuracy into the derived score', () => {
+        // 3 попадания из 4 выстрелов = точность 75 %.
+        useGameStore.setState({ shotsFired: 4, hits: 3 });
+        setGameOver(30, 10);
+        render(<GameOverDialog seed="daily-2026-07-19" />);
+
+        // урон 90 + остаток HP 30 + точность 75 = 195.
+        expect(submitMock).toHaveBeenCalledWith(
+            expect.objectContaining({ seed: 'daily-2026-07-19', points: 195 }),
+        );
+    });
+
+    it('submits a non-negative derived score even on a loss with 0 HP', () => {
+        // Игрок добит (HP 0): остаток HP 0, но урон противнику ещё даёт очки.
         setGameOver(-7, 10);
         render(<GameOverDialog seed="daily-2026-07-19" />);
 
+        // урон 90 + остаток HP 0 + точность 0 = 90 (никогда не отрицательное).
         expect(submitMock).toHaveBeenCalledWith(
-            expect.objectContaining({ seed: 'daily-2026-07-19', points: 0 }),
+            expect.objectContaining({ seed: 'daily-2026-07-19', points: 90 }),
         );
     });
 

@@ -6,6 +6,9 @@ import { clampPower } from '../lib/power';
 /** Максимум HP танка (GDD §2.5). HP боя живёт в диапазоне 0..MAX_HP. */
 export const MAX_HP = 100;
 
+/** Бюджет манёвров на матч (GDD §2.3) — стартовое `moves` и знаменатель показа «X / N». */
+export const MOVE_BUDGET = 4;
+
 /** Сторона боя, по которой адресуются HP и урон. Левый танк — игрок, правый — бот. */
 export type TSide = 'player' | 'enemy';
 
@@ -49,6 +52,8 @@ type TGameState = {
     windRevealed: boolean;
     /** Сколько раз игрок выстрелил — для статистики экрана конца боя. */
     shotsFired: number;
+    /** Сколько выстрелов игрока попали по противнику — для точности game-over. */
+    hits: number;
     isGameOver: boolean;
     isStarted: boolean;
     /**
@@ -79,10 +84,16 @@ type TGameActions = {
     applyDamage: (target: TSide, amount: number) => void;
     setPhase: (phase: TPhase) => void;
     /**
-     * Выстрел игрока: только из фазы прицеливания (`aiming`). Переводит в полёт,
-     * считает выстрел и раскрывает ветер. Вне своей фазы — игнорируется (лок хода).
+     * Выстрел игрока: только из фазы прицеливания (`aiming`). Переводит в полёт
+     * и раскрывает ветер. Вне своей фазы — игнорируется (лок хода). Счёт выстрелов
+     * для статистики ведёт отдельный `recordPlayerShot` (вызывается на боевом
+     * пути; фаза-лок движка — отдельная issue трека).
      */
     fire: () => void;
+    /** Считает выстрел игрока для статистики конца боя (точность, «Выстрелов N»). */
+    recordPlayerShot: () => void;
+    /** Считает попадание игрока по противнику для точности конца боя. */
+    recordPlayerHit: () => void;
     setWeapons: (weapons: TWeapon[]) => void;
     selectWeapon: (weapon: TWeapon) => void;
     removeWeaponById: (id: number) => void;
@@ -100,13 +111,14 @@ const fullHp = () => ({ player: MAX_HP, enemy: MAX_HP });
 export const useGameStore = create<TGameState & TGameActions>((set) => ({
     angle: 0,
     power: 10,
-    moves: 4,
+    moves: MOVE_BUDGET,
     hp: fullHp(),
     weapons: [],
     selectedWeapon: null,
     phase: 'idle',
     windRevealed: false,
     shotsFired: 0,
+    hits: 0,
     isGameOver: false,
     isStarted: false,
     finalHp: null,
@@ -131,12 +143,9 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             return { hp };
         }),
     setPhase: (phase) => set({ phase }),
-    fire: () =>
-        set((s) =>
-            s.phase !== 'aiming'
-                ? {}
-                : { phase: 'flight', shotsFired: s.shotsFired + 1, windRevealed: true },
-        ),
+    fire: () => set((s) => (s.phase !== 'aiming' ? {} : { phase: 'flight', windRevealed: true })),
+    recordPlayerShot: () => set((s) => ({ shotsFired: s.shotsFired + 1 })),
+    recordPlayerHit: () => set((s) => ({ hits: s.hits + 1 })),
     setWeapons: (weapons) => set({ weapons }),
     selectWeapon: (selectedWeapon) => set({ selectedWeapon }),
     removeWeaponById: (id) =>
@@ -157,22 +166,25 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             isStarted: true,
             isGameOver: false,
             hp: fullHp(),
+            moves: MOVE_BUDGET,
             phase: 'aiming',
             windRevealed: false,
             shotsFired: 0,
+            hits: 0,
             finalHp: null,
         }),
     resetGame: () =>
         set({
             angle: 0,
             power: 10,
-            moves: 4,
+            moves: MOVE_BUDGET,
             hp: fullHp(),
             weapons: [],
             selectedWeapon: null,
             phase: 'idle',
             windRevealed: false,
             shotsFired: 0,
+            hits: 0,
             isGameOver: false,
             isStarted: false,
             finalHp: null,
