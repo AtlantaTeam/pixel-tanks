@@ -38,6 +38,9 @@ test-results/
 .claude/ralph/ralph.lock
 .claude/ralph/.deps-lock.sha
 .claude/ralph/review-findings.jsonl
+# Намерения кодер-сессии: файл создаётся сессией, применяется и опустошается раннером.
+# Незакоммиченный остаток валит следующий запуск на проверке чистоты дерева.
+.claude/ralph/ralph.requests.jsonl
 .claude/ralph/security-baseline-push.json
 .claude/ralph/sessions/
 
