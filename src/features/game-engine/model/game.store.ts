@@ -1,21 +1,28 @@
 import { create } from 'zustand';
 import type { TReplayMove } from '@/entities/replays';
 import type { TWeapon } from '@/shared/model';
+import { MAX_HP, MOVE_BUDGET } from '@/shared/config';
 import { clampPower } from '../lib/power';
 
-/** Максимум HP танка (GDD §2.5). HP боя живёт в диапазоне 0..MAX_HP. */
-export const MAX_HP = 100;
-
-/** Бюджет манёвров на матч (GDD §2.3) — стартовое `moves` и знаменатель показа «X / N». */
-export const MOVE_BUDGET = 4;
+// Геймдизайн-константы боя (GDD §2.3/§2.5) живут в `shared/config` — общий
+// источник для стора, статистики боя и потолка очков лидерборда (см. там же).
+// Реэкспортим, чтобы не менять существующие импорты внутри `game-engine`.
+export { MAX_HP, MOVE_BUDGET };
 
 /** Сторона боя, по которой адресуются HP и урон. Левый танк — игрок, правый — бот. */
 export type TSide = 'player' | 'enemy';
 
 /**
  * Фаза хода — по ней экран блокирует ввод и подписывает лок (handoff «Состояние»):
- * `idle` — покоя нет боя; `aiming` — ход игрока, можно целиться и стрелять;
+ * `idle` — покой, боя нет; `aiming` — ход игрока, можно целиться и стрелять;
  * `flight` — снаряд в полёте; `resolving` — попадание оседает; `over` — бой окончен.
+ *
+ * ⚠️ Фазовая машина (`startGame`/`fire`/`setPhase`/`windRevealed`) — задел под
+ * СЛЕДУЮЩУЮ фазу трека «Экран боя» (HUD: индикатор ветра, лок хода). В боевом
+ * пути она пока не подключена (`GameCanvas` не зовёт `startGame`/`fire`), поэтому
+ * в живой игре `phase` остаётся `idle`, а `windRevealed` — `false`. Подключение
+ * (вызов `startGame` на старте боя, `fire` рядом с выстрелом, возврат фазы в
+ * `aiming` после разрешения) едет вместе со своим потребителем — ячейкой ветра.
  */
 export type TPhase = 'idle' | 'aiming' | 'flight' | 'resolving' | 'over';
 
@@ -29,7 +36,8 @@ const clampHp = (hp: number) => Math.min(MAX_HP, Math.max(0, hp));
  * Исход боя по HP: победа — если у игрока HP больше, поражение — если меньше,
  * ничья — при равенстве (например, кончились снаряды при равном HP). Победа по
  * `hp <= 0` — частный случай сравнения: у убитого танка HP наименьший. Чистая
- * функция — общий источник истины для стора и для оверлея конца боя.
+ * функция; исход в state стор не хранит — единственный потребитель `deriveOutcome`
+ * сейчас `GameOverDialog` (считает по снимку `finalHp`).
  */
 export const deriveOutcome = (playerHp: number, enemyHp: number): TBattleOutcome =>
     playerHp > enemyHp ? 'victory' : playerHp < enemyHp ? 'defeat' : 'draw';
@@ -55,13 +63,19 @@ type TGameState = {
     /** Сколько выстрелов игрока попали по противнику — для точности game-over. */
     hits: number;
     isGameOver: boolean;
-    isStarted: boolean;
     /**
      * Снимок HP на переходе isGameOver false→true. Пока последние кадры боя
      * «оседают», hp может ещё чуть измениться — исход законченной игры
      * фиксируется один раз и не должен от этого дрожать (#337).
      */
     finalHp: { player: number; enemy: number } | null;
+    /**
+     * Снимок входов статистики (выстрелы/попадания/манёвры) на том же переходе
+     * isGameOver false→true, что и `finalHp`. Симметрично снимку HP: диалог конца
+     * боя и отправленные в лидерборд очки читают ЗАМОРОЖЕННУЮ статистику, чтобы
+     * показанное совпало с отправленным, даже если стор ещё дрогнет (#337).
+     */
+    finalStats: { shots: number; hits: number; maneuvers: number } | null;
     /** Seed текущего боя — нужен для сборки ссылки-реплея после его окончания. */
     battleSeed: number | string | null;
     /**
@@ -78,35 +92,51 @@ type TGameActions = {
     increaseAngle: (delta: number) => void;
     setPower: (power: number) => void;
     increasePower: (delta: number) => void;
-    setMoves: (moves: number) => void;
     decrementMoves: () => void;
-    /** Наносит урон стороне: HP цели уменьшается на `amount`, зажатый в 0..MAX_HP. */
-    applyDamage: (target: TSide, amount: number) => void;
+    /**
+     * Наносит урон стороне: HP цели уменьшается на `amount`, зажатый в 0..MAX_HP.
+     * По умолчанию добивание (HP ≤ 0) заканчивает бой по HP. `endsBattle: false`
+     * (режим реплея) снимает урон, но НЕ ставит isGameOver: конец записи ставит
+     * драйвер по `isFinished`, иначе старая ссылка (суммарный урон стороне > MAX_HP
+     * по правилам до HP-модели) оборвала бы воспроизведение на середине ленты ходов.
+     */
+    applyDamage: (target: TSide, amount: number, endsBattle?: boolean) => void;
     setPhase: (phase: TPhase) => void;
     /**
-     * Выстрел игрока: только из фазы прицеливания (`aiming`). Переводит в полёт
-     * и раскрывает ветер. Вне своей фазы — игнорируется (лок хода). Счёт выстрелов
-     * для статистики ведёт отдельный `recordPlayerShot` (вызывается на боевом
-     * пути; фаза-лок движка — отдельная issue трека).
+     * Выстрел игрока в фазовой машине: только из фазы прицеливания (`aiming`),
+     * переводит в полёт и раскрывает ветер. Задел под HUD-фазу трека (см. `TPhase`):
+     * в боевом пути пока не вызывается, поэтому в живой игре — no-op. Счёт выстрелов
+     * для статистики ведёт `recordFire` (единый с записью реплея).
      */
     fire: () => void;
-    /** Считает выстрел игрока для статистики конца боя (точность, «Выстрелов N»). */
-    recordPlayerShot: () => void;
     /** Считает попадание игрока по противнику для точности конца боя. */
     recordPlayerHit: () => void;
     setWeapons: (weapons: TWeapon[]) => void;
     selectWeapon: (weapon: TWeapon) => void;
     removeWeaponById: (id: number) => void;
-    setGameOver: (over: boolean) => void;
+    /** Помечает бой законченным и фиксирует снимки HP/статистики (переход false→true). */
+    setGameOver: () => void;
     startGame: () => void;
     resetGame: () => void;
     setBattleSeed: (seed: number | string) => void;
     setBattleField: (width: number, height: number) => void;
     recordMove: (delta: number) => void;
+    /**
+     * Записывает выстрел игрока в реплей и считает его для статистики конца боя:
+     * `shotsFired` по построению равен числу ходов `kind: 'fire'`, поэтому счётчик
+     * инкрементится здесь же — один источник истины, рассинхрон невозможен.
+     */
     recordFire: (angle: number, power: number) => void;
 };
 
 const fullHp = () => ({ player: MAX_HP, enemy: MAX_HP });
+
+/** Снимок входов статистики на конце боя — симметрично `finalHp` (#337). */
+const snapshotStats = (s: TGameState) => ({
+    shots: s.shotsFired,
+    hits: s.hits,
+    maneuvers: MOVE_BUDGET - s.moves,
+});
 
 export const useGameStore = create<TGameState & TGameActions>((set) => ({
     angle: 0,
@@ -120,8 +150,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     shotsFired: 0,
     hits: 0,
     isGameOver: false,
-    isStarted: false,
     finalHp: null,
+    finalStats: null,
     battleSeed: null,
     battleField: null,
     replayMoves: [],
@@ -130,21 +160,27 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     increaseAngle: (delta) => set((s) => ({ angle: s.angle + delta })),
     setPower: (power) => set({ power: clampPower(power) }),
     increasePower: (delta) => set((s) => ({ power: clampPower(s.power + delta) })),
-    setMoves: (moves) => set({ moves }),
     decrementMoves: () => set((s) => ({ moves: s.moves - 1 })),
-    applyDamage: (target, amount) =>
+    applyDamage: (target, amount, endsBattle = true) =>
         set((s) => {
             const hp = { ...s.hp, [target]: clampHp(s.hp[target] - amount) };
             // Танк добит — бой окончен по HP (не по очкам). Исход фиксируется
-            // один раз: снимок HP держит его стабильным на «оседающих» кадрах (#337).
-            if ((hp.player <= 0 || hp.enemy <= 0) && !s.isGameOver) {
-                return { hp, isGameOver: true, phase: 'over', finalHp: hp };
+            // один раз: снимки HP и статистики держат его стабильным на
+            // «оседающих» кадрах (#337). В режиме реплея (`endsBattle: false`)
+            // конец ставит драйвер по концу ленты ходов, а не добивание по HP.
+            if (endsBattle && (hp.player <= 0 || hp.enemy <= 0) && !s.isGameOver) {
+                return {
+                    hp,
+                    isGameOver: true,
+                    phase: 'over',
+                    finalHp: hp,
+                    finalStats: snapshotStats(s),
+                };
             }
             return { hp };
         }),
     setPhase: (phase) => set({ phase }),
     fire: () => set((s) => (s.phase !== 'aiming' ? {} : { phase: 'flight', windRevealed: true })),
-    recordPlayerShot: () => set((s) => ({ shotsFired: s.shotsFired + 1 })),
     recordPlayerHit: () => set((s) => ({ hits: s.hits + 1 })),
     setWeapons: (weapons) => set({ weapons }),
     selectWeapon: (selectedWeapon) => set({ selectedWeapon }),
@@ -155,15 +191,19 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
                 s.selectedWeapon?.id === id ? (weapons[0] ?? null) : s.selectedWeapon;
             return { weapons, selectedWeapon };
         }),
-    setGameOver: (isGameOver) =>
+    setGameOver: () =>
         set((s) =>
-            isGameOver && !s.isGameOver
-                ? { isGameOver, phase: 'over', finalHp: s.hp }
-                : { isGameOver },
+            s.isGameOver
+                ? {}
+                : {
+                      isGameOver: true,
+                      phase: 'over',
+                      finalHp: s.hp,
+                      finalStats: snapshotStats(s),
+                  },
         ),
     startGame: () =>
         set({
-            isStarted: true,
             isGameOver: false,
             hp: fullHp(),
             moves: MOVE_BUDGET,
@@ -172,6 +212,12 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             shotsFired: 0,
             hits: 0,
             finalHp: null,
+            finalStats: null,
+            // Рематч через startGame стартует чистую запись: без сброса реплей
+            // нового боя унаследовал бы ходы предыдущего (склеенная ссылка).
+            battleSeed: null,
+            battleField: null,
+            replayMoves: [],
         }),
     resetGame: () =>
         set({
@@ -186,8 +232,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             shotsFired: 0,
             hits: 0,
             isGameOver: false,
-            isStarted: false,
             finalHp: null,
+            finalStats: null,
             battleSeed: null,
             battleField: null,
             replayMoves: [],
@@ -197,5 +243,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     recordMove: (delta) =>
         set((s) => ({ replayMoves: [...s.replayMoves, { kind: 'move', delta }] })),
     recordFire: (angle, power) =>
-        set((s) => ({ replayMoves: [...s.replayMoves, { kind: 'fire', angle, power }] })),
+        set((s) => ({
+            replayMoves: [...s.replayMoves, { kind: 'fire', angle, power }],
+            shotsFired: s.shotsFired + 1,
+        })),
 }));

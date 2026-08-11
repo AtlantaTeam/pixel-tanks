@@ -1,8 +1,5 @@
 import type { CollectionConfig } from 'payload';
-import { BOT_NAME } from '@/shared/config';
-
-/** Верхний предел очков за бой — синхронно с MAX_DAILY_POINTS в submit-daily-score. */
-const MAX_SCORE_POINTS = 100_000;
+import { BOT_NAME, MAX_LEADERBOARD_POINTS } from '@/shared/config';
 
 export const Scores: CollectionConfig = {
     slug: 'scores',
@@ -33,13 +30,15 @@ export const Scores: CollectionConfig = {
         {
             // Производная метрика боя (урон + остаток HP + точность), а НЕ сырой
             // HP — считает `computeLeaderboardPoints` (game-engine, решение #422).
-            // Тип и границы (0..MAX_SCORE_POINTS) при переезде на HP-модель не
-            // менялись, поэтому миграция прод-БД не нужна.
+            // Потолок = MAX_LEADERBOARD_POINTS (3·MAX_HP = 300), жёсткий максимум
+            // формулы: до Auth сервер не пересчитывает очки клиента, поэтому граница
+            // валидации = диапазону формулы, а не запас в 100k (окно накрутки).
+            // Старые записи не пострадают — min/max проверяются только на записи.
             name: 'points',
             type: 'number',
             required: true,
             min: 0,
-            max: MAX_SCORE_POINTS,
+            max: MAX_LEADERBOARD_POINTS,
             admin: {
                 description: 'Очки лидерборда за бой (производная метрика: урон/точность/HP)',
             },

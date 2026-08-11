@@ -3,7 +3,7 @@ import { createSeededRandom } from '@/shared/lib/random';
 import { floor } from '@/shared/lib/canvas';
 import type { TWeapon } from '@/shared/model';
 import { decodeReplay, encodeReplay, type TReplay } from '@/entities/replays';
-import { MAX_HP } from '../model/game.store';
+import { MAX_HP } from '@/shared/config';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
@@ -20,7 +20,7 @@ import { generateWind } from './wind';
  * `createSeededRandom` → `Ground` + `generateWind` (в том же порядке, что и
  * `GamePlay.initPaint`), физика `Bullet`, попадание в `Tank.tankHitArea`, урон
  * по HP той стороны, в которую попали (HP-модель, GDD §2.5 — как
- * `game-canvas` в `onPointsCalc`: `applyDamage(hittedIsLeft ? 'player' :
+ * `game-canvas` в `onTankHit`: `applyDamage(hittedIsLeft ? 'player' :
  * 'enemy', power)`). Косметика (частицы, тряска, slow-mo) на HP не влияет и
  * опущена.
  *
@@ -90,7 +90,7 @@ const clampHp = (hp: number) => Math.min(MAX_HP, Math.max(0, hp));
  * Headless-прогон записанного боя: воспроизводит ходы игрока (левый танк) на
  * seeded-рельефе и ветре, стреляет реальным `Bullet` и снимает урон с HP той
  * стороны, в которую попали — так же, как движок в `GamePlay.moveBullet` +
- * `game-canvas.onPointsCalc`. Возвращает итоговый HP сторон.
+ * `game-canvas.onTankHit`. Возвращает итоговый HP сторон.
  */
 const simulateBattleHp = (replay: TReplay): THp => {
     // Физика идёт на логическом размере записи — как воспроизведение реплея.

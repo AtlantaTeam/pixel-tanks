@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_HP, MOVE_BUDGET } from '../model/game.store';
+import { MAX_HP, MOVE_BUDGET } from '@/shared/config';
 import { computeBattleStats, computeLeaderboardPoints } from './battle-stats';
 
 describe('computeBattleStats', () => {

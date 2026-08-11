@@ -71,10 +71,13 @@ export function GameOverDialog({
     const isGameOver = useGameStore((s) => s.isGameOver);
     const liveHp = useGameStore((s) => s.hp);
     const finalHp = useGameStore((s) => s.finalHp);
+    const finalStats = useGameStore((s) => s.finalStats);
     // Снимок фиксируется один раз на переходе isGameOver false→true
     // (useGameStore.setGameOver) — пока бой идёт, снимка нет, и заголовок
-    // читает живой HP (#337). В режиме `preview` (витрина) HP задан пропом,
-    // а стор не читаем и не трогаем.
+    // читает живой HP (#337). В режиме `preview` (витрина) HP и статистика
+    // берутся из пропа; подписки на стор ниже всё равно выполняются (хук нельзя
+    // вызвать условно), но их значения в этом режиме игнорируются, а сам стор
+    // не мутируется.
     const open = preview ? true : isGameOver;
     const playerHp = preview ? preview.player : (finalHp?.player ?? liveHp.player);
     const enemyHp = preview ? preview.enemy : (finalHp?.enemy ?? liveHp.enemy);
@@ -89,17 +92,23 @@ export function GameOverDialog({
 
     // Статистика боя (handoff «Game over»): урон, точность, выстрелы, манёвры.
     // Совершено манёвров = бюджет − остаток. В preview (витрина) входы приходят
-    // пропом, в бою — из стора; HP берём из снимка finalHp (#337).
+    // пропом; в бою — из снимка finalStats, зафиксированного вместе с finalHp на
+    // конце боя (#337), чтобы показанное совпало с отправленными очками (fallback
+    // на живой стор — до фиксации снимка).
     const stats = computeBattleStats({
         playerHp,
         enemyHp,
-        shots: preview ? (preview.shots ?? 0) : shotsFired,
-        hits: preview ? (preview.hits ?? 0) : hits,
-        maneuvers: preview ? (preview.maneuvers ?? 0) : MOVE_BUDGET - moves,
+        shots: preview ? (preview.shots ?? 0) : (finalStats?.shots ?? shotsFired),
+        hits: preview ? (preview.hits ?? 0) : (finalStats?.hits ?? hits),
+        maneuvers: preview
+            ? (preview.maneuvers ?? 0)
+            : (finalStats?.maneuvers ?? MOVE_BUDGET - moves),
     });
     const statRows: { label: string; value: string }[] = [
         { label: 'Урон', value: String(stats.damage) },
-        { label: 'Точность', value: `${stats.accuracy} %` },
+        // Неразрывный пробел между числом и «%»: в узкой ячейке flex-строки
+        // обычный пробел мог бы перенести «%» на отдельную строку (формат «62 %»).
+        { label: 'Точность', value: `${stats.accuracy}\u00A0%` },
         { label: 'Выстрелов', value: String(stats.shots) },
         { label: 'Манёвров', value: `${stats.maneuvers} / ${stats.maneuverBudget}` },
     ];

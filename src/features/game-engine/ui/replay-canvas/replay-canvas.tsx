@@ -46,13 +46,17 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
             // арсеналы не записываются в реплей, а восстанавливаются.
             dealWeapons(),
             {
-                // Как в живом бою: попадание снимает урон с HP того, в кого попали.
-                onPointsCalc: ({ hittedIsLeft, power }) => {
-                    applyDamage(hittedIsLeft ? 'player' : 'enemy', power);
+                // Как в живом бою: попадание снимает урон с HP того, в кого попали,
+                // но конец боя по HP НЕ ставим (`endsBattle: false`): в реплее конец
+                // ставит драйвер по концу ленты ходов. Иначе старая ссылка (запись до
+                // HP-модели, где сторона суммарно ловила > MAX_HP урона) обнулила бы HP
+                // и показала «Бой завершён» посреди ещё проигрываемых ходов.
+                onTankHit: ({ hittedIsLeft, power }) => {
+                    applyDamage(hittedIsLeft ? 'player' : 'enemy', power, false);
                 },
                 onGameOverCheck: ({ leftWeapons, rightWeapons }) => {
                     if (!leftWeapons && !rightWeapons && !game.isFireMode) {
-                        setGameOver(true);
+                        setGameOver();
                     }
                 },
                 onMovesChange: () => {},
@@ -97,7 +101,7 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
             // (обрезанная или сторонняя ссылка).
             if (driver.isFinished && isEngineSettled()) {
                 window.clearInterval(timerId);
-                setGameOver(true);
+                setGameOver();
             }
         }, DRIVER_TICK_INTERVAL_MS);
 

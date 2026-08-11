@@ -17,7 +17,7 @@ function setGameOver(player: number, enemy: number) {
     // Через реальное действие стора (не сырой setState), чтобы сработала
     // фиксация снимка HP на переходе false→true (#337).
     useGameStore.setState({ isGameOver: false, hp: { player, enemy } });
-    useGameStore.getState().setGameOver(true);
+    useGameStore.getState().setGameOver();
 }
 
 describe('GameOverDialog', () => {
