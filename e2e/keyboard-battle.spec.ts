@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { weaponCount } from './helpers';
+import { expectGameOverDialog, weaponCount } from './helpers';
 
 // Полный бой одной клавиатурой: стрелки настраивают угол/мощность, Enter/Space
 // стреляют — без единого клика мыши бой с ботом идёт от старта до конца. Плюс
@@ -80,13 +80,6 @@ async function startGame(page: Page): Promise<void> {
     await page.goto(`/game?seed=${SEED}`);
     await expect(page.getByTestId('game-hud')).toBeVisible();
     await expect.poll(() => weaponCount(page)).toBe(PLAYER_WEAPONS);
-}
-
-async function expectGameOverDialog(page: Page): Promise<void> {
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible({ timeout: 30_000 });
-    await expect(dialog).toContainText(/Победа!|Поражение|Ничья/);
-    await expect(dialog).toContainText('Счёт:');
 }
 
 test.describe('бой только клавиатурой', () => {

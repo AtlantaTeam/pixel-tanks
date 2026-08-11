@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { POWER_MAX, POWER_MIN } from '../lib/power';
-import { useGameStore } from './game.store';
+import { deriveOutcome, MAX_HP, useGameStore } from './game.store';
 
 describe('game.store — запись реплея', () => {
     beforeEach(() => {
@@ -102,55 +102,318 @@ describe('game.store — запись реплея', () => {
     });
 });
 
-describe('game.store — снимок очков на конце боя (#337)', () => {
+describe('game.store — HP-модель боя', () => {
     beforeEach(() => {
         useGameStore.getState().resetGame();
     });
 
-    it('не имеет зафиксированного снимка очков до конца боя', () => {
+    it('начинает бой с полным HP у обеих сторон', () => {
         const state = useGameStore.getState();
 
-        expect(state.finalPlayerPoints).toBeNull();
-        expect(state.finalEnemyPoints).toBeNull();
+        expect(state.hp).toEqual({ player: MAX_HP, enemy: MAX_HP });
     });
 
-    it('фиксирует очки один раз на переходе isGameOver false→true', () => {
-        useGameStore.getState().setPlayerPoints(10);
-        useGameStore.getState().setEnemyPoints(5);
+    it('попадание снимает урон оружия с HP цели', () => {
+        useGameStore.getState().applyDamage('enemy', 30);
 
-        useGameStore.getState().setGameOver(true);
-
-        expect(useGameStore.getState().finalPlayerPoints).toBe(10);
-        expect(useGameStore.getState().finalEnemyPoints).toBe(5);
+        expect(useGameStore.getState().hp).toEqual({ player: MAX_HP, enemy: MAX_HP - 30 });
     });
 
-    it('не переписывает снимок, если очки меняются после фиксации исхода', () => {
-        useGameStore.getState().setPlayerPoints(10);
-        useGameStore.getState().setEnemyPoints(10);
-        useGameStore.getState().setGameOver(true);
+    it('накопление урона по одной стороне суммируется', () => {
+        useGameStore.getState().applyDamage('enemy', 20);
+        useGameStore.getState().applyDamage('enemy', 15);
 
-        // «Оседающие» очки последних кадров боя (root-cause #337) — после
+        expect(useGameStore.getState().hp.enemy).toBe(MAX_HP - 35);
+    });
+
+    it('урон больше остатка HP не уводит HP ниже нуля (клампится в 0)', () => {
+        useGameStore.setState({ hp: { player: 10, enemy: MAX_HP } });
+
+        useGameStore.getState().applyDamage('player', 30);
+
+        expect(useGameStore.getState().hp.player).toBe(0);
+    });
+
+    it('урон по уже мёртвому танку оставляет HP на нуле', () => {
+        useGameStore.setState({ hp: { player: 0, enemy: MAX_HP } });
+
+        useGameStore.getState().applyDamage('player', 25);
+
+        expect(useGameStore.getState().hp.player).toBe(0);
+    });
+
+    it('отрицательный урон (лечение) не уводит HP выше максимума', () => {
+        useGameStore.getState().applyDamage('enemy', -50);
+
+        expect(useGameStore.getState().hp.enemy).toBe(MAX_HP);
+    });
+
+    it('добивание цели заканчивает бой по HP и фиксирует фазу over', () => {
+        useGameStore.setState({ hp: { player: MAX_HP, enemy: 15 } });
+
+        useGameStore.getState().applyDamage('enemy', 15);
+
+        const state = useGameStore.getState();
+        expect(state.hp.enemy).toBe(0);
+        expect(state.isGameOver).toBe(true);
+        expect(state.phase).toBe('over');
+    });
+});
+
+describe('game.store — исход выводится из HP', () => {
+    it('победа: у игрока HP больше', () => {
+        expect(deriveOutcome(60, 0)).toBe('victory');
+    });
+
+    it('поражение: у игрока HP меньше', () => {
+        expect(deriveOutcome(0, 40)).toBe('defeat');
+    });
+
+    it('ничья: HP равны', () => {
+        expect(deriveOutcome(20, 20)).toBe('draw');
+    });
+});
+
+describe('game.store — фаза хода', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('покоящийся стор в фазе idle', () => {
+        expect(useGameStore.getState().phase).toBe('idle');
+    });
+
+    it('startGame переводит в фазу прицеливания', () => {
+        useGameStore.getState().startGame();
+
+        expect(useGameStore.getState().phase).toBe('aiming');
+    });
+
+    it('setPhase меняет фазу', () => {
+        useGameStore.getState().setPhase('resolving');
+
+        expect(useGameStore.getState().phase).toBe('resolving');
+    });
+
+    it('выстрел из фазы прицеливания переводит в полёт', () => {
+        useGameStore.getState().startGame();
+
+        useGameStore.getState().fire();
+
+        expect(useGameStore.getState().phase).toBe('flight');
+    });
+
+    it('выстрел вне своей фазы игнорируется (лок хода соперника)', () => {
+        useGameStore.getState().setPhase('flight');
+
+        useGameStore.getState().fire();
+
+        expect(useGameStore.getState().phase).toBe('flight');
+    });
+});
+
+describe('game.store — статистика боя (выстрелы и попадания)', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('recordFire считает выстрелы игрока (единый источник с числом ходов fire)', () => {
+        useGameStore.getState().recordFire(0.1, 5);
+        useGameStore.getState().recordFire(0.2, 6);
+
+        const state = useGameStore.getState();
+        expect(state.shotsFired).toBe(2);
+        // Счётчик выстрелов и число ходов kind:'fire' в реплее не расходятся.
+        expect(state.replayMoves.filter((m) => m.kind === 'fire')).toHaveLength(2);
+    });
+
+    it('recordPlayerHit считает попадания игрока', () => {
+        useGameStore.getState().recordFire(0.1, 5);
+        useGameStore.getState().recordFire(0.2, 6);
+        useGameStore.getState().recordPlayerHit();
+
+        expect(useGameStore.getState().shotsFired).toBe(2);
+        expect(useGameStore.getState().hits).toBe(1);
+    });
+
+    it('startGame и resetGame обнуляют выстрелы и попадания', () => {
+        useGameStore.getState().recordFire(0.1, 5);
+        useGameStore.getState().recordPlayerHit();
+
+        useGameStore.getState().startGame();
+        expect(useGameStore.getState().shotsFired).toBe(0);
+        expect(useGameStore.getState().hits).toBe(0);
+
+        useGameStore.getState().recordFire(0.1, 5);
+        useGameStore.getState().resetGame();
+        expect(useGameStore.getState().shotsFired).toBe(0);
+        expect(useGameStore.getState().hits).toBe(0);
+    });
+});
+
+describe('game.store — раскрытие ветра', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('ветер скрыт до первого выстрела', () => {
+        useGameStore.getState().startGame();
+
+        expect(useGameStore.getState().windRevealed).toBe(false);
+    });
+
+    it('первый выстрел игрока раскрывает ветер', () => {
+        useGameStore.getState().startGame();
+
+        useGameStore.getState().fire();
+
+        expect(useGameStore.getState().windRevealed).toBe(true);
+    });
+
+    it('раскрытый ветер держится до конца боя', () => {
+        useGameStore.getState().startGame();
+        useGameStore.getState().fire();
+
+        // Смена фаз до конца боя не прячет ветер обратно.
+        useGameStore.getState().setPhase('resolving');
+        useGameStore.getState().setPhase('aiming');
+        useGameStore.getState().setGameOver();
+
+        expect(useGameStore.getState().windRevealed).toBe(true);
+    });
+
+    it('игнорируемый выстрел вне фазы ветер не раскрывает', () => {
+        useGameStore.getState().setPhase('flight');
+
+        useGameStore.getState().fire();
+
+        expect(useGameStore.getState().windRevealed).toBe(false);
+    });
+});
+
+describe('game.store — снимок HP на конце боя (#337)', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('не имеет зафиксированного снимка HP до конца боя', () => {
+        expect(useGameStore.getState().finalHp).toBeNull();
+    });
+
+    it('фиксирует HP один раз на переходе isGameOver false→true', () => {
+        useGameStore.setState({ hp: { player: 70, enemy: 40 } });
+
+        useGameStore.getState().setGameOver();
+
+        expect(useGameStore.getState().finalHp).toEqual({ player: 70, enemy: 40 });
+    });
+
+    it('не переписывает снимок, если HP меняется после фиксации исхода', () => {
+        useGameStore.setState({ hp: { player: 55, enemy: 55 } });
+        useGameStore.getState().setGameOver();
+
+        // «Оседающие» кадры последнего попадания (root-cause #337) — после
         // фиксации исход больше не должен на них реагировать.
-        useGameStore.getState().setPlayerPoints(5);
+        useGameStore.getState().applyDamage('player', 30);
 
-        expect(useGameStore.getState().finalPlayerPoints).toBe(10);
-        expect(useGameStore.getState().finalEnemyPoints).toBe(10);
+        expect(useGameStore.getState().finalHp).toEqual({ player: 55, enemy: 55 });
     });
 
     it('сбрасывает снимок при startGame и resetGame', () => {
-        useGameStore.getState().setPlayerPoints(10);
-        useGameStore.getState().setGameOver(true);
+        useGameStore.setState({ hp: { player: 70, enemy: 10 } });
+        useGameStore.getState().setGameOver();
 
         useGameStore.getState().startGame();
 
-        expect(useGameStore.getState().finalPlayerPoints).toBeNull();
-        expect(useGameStore.getState().finalEnemyPoints).toBeNull();
+        expect(useGameStore.getState().finalHp).toBeNull();
 
-        useGameStore.getState().setPlayerPoints(7);
-        useGameStore.getState().setGameOver(true);
+        useGameStore.setState({ hp: { player: 30, enemy: 30 } });
+        useGameStore.getState().setGameOver();
         useGameStore.getState().resetGame();
 
-        expect(useGameStore.getState().finalPlayerPoints).toBeNull();
-        expect(useGameStore.getState().finalEnemyPoints).toBeNull();
+        expect(useGameStore.getState().finalHp).toBeNull();
+    });
+});
+
+describe('game.store — снимок статистики на конце боя', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('не имеет снимка статистики до конца боя', () => {
+        expect(useGameStore.getState().finalStats).toBeNull();
+    });
+
+    it('фиксирует выстрелы/попадания/манёвры вместе с HP на конце боя', () => {
+        useGameStore.getState().recordFire(0.1, 5);
+        useGameStore.getState().recordFire(0.2, 6);
+        useGameStore.getState().recordPlayerHit();
+        useGameStore.getState().decrementMoves();
+
+        useGameStore.getState().setGameOver();
+
+        expect(useGameStore.getState().finalStats).toEqual({ shots: 2, hits: 1, maneuvers: 1 });
+    });
+
+    it('не переписывает снимок статистики, если стор дрогнет после фиксации исхода', () => {
+        useGameStore.getState().recordFire(0.1, 5);
+        useGameStore.getState().setGameOver();
+
+        // Ввод/оседающее попадание за уже открытым диалогом не должны менять
+        // показанную статистику (симметрично снимку HP, #337).
+        useGameStore.getState().recordFire(0.2, 6);
+        useGameStore.getState().recordPlayerHit();
+
+        expect(useGameStore.getState().finalStats).toEqual({ shots: 1, hits: 0, maneuvers: 0 });
+    });
+
+    it('сбрасывает снимок статистики при startGame и resetGame', () => {
+        useGameStore.getState().recordFire(0.1, 5);
+        useGameStore.getState().setGameOver();
+
+        useGameStore.getState().startGame();
+        expect(useGameStore.getState().finalStats).toBeNull();
+
+        useGameStore.getState().recordFire(0.1, 5);
+        useGameStore.getState().setGameOver();
+        useGameStore.getState().resetGame();
+        expect(useGameStore.getState().finalStats).toBeNull();
+    });
+});
+
+describe('game.store — добивание в режиме реплея (endsBattle=false)', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('снимает урон, но НЕ заканчивает бой по HP (конец ставит драйвер реплея)', () => {
+        useGameStore.setState({ hp: { player: MAX_HP, enemy: 15 } });
+
+        useGameStore.getState().applyDamage('enemy', 15, false);
+
+        const state = useGameStore.getState();
+        expect(state.hp.enemy).toBe(0);
+        expect(state.isGameOver).toBe(false);
+        expect(state.phase).toBe('idle');
+        expect(state.finalHp).toBeNull();
+    });
+});
+
+describe('game.store — startGame стартует чистую запись реплея', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('сбрасывает ходы, seed и размер поля предыдущего боя', () => {
+        useGameStore.getState().setBattleSeed(42);
+        useGameStore.getState().setBattleField(800, 600);
+        useGameStore.getState().recordFire(0.1, 5);
+
+        useGameStore.getState().startGame();
+
+        const state = useGameStore.getState();
+        expect(state.replayMoves).toEqual([]);
+        expect(state.battleSeed).toBeNull();
+        expect(state.battleField).toBeNull();
     });
 });

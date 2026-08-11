@@ -3,12 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
+import type { TWeapon } from '@/shared/model';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { useGameStore } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
 import { dealWeapons } from '../../lib/weapons';
 import { createFxRandom } from '../../lib/fx-random';
-import { resolvePointsDelta } from '../../lib/score';
 import { calculateDragAim } from '../../lib/drag-aim';
 import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
@@ -22,6 +22,23 @@ type TDragState = {
 type TGameCanvasProps = {
     seed?: number | string;
 };
+
+/**
+ * Единый путь выстрела игрока: запись хода в реплей (`recordFire` заодно считает
+ * выстрел для статистики), выстрел движка, расход оружия. Один helper на обе схемы
+ * ввода — клавиатуру и мышь/тач: правка выстрела не должна расходиться по копиям.
+ */
+function commitPlayerShot(
+    game: GamePlay,
+    weapon: TWeapon,
+    recordFire: (angle: number, power: number) => void,
+    removeWeaponById: (id: number) => void,
+) {
+    if (!game.leftTank) return;
+    recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
+    game.onFire(weapon);
+    removeWeaponById(weapon.id);
+}
 
 export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -46,8 +63,9 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const increasePower = useGameStore((s) => s.increasePower);
     const increaseAngle = useGameStore((s) => s.increaseAngle);
     const decrementMoves = useGameStore((s) => s.decrementMoves);
-    const increasePlayerPoints = useGameStore((s) => s.increasePlayerPoints);
-    const increaseEnemyPoints = useGameStore((s) => s.increaseEnemyPoints);
+    const applyDamage = useGameStore((s) => s.applyDamage);
+    const recordPlayerHit = useGameStore((s) => s.recordPlayerHit);
+    const isGameOver = useGameStore((s) => s.isGameOver);
     const setWeapons = useGameStore((s) => s.setWeapons);
     const selectWeapon = useGameStore((s) => s.selectWeapon);
     const removeWeaponById = useGameStore((s) => s.removeWeaponById);
@@ -73,13 +91,17 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             canvasRef,
             allWeapons,
             {
-                onPointsCalc: (event) => {
-                    const { isPlayer, delta } = resolvePointsDelta(event);
-                    (isPlayer ? increasePlayerPoints : increaseEnemyPoints)(delta);
+                // Попадание снимает урон оружия с HP того танка, в который попали
+                // (HP-модель, GDD §2.5): левый танк — игрок, правый — бот.
+                onTankHit: ({ hittedIsLeft, leftActive, power }) => {
+                    applyDamage(hittedIsLeft ? 'player' : 'enemy', power);
+                    // Попадание игрока по противнику — для точности game-over.
+                    // leftActive → стрелял игрок; !hittedIsLeft → задет бот (не самострел).
+                    if (leftActive && !hittedIsLeft) recordPlayerHit();
                 },
                 onGameOverCheck: ({ leftWeapons, rightWeapons }) => {
                     if (!leftWeapons && !rightWeapons && !game.isFireMode) {
-                        setGameOver(true);
+                        setGameOver();
                     }
                 },
                 onMovesChange: (delta) => {
@@ -125,6 +147,14 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         return attachGestureGuard(canvas);
     }, []);
 
+    // Конец боя по HP наступает при живых арсеналах (добивание), о чём движок сам
+    // не знает — замораживаем его по isGameOver стора: rAF-цикл встаёт (бот не
+    // дострелит «в труп»), а ввод гасится по game.isOver ниже. Иначе бой продолжался
+    // бы за открытой модалкой и писал пост-смертные ходы в реплей.
+    useEffect(() => {
+        if (isGameOver) gameRef.current?.stop();
+    }, [isGameOver]);
+
     // Sync store → engine (когда меняем угол/мощность через UI)
     useEffect(() => {
         const game = gameRef.current;
@@ -153,6 +183,9 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         const onKeyDown = (e: KeyboardEvent) => {
             const game = gameRef.current;
             if (!game?.leftTank?.isActive || !game.rightTank) return;
+            // Бой окончен (движок заморожен по isGameOver) — ввод игнорируем,
+            // иначе выстрел/манёвр за модалкой допишет пост-смертный ход в реплей.
+            if (game.isOver) return;
             const intent = resolveKeyboardIntent(e.key, e.ctrlKey);
             if (!intent) return;
 
@@ -212,9 +245,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                         !game.isMoveMode &&
                         !game.leftTank.dx
                     ) {
-                        recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
-                        game.onFire(selectedWeapon);
-                        removeWeaponById(selectedWeapon.id);
+                        commitPlayerShot(game, selectedWeapon, recordFire, removeWeaponById);
                     }
                     break;
             }
@@ -235,10 +266,12 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
 
     const fireSelectedWeapon = () => {
         const game = gameRef.current;
-        // Не стреляем в полёте снаряда и пока танк доезжает после перемещения —
-        // иначе выстрел из промежуточной позиции разойдётся с реплеем (см. keyboard fire).
+        // Не стреляем после конца боя (движок заморожен), в полёте снаряда и пока
+        // танк доезжает после перемещения — иначе выстрел из промежуточной позиции
+        // разойдётся с реплеем (см. keyboard fire).
         if (
             !game ||
+            game.isOver ||
             !selectedWeapon ||
             game.isFireMode ||
             game.isMoveMode ||
@@ -246,9 +279,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             game.leftTank.dx
         )
             return;
-        recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
-        game.onFire(selectedWeapon);
-        removeWeaponById(selectedWeapon.id);
+        commitPlayerShot(game, selectedWeapon, recordFire, removeWeaponById);
     };
 
     return (
@@ -267,7 +298,7 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                         return;
                     }
                     const game = gameRef.current;
-                    if (!game?.leftTank?.isActive || game.isFireMode) return;
+                    if (!game?.leftTank?.isActive || game.isFireMode || game.isOver) return;
                     dragRef.current = {
                         pointerId: e.pointerId,
                         startX: e.clientX,

@@ -8,7 +8,6 @@ import { useGameStore } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
 import { dealWeapons } from '../../lib/weapons';
 import { createFxRandom } from '../../lib/fx-random';
-import { resolvePointsDelta } from '../../lib/score';
 import { createReplayEngineAdapter, ReplayDriver } from '../../lib/replay-driver';
 
 /**
@@ -33,8 +32,7 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
         null,
     );
 
-    const increasePlayerPoints = useGameStore((s) => s.increasePlayerPoints);
-    const increaseEnemyPoints = useGameStore((s) => s.increaseEnemyPoints);
+    const applyDamage = useGameStore((s) => s.applyDamage);
     const setGameOver = useGameStore((s) => s.setGameOver);
     const resetGame = useGameStore((s) => s.resetGame);
 
@@ -48,13 +46,17 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
             // арсеналы не записываются в реплей, а восстанавливаются.
             dealWeapons(),
             {
-                onPointsCalc: (event) => {
-                    const { isPlayer, delta } = resolvePointsDelta(event);
-                    (isPlayer ? increasePlayerPoints : increaseEnemyPoints)(delta);
+                // Как в живом бою: попадание снимает урон с HP того, в кого попали,
+                // но конец боя по HP НЕ ставим (`endsBattle: false`): в реплее конец
+                // ставит драйвер по концу ленты ходов. Иначе старая ссылка (запись до
+                // HP-модели, где сторона суммарно ловила > MAX_HP урона) обнулила бы HP
+                // и показала «Бой завершён» посреди ещё проигрываемых ходов.
+                onTankHit: ({ hittedIsLeft, power }) => {
+                    applyDamage(hittedIsLeft ? 'player' : 'enemy', power, false);
                 },
                 onGameOverCheck: ({ leftWeapons, rightWeapons }) => {
                     if (!leftWeapons && !rightWeapons && !game.isFireMode) {
-                        setGameOver(true);
+                        setGameOver();
                     }
                 },
                 onMovesChange: () => {},
@@ -99,7 +101,7 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
             // (обрезанная или сторонняя ссылка).
             if (driver.isFinished && isEngineSettled()) {
                 window.clearInterval(timerId);
-                setGameOver(true);
+                setGameOver();
             }
         }, DRIVER_TICK_INTERVAL_MS);
 

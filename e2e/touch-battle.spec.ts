@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { weaponCount } from './helpers';
+import { expectGameOverDialog, weaponCount } from './helpers';
 
 // Полный бой пальцем на телефоне: жест «оттяни и отпусти» (слингшот) ведёт бой
 // с ботом от старта до конца на 375px в портрете и ландшафте (touch-эмуляция).
@@ -116,14 +116,12 @@ for (const viewport of VIEWPORTS) {
             await playBattle(page, viewport.shot);
 
             // Бой отыгран целиком жестом — появился экран результата с решённым
-            // исходом и счётом. Конкретного победителя не проверяем: исход зависит
-            // от хаотичной динамики «прицел vs бот» (снаряд рикошетит от стен
-            // короткого канваса), а тест верифицирует играбельность тачем от старта
-            // до конца, а не силу бота — иначе он был бы хрупким к правкам физики.
-            const dialog = page.getByRole('dialog');
-            await expect(dialog).toBeVisible({ timeout: 30_000 });
-            await expect(dialog).toContainText(/Победа!|Поражение|Ничья/);
-            await expect(dialog).toContainText('Счёт:');
+            // исходом и статистикой (урон/точность/выстрелы/манёвры). Конкретного
+            // победителя не проверяем: исход зависит от хаотичной динамики «прицел vs
+            // бот» (снаряд рикошетит от стен короткого канваса), а тест верифицирует
+            // играбельность тачем от старта до конца, а не силу бота — иначе он был бы
+            // хрупким к правкам физики.
+            await expectGameOverDialog(page);
 
             await page.screenshot({
                 path: `screenshots/touch-battle-${viewport.name}.png`,

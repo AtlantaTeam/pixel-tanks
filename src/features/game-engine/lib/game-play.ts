@@ -35,7 +35,8 @@ export type TTanksWeapons = {
 export type TGameMode = 'idle' | 'fire' | 'angle' | 'move';
 
 export type TGamePlayCallbacks = {
-    onPointsCalc: (params: { hittedIsLeft: boolean; leftActive: boolean; power: number }) => void;
+    /** Попадание снаряда в танк: снимает урон с HP задетой стороны (HP-модель, §2.5). */
+    onTankHit: (params: { hittedIsLeft: boolean; leftActive: boolean; power: number }) => void;
     onGameOverCheck: (params: { leftWeapons: number; rightWeapons: number }) => void;
     onMovesChange: (delta: number) => void;
     onPowerChange: (delta: number) => void;
@@ -84,6 +85,14 @@ export class GamePlay {
     isFireMode = true;
     isAngleMode = false;
     isMoveMode = false;
+    /**
+     * Бой заморожен: конец боя по HP наступает при живых арсеналах (добивание),
+     * о чём движок сам не знает (его `onGameOverCheck` — только про пустое оружие).
+     * `GameCanvas` подписан на `isGameOver` стора и зовёт `stop()` — иначе за
+     * открытой модалкой бот продолжал бы стрелять «в труп», а ввод игрока писал бы
+     * пост-смертные ходы в реплей. Гейтит и цикл rAF, и обработчики ввода.
+     */
+    isOver = false;
     /** Пунктирная линия прицела видна только во время оттяжки (тач-жест) */
     showAimPreview = false;
     private isImagesLoaded = false;
@@ -392,6 +401,9 @@ export class GamePlay {
     };
 
     animate = () => {
+        // Бой заморожен по концу боя (HP-добивание) — цикл не крутим и не
+        // планируем следующий кадр: сцена застыла на кадре добивания под модалкой.
+        if (this.isOver) return;
         this.rafTimerId = requestAnimationFrame(this.animate);
         const now = performance.now();
         // Реальный dt между кадрами rAF — для затухания shake и slow-mo независимо
@@ -611,7 +623,7 @@ export class GamePlay {
                         this.bullet.gravity,
                         this.bullet.dx,
                     );
-                    this.callbacks.onPointsCalc({
+                    this.callbacks.onTankHit({
                         hittedIsLeft: this.bullet.hittedTank === this.leftTank,
                         leftActive: !!this.leftTank?.isActive,
                         power: this.bullet.power,
@@ -770,6 +782,20 @@ export class GamePlay {
 
     isIdleMode() {
         return !this.isFireMode && !this.isAngleMode && !this.isMoveMode;
+    }
+
+    /**
+     * Замораживает бой по концу боя (в отличие от `destroy` — не рвёт resize и не
+     * освобождает движок, сцена остаётся видимой под модалкой). Останавливает цикл
+     * rAF (бот больше не ходит), поднимает `isOver` — обработчики ввода в
+     * `GameCanvas` по нему гасят выстрелы/манёвры после game over.
+     */
+    stop() {
+        this.isOver = true;
+        if (this.rafTimerId !== undefined) {
+            cancelAnimationFrame(this.rafTimerId);
+            this.rafTimerId = undefined;
+        }
     }
 
     destroy() {

@@ -3,7 +3,13 @@
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { isDailySeed, ShareDailyResultButton, submitDailyScore } from '@/features/daily-challenge';
-import { useGameStore } from '@/features/game-engine';
+import {
+    computeBattleStats,
+    computeLeaderboardPoints,
+    deriveOutcome,
+    MOVE_BUDGET,
+    useGameStore,
+} from '@/features/game-engine';
 import { ShareReplayButton } from '@/features/replays';
 import { BOT_NAME } from '@/shared/config';
 import { ThemeScope, type TOutcome } from '@/shared/lib/theme';
@@ -17,11 +23,13 @@ type TGameOverDialogProps = {
     dialogVariant?: 'modal' | 'static';
     /** Витрина: показать конкретный исход, НЕ мутируя боевой `useGameStore` —
      *  три среза (победа/поражение/ничья) сосуществуют независимо. Диалог
-     *  считается открытым, а очки берутся отсюда, а не из стора. В этом режиме
-     *  гасятся и все привязанные к бою ветки (daily-блок, «Поделиться боем»):
-     *  срез статичен и не должен внезапно показать их, если в этой же сессии
-     *  сначала сыграли бой, а потом ушли на витрину. */
-    preview?: { playerPoints: number; enemyPoints: number };
+     *  считается открытым, а HP и статистика берутся отсюда, а не из стора.
+     *  `shots`/`hits`/`maneuvers` необязательны (по умолчанию 0) — задаются, чтобы
+     *  витрина показала непустую статистику. В этом режиме гасятся и все
+     *  привязанные к бою ветки (daily-блок, «Поделиться боем»): срез статичен и не
+     *  должен внезапно показать их, если в этой же сессии сначала сыграли бой, а
+     *  потом ушли на витрину. */
+    preview?: { player: number; enemy: number; shots?: number; hits?: number; maneuvers?: number };
     /** id заголовка (`aria-labelledby`). По умолчанию `'game-over-title'`; на
      *  витрине несколько диалогов на одной странице — нужен уникальный, иначе id
      *  дублируется в DOM. */
@@ -61,24 +69,53 @@ export function GameOverDialog({
     titleId = 'game-over-title',
 }: TGameOverDialogProps = {}) {
     const isGameOver = useGameStore((s) => s.isGameOver);
-    const livePlayerPoints = useGameStore((s) => s.playerPoints);
-    const liveEnemyPoints = useGameStore((s) => s.enemyPoints);
-    const finalPlayerPoints = useGameStore((s) => s.finalPlayerPoints);
-    const finalEnemyPoints = useGameStore((s) => s.finalEnemyPoints);
+    const liveHp = useGameStore((s) => s.hp);
+    const finalHp = useGameStore((s) => s.finalHp);
+    const finalStats = useGameStore((s) => s.finalStats);
     // Снимок фиксируется один раз на переходе isGameOver false→true
     // (useGameStore.setGameOver) — пока бой идёт, снимка нет, и заголовок
-    // читает живые очки (#337). В режиме `preview` (витрина) очки заданы пропом,
-    // а стор не читаем и не трогаем.
+    // читает живой HP (#337). В режиме `preview` (витрина) HP и статистика
+    // берутся из пропа; подписки на стор ниже всё равно выполняются (хук нельзя
+    // вызвать условно), но их значения в этом режиме игнорируются, а сам стор
+    // не мутируется.
     const open = preview ? true : isGameOver;
-    const playerPoints = preview ? preview.playerPoints : (finalPlayerPoints ?? livePlayerPoints);
-    const enemyPoints = preview ? preview.enemyPoints : (finalEnemyPoints ?? liveEnemyPoints);
+    const playerHp = preview ? preview.player : (finalHp?.player ?? liveHp.player);
+    const enemyHp = preview ? preview.enemy : (finalHp?.enemy ?? liveHp.enemy);
+    const shotsFired = useGameStore((s) => s.shotsFired);
+    const hits = useGameStore((s) => s.hits);
+    const moves = useGameStore((s) => s.moves);
     const battleSeed = useGameStore((s) => s.battleSeed);
     const battleField = useGameStore((s) => s.battleField);
     const replayMoves = useGameStore((s) => s.replayMoves);
     const resetGame = useGameStore((s) => s.resetGame);
     const submittedRef = useRef(false);
 
-    const points = Math.max(0, playerPoints);
+    // Статистика боя (handoff «Game over»): урон, точность, выстрелы, манёвры.
+    // Совершено манёвров = бюджет − остаток. В preview (витрина) входы приходят
+    // пропом; в бою — из снимка finalStats, зафиксированного вместе с finalHp на
+    // конце боя (#337), чтобы показанное совпало с отправленными очками (fallback
+    // на живой стор — до фиксации снимка).
+    const stats = computeBattleStats({
+        playerHp,
+        enemyHp,
+        shots: preview ? (preview.shots ?? 0) : (finalStats?.shots ?? shotsFired),
+        hits: preview ? (preview.hits ?? 0) : (finalStats?.hits ?? hits),
+        maneuvers: preview
+            ? (preview.maneuvers ?? 0)
+            : (finalStats?.maneuvers ?? MOVE_BUDGET - moves),
+    });
+    const statRows: { label: string; value: string }[] = [
+        { label: 'Урон', value: String(stats.damage) },
+        // Неразрывный пробел между числом и «%»: в узкой ячейке flex-строки
+        // обычный пробел мог бы перенести «%» на отдельную строку (формат «62 %»).
+        { label: 'Точность', value: `${stats.accuracy}\u00A0%` },
+        { label: 'Выстрелов', value: String(stats.shots) },
+        { label: 'Манёвров', value: `${stats.maneuvers} / ${stats.maneuverBudget}` },
+    ];
+
+    // Очки лидерборда «Боя дня» — производная метрика (урон + остаток HP +
+    // точность), а не сырой HP (решение #422). Формула — в `computeLeaderboardPoints`.
+    const points = computeLeaderboardPoints(stats);
 
     useEffect(() => {
         if (!isGameOver || !seed || !isDailySeed(seed) || submittedRef.current) return;
@@ -94,13 +131,18 @@ export function GameOverDialog({
             });
     }, [isGameOver, seed, points]);
 
+    // Исход выводится из HP (не из очков): у кого HP больше — тот победил.
+    const battleOutcome = deriveOutcome(playerHp, enemyHp);
     const winnerText =
-        playerPoints > enemyPoints ? 'Победа!' : playerPoints < enemyPoints ? 'Поражение' : 'Ничья';
+        battleOutcome === 'victory'
+            ? 'Победа!'
+            : battleOutcome === 'defeat'
+              ? 'Поражение'
+              : 'Ничья';
     // Исход задаёт тему диалога (token-spec §6): победа красит акцент в зелёный,
     // поражение — в danger. Заголовок читает --accent, поэтому меняется без правки
     // Dialog/Panel — переключение темы на предке через ThemeScope. Ничья нейтральна.
-    const outcome: TOutcome | undefined =
-        playerPoints > enemyPoints ? 'victory' : playerPoints < enemyPoints ? 'defeat' : undefined;
+    const outcome: TOutcome | undefined = battleOutcome === 'draw' ? undefined : battleOutcome;
     const isDaily = Boolean(seed && isDailySeed(seed));
     // В режиме `preview` (витрина) стор в покое не гарантирован — если игрок
     // сыграл бой и затем открыл /design-system в той же сессии, battleSeed и
@@ -128,9 +170,18 @@ export function GameOverDialog({
                 >
                     {winnerText}
                 </h2>
-                <p className="font-ui text-body mt-4 text-text-muted">
-                    Счёт: {playerPoints} — {enemyPoints}
-                </p>
+                {/* Статистика боя — четыре строки space-between, значения
+                    tabular-nums (handoff «Game over»): Урон, Точность %,
+                    Выстрелов, Манёвров X / 4. «Ходов N» из старого макета неверно:
+                    бюджет манёвра — 4 хода на матч (GDD §2.3). */}
+                <dl className="font-ui text-body mt-4 flex flex-col gap-1.5 text-left text-text-muted">
+                    {statRows.map(({ label, value }) => (
+                        <div key={label} className="flex items-baseline justify-between gap-4">
+                            <dt className="uppercase tracking-[0.08em]">{label}</dt>
+                            <dd className="tabular-nums text-text">{value}</dd>
+                        </div>
+                    ))}
+                </dl>
                 {showBattleBound && isDaily && seed ? (
                     <div className="mt-2">
                         <p className="font-ui text-label text-text-muted uppercase tracking-[0.12em]">

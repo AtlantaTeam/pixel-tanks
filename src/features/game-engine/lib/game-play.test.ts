@@ -52,7 +52,7 @@ const WEAPON: TWeapon = { id: 0, name: 'Снаряд' };
  */
 function makeGamePlay() {
     const callbacks: TGamePlayCallbacks = {
-        onPointsCalc: vi.fn(),
+        onTankHit: vi.fn(),
         onGameOverCheck: vi.fn(),
         onMovesChange: vi.fn(),
         onPowerChange: vi.fn(),
@@ -104,7 +104,7 @@ describe('GamePlay.moveBullet — разрешение попадания на �
         expect(playSfx).toHaveBeenCalledTimes(1);
         expect(playSfx).toHaveBeenCalledWith('hit');
         expect(jumpOnHit).toHaveBeenCalledTimes(1);
-        expect(callbacks.onPointsCalc).toHaveBeenCalledTimes(1);
+        expect(callbacks.onTankHit).toHaveBeenCalledTimes(1);
     });
 
     it('промах по земле проигрывает "miss" ровно один раз за несколько кадров анимации', () => {
@@ -128,6 +128,6 @@ describe('GamePlay.moveBullet — разрешение попадания на �
 
         expect(playSfx).toHaveBeenCalledTimes(1);
         expect(playSfx).toHaveBeenCalledWith('miss');
-        expect(callbacks.onPointsCalc).not.toHaveBeenCalled();
+        expect(callbacks.onTankHit).not.toHaveBeenCalled();
     });
 });

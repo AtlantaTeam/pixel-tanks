@@ -11,13 +11,13 @@ import { buttonClasses, Icon } from '@/shared/ui';
  * «Реплей» и выход в собственную игру. Управления нет — бой идёт сам.
  */
 export function ReplayHud() {
-    const playerPoints = useGameStore((s) => s.playerPoints);
-    const enemyPoints = useGameStore((s) => s.enemyPoints);
+    const playerHp = useGameStore((s) => s.hp.player);
+    const enemyHp = useGameStore((s) => s.hp.enemy);
     const isGameOver = useGameStore((s) => s.isGameOver);
 
-    // Как в GameControls: счёт скачет в сторе, HUD плавно дотягивает число.
-    const displayedPlayerPoints = Math.round(useAnimatedValue(playerPoints));
-    const displayedEnemyPoints = Math.round(useAnimatedValue(enemyPoints));
+    // Как в GameControls: HP скачет в сторе, HUD плавно дотягивает число.
+    const displayedPlayerHp = Math.round(useAnimatedValue(playerHp));
+    const displayedEnemyHp = Math.round(useAnimatedValue(enemyHp));
 
     return (
         <div className="flex flex-wrap items-center justify-between gap-2 p-2 sm:gap-4 sm:p-4">
@@ -36,13 +36,13 @@ export function ReplayHud() {
                 <div className="flex items-baseline gap-2">
                     <span className="font-ui text-xs text-text-muted">Игрок</span>
                     <span className="font-ui text-hud text-primary tabular-nums">
-                        {displayedPlayerPoints}
+                        {displayedPlayerHp}
                     </span>
                 </div>
                 <span className="font-ui text-xs text-text-muted">:</span>
                 <div className="flex items-baseline gap-2">
                     <span className="font-ui text-hud text-danger tabular-nums">
-                        {displayedEnemyPoints}
+                        {displayedEnemyHp}
                     </span>
                     <span className="font-ui text-xs text-text-muted">{BOT_NAME}</span>
                 </div>
