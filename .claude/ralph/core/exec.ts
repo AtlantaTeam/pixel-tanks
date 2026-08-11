@@ -30,7 +30,12 @@ import { redactSecrets } from '../shared/ralph-util.ts';
 
 type GuardFn = (what: string) => void;
 type SleepFn = (ms: number) => void;
-type ExecOpts = { env?: NodeJS.ProcessEnv };
+// `input` (только у shArgv) — данные на stdin дочернего процесса. Нужен там, где объём
+// не влезает в argv по природе: комментарии PR уходят счётчику находок целиком, а предел
+// одного аргумента у ядра ОС жёсткий (128 КБ) — обрезка здесь дала бы тихо заниженную
+// метрику вместо отказа. Секрет через argv не гонять — тот же довод, что у TG-токена
+// (виден в /proc/<pid>/cmdline), но здесь это про размер, а не про тайну.
+type ExecOpts = { env?: NodeJS.ProcessEnv; input?: string };
 
 export type ExecEnv = {
     guardSideEffect: GuardFn;
@@ -127,13 +132,18 @@ export function createExec(env: ExecEnv) {
     // шелл вообще, поэтому пробелы и спецсимволы в них не раскрываются: класс shell-инъекции
     // закрыт СТРУКТУРНО, а не квотированием shq(). env — как в sh(): по умолчанию наследуем
     // полный env раннера (git-мутациям и gh нужен GH_TOKEN).
-    function shArgv(file: string, args: string[], { env: cmdEnv }: ExecOpts = {}): string {
+    function shArgv(file: string, args: string[], { env: cmdEnv, input }: ExecOpts = {}): string {
         // #138: реальный процесс в тестах запрещён — тот же предохранитель, что в sh().
         // Печатаем file+argv: по строке видно, какой дефолт-коллаборатор не подменили.
+        // Содержимое stdin в журнал НЕ пишем: это данные (комментарии PR), а не команда.
         guardSideEffect(`shArgv(${file} ${args.join(' ')})`);
         return execFileSync(file, args, {
             ...EXEC_OPTS,
             ...(cmdEnv ? { env: cmdEnv } : {}),
+            // `input` перекрывает stdio[0] (документированное поведение execFileSync), но
+            // ставим 'pipe' явно: молчаливая зависимость от перекрытия — ровно то место,
+            // где следующая правка EXEC_OPTS тихо оборвёт stdin.
+            ...(input === undefined ? {} : { input, stdio: ['pipe', 'pipe', 'pipe'] }),
         }).trim();
     }
 

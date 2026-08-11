@@ -79,17 +79,19 @@ describe('resolveAdapterSelection — выбор реализаций из ко�
         );
     });
 
-    it('недефолтный taskSource → fail по той же причине', () => {
-        expect(() => resolveAdapterSelection({ taskSource: 'gitlab' }, throwingFail)).toThrow(
-            /свап этого шва пока не поддержан/,
-        );
+    // Снятие барьера для taskSource: мердж-путь получает findOpenPr/mergePr/phaseMerged
+    // из adapters.taskSource (composition root, orchestrator.ts), поэтому недефолтное имя
+    // больше не было бы «тихим дефолтом» — оно действительно доедет до мердж-пути.
+    // Валидность самого имени (есть ли такая реализация в реестре) проверяет buildAdapters:
+    // у резолвера реестра нет, он знает только имена швов.
+    it('недефолтный taskSource принимается — мердж-путь роутится через шов', () => {
+        expect(
+            resolveAdapterSelection({ taskSource: 'sourcecraft' }, throwingFail).taskSource,
+        ).toBe('sourcecraft');
     });
 
-    it('ЯВНО заданный дефолт этих швов проходит (запрет на свап, а не на упоминание)', () => {
-        const sel = resolveAdapterSelection(
-            { gate: ADAPTER_DEFAULTS.gate, taskSource: ADAPTER_DEFAULTS.taskSource },
-            throwingFail,
-        );
+    it('ЯВНО заданный дефолт связанного шва проходит (запрет на свап, а не на упоминание)', () => {
+        const sel = resolveAdapterSelection({ gate: ADAPTER_DEFAULTS.gate }, throwingFail);
         expect(sel).toEqual(ADAPTER_DEFAULTS);
     });
 
@@ -131,7 +133,15 @@ describe('createGithubTaskSource — раскладка функций форж�
         const ts: TaskSourceAdapter = createGithubTaskSource({
             openIssues: spy('openIssues', []) as never,
             allOpenIssues: spy('allOpenIssues', []) as never,
+            hasAnyIssues: spy('hasAnyIssues', true) as never,
+            milestoneLabels: spy('milestoneLabels', []) as never,
+            prComments: spy('prComments', []) as never,
+            commentOnPr: spy('commentOnPr') as never,
+            createPr: spy('createPr', 7) as never,
+            getIssue: spy('getIssue', { number: 7, title: 'задача', body: 'тело задачи' }) as never,
+            checkAuth: spy('checkAuth') as never,
             findOpenPr: spy('findOpenPr', null) as never,
+            prHeadSha: spy('prHeadSha', 'a'.repeat(40)) as never,
             phaseMerged: spy('phaseMerged', true) as never,
             mergedPhasePr: spy('mergedPhasePr', 42) as never,
             mergePr: spy('mergePr') as never,
@@ -139,10 +149,21 @@ describe('createGithubTaskSource — раскладка функций форж�
             removeBlockedLabel: spy('removeBlockedLabel') as never,
             closeMilestoneByTitle: spy('closeMilestoneByTitle') as never,
             syncProjectBoard: spy('syncProjectBoard') as never,
+            commentOnIssue: spy('commentOnIssue') as never,
+            closeIssue: spy('closeIssue') as never,
+            blockIssue: spy('blockIssue') as never,
+            createIssue: spy('createIssue', 101) as never,
         });
         ts.listReadyIssues('MS');
         ts.listAllOpenIssues('MS');
+        expect(ts.hasAnyIssues('MS')).toBe(true);
+        ts.listMilestoneLabels('MS');
+        ts.listPullRequestComments(42);
+        ts.commentOnPullRequest(42, { body: 'текст' });
+        expect(ts.getIssue(7).title).toBe('задача');
+        expect(ts.createPullRequest({ branch: 'feature/x', title: 'т', body: 'б' })).toBe(7);
         ts.findOpenPullRequest('feature/x');
+        expect(ts.pullRequestHeadSha(7)).toBe('a'.repeat(40));
         expect(ts.isPhaseMerged({ branch: 'feature/x' })).toBe(true);
         expect(ts.mergedPullRequestNumber({ branch: 'feature/x' })).toBe(42);
         ts.mergePullRequest(7, 'a'.repeat(40));
@@ -150,10 +171,21 @@ describe('createGithubTaskSource — раскладка функций форж�
         ts.removeBlockedLabel('feature/x');
         ts.closeMilestone('MS');
         ts.syncBoard();
+        ts.commentOnIssue(7, 'текст');
+        ts.closeIssue(7);
+        ts.blockIssue(9);
+        expect(ts.createIssue({ title: 'т', body: 'б', labels: ['area:devops'] })).toBe(101);
         expect(calls).toEqual([
             'openIssues:["MS"]',
             'allOpenIssues:["MS"]',
+            'hasAnyIssues:["MS"]',
+            'milestoneLabels:["MS"]',
+            'prComments:[42]',
+            'commentOnPr:[42,{"body":"текст"}]',
+            'getIssue:[7]',
+            'createPr:[{"branch":"feature/x","title":"т","body":"б"}]',
             'findOpenPr:["feature/x"]',
+            'prHeadSha:[7]',
             'phaseMerged:[{"branch":"feature/x"}]',
             'mergedPhasePr:[{"branch":"feature/x"}]',
             `mergePr:[7,"${'a'.repeat(40)}"]`,
@@ -161,7 +193,43 @@ describe('createGithubTaskSource — раскладка функций форж�
             'removeBlockedLabel:["feature/x"]',
             'closeMilestoneByTitle:["MS"]',
             'syncProjectBoard:[]',
+            'commentOnIssue:[7,"текст"]',
+            'closeIssue:[7]',
+            'blockIssue:[9]',
+            'createIssue:[{"title":"т","body":"б","labels":["area:devops"]}]',
         ]);
+    });
+
+    // Отдельным кейсом, а не третьим ассертом выше: маппер обязан отдавать ответ боевой
+    // функции КАК ЕСТЬ. `false` — единственное значение, на котором видно подмену вида
+    // `Boolean(...)`/`?? true`; с одним лишь true-кейсом такая правка осталась бы зелёной,
+    // а петля решила бы, что задачи у фазы были, и ушла сдавать неначатую фазу (C5).
+    it('hasAnyIssues прокидывает false без искажения', () => {
+        const ts: TaskSourceAdapter = createGithubTaskSource({
+            openIssues: (() => []) as never,
+            allOpenIssues: (() => []) as never,
+            hasAnyIssues: (() => false) as never,
+            milestoneLabels: (() => []) as never,
+            prComments: (() => []) as never,
+            commentOnPr: (() => {}) as never,
+            createPr: (() => 7) as never,
+            getIssue: (() => ({ number: 7, title: 'задача', body: 'тело задачи' })) as never,
+            checkAuth: (() => {}) as never,
+            findOpenPr: (() => null) as never,
+            prHeadSha: (() => 'a'.repeat(40)) as never,
+            phaseMerged: (() => false) as never,
+            mergedPhasePr: (() => null) as never,
+            mergePr: (() => {}) as never,
+            addBlockedLabel: (() => {}) as never,
+            removeBlockedLabel: (() => {}) as never,
+            closeMilestoneByTitle: (() => {}) as never,
+            syncProjectBoard: (() => {}) as never,
+            commentOnIssue: (() => {}) as never,
+            closeIssue: (() => {}) as never,
+            blockIssue: (() => {}) as never,
+            createIssue: (() => null) as never,
+        });
+        expect(ts.hasAnyIssues('MS')).toBe(false);
     });
 });
 
@@ -223,9 +291,21 @@ describe('мапперы гейта / нотификатора / рантайм�
 
 function fakeRegistries(): AdapterRegistries {
     const ts: TaskSourceAdapter = createGithubTaskSource({
+        checkAuth: () => {},
         openIssues: () => [],
         allOpenIssues: () => [],
+        hasAnyIssues: () => true,
+        milestoneLabels: () => [],
+        prComments: () => [],
+        commentOnPr: () => {},
+        createPr: () => 7,
+        getIssue: () => ({ number: 7, title: 'задача', body: 'тело задачи' }),
+        commentOnIssue: () => {},
+        closeIssue: () => {},
+        blockIssue: () => {},
+        createIssue: () => null,
         findOpenPr: () => null,
+        prHeadSha: () => 'a'.repeat(40),
         phaseMerged: () => false,
         mergedPhasePr: () => null,
         mergePr: () => {},

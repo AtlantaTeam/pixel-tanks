@@ -12,6 +12,12 @@ import { createWorktreeManager } from './worktree.ts';
 // перенесены из ralph.test.js как есть и ходят через его ре-экспорт (#366).
 import ralph from '../ralph.js';
 
+// Платформенное: тест опирается на POSIX-механизмы, которых на Windows нет
+// (/proc/<pid>/cmdline, пути соседнего worktree, /bin/sh). Раннер живёт на
+// Linux-VPS, поэтому пометка, а не вторая реализация — грабля 7 в
+// docs/ralph-runner/portability-log.md. Снять вместе с платформенным швом.
+const itPosix = it.skipIf(process.platform === 'win32');
+
 // Синтетический env: заглушки-коллабораторы, которые молча падают, если функция под
 // тестом их зовёт без явного override, — чтобы забытый override был громкой ошибкой
 // теста, а не тихим проходом через боевой sh/log.
@@ -46,28 +52,31 @@ describe('resolveWorktreePath — путь выделенного worktree ра�
         delete process.env.RALPH_WORKTREE_PATH;
     });
 
-    it('дефолт: сосед репозитория, имя выведено из basename(repoRoot) + "-ralph" (#204)', () => {
-        const { resolveWorktreePath } = createWorktreeManager(makeEnv());
-        expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/root/pixel-tanks-ralph');
-        // Портируемость: другое имя репо → другое имя дерева, без правки кода.
-        expect(resolveWorktreePath({}, '/srv/acme-app')).toBe('/srv/acme-app-ralph');
-    });
+    itPosix(
+        'дефолт: сосед репозитория, имя выведено из basename(repoRoot) + "-ralph" (#204)',
+        () => {
+            const { resolveWorktreePath } = createWorktreeManager(makeEnv());
+            expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/root/pixel-tanks-ralph');
+            // Портируемость: другое имя репо → другое имя дерева, без правки кода.
+            expect(resolveWorktreePath({}, '/srv/acme-app')).toBe('/srv/acme-app-ralph');
+        },
+    );
 
-    it('#204: cfg.runnerWorktreeDirname важнее выведенного дефолта', () => {
+    itPosix('#204: cfg.runnerWorktreeDirname важнее выведенного дефолта', () => {
         const { resolveWorktreePath } = createWorktreeManager(makeEnv());
         expect(
             resolveWorktreePath({ runnerWorktreeDirname: 'custom-tree' }, '/root/pixel-tanks'),
         ).toBe('/root/custom-tree');
     });
 
-    it('cfg.runnerWorktreePath — относительный, резолвится от repoRoot', () => {
+    itPosix('cfg.runnerWorktreePath — относительный, резолвится от repoRoot', () => {
         const { resolveWorktreePath } = createWorktreeManager(makeEnv());
         expect(
             resolveWorktreePath({ runnerWorktreePath: '../custom-ralph' }, '/root/pixel-tanks'),
         ).toBe('/root/custom-ralph');
     });
 
-    it('RALPH_WORKTREE_PATH (env) используется, если cfg пуст', () => {
+    itPosix('RALPH_WORKTREE_PATH (env) используется, если cfg пуст', () => {
         const prev = process.env.RALPH_WORKTREE_PATH;
         process.env.RALPH_WORKTREE_PATH = '/tmp/ralph-worktree';
         try {
@@ -79,7 +88,7 @@ describe('resolveWorktreePath — путь выделенного worktree ра�
         }
     });
 
-    it('cfg.runnerWorktreePath важнее RALPH_WORKTREE_PATH', () => {
+    itPosix('cfg.runnerWorktreePath важнее RALPH_WORKTREE_PATH', () => {
         const prev = process.env.RALPH_WORKTREE_PATH;
         process.env.RALPH_WORKTREE_PATH = '/tmp/from-env';
         try {
@@ -217,7 +226,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
     const WT = '/root/pixel-tanks-ralph';
     const REPO = '/root/pixel-tanks';
 
-    it('путь внутри репозитория → fail-closed, git не зовём', () => {
+    itPosix('путь внутри репозитория → fail-closed, git не зовём', () => {
         const { ensureRunnerWorktree } = createWorktreeManager(makeEnv());
         const shFn = vi.fn();
         expect(() =>
@@ -385,7 +394,7 @@ describe('resolveWorktreePath — относительный путь из env (
 
     const { resolveWorktreePath } = ralph;
 
-    it('ОТНОСИТЕЛЬНЫЙ RALPH_WORKTREE_PATH резолвится от repoRoot, а не от cwd вызова', () => {
+    itPosix('ОТНОСИТЕЛЬНЫЙ RALPH_WORKTREE_PATH резолвится от repoRoot, а не от cwd вызова', () => {
         process.env.RALPH_WORKTREE_PATH = '../custom';
         expect(resolveWorktreePath({}, '/root/pixel-tanks')).toBe('/root/custom');
     });

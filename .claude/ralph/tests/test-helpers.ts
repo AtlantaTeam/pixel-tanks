@@ -163,6 +163,14 @@ export function makeRunLoopScenario(
                 saveStateFn: (s: RalphState) => saved.push({ ...s }),
                 openIssuesFn: () => [],
                 allOpenIssuesFn: () => [],
+                // #39: у фазы сценария задачи были и закрыты — сдача идёт штатно. Барьер
+                // «фаза не начата» проверяется своими тестами в orchestrator.test.ts.
+                hasAnyIssuesFn: () => true,
+                // #46: шаг 1 сдачи — заведение PR петлёй, а не сессией. Без заглушек
+                // сценарий уходил бы в боевой шов и ждал его сетевых ретраев.
+                findOpenPrFn: () => null,
+                createPrFn: () => 7,
+                phasePrBodyFn: () => 'тело PR',
                 phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
                 pickModelFn: () => 'claude-coder',
                 pickReviewModelFn: () => SCENARIO_REVIEW_MODEL,

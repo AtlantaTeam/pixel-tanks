@@ -63,7 +63,12 @@ describe('фикстурный чужой проект — сама фиксту
         expect(raw.common.board.owner).not.toBe(real.common.board.owner);
         expect(raw.common.installCmd).not.toBe(real.common.installCmd);
         expect(raw.common.runnerWorktreeDirname).not.toBe(real.common.runnerWorktreeDirname);
-        expect(raw.common.deployCheck.healthUrl).not.toBe(real.common.deployCheck.healthUrl);
+        // #51: у боевого конфига блока `deployCheck` больше нет вовсе — деплоя в проекте
+        // не существует, шов выключен (`adapters.deployCheck: "none"`). Сравниваем через
+        // `?.`, а не выкидываем ассерт: фикстура ЧУЖОГО проекта деплой имеет, и требование
+        // «фикстура не повторяет боевые значения» для неё остаётся в силе.
+        expect(raw.common.deployCheck?.healthUrl).not.toBe(real.common.deployCheck?.healthUrl);
+        expect(raw.common.deployCheck?.healthUrl).toBeTruthy();
         expect(raw.common.phases[0].milestone).not.toBe(real.common.phases[0].milestone);
         expect(raw.common.phases[0].branch).not.toBe(real.common.phases[0].branch);
         expect(raw.common.prompt).not.toBe(real.common.prompt);
@@ -117,8 +122,14 @@ describe('dry-run переносимости ядра на чужом конфи
             return '';
         };
 
+        let authChecked = 0;
         const ctx = runtime.preflight(cfg, {
             shFn: fakeSh,
+            // Авторизация форжа проверяется через шов (#35), а не через shFn: боевой
+            // дефолт ушёл бы в настоящий gh/curl мимо фейка и упал бы предохранителем.
+            checkAuthFn: () => {
+                authChecked += 1;
+            },
             failFn: (msg: string) => {
                 throw new Error(msg);
             },
@@ -135,9 +146,6 @@ describe('dry-run переносимости ядра на чужом конфи
                 reReviewPending: false,
                 deployBlock: null,
             }),
-            closeMilestonesFn: () => {
-                throw new Error('closeMilestonesFn не должен звонить в dry-режиме');
-            },
             phaseIndexOfFn: () => 0,
             saveStateFn: () => {},
             pushEventFn: () => false,
@@ -145,9 +153,13 @@ describe('dry-run переносимости ядра на чужом конфи
         });
 
         expect(ctx.state.milestone).toBe('Sputnik Tracker · Фаза 1: Каркас');
-        // git/gh только ЧИТАЮТСЯ через подменённый shFn — ни одного реального вызова.
+        // git только ЧИТАЕТСЯ через подменённый shFn — ни одного реального вызова.
         expect(shCalls.some((c) => c.includes('git rev-parse'))).toBe(true);
-        expect(shCalls.some((c) => c.includes('gh auth status'))).toBe(true);
+        // Авторизацию форжа preflight спрашивает у шва и НЕ знает про `gh`: раньше здесь
+        // стояло ожидание `gh auth status`, то есть сам тест переносимости требовал GitHub.
+        // Чем именно проверяет каждая реализация — предмет adapters-contract.test.ts.
+        expect(authChecked).toBe(1);
+        expect(shCalls.some((c) => c.includes('gh auth status'))).toBe(false);
 
         const fixtureIssue = {
             number: 101,
@@ -175,6 +187,17 @@ describe('dry-run переносимости ядра на чужом конфи
                 return [fixtureIssue];
             },
             allOpenIssuesFn: () => [],
+            hasAnyIssuesFn: () => true,
+            // #50: карточку для промпта читает петля — тот же случай, что у соседей:
+            // дефолт ушёл бы в шов, собранный без выбора из фикстуры, и dry-проход
+            // потрогал бы настоящий форж.
+            getIssueFn: (number: number) => ({
+                number,
+                title: fixtureIssue.title,
+                body: 'тело карточки из фикстуры',
+            }),
+            prCommentsFn: () => [],
+            findOpenPrFn: () => null,
             removeBlockedLabelFn: () => {},
             addBlockedLabelFn: () => {},
             phaseMergedFn: () => true,

@@ -10,6 +10,18 @@
         "fallbackModel": "claude-opus-4-8",
         "permissionMode": "bypassPermissions",
         "installCmd": "npm ci",
+        "issueLabels": [
+            "complexity:low",
+            "complexity:medium",
+            "complexity:high",
+            "complexity:expert",
+            "area:backend",
+            "area:core",
+            "area:frontend",
+            "area:devops",
+            "area:docs",
+            "backlog"
+        ],
         "board": {
             "owner": "AtlantaTeam",
             "number": 1

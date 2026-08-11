@@ -166,6 +166,37 @@ export function createConfigProfile(env: ConfigProfileEnv) {
         return true;
     }
 
+    // #48: плейсхолдеры промпта кодер-сессии. Петля подставляет РОВНО `{milestone}` и
+    // `{branch}`; всё остальное в фигурных скобках уедет в сессию как есть.
+    //
+    // Барьер, а не вычитка глазами: боевой конфиг задавал `{{MILESTONE}}`/`{{BRANCH}}` — ни
+    // одного совпадения с подстановкой, — и первая же итерация уходила бы с промптом
+    // «возьми issue из milestone «{{MILESTONE}}»». Сессия при этом не падает: она честно
+    // делает что-то не то, а брейкер `maxNoProgress` гасит петлю через три сожжённые
+    // сессии. Отказ на старте стоит трёх строк, диагностика молчаливого случая — вечера.
+    //
+    // Проверяется ОСТАТОК после подстановки, а не исходный текст: так барьер ловит и
+    // опечатку в имени (`{mileston}`), и чужую форму (`{{…}}`), не перечисляя их.
+    function assertValidPromptPlaceholders(
+        cfg: Record<string, unknown>,
+        profileName: string,
+        failFn: FailFn = fail,
+    ): unknown {
+        const prompt = cfg.prompt;
+        if (typeof prompt !== 'string' || prompt === '') return true;
+        const left = prompt.replaceAll('{milestone}', '').replaceAll('{branch}', '');
+        const stray = [...left.matchAll(/\{[^{}\n]{0,60}\}/g)].map((m) => m[0]);
+        if (stray.length > 0) {
+            return failFn(
+                `ralph.config.json (профиль "${profileName}"): в prompt остались нераскрытые ` +
+                    `плейсхолдеры ${stray.join(', ')} — петля подставляет только {milestone} и {branch}. ` +
+                    'Сессия получила бы их буквально и делала бы не то, а понять это можно только ' +
+                    'по трём сожжённым итерациям (#48).',
+            );
+        }
+        return true;
+    }
+
     // #376 (фаза 6): значение modelRouting — либо строка (обратная совместимость,
     // claude-модель, провайдер по умолчанию — статический adapters.coderRuntime), либо
     // объект { provider, model } (явный выбор провайдера кодер-рантайма). provider
@@ -415,6 +446,10 @@ export function createConfigProfile(env: ConfigProfileEnv) {
         // провайдера по label'ам issue.
         const routingOk = assertValidModelRouting(merged, wanted, failFn);
         if (routingOk !== true) return routingOk; // мягкий failFn — наверх как есть
+        // #48: плейсхолдеры промпта — последняя проверка схемы: она про содержимое, а не
+        // про форму, и осмысленна только на уже слитом конфиге.
+        const promptOk = assertValidPromptPlaceholders(merged, wanted, failFn);
+        if (promptOk !== true) return promptOk; // мягкий failFn — наверх как есть
         return { ...merged, profileName: wanted };
     }
 
@@ -423,6 +458,7 @@ export function createConfigProfile(env: ConfigProfileEnv) {
         parseProfileFlag,
         assertValidHaltBeforeDeploy,
         assertValidModelRouting,
+        assertValidPromptPlaceholders,
         resolveProfile,
     };
 }

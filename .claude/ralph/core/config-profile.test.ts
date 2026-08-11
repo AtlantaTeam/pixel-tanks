@@ -116,6 +116,41 @@ describe('deepMerge — ярлык блока в сообщении о запр�
     });
 });
 
+// #48: плейсхолдеры промпта. Боевой конфиг задавал `{{MILESTONE}}`/`{{BRANCH}}` — ни одного
+// совпадения с подстановкой петли, — и первая же итерация уходила с плейсхолдером внутри
+// промпта. Сессия при этом НЕ падает: она делает не то, и понять это можно только по трём
+// сожжённым итерациям. Проверяем через боевой resolveProfile — тем же путём, каким конфиг
+// приходит к раннеру.
+describe('resolveProfile: нераскрытый плейсхолдер промпта валит старт (#48)', () => {
+    // Мягкий failFn: боевой уходит в process.exit(1), и тест ловил бы выход процесса
+    // вместо сообщения — тот же приём, что у соседних негативных проверок файла.
+    const boom = (m: string) => {
+        throw new Error(m);
+    };
+    const base = (prompt: string) => ({
+        common: { model: 'm', prompt, phases: [{ milestone: 'M1', branch: 'feature/m1' }] },
+        profiles: { dev: {}, prod: {} },
+        defaultProfile: 'dev',
+    });
+
+    it('промпт с {milestone} и {branch} собирается', () => {
+        const cfg = resolveProfile(base('возьми «{milestone}» в ветке {branch}'), 'dev', boom);
+        expect(cfg.profileName).toBe('dev');
+    });
+
+    it.each([
+        ['{{MILESTONE}}', 'чужая форма скобок'],
+        ['{mileston}', 'опечатка в имени'],
+        ['{BRANCH}', 'верхний регистр'],
+    ])('НЕГАТИВНЫЙ: %s отвергается на старте (%s)', (bad) => {
+        // `boom` вместо боевого fail: тот уходит в process.exit(1), и тест ловил бы выход
+        // процесса вместо сообщения — как у соседних негативных проверок этого файла.
+        expect(() => resolveProfile(base(`возьми ${bad} и работай`), 'dev', boom)).toThrow(
+            /плейсхолдер/i,
+        );
+    });
+});
+
 describe('resolveProfile — сборка итогового конфига из common + профиль (#71)', () => {
     const raw = () => ({
         defaultProfile: 'playground',
@@ -603,20 +638,32 @@ describe('parseProfileFlag — выбор профиля из argv (#72)', () =>
     });
 });
 
-describe('боевой ralph.config.json — профили playground/prod (#73)', () => {
+describe('боевой ralph.config.json — профиль по умолчанию и prod (#73)', () => {
     // Читаем НАСТОЯЩИЙ конфиг, а не синтетику: смысл issue в том, что прод-значения
-    // лежат в файле, а не в дефолтах кода, и что playground не съехал.
+    // лежат в файле, а не в дефолтах кода, и что дефолтный профиль не съехал.
     const raw = JSON.parse(fs.readFileSync('.claude/ralph/ralph.config.json', 'utf-8'));
     const boom = (m: string) => {
         throw new Error(m);
     };
 
-    it('без флага резолвится playground', () => {
-        expect(resolveProfile(raw, null, boom).profileName).toBe('playground');
+    // Имя дефолтного профиля — решение проекта, а не контракт ядра (грабля 6 журнала
+    // переносимости): раньше здесь стоял литерал 'playground', и перенос падал на
+    // «Неизвестный профиль» просто из-за другого имени. `prod` ниже литералом остаётся
+    // намеренно — это имя ядро знает само (толстый гейт, Telegram, проверка деплоя,
+    // единственное место, где легален haltBeforeDeploy).
+    const DEFAULT_PROFILE = raw.defaultProfile;
+
+    it('дефолтный профиль объявлен и существует в profiles', () => {
+        expect(typeof DEFAULT_PROFILE).toBe('string');
+        expect(Object.keys(raw.profiles)).toContain(DEFAULT_PROFILE);
     });
 
-    it('playground сохраняет прежнее поведение: крутилки равны дефолтам кода', () => {
-        const cfg = resolveProfile(raw, 'playground', boom);
+    it('без флага резолвится профиль по умолчанию', () => {
+        expect(resolveProfile(raw, null, boom).profileName).toBe(DEFAULT_PROFILE);
+    });
+
+    it('профиль по умолчанию сохраняет прежнее поведение: крутилки равны дефолтам кода', () => {
+        const cfg = resolveProfile(raw, DEFAULT_PROFILE, boom);
         // Ровно те значения, что стояли в `cfg.X ?? N` до переезда в конфиг.
         expect(cfg.blockedHealAttempts).toBe(3);
         expect(cfg.gateHealAttempts).toBe(2);
@@ -631,24 +678,21 @@ describe('боевой ralph.config.json — профили playground/prod (#73
     });
 
     it('prod наследует всё остальное из common, не дублируя его', () => {
-        const pg = resolveProfile(raw, 'playground', boom);
+        const pg = resolveProfile(raw, DEFAULT_PROFILE, boom);
         const prod = resolveProfile(raw, 'prod', boom);
         expect(prod.modelRouting).toEqual(pg.modelRouting);
         expect(prod.review).toEqual(pg.review);
         expect(prod.phases).toEqual(pg.phases);
         expect(prod.authorAllowlist).toEqual(pg.authorAllowlist);
         expect(prod.blockedHealAttempts).toEqual(pg.blockedHealAttempts);
-        // #256: единственная дельта prod теперь — haltBeforeDeploy: false (непрерывный
-        // prod, #249). Остальное отличие прода от playground по-прежнему держит код по
-        // profileName (толстый гейт, TG, пост-мердж проверка деплоя), а не конфиг.
+        // Единственная дельта prod — `haltBeforeDeploy: false` (непрерывный режим, включён
+        // после того, как цикл проверили живьём). Пиннится и состав ключей, и значение:
+        // любая ДРУГАЯ дельта, приехавшая правкой руками или мерджем, краснит ассерт —
+        // профиль обязан оставаться дельтой, а не второй копией common.
         expect(Object.keys(raw.profiles.prod)).toEqual(['haltBeforeDeploy']);
-        // Пиннится не только НАЛИЧИЕ ключа, но и ЗНАЧЕНИЕ: тихий флип на true (правкой
-        // руками или будущим мерджем) вернул бы prod в halt-режим — единственный смысл
-        // фазы #256 — и старт-валидация true пропустит как валидный конфиг. Резолв-
-        // ассерты краснеют на таком регрессе.
         expect(resolveProfile(raw, 'prod', boom).haltBeforeDeploy).toBe(false);
-        // playground остаётся на дефолте (halt) — флаг не протёк через common.
-        expect(resolveProfile(raw, 'playground', boom).haltBeforeDeploy).toBeUndefined();
+        // Профиль по умолчанию — тоже дефолт (halt): флаг не протёк через common.
+        expect(resolveProfile(raw, DEFAULT_PROFILE, boom).haltBeforeDeploy).toBeUndefined();
     });
 });
 
