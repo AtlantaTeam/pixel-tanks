@@ -150,7 +150,10 @@ function CellShell({
                 className,
             )}
         >
-            <span className="font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase">
+            {/* whitespace-nowrap: подпись «Угол · заморожен» на ходе бота длиннее
+                «Угол» — без запрета переноса она уходит на вторую строку и растит
+                высоту ячейки (а с ней и всего HUD) относительно своего хода (#447). */}
+            <span className="font-ui text-[9px] tracking-[0.14em] whitespace-nowrap text-text-muted uppercase">
                 {label}
             </span>
             {children}
@@ -322,7 +325,14 @@ function WindCell({
     const pips = Array.from({ length: WIND_DISPLAY_SCALE }, (_, index) => index < magnitude);
 
     const content = windRevealed ? (
-        <CellValue compact={compact} valueClassName="text-warning">
+        // На мобилке (`compact`) число ветра прижато к `leading-none` — ровно та же
+        // высота строки, что у невидимого размерника-высоты бокса ниже; иначе
+        // раскрытое число (обычный line-height ~27px) выше пипов (18px) и растит
+        // ячейку. Планшет/десктоп (`!compact`) не трогаем.
+        <CellValue
+            compact={compact}
+            valueClassName={clsx('text-warning', compact && 'leading-none')}
+        >
             {magnitude}
         </CellValue>
     ) : (

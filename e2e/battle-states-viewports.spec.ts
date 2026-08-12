@@ -77,9 +77,14 @@ for (const viewport of VIEWPORTS) {
             await expect(filledButtons).toHaveText(/Реванш/);
 
             // Пилюля хода — только в HUD-оверлеях, не в самом диалоге; после конца
-            // боя она скрыта целиком (handoff «Game over»).
-            await expect(page.getByText('ТВОЙ ХОД')).not.toBeVisible();
-            await expect(page.getByText('ХОД СОПЕРНИКА')).not.toBeVisible();
+            // боя она скрыта (handoff «Game over»). С #447 пилюля не размонтируется,
+            // а прячется видимостью (ряд держит высоту), поэтому в DOM остаётся по
+            // копии на моб/десктоп-оверлей — проверяем, что КАЖДАЯ невидима.
+            for (const label of ['ТВОЙ ХОД', 'ХОД СОПЕРНИКА']) {
+                for (const pill of await page.getByText(label).all()) {
+                    await expect(pill).not.toBeVisible();
+                }
+            }
 
             const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
             const clientWidth = await page.evaluate(() => document.documentElement.clientWidth);
