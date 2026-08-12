@@ -83,12 +83,7 @@
                 ".github/workflows/**",
                 ".claude/ralph/**",
                 "deploy/**",
-                "scripts/**",
-                "src/payload.config.ts",
-                "src/payload/**",
-                "src/app/(payload)/**",
-                "**/middleware.ts",
-                "next.config.ts"
+                "scripts/**"
             ],
             "maxTurns": 80,
             "diffLimit": 60000
