@@ -143,4 +143,12 @@ describe('TopHud', () => {
 
         expect(mobile.getByRole('button', { name: 'Выключить звук' })).toBeInTheDocument();
     });
+
+    it('не показывает кнопки ± угла/силы в планшетной/десктопной раскладке (handoff: доводка только на тач-мобилке)', () => {
+        const { getByTestId } = render(<TopHud />);
+        const desktop = within(getByTestId('top-hud-desktop'));
+
+        expect(desktop.queryByRole('button', { name: 'Угол больше' })).not.toBeInTheDocument();
+        expect(desktop.queryByRole('button', { name: 'Сила больше' })).not.toBeInTheDocument();
+    });
 });

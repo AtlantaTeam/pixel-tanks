@@ -75,11 +75,14 @@ function TurnPill({ turn, phase }: { turn: TSide; phase: TPhase }) {
         <div
             className={clsx(
                 HUD_SURFACE,
-                'flex min-h-10 items-center gap-2 border-[length:var(--border-w)] border-[color:var(--accent)] px-3 py-2 shadow-[var(--glow)]',
+                // shrink-0: сосед по флекс-ряду — HP-блок с flex-1 — иначе забирает
+                // всё свободное место и пилюля сжимается ниже контента (текст
+                // разбивается на «ТВОЙ» / «ХОД» вместо одной строки на десктопе).
+                'flex min-h-10 shrink-0 items-center gap-2 border-[length:var(--border-w)] border-[color:var(--accent)] px-3 py-2 shadow-[var(--glow)]',
             )}
         >
-            <span aria-hidden className="size-2 bg-[color:var(--accent)]" />
-            <span className="font-display text-[13px] tracking-[0.08em] text-[color:var(--accent)] uppercase [text-shadow:var(--glow)]">
+            <span aria-hidden className="size-2 shrink-0 bg-[color:var(--accent)]" />
+            <span className="font-display text-[13px] tracking-[0.08em] whitespace-nowrap text-[color:var(--accent)] uppercase [text-shadow:var(--glow)]">
                 {turnPillLabel(turn, phase)}
             </span>
         </div>
@@ -90,7 +93,7 @@ function HudIconButtons({ onPauseClick }: { onPauseClick?: () => void }) {
     const { isMuted, toggle } = useMuteState();
 
     return (
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2">
             <Button
                 variant="ghost"
                 size="icon"
@@ -436,7 +439,13 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                 className="pointer-events-auto hidden md:flex md:w-full md:flex-col md:gap-3 md:border-b-[length:var(--border-w)] md:border-border md:bg-panel md:px-4 md:py-3 xl:mx-auto xl:h-[78px] xl:max-w-[1280px] xl:flex-row xl:items-center xl:gap-5 xl:py-0"
             >
                 <div className="flex flex-1 flex-wrap items-center gap-4 xl:flex-nowrap">
-                    <div className="flex min-w-[420px] flex-1 gap-2">
+                    {/* min-width 420 держит HP-бары на планшете (2 ряда, есть запас
+                        по высоте); на 1280/1920 та же полоса — один ряд высотой 78px
+                        фиксированно, и 420 там не помещается рядом с пилюлей, кнопками
+                        и телеметрией (в один ряд не влезает — та же причина, по которой
+                        спека прямым текстом требует 2 ряда на 768). `xl:min-w-0` снимает
+                        пол — карточки внутри сами держат минимум 150px каждая. */}
+                    <div className="flex min-w-[420px] flex-1 gap-2 xl:min-w-0">
                         <HpCard
                             faction="player"
                             label={PLAYER_NAME_PLACEHOLDER}
@@ -455,7 +464,13 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                 </div>
                 <div
                     className={clsx(
-                        'flex w-full flex-wrap items-center gap-4 xl:w-auto',
+                        // xl:shrink-0 + xl:flex-nowrap: телеметрия — мои числа, ей
+                        // нельзя тихо перенестись на вторую строку и вылезти из
+                        // фиксированной высоты полосы 78px (её сжимал бы flex-1
+                        // соседнего HP-блока, тот же класс бага, что и с пилюлей
+                        // хода выше) — она либо помещается в ряд целиком, либо
+                        // e2e-проверка переполнения должна это поймать.
+                        'flex w-full flex-wrap items-center gap-4 xl:w-auto xl:shrink-0 xl:flex-nowrap',
                         isBotTurn && 'opacity-60',
                     )}
                 >

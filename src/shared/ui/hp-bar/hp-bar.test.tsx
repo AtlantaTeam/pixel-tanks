@@ -104,6 +104,18 @@ describe('HPBar', () => {
         expect(fill.style.width).toBe('100%');
     });
 
+    it('truncates a long name with ellipsis instead of wrapping onto a second line (handoff)', () => {
+        const { getByText, container } = render(
+            <HPBar label="Очень длинное имя, которое не влезает" value={72} faction="player" />,
+        );
+
+        const nameSpan = getByText('Очень длинное имя, которое не влезает');
+        expect(nameSpan).toHaveClass('overflow-hidden', 'text-ellipsis', 'whitespace-nowrap');
+
+        const row = container.querySelector('.min-w-0')?.parentElement;
+        expect(row).toHaveClass('justify-between');
+    });
+
     it('exposes progressbar semantics for assistive tech', () => {
         const { getByRole } = render(<HPBar label="Игрок" value={72} faction="player" />);
 

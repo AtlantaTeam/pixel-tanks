@@ -35,9 +35,21 @@ for (const viewport of VIEWPORTS) {
             // Относительный путь — подтягивает baseURL из playwright.config (в CI это порт 3051).
             await page.goto('/game?seed=42');
 
+            // Ссылка переехала в паузу (#423, handoff «Что делать в кодовой базе»):
+            // плавающая иконка поверх арены перекрывала верхний HUD. Верхний HUD
+            // рендерит два состава (мобилка/десктоп, `md:` брейкпоинт 768px) —
+            // берём кнопку паузы из видимого на этом вьюпорте состава.
+            const hudTestId = viewport.width >= 768 ? 'top-hud-desktop' : 'top-hud-mobile';
+            await page.getByTestId(hudTestId).getByRole('button', { name: 'Пауза' }).click();
+
             const link = page.getByRole('link', { name: /витрина|showcase/i });
             await expect(link).toBeVisible();
             await expect(link).toHaveAccessibleName(/витрина|showcase/i);
+
+            // Диалог паузы скроллится, когда контент выше короткого вьюпорта
+            // (напр. mobile-landscape 390px высотой) — дотягиваемся до ссылки так же,
+            // как это сделал бы реальный палец, прежде чем мерить её геометрию.
+            await link.scrollIntoViewIfNeeded();
 
             // Геометрия: ссылка — валидный touch target (≥44px) и не уезжает за край вьюпорта.
             const box = await link.boundingBox();
