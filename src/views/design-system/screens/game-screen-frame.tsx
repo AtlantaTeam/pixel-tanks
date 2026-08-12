@@ -148,18 +148,14 @@ function NumberCell({
     label,
     value,
     valueClassName,
-    compact,
 }: {
     label: string;
     value: ReactNode;
     valueClassName: string;
-    compact?: boolean;
 }) {
     return (
         <CellShell label={label}>
-            <CellValue compact={compact} valueClassName={valueClassName}>
-                {value}
-            </CellValue>
+            <CellValue valueClassName={valueClassName}>{value}</CellValue>
         </CellShell>
     );
 }
@@ -449,14 +445,13 @@ function GestureHint({ className }: { className?: string }) {
     );
 }
 
-function WeaponDeckSlot({ ammo, className }: { ammo: number; className?: string }) {
+function WeaponDeckSlot({ ammo }: { ammo: number }) {
     return (
         <WeaponSelector
             weapons={[{ name: 'Снаряд', icon: 'fire', ammo }]}
             selectedIndex={0}
             onPrev={noop}
             onNext={noop}
-            className={className}
         />
     );
 }

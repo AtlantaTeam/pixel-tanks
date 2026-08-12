@@ -89,8 +89,12 @@ describe('ScreensSection', () => {
         expect(states.getByText('Пустой боезапас')).toBeInTheDocument();
         expect(states.getByText('Спокойный HUD')).toBeInTheDocument();
 
-        // Ход бота: пилюля хода и лок палубы.
-        expect(states.getAllByText('ХОД СОПЕРНИКА').length).toBeGreaterThan(0);
+        // Ход бота: пилюля хода — ровно одна (единственный кадр 'bot-turn' в
+        // ряду состояний). `toHaveLength(1)` ловит случайный дубль, который
+        // `> 0` пропустил бы молча (напр. если лок-оверлей начнёт печатать тот
+        // же кейс вместо «Ход соперника»).
+        expect(states.getAllByText('ХОД СОПЕРНИКА')).toHaveLength(1);
+        // …и лок палубы отдельной подписью (иной регистр — самостоятельный узел).
         expect(states.getByText('Ход соперника')).toBeInTheDocument();
         // Пустой боезапас: тост-предупреждение и disabled-подпись кнопки ОГОНЬ.
         expect(states.getByText(/Патроны кончились/)).toBeInTheDocument();

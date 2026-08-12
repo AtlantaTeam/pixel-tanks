@@ -5,7 +5,9 @@ import { ScreenFrame } from './screen-frame';
 /** Состояния боевого экрана (handoff «Взаимодействия и состояния», issue #427).
  *  `over` (game over, victory/defeat) сюда не входит — он уже 1:1 показан
  *  `GameOverSection` (§13) реальным `GameOverDialog`, дублировать незачем. Все
- *  срезы — на эталонном мобильном брейкпоинте (handoff: «390×844 — эталон»). */
+ *  срезы — на эталонной мобильной ШИРИНЕ 390 (handoff «390×844 — эталон» задаёт
+ *  эталонной именно ширину); высота кадра — общая `SCREEN_FRAME_HEIGHT` каталога
+ *  (720), а не 844: каталог сравнивает срезы по ширине при единой высоте. */
 const STATES: { key: TGameScreenState; label: string }[] = [
     { key: 'player-turn', label: 'Свой ход' },
     { key: 'bot-turn', label: 'Ход бота' },

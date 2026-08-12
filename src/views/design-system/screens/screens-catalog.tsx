@@ -14,6 +14,11 @@ type TScreenEntry = {
     title: string;
     note: string;
     Component: ComponentType<{ variant: TScreenVariant }>;
+    /** Явный testid ряда кадров брейкпоинтов — тест-хук не выводим из наличия
+     *  `renderStates`: как только второй экран заведёт состояния, он не должен
+     *  ошибочно получить игро-специфичный `game-screen-breakpoints`. Пока задан
+     *  только игровому экрану (#427). */
+    framesTestId?: string;
     /** Доп. ряд под кадрами брейкпоинтов — состояния экрана (handoff
      *  «Взаимодействия и состояния»), которых по определению нет в четырёх
      *  срезах одного и того же (дефолтного) состояния. Пока нужен только
@@ -54,6 +59,7 @@ const SCREENS: TScreenEntry[] = [
         title: 'Игровой экран (mobile-first)',
         note: 'Canvas + HUD + тач-рогатка; десктоп — HUD-бар сверху',
         Component: GameScreenFrame,
+        framesTestId: 'game-screen-breakpoints',
         renderStates: () => <GameScreenStatesRow />,
     },
     {
@@ -68,7 +74,7 @@ const FRAMES = frameset();
 export function ScreensCatalog() {
     return (
         <div className="flex min-w-0 flex-col gap-10">
-            {SCREENS.map(({ title, note, Component, renderStates }) => (
+            {SCREENS.map(({ title, note, Component, framesTestId, renderStates }) => (
                 <section key={title} className="flex min-w-0 flex-col gap-4">
                     <div className="flex flex-wrap items-baseline gap-3 border-b-[length:var(--border-w)] border-border pb-2.5">
                         <h3 className="font-display text-h2 text-text uppercase">{title}</h3>
@@ -77,7 +83,7 @@ export function ScreensCatalog() {
                     {/* Кадры — фиксированной ширины (до 576px у wide), поэтому на узком
                         окне прокручивается сама лента, а не страница витрины. */}
                     <div
-                        data-testid={renderStates ? 'game-screen-breakpoints' : undefined}
+                        data-testid={framesTestId}
                         className="flex min-w-0 flex-wrap items-start gap-5 overflow-x-auto pb-2"
                     >
                         {FRAMES.map((frame) => (
