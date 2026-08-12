@@ -1,6 +1,7 @@
 import { floor } from '@/shared/lib/canvas';
 import { Ground } from './ground';
 import { Tank } from './tank';
+import { WORLD_UNITS } from './world-scale';
 
 export class Bullet {
     static readonly label = 'Снаряд';
@@ -39,7 +40,12 @@ export class Bullet {
     ) {
         this.activeTank = activeTank;
         this.targetTank = targetTank;
-        this.radius = 2;
+        // Радиус снаряда и взрыва масштабируются вместе с телом танка (масштаб мира,
+        // #455): снаряд берёт коэффициент у стрелявшего танка. scale === 1 — канон
+        // прежних констант (радиус 2, взрыв 50). Хит-детект по земле и стенам, а также
+        // радиус кратера (`ground.fall`) идут в этих же масштабированных величинах.
+        const { scale } = activeTank;
+        this.radius = WORLD_UNITS.bulletRadius * scale;
         this.mass = this.radius;
         const { x, y } = activeTank.calcBulletStartPos();
         this.x = x;
@@ -51,7 +57,7 @@ export class Bullet {
         this.elasticity = 1;
         this.wind = wind;
         this.explosionRadius = 0;
-        this.explosionMaxRadius = 50;
+        this.explosionMaxRadius = WORLD_UNITS.explosionMaxRadius * scale;
         this.color = '#000000';
         this.innerWidth = innerWidth;
         this.innerHeight = innerHeight;

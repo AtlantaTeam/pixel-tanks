@@ -9,6 +9,7 @@ import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
+import { computeWorldScale } from './world-scale';
 
 /**
  * Тест детерминизма реплея (Issue #37): сериализованный бой при воспроизведении
@@ -74,11 +75,13 @@ const ctxStub = {
     isPointInPath: (path: Path2DStub, x: number, y: number) => path.contains(x, y),
 } as unknown as CanvasRenderingContext2D;
 
-// Область попадания танка = его прямоугольник, как в Tank.draw. Пересобираем перед
-// каждым выстрелом, чтобы она следовала за танком после перемещений.
+// Область попадания танка = его прямоугольник, как в Tank.draw (общий источник
+// `bodyRect`, масштаб мира #455). Пересобираем перед каждым выстрелом, чтобы она
+// следовала за танком после перемещений.
 const refreshHitArea = (tank: Tank) => {
     const path = new Path2DStub();
-    path.rect(floor(tank.x), floor(tank.y - 30), tank.tankWidth, tank.tankHeight);
+    const body = tank.bodyRect();
+    path.rect(body.x, body.y, body.width, body.height);
     tank.tankHitArea = path as unknown as Path2D;
 };
 
@@ -110,13 +113,36 @@ const simulateBattleHp = (replay: TReplay): THp => {
     );
     const wind = generateWind(random);
 
+    // Масштаб мира — чистая функция логической ширины записи (масштаб мира #455):
+    // при воспроизведении GamePlay фиксирует размер записью, поэтому scale тот же,
+    // что при живом бою этой записи. Так реплей воспроизводится один в один на любом
+    // экране (см. докблок world-scale). Здесь считаем его ровно так же.
+    const scale = computeWorldScale(width);
     const leftX = floor(width / 4);
     const rightX = floor((width * 3) / 4);
-    const player = new Tank(leftX, height - ground.heights[leftX], width, height, 0, [WEAPON]);
+    const player = new Tank(
+        leftX,
+        height - ground.heights[leftX],
+        width,
+        height,
+        0,
+        [WEAPON],
+        undefined,
+        undefined,
+        scale,
+    );
     player.isActive = true;
-    const enemy = new Tank(rightX, height - ground.heights[rightX], width, height, Math.PI, [
-        WEAPON,
-    ]);
+    const enemy = new Tank(
+        rightX,
+        height - ground.heights[rightX],
+        width,
+        height,
+        Math.PI,
+        [WEAPON],
+        undefined,
+        undefined,
+        scale,
+    );
 
     const hp: THp = { playerHp: MAX_HP, enemyHp: MAX_HP };
 

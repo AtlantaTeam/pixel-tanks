@@ -20,6 +20,7 @@ import { CameraShake } from './camera-shake';
 import { SlowMotion } from './slow-motion';
 import { BulletTrail } from './bullet-trail';
 import { ENGINE_COLORS } from './engine-palette';
+import { computeWorldScale } from './world-scale';
 
 /** Ёмкости пула хватает на одновременный залп земли и вспышку урона. */
 const PARTICLE_CAPACITY = 96;
@@ -412,6 +413,10 @@ export class GamePlay {
     private rescaleTerrainAndTanks = () => {
         if (!this.leftTank || !this.rightTank || !this.ground) return;
         this.ground.resize(this.innerWidth, this.innerHeight);
+        // Ширина арены изменилась → пересчитываем масштаб мира (issue #455) и
+        // применяем к обоим танкам перед постановкой на новый рельеф. Снаряд в
+        // полёте берёт scale стрелявшего танка и обновится тем же коэффициентом.
+        const worldScale = computeWorldScale(this.innerWidth);
         const leftTankX = floor(this.innerWidth / 4);
         const rightTankX = floor((this.innerWidth * 3) / 4);
         for (const [tank, x] of [
@@ -420,6 +425,7 @@ export class GamePlay {
         ] as const) {
             tank.innerWidth = this.innerWidth;
             tank.innerHeight = this.innerHeight;
+            tank.setScale(worldScale);
             tank.x = x;
             tank.y = this.innerHeight - this.ground.heights[x];
             tank.dx = 0;
@@ -465,6 +471,10 @@ export class GamePlay {
         );
         this.wind = generateWind(this.random);
         this.callbacks.onWindInit?.(this.wind);
+        // Масштаб мира от ширины арены (issue #455): танки/ствол/снаряд/взрыв
+        // считаются в мировых единицах и рисуются через этот коэффициент. В режиме
+        // реплея innerWidth зафиксирован записью → scale тот же, что при записи.
+        const worldScale = computeWorldScale(this.innerWidth);
         const leftTankX = floor(this.innerWidth / 4);
         const leftTankY = this.innerHeight - this.ground.heights[leftTankX];
         this.leftTank = new Tank(
@@ -476,6 +486,7 @@ export class GamePlay {
             leftTankWeapons,
             leftTank,
             leftGunpoint,
+            worldScale,
         );
         this.leftTank.isActive = true;
         // Игрок всегда ходит первым (см. §GDD) — HUD узнаёт об этом здесь же,
@@ -493,6 +504,7 @@ export class GamePlay {
             rightTankWeapons,
             rightTank,
             rightGunpoint,
+            worldScale,
         );
         if (this.ctx) {
             this.ground.draw(this.ctx);
