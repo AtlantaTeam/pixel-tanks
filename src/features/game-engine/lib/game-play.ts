@@ -4,6 +4,12 @@ import { getAudioEngine } from '@/shared/lib/audio';
 import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
 import { pickBotReply, resolveBotReplyCategory, type TBotReply } from '@/entities/bot-messages';
+import {
+    computeArenaZone,
+    EMPTY_ARENA_INSETS,
+    type TArenaInsets,
+    type TArenaZone,
+} from './arena-insets';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
@@ -111,6 +117,21 @@ export class GamePlay {
     static images: { [p: string]: HTMLImageElement } = {};
     innerWidth: number;
     innerHeight: number;
+    /**
+     * Инсеты оверлеев (HUD сверху, палуба снизу), которыми они закрывают арену
+     * (контракт safe-зоны, issue #453). Публикует их стор боя (`arenaInsets`),
+     * доносит `GameCanvas` через `setArenaInsets`. По умолчанию пусто — движок
+     * ведёт себя как раньше (зона = весь канвас), пока оверлеи не сообщили высоту.
+     */
+    arenaInsets: TArenaInsets = EMPTY_ARENA_INSETS;
+    /**
+     * Свободная (не закрытая оверлеями) зона арены — производная от `innerHeight`
+     * и `arenaInsets` (см. `computeArenaZone`). Хранится как поле и пересчитывается
+     * на изменение любого входа: смену инсетов (`setArenaInsets` — брейкпоинт,
+     * safe-area) и ресайз/поворот (`fit` меняет `innerHeight`). Пока отрисовка её
+     * не использует — рельеф и танки перейдут в зону следующими карточками фазы.
+     */
+    arenaZone: TArenaZone = { top: 0, height: 0 };
     mousePos: TCoords | null;
     maxGameDifficulty = 5;
     gameDifficulty = 1;
@@ -198,6 +219,22 @@ export class GamePlay {
             this.innerWidth = rect.width;
             this.innerHeight = rect.height;
         }
+        this.recomputeArenaZone();
+    }
+
+    /**
+     * Принимает инсеты оверлеев из стора (`GameCanvas` зовёт на каждой смене
+     * `arenaInsets` — брейкпоинт, safe-area, будущая фаза боя) и пересчитывает
+     * свободную зону. Идемпотентна: те же инсеты дают ту же зону.
+     */
+    setArenaInsets = (insets: TArenaInsets) => {
+        this.arenaInsets = insets;
+        this.recomputeArenaZone();
+    };
+
+    /** Пересчёт свободной зоны из текущих `innerHeight` и `arenaInsets`. */
+    private recomputeArenaZone() {
+        this.arenaZone = computeArenaZone(this.innerHeight, this.arenaInsets);
     }
 
     changeTankPosition = (delta: number) => {
@@ -319,6 +356,9 @@ export class GamePlay {
         if (canvas.height !== backingHeight) canvas.height = backingHeight;
         this.innerWidth = cssWidth;
         this.innerHeight = cssHeight;
+        // Высота канваса могла измениться (ресайз/поворот) — свободная зона от неё
+        // производна, пересчитываем вместе с логическим размером.
+        this.recomputeArenaZone();
         if (this.ctx) {
             this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }

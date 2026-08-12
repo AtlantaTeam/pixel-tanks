@@ -560,3 +560,49 @@ describe('game.store — startGame стартует чистую запись р
         expect(state.battleField).toBeNull();
     });
 });
+
+describe('game.store — инсеты арены (контракт safe-зоны, #453)', () => {
+    beforeEach(() => {
+        // Инсеты — свойство раскладки, не сбрасываются `resetGame` (владелец —
+        // хук `useArenaInset`); изолируем каждый тест явно.
+        useGameStore.getState().setArenaInset('top', 0);
+        useGameStore.getState().setArenaInset('bottom', 0);
+    });
+
+    it('по умолчанию инсеты нулевые', () => {
+        expect(useGameStore.getState().arenaInsets).toEqual({ top: 0, bottom: 0 });
+    });
+
+    it('публикует высоту верхнего оверлея, не трогая нижний', () => {
+        useGameStore.getState().setArenaInset('top', 284);
+
+        expect(useGameStore.getState().arenaInsets).toEqual({ top: 284, bottom: 0 });
+    });
+
+    it('публикует высоту нижнего оверлея, не трогая верхний', () => {
+        useGameStore.getState().setArenaInset('top', 284);
+        useGameStore.getState().setArenaInset('bottom', 150);
+
+        expect(useGameStore.getState().arenaInsets).toEqual({ top: 284, bottom: 150 });
+    });
+
+    it('запись той же высоты — no-op: ссылка arenaInsets не меняется', () => {
+        useGameStore.getState().setArenaInset('top', 200);
+        const before = useGameStore.getState().arenaInsets;
+
+        useGameStore.getState().setArenaInset('top', 200);
+
+        // Та же ссылка → подписчики (GameCanvas) не будятся лишним тиком.
+        expect(useGameStore.getState().arenaInsets).toBe(before);
+    });
+
+    it('новая высота даёт новую ссылку arenaInsets', () => {
+        useGameStore.getState().setArenaInset('top', 200);
+        const before = useGameStore.getState().arenaInsets;
+
+        useGameStore.getState().setArenaInset('top', 180);
+
+        expect(useGameStore.getState().arenaInsets).not.toBe(before);
+        expect(useGameStore.getState().arenaInsets.top).toBe(180);
+    });
+});

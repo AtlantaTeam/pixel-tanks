@@ -122,6 +122,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
 
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
+    const arenaInsets = useGameStore((s) => s.arenaInsets);
     const moves = useGameStore((s) => s.moves);
     const selectedWeapon = useGameStore((s) => s.selectedWeapon);
     const weapons = useGameStore((s) => s.weapons);
@@ -282,6 +283,15 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             game.activateMode('angle');
         }
     }, [angle, power]);
+
+    // Инсеты арены → движок (контракт safe-зоны, #453): оверлеи публикуют свои
+    // высоты в стор (`useArenaInset`), движок хранит производную свободную зону.
+    // Тот же паттерн store→engine, что и синк угла/мощности выше: React-состояние
+    // не участвует в кадровом цикле, движок держит зону в поле. Отрисовка её пока
+    // не использует — рельеф и танки перейдут в зону следующими карточками фазы.
+    useEffect(() => {
+        gameRef.current?.setArenaInsets(arenaInsets);
+    }, [arenaInsets]);
 
     // Управление клавиатурой
     useEffect(() => {

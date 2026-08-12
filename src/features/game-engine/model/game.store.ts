@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { TReplayMove } from '@/entities/replays';
 import type { TWeapon } from '@/shared/model';
 import { MAX_HP, MOVE_BUDGET } from '@/shared/config';
+import { EMPTY_ARENA_INSETS, type TArenaInsets } from '../lib/arena-insets';
 import { clampPower } from '../lib/power';
 
 // Геймдизайн-константы боя (GDD §2.3/§2.5) живут в `shared/config` — общий
@@ -135,6 +136,17 @@ type TGameState = {
     battleField: { width: number; height: number } | null;
     /** Ходы игрока текущего боя в порядке совершения (см. `@/entities/replays`). */
     replayMoves: TReplayMove[];
+    /**
+     * Фактические высоты оверлеев, закрывающих арену сверху (HUD) и снизу
+     * (палуба), CSS-пиксели — **единственный источник правды по инсетам арены**
+     * (контракт safe-зоны, issue #453). Оба оверлея публикуют сюда свою высоту
+     * через `ResizeObserver` (хук `useArenaInset`), движок читает и хранит
+     * производную свободную зону (см. `arena-insets.ts`, `GamePlay.setArenaInsets`).
+     * Не сбрасывается в `startGame`/`resetGame`: инсеты — свойство раскладки
+     * смонтированных оверлеев, а не состояние боя; их жизненным циклом владеет сам
+     * хук (публикует на монтировании, обнуляет на размонтировании).
+     */
+    arenaInsets: TArenaInsets;
 };
 
 type TGameActions = {
@@ -181,6 +193,14 @@ type TGameActions = {
      * инкрементится здесь же — один источник истины, рассинхрон невозможен.
      */
     recordFire: (angle: number, power: number) => void;
+    /**
+     * Публикует фактическую высоту одного оверлея (верхнего HUD или нижней
+     * палубы) в инсеты арены. Обновляет ровно одну грань, не трогая соседнюю —
+     * оверлеи независимы и измеряются каждый своим `ResizeObserver`. Запись
+     * той же высоты — no-op (ссылка `arenaInsets` не меняется), чтобы лишний
+     * тик `ResizeObserver` не будил подписчиков (`GameCanvas`).
+     */
+    setArenaInset: (edge: keyof TArenaInsets, height: number) => void;
 };
 
 const fullHp = () => ({ player: MAX_HP, enemy: MAX_HP });
@@ -211,6 +231,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     battleSeed: null,
     battleField: null,
     replayMoves: [],
+    arenaInsets: EMPTY_ARENA_INSETS,
 
     setAngle: (angle) => set({ angle }),
     increaseAngle: (delta) => set((s) => ({ angle: s.angle + delta })),
@@ -309,4 +330,10 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             replayMoves: [...s.replayMoves, { kind: 'fire', angle, power }],
             shotsFired: s.shotsFired + 1,
         })),
+    setArenaInset: (edge, height) =>
+        set((s) =>
+            s.arenaInsets[edge] === height
+                ? {}
+                : { arenaInsets: { ...s.arenaInsets, [edge]: height } },
+        ),
 }));
