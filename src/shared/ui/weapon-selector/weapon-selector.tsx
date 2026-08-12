@@ -26,7 +26,9 @@ const ARROW_BUTTON_CLASSES =
  *
  *  Контракт: вызывающий код обязан держать `selectedIndex` в границах `weapons`.
  *  При выходе за границы (или пустом `weapons`) центральная панель рендерится
- *  пустой — это безопасный, но «тихий» фолбэк без диагностики, а не штатный режим. */
+ *  пустой — это безопасный, но «тихий» фолбэк без диагностики, а не штатный режим.
+ *  Высоту панели фолбэк держит невидимым размерником (чтобы палуба не «скакала»,
+ *  когда у игрока кончаются снаряды и `game-controls` отдаёт пустой список). */
 export function WeaponSelector({
     weapons,
     selectedIndex,
@@ -62,7 +64,7 @@ export function WeaponSelector({
                         : 'border-[color:var(--accent)] shadow-[var(--glow)]',
                 )}
             >
-                {weapon && (
+                {weapon ? (
                     <>
                         <Icon
                             name={weapon.icon}
@@ -83,6 +85,21 @@ export function WeaponSelector({
                             </span>
                         </div>
                     </>
+                ) : (
+                    // Пустой список / выход за границы — «тихий фолбэк» (см. докблок).
+                    // Держим высоту центральной панели невидимым размерником в две
+                    // строки (имя + ×N) тем же приёмом, что `FixedNumeric`/пилюля хода
+                    // в `top-hud`: без него палуба «скачет» на ~7px, когда у игрока
+                    // кончаются снаряды и `game-controls` отдаёт пустой список
+                    // (`weaponSlots = []`). Пусто остаётся пустым визуально —
+                    // размерник невидим и вне дерева доступности.
+                    <span
+                        aria-hidden
+                        className="invisible flex flex-col items-center gap-0.5 text-center"
+                    >
+                        <span className="font-ui text-[15px] font-bold">Оружие</span>
+                        <span className="font-ui text-label tracking-[0.1em] uppercase">×0</span>
+                    </span>
                 )}
             </div>
             <button
