@@ -132,7 +132,7 @@ describe('GameOverDialog', () => {
         expect(submitMock).not.toHaveBeenCalled();
     });
 
-    it('shows a "Поделиться боем" replay-share button when a battle seed was recorded', () => {
+    it('shows a "Поделиться реплеем" replay-share button when a battle seed was recorded', () => {
         setGameOver(10, 5);
         useGameStore.setState({
             battleSeed: 42,
@@ -141,7 +141,7 @@ describe('GameOverDialog', () => {
         });
         render(<GameOverDialog seed="42" />);
 
-        expect(screen.getByRole('button', { name: /Поделиться боем/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /Поделиться реплеем/i })).toBeInTheDocument();
     });
 
     it('does not show a replay-share button when no battle seed was recorded', () => {
@@ -149,7 +149,7 @@ describe('GameOverDialog', () => {
         useGameStore.setState({ battleSeed: null, battleField: null, replayMoves: [] });
         render(<GameOverDialog seed="42" />);
 
-        expect(screen.queryByRole('button', { name: /Поделиться боем/i })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /Поделиться реплеем/i })).not.toBeInTheDocument();
     });
 
     it('keeps the finished game outcome stable when the store HP still changes (#337)', () => {
@@ -171,12 +171,49 @@ describe('GameOverDialog', () => {
         expect(screen.queryByText('Ничья')).not.toBeInTheDocument();
     });
 
-    it('shows both "Новая игра" and "В меню" buttons (#338)', () => {
+    it('shows both "Реванш" and "В меню" buttons (#338)', () => {
         setGameOver(10, 5);
         render(<GameOverDialog seed="42" />);
 
-        expect(screen.getByRole('button', { name: /Новая игра/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /Реванш/i })).toBeInTheDocument();
         expect(screen.getByRole('link', { name: /В меню/i })).toBeInTheDocument();
+    });
+
+    it('"Реванш" — единственная залитая кнопка (primary); «Поделиться реплеем» и «В меню» — контур/ghost (handoff «Game over»)', () => {
+        setGameOver(10, 5);
+        useGameStore.setState({
+            battleSeed: 42,
+            battleField: { width: 800, height: 600 },
+            replayMoves: [],
+        });
+        render(<GameOverDialog seed="42" />);
+
+        const rematch = screen.getByRole('button', { name: /Реванш/i });
+        expect(rematch.className).toMatch(/\bbg-primary\b/);
+
+        const share = screen.getByRole('button', { name: /Поделиться реплеем/i });
+        expect(share.className).not.toMatch(/bg-primary|bg-\[var\(--accent\)\]/);
+        expect(share.className).toMatch(/var\(--accent\)/);
+        expect(share.className).toMatch(/\bbg-transparent\b/);
+
+        const menu = screen.getByRole('link', { name: /В меню/i });
+        expect(menu.className).not.toMatch(/bg-primary|bg-\[var\(--accent\)\]/);
+    });
+
+    it('orders the game-over buttons Реванш → Поделиться реплеем → В меню, stacked (handoff «Game over»)', () => {
+        setGameOver(10, 5);
+        useGameStore.setState({
+            battleSeed: 42,
+            battleField: { width: 800, height: 600 },
+            replayMoves: [],
+        });
+        render(<GameOverDialog seed="42" />);
+
+        const labels = screen
+            .getAllByRole('button', { name: /Реванш|Поделиться реплеем/i })
+            .map((el) => el.textContent);
+        expect(labels[0]).toMatch(/Реванш/);
+        expect(labels[1]).toMatch(/Поделиться реплеем/);
     });
 
     it('"В меню" link points to the home page (#338)', () => {

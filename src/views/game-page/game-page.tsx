@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { GameCanvas, useGameStore, type TGameCanvasHandle } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
+import { themeAttrs } from '@/shared/lib/theme';
 import { GameControls } from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
 import { PauseOverlay } from '@/widgets/pause-overlay';
@@ -22,10 +23,19 @@ type TGamePageProps = {
 export function GamePage({ seed }: TGamePageProps = {}) {
     const [isPaused, setIsPaused] = useState(false);
     const resetGame = useGameStore((s) => s.resetGame);
+    const turn = useGameStore((s) => s.turn);
+    const phase = useGameStore((s) => s.phase);
     const gameApiRef = useRef<TGameCanvasHandle>(null);
 
+    // Ход бота (handoff «Ход бота»): весь --accent корня → маджента. Бой
+    // окончен — тема нейтральна, финал темизирует себя сам через GameOverDialog.
+    const isBotTurn = turn === 'enemy' && phase !== 'over';
+
     return (
-        <main className="safe-area-inset relative h-dvh overflow-hidden">
+        <main
+            className="safe-area-inset relative h-dvh overflow-hidden"
+            {...themeAttrs({ faction: isBotTurn ? 'enemy' : undefined })}
+        >
             <SceneMusic track="battle" />
             <GameCanvas ref={gameApiRef} seed={seed} />
             <TopHud onPauseClick={() => setIsPaused(true)} />

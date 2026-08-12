@@ -1,10 +1,15 @@
 'use client';
 
-import { useEffect, useRef, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { clsx } from 'clsx';
+import { usePrefersReducedMotion } from '@/shared/lib/animation';
+import { BOT_NAME } from '@/shared/config';
+import { Icon } from '@/shared/ui';
 import { EBotReplyCategory, type TBotReply } from '../../t-bot-reply';
 
 const DEFAULT_DURATION_MS = 3000;
+/** Печать реплики (handoff «Чат-бабл бота»): ~35 мс/символ. */
+const TYPING_MS_PER_CHAR = 35;
 
 const CATEGORY_COLOR: Record<EBotReplyCategory, string> = {
     [EBotReplyCategory.Happy]: 'var(--color-accent)',
@@ -21,7 +26,40 @@ type TChatBubbleProps = {
     className?: string;
 };
 
-/** DOM-слой поверх Canvas: реплика бота, привязанная к точке (x, y) над танком. */
+/** Печатает `text` посимвольно с шагом `TYPING_MS_PER_CHAR` — сразу целиком при
+ *  `prefers-reduced-motion: reduce` (handoff «Доступность движения»): в этом
+ *  случае эффект даже не подписывается на интервал, полный текст отдаёт сам
+ *  return — состояние печати такому рендеру не нужно.
+ *
+ *  Сброс прогресса печати при смене `text` — синхронный setState ПРЯМО В теле
+ *  рендера (паттерн React «adjusting state when a prop changes»), не в эффекте:
+ *  так React перерендерит с нуля до коммита, без каскадного лишнего кадра,
+ *  который дал бы сброс из `useEffect`. */
+function useTypedText(text: string): string {
+    const reducedMotion = usePrefersReducedMotion();
+    const [state, setState] = useState({ text, visibleChars: 0 });
+    if (state.text !== text) {
+        setState({ text, visibleChars: 0 });
+    }
+
+    useEffect(() => {
+        if (reducedMotion) return;
+        let shown = 0;
+        const id = setInterval(() => {
+            shown += 1;
+            setState((s) => ({ ...s, visibleChars: shown }));
+            if (shown >= text.length) clearInterval(id);
+        }, TYPING_MS_PER_CHAR);
+        return () => clearInterval(id);
+    }, [text, reducedMotion]);
+
+    return reducedMotion ? text : text.slice(0, state.visibleChars);
+}
+
+/** DOM-слой поверх Canvas: реплика бота, привязанная к точке (x, y) над танком —
+ *  бабл сидит нижним краем на (x, y) (`-translate-y-full`), поэтому хвост,
+ *  центрированный по низу, всегда указывает точно на танк независимо от длины
+ *  текста (высота растёт вверх, точка привязки не двигается). */
 export function ChatBubble({
     reply,
     x,
@@ -30,6 +68,9 @@ export function ChatBubble({
     onExpire,
     className,
 }: TChatBubbleProps) {
+    const typedText = useTypedText(reply.text);
+    const color = CATEGORY_COLOR[reply.category];
+
     // onExpire держим в ref, чтобы его идентичность не пересоздавала таймер:
     // родитель ре-рендерится десятками раз в секунду при прицеливании, а инлайн
     // `() => setBotBubble(null)` без ref сбрасывал бы отсчёт и бабл не исчезал бы.
@@ -53,18 +94,32 @@ export function ChatBubble({
             className={clsx(
                 'pointer-events-none absolute -translate-x-1/2 -translate-y-full',
                 'animate-bubble-pop motion-reduce:animate-none',
-                'border-[length:var(--border-w)] max-w-40 bg-panel px-3 py-2 text-center font-ui text-[10px] text-text',
+                'border-[length:var(--border-w)] max-w-[260px] bg-surface px-3.5 py-3 text-center',
+                'shadow-[var(--glow-enemy),0_0_0_1px_rgba(0,0,0,.9)]',
                 className,
             )}
             style={
                 {
                     left: x,
                     top: y,
-                    borderColor: CATEGORY_COLOR[reply.category],
+                    borderColor: color,
                 } as CSSProperties
             }
         >
-            {reply.text}
+            <div className="mb-1 flex items-center justify-center gap-1.5 text-enemy">
+                <Icon name="skull" size={14} />
+                <span className="font-ui text-[10px] font-bold tracking-[0.12em] uppercase">
+                    {BOT_NAME}
+                </span>
+            </div>
+            <p className="font-ui text-[12px] leading-[1.45] text-text">{typedText}</p>
+            {/* Хвост — треугольник, центрирован по низу бабла: указывает на танк,
+                над которым бабл заякорен (см. докблок компонента). */}
+            <span
+                aria-hidden
+                className="absolute bottom-[-9px] left-1/2 h-0 w-0 -translate-x-1/2 border-x-8 border-t-[9px] border-x-transparent"
+                style={{ borderTopColor: color }}
+            />
         </div>
     );
 }

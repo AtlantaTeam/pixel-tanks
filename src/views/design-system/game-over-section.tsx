@@ -1,7 +1,8 @@
 import { GameOverDialog } from '@/widgets/game-over-dialog';
 
-/** design-inventory.dc.html — экран конца боя: диалог с кнопками «Новая игра»
- *  (primary) и «В меню» (ghost) для всех исходов.
+/** handoff «Game over» — экран конца боя: диалог с кнопками «Реванш» (primary,
+ *  единственная залитая) и «В меню» (ghost) для всех исходов; «Поделиться
+ *  реплеем» (контур accent) не показан здесь — preview не пишет battleSeed.
  *
  *  Витрина = срез визуальной регрессии (`design-system-showcase.md`): исход
  *  показываем СТАТИЧНО (`dialogVariant="static"` — в потоке, без `fixed` и без

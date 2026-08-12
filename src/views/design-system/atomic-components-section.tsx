@@ -281,6 +281,10 @@ export function AtomicComponentsSection() {
                     <Toast variant="success" message="Ссылка на реплей скопирована" />
                     <Toast variant="neutral" message="Синхронизация профиля…" />
                     <Toast variant="error" message="Не удалось поделиться" />
+                    <Toast
+                        variant="warning"
+                        message="Патроны кончились — остался только манёвр. Ход перейдёт сопернику."
+                    />
                 </div>
             </div>
 

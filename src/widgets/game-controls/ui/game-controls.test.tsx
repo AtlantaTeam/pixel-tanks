@@ -133,4 +133,84 @@ describe('GameControls (палуба)', () => {
             expect(button).toBeDisabled();
         }
     });
+
+    it('клик по дизейбленной ОГОНЬ на ходе соперника реально не стреляет (лок ввода)', async () => {
+        const user = userEvent.setup();
+        setWeapons(3);
+        useGameStore.setState({ turn: 'enemy' });
+        const { getAllByRole, gameApiRef } = renderDeck();
+
+        for (const button of getAllByRole('button', { name: /Огонь/ })) {
+            await user.click(button);
+        }
+
+        expect(gameApiRef.current?.fire).not.toHaveBeenCalled();
+    });
+
+    it('показывает лок «Ход соперника» на ходе бота', () => {
+        setWeapons(3);
+        useGameStore.setState({ turn: 'enemy', phase: 'aiming' });
+        const { getByTestId, getByText } = renderDeck();
+
+        expect(getByTestId('deck-lock')).toBeInTheDocument();
+        expect(getByText('Ход соперника')).toBeInTheDocument();
+    });
+
+    it('показывает лок «Снаряд в полёте» во время полёта независимо от того, чей был ход', () => {
+        setWeapons(3);
+        useGameStore.setState({ turn: 'player', phase: 'flight' });
+        const { getByText } = renderDeck();
+
+        expect(getByText('Снаряд в полёте')).toBeInTheDocument();
+    });
+
+    it('не показывает лок на ходе игрока', () => {
+        setWeapons(3);
+        const { queryByTestId } = renderDeck();
+
+        expect(queryByTestId('deck-lock')).not.toBeInTheDocument();
+    });
+
+    it('не показывает лок после конца боя (индикатор хода скрыт, лок тоже)', () => {
+        setWeapons(3);
+        useGameStore.setState({ turn: 'enemy', phase: 'over' });
+        const { queryByTestId } = renderDeck();
+
+        expect(queryByTestId('deck-lock')).not.toBeInTheDocument();
+    });
+
+    it('лок не мигает при prefers-reduced-motion', () => {
+        setWeapons(3);
+        useGameStore.setState({ turn: 'enemy', phase: 'aiming' });
+        const { getByTestId } = renderDeck();
+
+        const marker = getByTestId('deck-lock').querySelector('.animate-lock-blink');
+        expect(marker).toHaveClass('motion-reduce:animate-none');
+    });
+
+    it('показывает тост «патроны кончились» на своём ходе без снарядов, манёвр остаётся активным', () => {
+        setWeapons(0);
+        useGameStore.setState({ moves: 2 });
+        const { getByRole, getAllByLabelText } = renderDeck();
+
+        expect(getByRole('status')).toHaveTextContent('Патроны кончились');
+        for (const button of getAllByLabelText('Сдвинуть влево')) {
+            expect(button).not.toBeDisabled();
+        }
+    });
+
+    it('не показывает тост «патроны кончились», пока есть снаряды', () => {
+        setWeapons(3);
+        const { queryByRole } = renderDeck();
+
+        expect(queryByRole('status')).not.toBeInTheDocument();
+    });
+
+    it('не показывает тост «патроны кончились» на ходе соперника (там уже лок)', () => {
+        setWeapons(0);
+        useGameStore.setState({ turn: 'enemy' });
+        const { queryByRole } = renderDeck();
+
+        expect(queryByRole('status')).not.toBeInTheDocument();
+    });
 });

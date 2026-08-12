@@ -1,7 +1,39 @@
-import { fireEvent, render, within } from '@testing-library/react';
+import { act, fireEvent, render, within } from '@testing-library/react';
+import { useGameStore } from '@/features/game-engine';
 import { GamePage } from './game-page';
 
 describe('GamePage', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('ставит data-faction="enemy" на корень на ходе бота (handoff «Ход бота»)', () => {
+        // GameCanvas.startGame() на монтировании сбрасывает turn/phase — задаём
+        // ПОСЛЕ рендера, иначе mount-эффект тут же перезапишет их обратно.
+        const { container } = render(<GamePage seed="42" />);
+        act(() => {
+            useGameStore.setState({ turn: 'enemy', phase: 'aiming' });
+        });
+
+        expect(container.querySelector('main')).toHaveAttribute('data-faction', 'enemy');
+    });
+
+    it('не ставит data-faction на ходе игрока', () => {
+        useGameStore.setState({ turn: 'player', phase: 'aiming' });
+        const { container } = render(<GamePage seed="42" />);
+
+        expect(container.querySelector('main')).not.toHaveAttribute('data-faction');
+    });
+
+    it('снимает data-faction после конца боя, даже если ход был за ботом', () => {
+        const { container } = render(<GamePage seed="42" />);
+        act(() => {
+            useGameStore.setState({ turn: 'enemy', phase: 'over' });
+        });
+
+        expect(container.querySelector('main')).not.toHaveAttribute('data-faction');
+    });
+
     it('uses dvh viewport height and clips overflow to avoid horizontal scroll', () => {
         const { container } = render(<GamePage seed="42" />);
         const main = container.querySelector('main');

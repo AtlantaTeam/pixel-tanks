@@ -43,6 +43,13 @@ function turnPillLabel(turn: TSide, phase: TPhase): string {
     return turn === 'enemy' ? 'ХОД СОПЕРНИКА' : 'ТВОЙ ХОД';
 }
 
+/** Индикатор хода на финале скрыт (handoff «Game over»): бой окончен —
+ *  индикатора хода быть не может. */
+function TurnPillOrNothing({ turn, phase }: { turn: TSide; phase: TPhase }) {
+    if (phase === 'over') return null;
+    return <TurnPill turn={turn} phase={phase} />;
+}
+
 function HpCard({
     faction,
     label,
@@ -390,7 +397,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     />
                 </div>
                 <div className="flex items-center gap-2">
-                    <TurnPill turn={turn} phase={phase} />
+                    <TurnPillOrNothing turn={turn} phase={phase} />
                     <div className="flex-1" />
                     <HudIconButtons onPauseClick={onPauseClick} />
                 </div>
@@ -468,7 +475,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                             active={turn === 'enemy'}
                         />
                     </div>
-                    <TurnPill turn={turn} phase={phase} />
+                    <TurnPillOrNothing turn={turn} phase={phase} />
                     <HudIconButtons onPauseClick={onPauseClick} />
                 </div>
                 <div

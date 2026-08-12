@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { POWER_MAX, POWER_MIN } from '@/shared/config';
 import {
     calculateGestureAim,
+    clampBubbleAnchorY,
     clampChipCenterX,
     clampChipTop,
     DIRECTION_SEGMENT_MAX,
@@ -152,5 +153,19 @@ describe('clampChipCenterX', () => {
 
     it('не вылезает за левую границу зоны', () => {
         expect(clampChipCenterX(20, zone, 180)).toBe(zone.left + 90);
+    });
+});
+
+describe('clampBubbleAnchorY', () => {
+    const zone: TGestureZone = { top: 242, bottom: 700, left: 10, right: 390 };
+
+    it('не трогает якорь, если бабл целиком помещается ниже верхнего HUD', () => {
+        expect(clampBubbleAnchorY(500, zone, 90)).toBe(500);
+    });
+
+    it('прижимает якорь так, чтобы верх бабла не заходил в верхний HUD', () => {
+        // Танк близко к верхнему оверлею (rawY=260) — бабл высотой 90 задел бы
+        // зону HUD (260 - 90 = 170 < 242). Якорь прижимается к zone.top + height.
+        expect(clampBubbleAnchorY(260, zone, 90)).toBe(zone.top + 90);
     });
 });

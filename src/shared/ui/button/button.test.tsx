@@ -48,6 +48,15 @@ describe('Button', () => {
         expect(button.className).not.toMatch(/\bpixel-border\b/);
     });
 
+    it('renders outline variant as a themed accent outline, without a fill', () => {
+        const { getByRole } = render(<Button variant="outline">Поделиться реплеем</Button>);
+
+        const button = getByRole('button');
+        expect(button.className).toMatch(/var\(--accent\)/);
+        expect(button.className).toMatch(/\bbg-transparent\b/);
+        expect(button.className).not.toMatch(/#[0-9a-fA-F]{3,6}/);
+    });
+
     it('feeds edge/glow into box-shadow tokens directly, without the legacy pixel-border utility', () => {
         const { getByRole } = render(<Button variant="primary">Играть</Button>);
 

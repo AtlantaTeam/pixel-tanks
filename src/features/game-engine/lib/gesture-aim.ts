@@ -122,3 +122,14 @@ export function clampChipCenterX(fingerX: number, zone: TGestureZone, chipWidth:
     if (max < min) return (zone.left + zone.right) / 2;
     return Math.max(min, Math.min(fingerX, max));
 }
+
+/**
+ * Точка привязки чат-бабла бота (нижний край, растёт вверх — handoff «Чат-бабл
+ * бота»): не должна уходить выше верхней границы зоны жеста, иначе бабл заходит
+ * в полосы верхнего HUD (handoff «Чат-бабл... не заходит в полосы HUD»). `zone.top`
+ * совпадает с нижней границей верхнего оверлея на любом брейкпоинте (та же зона,
+ * что и у жеста/чипа), поэтому отдельного порога под бабл считать не нужно.
+ */
+export function clampBubbleAnchorY(rawY: number, zone: TGestureZone, bubbleHeight: number): number {
+    return Math.max(rawY, zone.top + bubbleHeight);
+}

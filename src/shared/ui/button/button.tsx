@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes } from 'react';
 import { clsx } from 'clsx';
 
-export type TButtonVariant = 'primary' | 'accent' | 'ghost' | 'danger';
+export type TButtonVariant = 'primary' | 'accent' | 'ghost' | 'danger' | 'outline';
 export type TButtonSize = 'sm' | 'md' | 'icon';
 
 /** `accent` читает --accent/--accent-ink/--glow — переключается атрибутом
@@ -17,14 +17,21 @@ export type TButtonSize = 'sm' | 'md' | 'icon';
  *  одним общим классом: у primary/accent объём — тоже `box-shadow`
  *  (`--edge-pixel`), и голый `focus-visible:shadow-[--ring-focus]` перебил бы
  *  edge (у `:focus-visible` выше специфичность), съев 3D-грань под клавиатурным
- *  фокусом. Домешиваем edge в фокус-тень (`edge,ring`); у ghost/danger грани
- *  нет (рамка через `border`) — им достаточно кольца. */
+ *  фокусом. Домешиваем edge в фокус-тень (`edge,ring`); у ghost/danger/outline
+ *  грани нет (рамка через `border`) — им достаточно кольца.
+ *
+ *  `outline` — контурный акцент (handoff game-over «Поделиться реплеем»): рамка +
+ *  текст `var(--accent)`, без заливки. Отличается от `danger` только тем, что
+ *  красится тематизированным `--accent` (переключается фракцией/исходом боя), а
+ *  не фиксированным `--color-danger`; от `accent` — отсутствием заливки. */
 const VARIANT_CLASSES: Record<TButtonVariant, string> = {
     primary:
         'bg-primary text-primary-ink shadow-[var(--edge-pixel)] hover:shadow-[var(--edge-pixel),var(--glow-primary)] focus-visible:shadow-[var(--edge-pixel),var(--ring-focus)]',
     accent: 'bg-[var(--accent)] text-[var(--accent-ink)] shadow-[var(--edge-pixel)] hover:shadow-[var(--edge-pixel),var(--glow)] focus-visible:shadow-[var(--edge-pixel),var(--ring-focus)]',
     ghost: 'border-[length:var(--border-w)] border-border-strong bg-transparent text-text hover:border-[var(--accent)] focus-visible:shadow-[var(--ring-focus)]',
     danger: 'border-[length:var(--border-w)] border-danger bg-transparent text-danger focus-visible:shadow-[var(--ring-focus)]',
+    outline:
+        'border-[length:var(--border-w)] border-[var(--accent)] bg-transparent text-[var(--accent)] hover:shadow-[var(--glow)] focus-visible:shadow-[var(--ring-focus)]',
 };
 
 const SIZE_CLASSES: Record<TButtonSize, string> = {

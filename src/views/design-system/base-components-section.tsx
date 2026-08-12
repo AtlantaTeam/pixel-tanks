@@ -1,7 +1,7 @@
 import type { TButtonSize, TButtonVariant } from '@/shared/ui';
 import { Button, Dialog, Icon, Panel, Select } from '@/shared/ui';
 
-const VARIANTS: TButtonVariant[] = ['primary', 'accent', 'ghost', 'danger'];
+const VARIANTS: TButtonVariant[] = ['primary', 'accent', 'ghost', 'danger', 'outline'];
 const SIZES: TButtonSize[] = ['sm', 'md', 'icon'];
 
 /** Один набор опций на все срезы Select ниже — чтобы правки не расходились по копиям.

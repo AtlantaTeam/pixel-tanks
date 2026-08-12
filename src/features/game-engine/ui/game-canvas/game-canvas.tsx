@@ -13,6 +13,7 @@ import { createFxRandom } from '../../lib/fx-random';
 import { calculateDragAim } from '../../lib/drag-aim';
 import {
     calculateGestureAim,
+    clampBubbleAnchorY,
     clampChipCenterX,
     clampChipTop,
     isPointInGestureZone,
@@ -42,6 +43,13 @@ type TDragState = {
 const CHIP_HEIGHT = 92;
 /** Отступ чипа над пальцем: радиус кольца (28) + запас, чтобы палец не закрывал чип. */
 const CHIP_GAP = 46;
+/**
+ * Приблизительная высота чат-бабла бота (шапка «skull + имя» + 1–2 строки текста +
+ * паддинги + хвост) — для клэмпа `clampBubbleAnchorY`, как `CHIP_HEIGHT` выше:
+ * точная высота зависит от длины конкретной реплики, оценка держит бабл выше
+ * верхнего HUD с запасом, а не впритык.
+ */
+const BUBBLE_HEIGHT_ESTIMATE = 100;
 
 type TGameCanvasProps = {
     seed?: number | string;
@@ -129,6 +137,13 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const setWind = useGameStore((s) => s.setWind);
     const setPhase = useGameStore((s) => s.setPhase);
     const fireStore = useGameStore((s) => s.fire);
+    const turn = useGameStore((s) => s.turn);
+    const phase = useGameStore((s) => s.phase);
+    // Ход бота (handoff «Ход бота»): арена в маджента-рамке весь ход соперника —
+    // включая его собственный полёт снаряда (turn не флипается обратно, пока
+    // снаряд бота не долетит, см. `changeActiveTank`). Бой окончен — рамки нет,
+    // финал закрывает GameOverDialog.
+    const isBotTurn = turn === 'enemy' && phase !== 'over';
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -171,10 +186,29 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     if (!bot) return;
                     // Bubble всегда над танком бота (справа). Эмитится не на каждый
                     // выстрел: свой промах/самострел бот молчит (см. game-play.emitBotReply).
+                    // Клэмп по зоне жеста (handoff: бабл «не заходит в полосы HUD») —
+                    // та же зона, что и у чипа прицела, её верхняя граница совпадает с
+                    // низом верхнего оверлея на любом брейкпоинте.
+                    const rawY = bot.y - bot.tankHeight;
+                    const containerRect = canvasRef.current?.getBoundingClientRect();
+                    const zoneRect = zoneRef.current?.getBoundingClientRect();
+                    const y =
+                        containerRect && zoneRect
+                            ? clampBubbleAnchorY(
+                                  rawY,
+                                  {
+                                      top: zoneRect.top - containerRect.top,
+                                      bottom: zoneRect.bottom - containerRect.top,
+                                      left: zoneRect.left - containerRect.left,
+                                      right: zoneRect.right - containerRect.left,
+                                  },
+                                  BUBBLE_HEIGHT_ESTIMATE,
+                              )
+                            : rawY;
                     setBotBubble({
                         reply,
                         x: bot.x + bot.tankWidth / 2,
-                        y: bot.y - bot.tankHeight,
+                        y,
                     });
                 },
                 // Логический размер поля этого боя — пишем в реплей вместе с seed.
@@ -542,6 +576,15 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 )}
             </div>
             <GestureOverlay visual={gestureVisual} />
+            {/* Ход бота (handoff): маджента-рамка арены — без предсказания траектории,
+                игрок не должен заранее знать, попадёт ли соперник. */}
+            {isBotTurn && (
+                <div
+                    data-testid="arena-turn-ring"
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 shadow-[inset_0_0_0_3px_var(--color-enemy),inset_0_0_40px_rgba(201,0,255,.28)]"
+                />
+            )}
             {botBubble && (
                 <ChatBubble
                     reply={botBubble.reply}
