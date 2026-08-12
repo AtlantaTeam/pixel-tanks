@@ -54,17 +54,20 @@ function HpCard({
     label,
     value,
     active,
+    layout = 'stacked',
 }: {
     faction: 'player' | 'enemy';
     label: string;
     value: number;
     active: boolean;
+    layout?: 'stacked' | 'inline';
 }) {
     return (
         <div
             className={clsx(
                 HUD_SURFACE,
-                'min-w-[150px] flex-1 border-[length:var(--border-w)] p-2',
+                'min-w-[150px] flex-1 border-[length:var(--border-w)]',
+                layout === 'inline' ? 'px-2 py-1.5' : 'p-2',
                 active
                     ? faction === 'player'
                         ? 'border-accent shadow-[var(--glow-accent),0_0_0_1px_rgba(0,0,0,.9)]'
@@ -72,7 +75,7 @@ function HpCard({
                     : 'border-border',
             )}
         >
-            <HPBar label={label} value={value} faction={faction} max={MAX_HP} />
+            <HPBar label={label} value={value} faction={faction} max={MAX_HP} layout={layout} />
         </div>
     );
 }
@@ -106,12 +109,21 @@ function HudIconButtons() {
     );
 }
 
-function CellShell({ label, children }: { label: string; children: ReactNode }) {
+function CellShell({
+    label,
+    compact,
+    children,
+}: {
+    label: string;
+    compact?: boolean;
+    children: ReactNode;
+}) {
     return (
         <div
             className={clsx(
                 HUD_SURFACE,
-                'flex flex-col gap-0.5 border-[length:var(--border-w)] border-border px-2.5 py-1.5',
+                'flex flex-col gap-0.5 border-[length:var(--border-w)] border-border',
+                compact ? 'shrink-0 px-1 py-0.5' : 'px-2.5 py-1.5',
             )}
         >
             <span className="font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase">
@@ -160,8 +172,42 @@ function NumberCell({
     );
 }
 
-/** УГОЛ/СИЛА на тач-мобилке (handoff, решение B): ± 44×44 — доводка после жеста
- *  рогатки. На витрине декоративные (`noop`), но визуально 1:1 с боевой ячейкой. */
+/** Компактная тач-кнопка ± (#450): визуально 32px, зона нажатия ≥44×44
+ *  псевдоэлементом. 1:1 с боевым `TrimButton` в `widgets/top-hud`. */
+function TrimButton({
+    ariaLabel,
+    disabled,
+    children,
+}: {
+    ariaLabel: string;
+    disabled: boolean;
+    children: ReactNode;
+}) {
+    return (
+        <button
+            type="button"
+            onClick={noop}
+            disabled={disabled}
+            aria-label={ariaLabel}
+            className={clsx(
+                'relative flex size-8 shrink-0 cursor-pointer items-center justify-center',
+                'border-[length:var(--border-w)] border-border-strong bg-panel-raised text-text',
+                'font-ui text-base leading-none uppercase',
+                'transition-colors hover:border-[color:var(--accent)]',
+                'focus-visible:border-[color:var(--accent)] focus-visible:outline-none',
+                'active:translate-y-0.5',
+                'disabled:cursor-not-allowed disabled:border-transparent disabled:bg-muted disabled:text-text-dim',
+                "before:absolute before:-inset-2.5 before:content-['']",
+            )}
+        >
+            {children}
+        </button>
+    );
+}
+
+/** УГОЛ/СИЛА на тач-мобилке (handoff, решение B): ± вокруг значения — доводка
+ *  после жеста рогатки. Компактная плотность (#450): кнопки визуально 32px
+ *  (тач-цель ≥44). На витрине декоративные (`noop`), но визуально 1:1 с боевой. */
 function TrimCell({
     label,
     value,
@@ -174,31 +220,17 @@ function TrimCell({
     frozen: boolean;
 }) {
     return (
-        <CellShell label={label}>
-            <div className="flex items-center gap-1.5">
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    className="m-0"
-                    disabled={frozen}
-                    aria-label={`${label} меньше`}
-                    onClick={noop}
-                >
+        <CellShell label={label} compact>
+            <div className="flex items-center gap-0.5">
+                <TrimButton ariaLabel={`${label} меньше`} disabled={frozen}>
                     −
-                </Button>
+                </TrimButton>
                 <CellValue compact valueClassName={valueClassName}>
                     {value}
                 </CellValue>
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    className="m-0"
-                    disabled={frozen}
-                    aria-label={`${label} больше`}
-                    onClick={noop}
-                >
+                <TrimButton ariaLabel={`${label} больше`} disabled={frozen}>
                     +
-                </Button>
+                </TrimButton>
             </div>
         </CellShell>
     );
@@ -212,13 +244,14 @@ function WindCell({ compact }: { compact?: boolean }) {
     const pips = Array.from({ length: WIND_DISPLAY_SCALE }, (_, index) => index < magnitude);
 
     return (
-        <CellShell label="Ветер">
-            <div className="flex items-center gap-1.5">
+        <CellShell label="Ветер" compact={compact}>
+            <div className={clsx('flex items-center', compact ? 'gap-1' : 'gap-1.5')}>
                 <Icon name="arrow-r" size={compact ? 14 : 18} className="text-warning" />
                 <PipRow
                     pips={pips}
                     color="var(--color-warning)"
-                    size={10}
+                    size={compact ? 8 : 10}
+                    gap={compact ? 3 : 5}
                     label="грубая сила ветра"
                 />
             </div>
@@ -231,18 +264,22 @@ function ResourcePips({
     pips,
     color,
     ariaLabel,
+    size,
+    gap,
 }: {
     label: string;
     pips: boolean[];
     color: string;
     ariaLabel: string;
+    size?: number;
+    gap?: number;
 }) {
     return (
         <div className="flex flex-col gap-1">
             <span className="font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase">
                 {label}
             </span>
-            <PipRow pips={pips} color={color} label={ariaLabel} />
+            <PipRow pips={pips} color={color} label={ariaLabel} size={size} gap={gap} />
         </div>
     );
 }
@@ -467,19 +504,21 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                 className="pointer-events-none absolute inset-x-0 top-0 z-6 flex flex-col gap-2 p-2.5"
                 style={{ paddingTop: 'calc(0.625rem + env(safe-area-inset-top))' }}
             >
-                <div className="pointer-events-auto flex flex-col gap-2">
+                <div className="pointer-events-auto flex flex-col gap-1.5">
                     <div className="flex gap-2">
                         <HpCard
                             faction="player"
                             label="Rex Commander"
                             value={72}
                             active={!scene.isBotTurn}
+                            layout="inline"
                         />
                         <HpCard
                             faction="enemy"
                             label={BOT_NAME}
                             value={38}
                             active={scene.isBotTurn}
+                            layout="inline"
                         />
                     </div>
                     <div className="flex items-center gap-2">
@@ -487,7 +526,13 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                         <div className="flex-1" />
                         <HudIconButtons />
                     </div>
-                    <div className={clsx('flex gap-2', scene.isBotTurn && 'opacity-60')}>
+                    {/* Вся телеметрия — один ряд (#450): угол / сила / ветер / пипы. */}
+                    <div
+                        className={clsx(
+                            'relative flex items-stretch gap-1.5',
+                            scene.isBotTurn && 'opacity-60',
+                        )}
+                    >
                         <TrimCell
                             label="Угол"
                             value="47°"
@@ -500,30 +545,29 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                             valueClassName="text-warning"
                             frozen={scene.isBotTurn}
                         />
-                    </div>
-                    <div
-                        className={clsx(
-                            'flex items-end justify-between gap-2',
-                            scene.isBotTurn && 'opacity-60',
-                        )}
-                    >
                         <WindCell compact />
-                        <div className="flex gap-3">
+                        <div className="flex shrink-0 flex-col justify-center gap-1">
                             <ResourcePips
                                 label="Снаряды"
                                 pips={ammoPips}
                                 color="var(--color-accent)"
                                 ariaLabel="снарядов"
+                                size={8}
+                                gap={2}
                             />
                             <ResourcePips
                                 label="Ходы"
                                 pips={movePips}
                                 color="var(--color-warning)"
                                 ariaLabel="ходов манёвра"
+                                size={8}
+                                gap={2}
                             />
                         </div>
+                        {scene.isBotTurn && (
+                            <FrozenNote className="pointer-events-none absolute inset-x-0 bottom-0" />
+                        )}
                     </div>
-                    {scene.isBotTurn && <FrozenNote />}
                 </div>
             </div>
         );

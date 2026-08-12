@@ -99,6 +99,19 @@ for (const viewport of HEIGHT_VIEWPORTS) {
                     `top-hud высота: фаза «${phase}» = ${height}px, ожидалось как на «${baselinePhase}» = ${baseline}px (разница ${Math.abs(height - baseline)}px)`,
                 ).toBe(baseline);
             }
+
+            // Бюджет компактного мобильного HUD (#450): ≤180px на 390×844 в любой
+            // фазе. Геометрия уже доказана неизменной выше, поэтому потолок держим
+            // на всех фазах одним замером базовой. Только мобилка — на планшете
+            // другой (двухрядный) состав, вне бюджета #450.
+            if (viewport.width === 390) {
+                for (const [phase, height] of Object.entries(heights)) {
+                    expect(
+                        height,
+                        `top-hud высота: фаза «${phase}» = ${height}px, бюджет #450 ≤180px`,
+                    ).toBeLessThanOrEqual(180);
+                }
+            }
         });
 
         test('ширина HP-бара соперника не меняется после попадания (0 px)', async ({ page }) => {
@@ -188,6 +201,82 @@ test.describe('Ширина ячеек и координаты кнопок ± �
                 sample.x,
                 `кнопка «+» силы: X «${sample.label}» = ${sample.x}px, ожидалось как на «${baseline.label}» = ${baseline.x}px (разница ${Math.abs(sample.x - baseline.x)}px)`,
             ).toBe(baseline.x);
+        }
+    });
+
+    // #450 — компактные кнопки ± визуально 32–36px, но тач-цель ≥44×44 с зазором
+    // ≥8px до соседней. Визуальный бокс — `boundingBox` (border-box, без
+    // псевдоэлемента); реальную тач-цель — размер бокса псевдоэлемента `::before`
+    // (`getComputedStyle` даёт его width/height), он и есть кликабельная область
+    // (браузерный hit-test через `elementFromPoint` попадает в кнопку по всей его
+    // площади). Зазор между целями считаем через центры: две центрированные ≥44px
+    // цели разведены ≥8px ⟺ расстояние между центрами ≥52px.
+    test('кнопки ± компактны (32–36px), тач-цель ≥44 с зазором ≥8px до соседней', async ({
+        page,
+    }) => {
+        await page.goto('/game?seed=42');
+        await expect(page.getByTestId('game-hud')).toBeVisible();
+
+        const minus = page.getByRole('button', { name: 'Угол меньше' });
+        const plus = page.getByRole('button', { name: 'Угол больше' });
+        const minusBox = await minus.boundingBox();
+        const plusBox = await plus.boundingBox();
+        if (!minusBox || !plusBox) throw new Error('кнопки ± угла не найдены');
+
+        // Визуально компактные: 32–36px по обеим осям.
+        for (const box of [minusBox, plusBox]) {
+            expect(box.width).toBeGreaterThanOrEqual(32);
+            expect(box.width).toBeLessThanOrEqual(36);
+            expect(box.height).toBeGreaterThanOrEqual(32);
+            expect(box.height).toBeLessThanOrEqual(36);
+        }
+
+        // Тач-цель ≥44×44 — размер псевдоэлемента `::before` каждой кнопки.
+        for (const name of ['Угол меньше', 'Угол больше']) {
+            const hit = await page.evaluate((label) => {
+                const btn = [...document.querySelectorAll('button')].find(
+                    (b) => b.getAttribute('aria-label') === label,
+                );
+                if (!btn) return null;
+                const bs = getComputedStyle(btn, '::before');
+                return { w: parseFloat(bs.width), h: parseFloat(bs.height) };
+            }, name);
+            if (!hit) throw new Error(`кнопка «${name}» не найдена`);
+            expect(hit.w, `«${name}» hit-area ширина`).toBeGreaterThanOrEqual(44);
+            expect(hit.h, `«${name}» hit-area высота`).toBeGreaterThanOrEqual(44);
+        }
+
+        // Кнопка функциональна: клик по центру меняет угол (значение — accent-span
+        // без `invisible`; зеркальный размерник ширины #447 несёт класс `invisible`).
+        const angleValue = page
+            .getByTestId('top-hud-mobile')
+            .locator('span.text-accent:not(.invisible)')
+            .first();
+        const angleBefore = (await angleValue.textContent())?.trim();
+        await plus.click();
+        await expect
+            .poll(async () => (await angleValue.textContent())?.trim())
+            .not.toBe(angleBefore);
+
+        // Зазор между ≥44px тач-целями ≥8px ⟺ центры разведены ≥52px.
+        const minusCenter = minusBox.x + minusBox.width / 2;
+        const plusCenter = plusBox.x + plusBox.width / 2;
+        expect(
+            plusCenter - minusCenter,
+            `центры ± угла: ${plusCenter} − ${minusCenter} = ${plusCenter - minusCenter}px (нужно ≥52 для зазора ≥8 между 44px-целями)`,
+        ).toBeGreaterThanOrEqual(52);
+    });
+
+    test('иконки mute/пауза сохраняют тач-цель ≥44×44', async ({ page }) => {
+        await page.goto('/game?seed=42');
+        await expect(page.getByTestId('game-hud')).toBeVisible();
+
+        const mobile = page.getByTestId('top-hud-mobile');
+        for (const name of ['Выключить звук', 'Пауза']) {
+            const box = await mobile.getByRole('button', { name }).boundingBox();
+            if (!box) throw new Error(`кнопка «${name}» не найдена`);
+            expect(box.width, `«${name}» ширина`).toBeGreaterThanOrEqual(44);
+            expect(box.height, `«${name}» высота`).toBeGreaterThanOrEqual(44);
         }
     });
 
