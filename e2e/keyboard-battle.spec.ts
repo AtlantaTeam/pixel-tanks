@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { expectGameOverDialog, weaponCount } from './helpers';
+import { expectGameOverDialog, fireOne, weaponCount } from './helpers';
 
 // Полный бой одной клавиатурой: стрелки настраивают угол/мощность, Enter/Space
 // стреляют — без единого клика мыши бой с ботом идёт от старта до конца. Плюс
@@ -11,27 +11,6 @@ const SEED = 42;
 
 const PLAYER_WEAPONS = 5; // WEAPONS_AMOUNT=10, поровну между танками
 const PIXELS_PER_POWER_UNIT = 8; // DRAG_AIM_DEFAULTS.pixelsPerPowerUnit
-
-/**
- * Повторяет `action` (нажатие клавиши / клик / тач-жест), пока у игрока не станет
- * ровно на одно оружие меньше. Каждая из трёх схем — no-op вне активного хода
- * игрока (движок гасит выстрел, пока снаряд в полёте или ход бота), поэтому
- * ровно один выстрел на ход, без двойных. Возвращает новое число оружия.
- */
-async function fireOne(page: Page, action: () => Promise<void>, before: number): Promise<number> {
-    let count = before;
-    await expect
-        .poll(
-            async () => {
-                await action();
-                count = await weaponCount(page);
-                return count < before;
-            },
-            { timeout: 30_000, intervals: [50] },
-        )
-        .toBeTruthy();
-    return count;
-}
 
 /**
  * Эмулирует тач-жест «оттяни и отпусти» на Canvas: pointerdown → pointermove →
