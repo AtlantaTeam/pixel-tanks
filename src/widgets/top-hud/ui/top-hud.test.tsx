@@ -164,6 +164,47 @@ describe('TopHud', () => {
         expect(mobile.getByRole('button', { name: 'Сила больше' })).toBeDisabled();
     });
 
+    // #450 — компактный мобильный HUD (бюджет ≤180px при hit-area ≥44).
+
+    it('HP-карточки мобилки — inline-раскладка: трек тянется в общей строке (#450)', () => {
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        // inline-раскладка HPBar кладёт трек в один ряд с именем/числом и тянет его
+        // `flex-1` — так карточка занимает одну строку вместо двух (экономия высоты).
+        const playerBar = mobile.getAllByRole('progressbar')[0];
+        expect(playerBar).toHaveClass('flex-1');
+    });
+
+    it('кнопки ± угла визуально 32px, но с расширенной до 44px зоной нажатия (#450)', () => {
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        const plus = mobile.getByRole('button', { name: 'Угол больше' });
+        // Визуально компактная (size-8 = 32px), НЕ 44px-иконка.
+        expect(plus).toHaveClass('size-8');
+        expect(plus).not.toHaveClass('size-11');
+        // Зона нажатия ≥44×44 — псевдоэлемент `before:-inset-2.5` расширяет бокс на
+        // 10px во все стороны (52×52); тач-цель шире визуального бокса, раскладку
+        // не растит. Проверяем точный класс: `-inset-2` дал бы лишь 48×48, а
+        // substring `-inset-2` не отличил бы его от `-inset-2.5`.
+        expect(plus).toHaveClass('before:-inset-2.5');
+    });
+
+    it('вся телеметрия (угол, сила, ветер, пипы) — один ряд (#450)', () => {
+        const { getByTestId } = render(<TopHud />);
+        const mobile = getByTestId('top-hud-mobile');
+
+        // Угол-минус и пипы снарядов лежат в одном и том же ряду телеметрии
+        // (последний прямой ребёнок колонки), а не в двух разных рядах, как было.
+        const telemetryRow = mobile.children[mobile.children.length - 1];
+        const contains = (el: Element, node: Element | null) => !!node && el.contains(node);
+        const minusBtn = mobile.querySelector('button[aria-label="Угол меньше"]');
+        const ammoPips = mobile.querySelector('[aria-label*="снарядов"]');
+        expect(contains(telemetryRow, minusBtn)).toBe(true);
+        expect(contains(telemetryRow, ammoPips)).toBe(true);
+    });
+
     it('кнопка паузы 44px зовёт onPauseClick', () => {
         const onPauseClick = vi.fn();
         const { getByTestId } = render(<TopHud onPauseClick={onPauseClick} />);
@@ -248,13 +289,13 @@ describe('TopHud', () => {
 
     it('бокс значения ветра фиксирован в обоих состояниях (пипы ↔ раскрытое число)', () => {
         // Не раскрыт: пипы. Раскрыт: число. В обоих случаях у бокса есть размерники
-        // ширины (w-10 под ряд пипов) и высоты — геометрия ячейки не меняется.
+        // ширины (w-8 под компактный ряд пипов #450) и высоты — геометрия не меняется.
         for (const windRevealed of [false, true]) {
             useGameStore.setState({ wind: MAX_WIND, windRevealed });
             const { getByTestId, unmount } = render(<TopHud />);
             const mobile = getByTestId('top-hud-mobile');
 
-            expect(mobile.querySelector('.w-10')).not.toBeNull();
+            expect(mobile.querySelector('.w-8')).not.toBeNull();
             unmount();
         }
     });

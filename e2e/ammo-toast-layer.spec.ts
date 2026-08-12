@@ -25,15 +25,21 @@ const VIEWPORTS = [
     { name: 'desktop-1280', width: 1280, height: 800 },
 ];
 
-/** Доводит бой до момента, когда у игрока кончился боезапас (тот же прицел,
- *  что и в `battle-states-viewports.spec.ts`: ствол к −45°, немного мощности). */
-async function fireUntilEmptyAmmo(page: Page): Promise<void> {
+/** Прицел (тот же, что и в `battle-states-viewports.spec.ts`: ствол к −45°,
+ *  немного мощности) и один пристрелочный выстрел — до того, как гонять бой
+ *  до нуля патронов. */
+async function aimAndFireOnce(page: Page): Promise<number> {
     await expect(page.getByTestId('game-hud')).toBeVisible();
     await expect.poll(() => weaponCount(page)).toBeGreaterThan(0);
-    let count = await weaponCount(page);
+    const count = await weaponCount(page);
     for (let i = 0; i < 45; i++) await page.keyboard.press('ArrowLeft');
     for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowUp');
+    return fireOne(page, () => page.keyboard.press('Space'), count, 60_000);
+}
 
+/** Доводит бой до момента, когда у игрока кончился боезапас. */
+async function fireUntilEmptyAmmo(page: Page, startCount: number): Promise<void> {
+    let count = startCount;
     while (count > 0) {
         count = await fireOne(page, () => page.keyboard.press('Space'), count, 60_000);
     }
@@ -48,12 +54,19 @@ test('тост «патроны кончились» — свой слой по�
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
         await page.goto('/game?seed=42');
 
+        // Пристрелочный выстрел ПЕРЕД замером «до»: подсказка жеста (#451) живёт в
+        // потоке деки только до первого выстрела боя, и её исчезновение меняло бы
+        // высоту деки само по себе — независимо от тоста. Замер «до» берём в уже
+        // стабильном состоянии (подсказки нет, патроны ещё есть), «после» —
+        // когда патроны кончились и вылез тост, обе точки сравнимы 1:1.
+        const remaining = await aimAndFireOnce(page);
+
         const deckBoxBefore = await page.getByTestId('game-hud').boundingBox();
         expect(deckBoxBefore).not.toBeNull();
         const hudBoxBefore = await page.getByTestId('top-hud').boundingBox();
         expect(hudBoxBefore).not.toBeNull();
 
-        await fireUntilEmptyAmmo(page);
+        await fireUntilEmptyAmmo(page, remaining);
 
         const toast = page.getByRole('status');
         await expect(toast).toBeVisible({ timeout: 90_000 });

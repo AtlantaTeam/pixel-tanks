@@ -6,6 +6,7 @@ export {
     deriveOutcome,
     selectIsBotTurn,
     selectShowAmmoEmptyToast,
+    selectShowGestureHint,
     MAX_HP,
     MOVE_BUDGET,
 } from './model/game.store';

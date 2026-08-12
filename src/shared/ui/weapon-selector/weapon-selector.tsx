@@ -8,17 +8,23 @@ export type TWeaponSelectorWeapon = {
     ammo: number;
 };
 
+export type TWeaponSelectorSize = 'default' | 'compact';
+
 type TWeaponSelectorProps = {
     weapons: TWeaponSelectorWeapon[];
     selectedIndex: number;
     onPrev: () => void;
     onNext: () => void;
     className?: string;
+    /** Компактная палуба мобилки (issue #451): стрелки и панель — 44px, ровно
+     *  минимальная тач-цель (доп. псевдоэлемент не нужен — визуальный бокс
+     *  сам покрывает 44×44), имя и боезапас в один ряд вместо двух. Планшет/
+     *  десктоп остаются `default` (48px, #450) — их issue #451 не трогает. */
+    size?: TWeaponSelectorSize;
 };
 
-// 48×48 (handoff «Селектор оружия») — совпадает с size-12 дефолтной Tailwind-шкалы.
-const ARROW_BUTTON_CLASSES =
-    'flex size-12 shrink-0 cursor-pointer items-center justify-center border-[length:var(--border-w)] border-border-strong bg-surface text-text transition-colors hover:border-[color:var(--accent)] focus-visible:outline-none focus-visible:border-[color:var(--accent)]';
+const ARROW_BUTTON_BASE =
+    'flex shrink-0 cursor-pointer items-center justify-center border-[length:var(--border-w)] border-border-strong bg-surface text-text transition-colors hover:border-[color:var(--accent)] focus-visible:outline-none focus-visible:border-[color:var(--accent)]';
 
 /** design-inventory.dc.html §HUD «Weapon Selector»: центральная панель на --accent/--glow
  *  с текущим оружием, стрелки листают список. Управляется снаружи (selectedIndex +
@@ -37,6 +43,7 @@ export function WeaponSelector({
     onPrev,
     onNext,
     className,
+    size = 'default',
 }: TWeaponSelectorProps) {
     const weapon = weapons[selectedIndex];
     // «Пусто» (handoff «Селектор оружия»): сигнал «стрелять нечем», не просто
@@ -50,6 +57,7 @@ export function WeaponSelector({
     // accent'ом как заряженный слот. Сигнал «нечем стрелять» дополнительно несёт
     // дизейбл кнопки «ОГОНЬ» в `game-controls`.
     const isEmpty = weapon == null || weapon.ammo === 0;
+    const compact = size === 'compact';
 
     return (
         <div className={clsx('flex items-stretch gap-0.5', className)}>
@@ -57,7 +65,7 @@ export function WeaponSelector({
                 type="button"
                 onClick={onPrev}
                 aria-label="Предыдущее оружие"
-                className={ARROW_BUTTON_CLASSES}
+                className={clsx(ARROW_BUTTON_BASE, compact ? 'size-11' : 'size-12')}
             >
                 <Icon name="arrow-l" />
             </button>
@@ -65,7 +73,8 @@ export function WeaponSelector({
                 data-testid="weapon-ammo"
                 data-ammo-count={weapon?.ammo ?? 0}
                 className={clsx(
-                    'flex flex-1 items-center justify-center gap-3 border-[length:var(--border-w)] bg-surface px-3.5 py-1.5',
+                    'flex flex-1 items-center justify-center border-[length:var(--border-w)] bg-surface',
+                    compact ? 'h-11 gap-1.5 px-2' : 'gap-3 px-3.5 py-1.5',
                     isEmpty
                         ? 'border-border-strong opacity-55'
                         : 'border-[color:var(--accent)] shadow-[var(--glow)]',
@@ -75,37 +84,74 @@ export function WeaponSelector({
                     <>
                         <Icon
                             name={weapon.icon}
-                            size={22}
+                            size={compact ? 16 : 22}
                             className={isEmpty ? 'text-text-dim' : 'text-[color:var(--accent)]'}
                         />
-                        <div className="flex flex-col items-center gap-0.5 text-center">
-                            <span className="font-ui text-[15px] font-bold text-text">
-                                {weapon.name}
+                        {compact ? (
+                            // Компакт: имя + боезапас в один ряд по базовой линии —
+                            // укладывается в фикс-высоту 44px без второй строки.
+                            <span className="flex items-baseline gap-1.5">
+                                <span className="font-ui text-[11px] font-bold text-text">
+                                    {weapon.name}
+                                </span>
+                                <span
+                                    className={clsx(
+                                        'font-ui text-[9px] tracking-[0.1em] uppercase',
+                                        isEmpty ? 'text-danger' : 'text-text-muted',
+                                    )}
+                                >
+                                    ×{weapon.ammo}
+                                </span>
                             </span>
-                            <span
-                                className={clsx(
-                                    'font-ui text-label tracking-[0.1em] uppercase',
-                                    isEmpty ? 'text-danger' : 'text-text-muted',
-                                )}
-                            >
-                                ×{weapon.ammo}
-                            </span>
-                        </div>
+                        ) : (
+                            <div className="flex flex-col items-center gap-0.5 text-center">
+                                <span className="font-ui text-[15px] font-bold text-text">
+                                    {weapon.name}
+                                </span>
+                                <span
+                                    className={clsx(
+                                        'font-ui text-label tracking-[0.1em] uppercase',
+                                        isEmpty ? 'text-danger' : 'text-text-muted',
+                                    )}
+                                >
+                                    ×{weapon.ammo}
+                                </span>
+                            </div>
+                        )}
                     </>
                 ) : (
                     // Пустой список / выход за границы — «тихий фолбэк» (см. докблок).
-                    // Держим высоту центральной панели невидимым размерником в две
-                    // строки (имя + ×N) тем же приёмом, что `FixedNumeric`/пилюля хода
-                    // в `top-hud`: без него палуба «скачет» на ~7px, когда у игрока
-                    // кончаются снаряды и `game-controls` отдаёт пустой список
-                    // (`weaponSlots = []`). Пусто остаётся пустым визуально —
-                    // размерник невидим и вне дерева доступности.
+                    // Держим высоту/ширину центральной панели невидимым размерником тем
+                    // же приёмом, что `FixedNumeric`/пилюля хода в `top-hud`: без него
+                    // палуба «скачет», когда у игрока кончаются снаряды и
+                    // `game-controls` отдаёт пустой список (`weaponSlots = []`). Пусто
+                    // остаётся пустым визуально — размерник невидим и вне дерева
+                    // доступности.
                     <span
                         aria-hidden
-                        className="invisible flex flex-col items-center gap-0.5 text-center"
+                        className={clsx(
+                            'invisible',
+                            compact
+                                ? 'flex items-baseline gap-1.5'
+                                : 'flex flex-col items-center gap-0.5 text-center',
+                        )}
                     >
-                        <span className="font-ui text-[15px] font-bold">Оружие</span>
-                        <span className="font-ui text-label tracking-[0.1em] uppercase">×0</span>
+                        <span
+                            className={clsx(
+                                'font-ui font-bold',
+                                compact ? 'text-[11px]' : 'text-[15px]',
+                            )}
+                        >
+                            Оружие
+                        </span>
+                        <span
+                            className={clsx(
+                                'font-ui tracking-[0.1em] uppercase',
+                                compact ? 'text-[9px]' : 'text-label',
+                            )}
+                        >
+                            ×0
+                        </span>
                     </span>
                 )}
             </div>
@@ -113,7 +159,7 @@ export function WeaponSelector({
                 type="button"
                 onClick={onNext}
                 aria-label="Следующее оружие"
-                className={ARROW_BUTTON_CLASSES}
+                className={clsx(ARROW_BUTTON_BASE, compact ? 'size-11' : 'size-12')}
             >
                 <Icon name="arrow-r" />
             </button>

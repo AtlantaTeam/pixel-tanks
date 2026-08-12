@@ -194,6 +194,19 @@ export function AtomicComponentsSection() {
                             label="грубая сила ветра"
                         />
                     </div>
+                    {/* Компактный ряд (size=8, gap=2): снаряды/ходы в едином ряду
+                        телеметрии мобильного HUD (#450) — плотнее и уже. */}
+                    <div className="flex items-center gap-2.5">
+                        <span className="w-16 font-ui text-label text-text-muted">
+                            Компактно 8×8
+                        </span>
+                        <PipRow
+                            pips={[true, true, true, false, false]}
+                            size={8}
+                            gap={2}
+                            label="снарядов"
+                        />
+                    </div>
                 </div>
             </div>
 
@@ -213,6 +226,18 @@ export function AtomicComponentsSection() {
                         value={64}
                         faction="player"
                     />
+                </div>
+
+                <div className="h-0.5 bg-border" />
+
+                {/* Раскладка inline (#450): имя, трек и число в одну строку —
+                    компактная HP-карточка мобильного HUD, экономит высоту оверлея. */}
+                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                    HP-bar · inline (компактный мобильный HUD)
+                </span>
+                <div className="flex flex-col gap-2">
+                    <HPBar label="Rex Commander" value={72} faction="player" layout="inline" />
+                    <HPBar label="Terminator" value={38} faction="enemy" layout="inline" />
                 </div>
             </div>
 
@@ -237,6 +262,31 @@ export function AtomicComponentsSection() {
                     selectedIndex={0}
                     onPrev={noop}
                     onNext={noop}
+                />
+
+                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                    Weapon Selector · compact (мобильная палуба, #451)
+                </span>
+                {/* size="compact": стрелки/панель 44px (было 48), имя и боезапас в
+                    один ряд — используется только в мобильном составе `game-controls`,
+                    планшет/десктоп остаются default. */}
+                <WeaponSelector
+                    weapons={WEAPONS}
+                    selectedIndex={weaponIndex}
+                    onPrev={() => setWeaponIndex((i) => (i - 1 + WEAPONS.length) % WEAPONS.length)}
+                    onNext={() => setWeaponIndex((i) => (i + 1) % WEAPONS.length)}
+                    size="compact"
+                />
+
+                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                    Weapon Selector · compact · пусто (×0)
+                </span>
+                <WeaponSelector
+                    weapons={EMPTY_WEAPON_SLOT}
+                    selectedIndex={0}
+                    onPrev={noop}
+                    onNext={noop}
+                    size="compact"
                 />
 
                 <div className="h-0.5 bg-border" />

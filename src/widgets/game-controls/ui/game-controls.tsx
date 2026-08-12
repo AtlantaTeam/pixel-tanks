@@ -5,6 +5,7 @@ import type { RefObject } from 'react';
 import {
     formatAngle,
     selectIsBotTurn,
+    selectShowGestureHint,
     useGameStore,
     type TGameCanvasHandle,
 } from '@/features/game-engine';
@@ -43,10 +44,15 @@ function ManeuverButton({
     direction,
     disabled,
     onClick,
+    compact,
 }: {
     direction: 'left' | 'right';
     disabled: boolean;
     onClick: () => void;
+    /** Компактная палуба мобилки (#451): 44×44 — ровно минимальная тач-цель,
+     *  визуальный бокс сам покрывает hit-area (доп. псевдоэлемент не нужен).
+     *  Планшет/десктоп остаются 56×64 (handoff «Кнопки манёвра»). */
+    compact?: boolean;
 }) {
     return (
         <button
@@ -54,8 +60,13 @@ function ManeuverButton({
             onClick={onClick}
             disabled={disabled}
             aria-label={direction === 'left' ? 'Сдвинуть влево' : 'Сдвинуть вправо'}
-            // 56×64 (handoff «Кнопки манёвра») — w-14/h-16 дефолтной Tailwind-шкалы.
-            className="flex h-16 w-14 shrink-0 cursor-pointer items-center justify-center border-[length:var(--border-w)] border-border-strong bg-panel-raised text-text transition-colors hover:border-[color:var(--accent)] focus-visible:outline-none focus-visible:border-[color:var(--accent)] disabled:cursor-not-allowed disabled:border-transparent disabled:bg-muted disabled:text-text-dim"
+            className={clsx(
+                'flex shrink-0 cursor-pointer items-center justify-center border-[length:var(--border-w)] border-border-strong bg-panel-raised text-text transition-colors hover:border-[color:var(--accent)] focus-visible:outline-none focus-visible:border-[color:var(--accent)] disabled:cursor-not-allowed disabled:border-transparent disabled:bg-muted disabled:text-text-dim',
+                // compact: 44×44 (h-11 w-11) — минимальная тач-цель компактной палубы
+                // (#451); иначе 56×64 (handoff «Кнопки манёвра») — w-14/h-16 дефолтной
+                // Tailwind-шкалы.
+                compact ? 'h-11 w-11' : 'h-16 w-14',
+            )}
         >
             <Icon name={direction === 'left' ? 'arrow-l' : 'arrow-r'} />
         </button>
@@ -68,6 +79,7 @@ function FireButton({
     angle,
     power,
     onClick,
+    compact,
     className,
 }: {
     disabled: boolean;
@@ -75,6 +87,9 @@ function FireButton({
     angle: number;
     power: number;
     onClick: () => void;
+    /** Компактная палуба мобилки (#451): min-height 44 вместо 64 — ОГОНЬ
+     *  остаётся главной целью ряда шириной (`flex:1`) и цветом, не высотой. */
+    compact?: boolean;
     className?: string;
 }) {
     const angleDeg = formatAngle(angle);
@@ -93,26 +108,37 @@ function FireButton({
                 disabled ? 'Огонь — нет снарядов' : `Огонь: угол ${angleDeg}°, сила ${power}`
             }
             className={clsx(
-                // flex:1, min-height:64px (handoff «Кнопка ОГОНЬ»).
-                'flex min-h-16 flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 uppercase transition-[filter] active:translate-y-0.5 disabled:cursor-not-allowed',
+                'flex flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 uppercase transition-[filter] active:translate-y-0.5 disabled:cursor-not-allowed',
+                // flex:1, min-height:64px (handoff «Кнопка ОГОНЬ»); компакт — 44.
+                compact ? 'min-h-11' : 'min-h-16',
                 disabled
                     ? 'bg-muted text-text-dim shadow-none'
                     : 'bg-primary text-primary-ink shadow-[var(--edge-pixel),var(--glow-primary)]',
                 className,
             )}
         >
-            <span className="font-display text-[20px] tracking-[0.12em]">Огонь</span>
+            <span
+                className={clsx(
+                    'font-display tracking-[0.12em]',
+                    compact ? 'text-[15px]' : 'text-[20px]',
+                )}
+            >
+                Огонь
+            </span>
             <span className="text-[9px] tracking-normal opacity-75">{subtitle}</span>
         </button>
     );
 }
 
+/** Подсказка жеста (issue #451): только мобильная палуба, компактный размер —
+ *  не постоянная строка (см. `selectShowGestureHint`), поэтому не нужен вариант
+ *  под другие брейкпоинты. */
 function GestureHint({ className }: { className?: string }) {
     return (
         <p
             className={clsx(
                 HUD_SURFACE,
-                'border-[length:var(--border-w)] border-border px-2.5 py-1.5 text-center font-ui text-[10px] text-text-muted uppercase',
+                'border-[length:var(--border-w)] border-border px-2 py-1 text-center font-ui text-[9px] text-text-muted uppercase',
                 className,
             )}
         >
@@ -148,6 +174,10 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
     const phase = useGameStore((s) => s.phase);
     // Ход бота — общий селектор стора (одна точка правды с `game-page`/`game-canvas`).
     const isBotTurn = useGameStore(selectIsBotTurn);
+    // Подсказка жеста живёт до первого выстрела ТЕКУЩЕГО боя (#451) — источник
+    // в сторе (`shotsFired`), не локальный `useState`: иначе подсказка вернулась
+    // бы после ремаунта `GameControls` посреди боя.
+    const showGestureHint = useGameStore(selectShowGestureHint);
 
     // Ход соперника/снаряд в полёте — палуба не должна принимать ввод (движок сам
     // отбрасывает такие вызовы, но кнопки обязаны выглядеть недоступными).
@@ -181,30 +211,46 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
 
     return (
         <div data-testid="game-hud" className="pointer-events-none absolute inset-x-0 bottom-0 z-6">
-            {/* Мобилка (<768): колонка — селектор, манёвр+ОГОНЬ, подсказка жеста. */}
+            {/* Мобилка (<768): колонка — селектор, манёвр+ОГОНЬ, подсказка жеста
+                (только до первого выстрела боя, #451). Бюджет ≤150px без
+                подсказки / ≤175px с ней (390×844) — компактные размеры селектора
+                и кнопок манёвра держат этот потолок, ОГОНЬ остаётся главной целью
+                ряда шириной (`flex:1`) и цветом, а не высотой. */}
             <div
                 data-testid="game-deck-mobile"
-                className="pointer-events-auto flex flex-col gap-2 bg-linear-to-t from-[rgba(8,12,8,.92)] from-[26%] to-transparent px-2.5 pt-6 md:hidden"
-                style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 8px))' }}
+                className="pointer-events-auto flex flex-col gap-2 bg-linear-to-t from-[rgba(8,12,8,.92)] from-[26%] to-transparent px-2.5 pt-4 md:hidden"
+                style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom, 8px))' }}
             >
                 <WeaponSelector
                     weapons={weaponSlots}
                     selectedIndex={0}
                     onPrev={() => cycleWeapon(-1)}
                     onNext={() => cycleWeapon(1)}
+                    size="compact"
                 />
                 <div className="flex items-stretch gap-2">
-                    <ManeuverButton direction="left" disabled={!canManeuver} onClick={moveLeft} />
-                    <ManeuverButton direction="right" disabled={!canManeuver} onClick={moveRight} />
+                    <ManeuverButton
+                        direction="left"
+                        disabled={!canManeuver}
+                        onClick={moveLeft}
+                        compact
+                    />
+                    <ManeuverButton
+                        direction="right"
+                        disabled={!canManeuver}
+                        onClick={moveRight}
+                        compact
+                    />
                     <FireButton
                         disabled={!canFire}
                         hint="touch"
                         angle={angle}
                         power={power}
                         onClick={fire}
+                        compact
                     />
                 </div>
-                <GestureHint />
+                {showGestureHint && <GestureHint />}
             </div>
 
             {/* Планшет (768–1279): угловые кластеры — селектор слева, манёвр+ОГОНЬ справа. */}

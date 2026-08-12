@@ -79,6 +79,34 @@ describe('HPBar', () => {
         expect((container.firstChild as HTMLElement).className).toContain('custom-hp-bar');
     });
 
+    it('раскладка inline держит имя, трек и число в одной строке (#450)', () => {
+        const { container, getByText } = render(
+            <HPBar label="Игрок" value={72} faction="player" layout="inline" />,
+        );
+
+        // Корень inline-раскладки — единый flex-ряд (items-center), а не колонка:
+        // имя, трек и число лежат в один ряд, экономя высоту компактного HUD.
+        const root = container.firstChild as HTMLElement;
+        expect(root).toHaveClass('flex');
+        expect(root).toHaveClass('items-center');
+        expect(root).not.toHaveClass('flex-col');
+
+        // Трек тянется (`flex-1`) — имя усекается, число фиксировано.
+        const track = container.querySelector('[role="progressbar"]') as HTMLElement;
+        expect(track).toHaveClass('flex-1');
+
+        // Информация та же, что в stacked: имя и «72/100».
+        expect(getByText('Игрок')).toBeInTheDocument();
+        expect(getByText('72/100')).toBeInTheDocument();
+    });
+
+    it('раскладка по умолчанию (stacked) — колонка «заголовок над треком»', () => {
+        const { container } = render(<HPBar label="Игрок" value={72} faction="player" />);
+
+        const root = container.firstChild as HTMLElement;
+        expect(root).toHaveClass('flex-col');
+    });
+
     it('scales fill width and caption against a custom max', () => {
         const { container, getByText } = render(
             <HPBar label="Босс" value={75} faction="enemy" max={150} />,

@@ -5,6 +5,7 @@ import {
     MAX_HP,
     selectIsBotTurn,
     selectShowAmmoEmptyToast,
+    selectShowGestureHint,
     useGameStore,
 } from './game.store';
 
@@ -236,6 +237,27 @@ describe('game.store — тост «патроны кончились» (selectS
         expect(selectShowAmmoEmptyToast({ turn: 'player', phase: 'idle', weapons: [] })).toBe(
             false,
         );
+    });
+});
+
+describe('game.store — подсказка жеста палубы (selectShowGestureHint)', () => {
+    it('истина: выстрелов ещё не было в этом бою', () => {
+        expect(selectShowGestureHint({ shotsFired: 0 })).toBe(true);
+    });
+
+    it('ложь: игрок уже выстрелил хотя бы раз', () => {
+        expect(selectShowGestureHint({ shotsFired: 1 })).toBe(false);
+    });
+
+    it('стор: recordFire скрывает подсказку, startGame её снова открывает (новый бой)', () => {
+        useGameStore.getState().startGame();
+        expect(selectShowGestureHint(useGameStore.getState())).toBe(true);
+
+        useGameStore.getState().recordFire(0, 10);
+        expect(selectShowGestureHint(useGameStore.getState())).toBe(false);
+
+        useGameStore.getState().startGame();
+        expect(selectShowGestureHint(useGameStore.getState())).toBe(true);
     });
 });
 

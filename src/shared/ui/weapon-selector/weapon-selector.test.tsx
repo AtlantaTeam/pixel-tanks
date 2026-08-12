@@ -155,6 +155,66 @@ describe('WeaponSelector', () => {
         });
     });
 
+    describe('компактный размер (size="compact", #451)', () => {
+        it('стрелки — 44px (size-11), не 48px (size-12) дефолта', () => {
+            const { getByLabelText } = render(
+                <WeaponSelector
+                    weapons={WEAPONS}
+                    selectedIndex={0}
+                    onPrev={() => {}}
+                    onNext={() => {}}
+                    size="compact"
+                />,
+            );
+
+            expect(getByLabelText('Следующее оружие')).toHaveClass('size-11');
+            expect(getByLabelText('Следующее оружие')).not.toHaveClass('size-12');
+        });
+
+        it('дефолт (size не передан) остаётся 48px — планшет/десктоп не трогаем', () => {
+            const { getByLabelText } = render(
+                <WeaponSelector
+                    weapons={WEAPONS}
+                    selectedIndex={0}
+                    onPrev={() => {}}
+                    onNext={() => {}}
+                />,
+            );
+
+            expect(getByLabelText('Следующее оружие')).toHaveClass('size-12');
+        });
+
+        it('панель фиксированной высоты 44px (h-11), имя и боезапас в один ряд', () => {
+            const { getByTestId, getByText } = render(
+                <WeaponSelector
+                    weapons={WEAPONS}
+                    selectedIndex={0}
+                    onPrev={() => {}}
+                    onNext={() => {}}
+                    size="compact"
+                />,
+            );
+
+            expect(getByTestId('weapon-ammo')).toHaveClass('h-11');
+            expect(getByText('Фугас')).toBeInTheDocument();
+            expect(getByText('×12')).toBeInTheDocument();
+        });
+
+        it('пустой фолбэк компакта тоже приглушён (муто-рамка)', () => {
+            const { getByTestId } = render(
+                <WeaponSelector
+                    weapons={[]}
+                    selectedIndex={0}
+                    onPrev={() => {}}
+                    onNext={() => {}}
+                    size="compact"
+                />,
+            );
+
+            expect(getByTestId('weapon-ammo')).toHaveClass('opacity-55');
+        });
+    });
+
     it('accepts a custom className', () => {
         const { container } = render(
             <WeaponSelector

@@ -74,6 +74,16 @@ describe('PipRow', () => {
         expect(wrapper.className).toContain('gap-[5px]');
     });
 
+    it('компактный зазор (#450): кастомный gap задаётся inline, дефолтный класс снят', () => {
+        const { container } = render(<PipRow pips={[true, false, true]} gap={2} />);
+
+        const wrapper = container.firstChild as HTMLElement;
+        // Нестандартный зазор — через inline style (как нестандартный размер),
+        // дефолтный `gap-[5px]` при этом не навешивается, чтобы не конфликтовать.
+        expect(wrapper.className).not.toContain('gap-[5px]');
+        expect(wrapper.style.gap).toBe('2px');
+    });
+
     it('exposes an aria-label summarizing active pips for screen readers', () => {
         const { getByRole } = render(
             <PipRow pips={[true, true, true, false, false]} label="снарядов" />,
