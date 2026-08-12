@@ -70,6 +70,20 @@ export const selectShowAmmoEmptyToast = (
     s: Pick<TGameState, 'turn' | 'phase' | 'weapons'>,
 ): boolean => s.turn === 'player' && s.phase === 'aiming' && s.weapons.length === 0;
 
+/**
+ * Показывать подсказку жеста «тяни по арене — отпусти, чтобы выстрелить»
+ * (issue #451): до первого выстрела ТЕКУЩЕГО боя, дальше скрыта — новичку
+ * подсказка нужна один раз, а не постоянной строкой в компактной палубе.
+ *
+ * Источник — `shotsFired` (стор, не локальный `useState` палубы): счётчик
+ * считает только выстрелы игрока (`recordFire`) и обнуляется в `startGame`/
+ * `resetGame`, поэтому подсказка переживает ремаунт `GameControls` внутри
+ * одного боя и появляется заново в следующем — ровно то, что требует критерий
+ * готовности.
+ */
+export const selectShowGestureHint = (s: Pick<TGameState, 'shotsFired'>): boolean =>
+    s.shotsFired === 0;
+
 type TGameState = {
     angle: number;
     power: number;

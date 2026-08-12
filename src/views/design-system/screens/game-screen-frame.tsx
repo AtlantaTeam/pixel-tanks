@@ -420,26 +420,39 @@ function BattleArena({ scene }: { scene: TSceneData }) {
     );
 }
 
-function ManeuverButton({ direction }: { direction: 'left' | 'right' }) {
+/** compact — компактная мобильная палуба (#451): 44×44 вместо 56×64. */
+function ManeuverButton({
+    direction,
+    compact,
+}: {
+    direction: 'left' | 'right';
+    compact?: boolean;
+}) {
     return (
         <button
             type="button"
             onClick={noop}
             aria-label={direction === 'left' ? 'Сдвинуть влево' : 'Сдвинуть вправо'}
-            className="flex h-16 w-14 shrink-0 cursor-pointer items-center justify-center border-[length:var(--border-w)] border-border-strong bg-panel-raised text-text transition-colors hover:border-[color:var(--accent)] focus-visible:border-[color:var(--accent)] focus-visible:outline-none"
+            className={clsx(
+                'flex shrink-0 cursor-pointer items-center justify-center border-[length:var(--border-w)] border-border-strong bg-panel-raised text-text transition-colors hover:border-[color:var(--accent)] focus-visible:border-[color:var(--accent)] focus-visible:outline-none',
+                compact ? 'h-11 w-11' : 'h-16 w-14',
+            )}
         >
             <Icon name={direction === 'left' ? 'arrow-l' : 'arrow-r'} />
         </button>
     );
 }
 
+/** compact — компактная мобильная палуба (#451): min-height 44 вместо 64. */
 function FireButton({
     disabled,
     hint,
+    compact,
     className,
 }: {
     disabled: boolean;
     hint: 'touch' | 'desktop';
+    compact?: boolean;
     className?: string;
 }) {
     const subtitle = disabled
@@ -455,25 +468,36 @@ function FireButton({
             disabled={disabled}
             aria-label={disabled ? 'Огонь — нет снарядов' : 'Огонь: угол 47°, сила 64'}
             className={clsx(
-                'flex min-h-16 flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 uppercase transition-[filter] active:translate-y-0.5 disabled:cursor-not-allowed',
+                'flex flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 uppercase transition-[filter] active:translate-y-0.5 disabled:cursor-not-allowed',
+                compact ? 'min-h-11' : 'min-h-16',
                 disabled
                     ? 'bg-muted text-text-dim shadow-none'
                     : 'bg-primary text-primary-ink shadow-[var(--edge-pixel),var(--glow-primary)]',
                 className,
             )}
         >
-            <span className="font-display text-[20px] tracking-[0.12em]">Огонь</span>
+            <span
+                className={clsx(
+                    'font-display tracking-[0.12em]',
+                    compact ? 'text-[15px]' : 'text-[20px]',
+                )}
+            >
+                Огонь
+            </span>
             <span className="text-[9px] tracking-normal opacity-75">{subtitle}</span>
         </button>
     );
 }
 
+/** Компактный размер (#451) — только мобильная палуба, подсказка не постоянная
+ *  (см. `selectShowGestureHint` в реальном `game-controls`); здесь показана как
+ *  срез «до первого выстрела». */
 function GestureHint({ className }: { className?: string }) {
     return (
         <p
             className={clsx(
                 HUD_SURFACE,
-                'border-[length:var(--border-w)] border-border px-2.5 py-1.5 text-center font-ui text-[10px] text-text-muted uppercase',
+                'border-[length:var(--border-w)] border-border px-2 py-1 text-center font-ui text-[9px] text-text-muted uppercase',
                 className,
             )}
         >
@@ -482,13 +506,14 @@ function GestureHint({ className }: { className?: string }) {
     );
 }
 
-function WeaponDeckSlot({ ammo }: { ammo: number }) {
+function WeaponDeckSlot({ ammo, compact }: { ammo: number; compact?: boolean }) {
     return (
         <WeaponSelector
             weapons={[{ name: 'Снаряд', icon: 'fire', ammo }]}
             selectedIndex={0}
             onPrev={noop}
             onNext={noop}
+            size={compact ? 'compact' : 'default'}
         />
     );
 }
@@ -679,14 +704,14 @@ function DeckOverlay({ scene, variant }: { scene: TSceneData; variant: TScreenVa
             <div className="pointer-events-none absolute inset-x-0 bottom-0 z-6">
                 {scene.isEmptyAmmo && <AmmoEmptyToastRow />}
                 <div
-                    className="pointer-events-auto flex flex-col gap-2 bg-linear-to-t from-[rgba(8,12,8,.92)] from-[26%] to-transparent px-2.5 pt-6"
-                    style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 8px))' }}
+                    className="pointer-events-auto flex flex-col gap-2 bg-linear-to-t from-[rgba(8,12,8,.92)] from-[26%] to-transparent px-2.5 pt-4"
+                    style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom, 8px))' }}
                 >
-                    <WeaponDeckSlot ammo={scene.ammoActive} />
+                    <WeaponDeckSlot ammo={scene.ammoActive} compact />
                     <div className="flex items-stretch gap-2">
-                        <ManeuverButton direction="left" />
-                        <ManeuverButton direction="right" />
-                        <FireButton disabled={scene.isEmptyAmmo} hint="touch" />
+                        <ManeuverButton direction="left" compact />
+                        <ManeuverButton direction="right" compact />
+                        <FireButton disabled={scene.isEmptyAmmo} hint="touch" compact />
                     </div>
                     <GestureHint />
                 </div>

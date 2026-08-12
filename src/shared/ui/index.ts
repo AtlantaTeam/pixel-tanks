@@ -18,7 +18,7 @@ export { HPBar } from './hp-bar';
 export type { THPBarFaction } from './hp-bar';
 export { PipRow } from './pip-row';
 export { WeaponSelector, DEMO_WEAPONS } from './weapon-selector';
-export type { TWeaponSelectorWeapon } from './weapon-selector';
+export type { TWeaponSelectorWeapon, TWeaponSelectorSize } from './weapon-selector';
 export { ChatBubble } from './chat-bubble';
 export type { TChatBubbleFaction } from './chat-bubble';
 export { Toast } from './toast';

@@ -39,12 +39,12 @@ describe('GameControls (палуба)', () => {
         expect(queryByRole('combobox')).not.toBeInTheDocument();
     });
 
-    it('показывает боезапас выбранного оружия в селекторе (48px стрелки)', () => {
+    it('показывает боезапас выбранного оружия в селекторе (44px стрелки на компактной мобильной палубе)', () => {
         setWeapons(5);
         const { getAllByLabelText } = renderDeck();
 
         const arrows = getAllByLabelText('Следующее оружие');
-        expect(arrows[0]).toHaveClass('size-12');
+        expect(arrows[0]).toHaveClass('size-11');
     });
 
     it('кнопка ОГОНЬ подписана конкретными числами выстрела', () => {
@@ -194,5 +194,41 @@ describe('GameControls (палуба)', () => {
         const { queryByRole } = renderDeck();
 
         expect(queryByRole('status')).not.toBeInTheDocument();
+    });
+
+    describe('подсказка жеста (#451)', () => {
+        it('показана до первого выстрела боя', () => {
+            setWeapons(3);
+            const { getByText } = renderDeck();
+
+            expect(getByText('Тяни по арене — отпусти, чтобы выстрелить')).toBeInTheDocument();
+        });
+
+        it('скрыта после первого выстрела и не возвращается на ремаунте того же боя', () => {
+            setWeapons(3);
+            useGameStore.getState().recordFire(0, 10);
+            const { queryByText, rerender } = renderDeck();
+
+            expect(
+                queryByText('Тяни по арене — отпусти, чтобы выстрелить'),
+            ).not.toBeInTheDocument();
+
+            // Ремаунт (эмулируем повторным рендером того же дерева) — состояние в
+            // сторе, не в локальном useState, поэтому подсказка не возвращается.
+            rerender(<></>);
+            const { queryByText: queryByTextAgain } = renderDeck();
+            expect(
+                queryByTextAgain('Тяни по арене — отпусти, чтобы выстрелить'),
+            ).not.toBeInTheDocument();
+        });
+
+        it('показывается заново в новом бою (startGame сбрасывает shotsFired)', () => {
+            setWeapons(3);
+            useGameStore.getState().recordFire(0, 10);
+            useGameStore.getState().startGame();
+            const { getByText } = renderDeck();
+
+            expect(getByText('Тяни по арене — отпусти, чтобы выстрелить')).toBeInTheDocument();
+        });
     });
 });

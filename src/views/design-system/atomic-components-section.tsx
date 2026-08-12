@@ -264,6 +264,31 @@ export function AtomicComponentsSection() {
                     onNext={noop}
                 />
 
+                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                    Weapon Selector · compact (мобильная палуба, #451)
+                </span>
+                {/* size="compact": стрелки/панель 44px (было 48), имя и боезапас в
+                    один ряд — используется только в мобильном составе `game-controls`,
+                    планшет/десктоп остаются default. */}
+                <WeaponSelector
+                    weapons={WEAPONS}
+                    selectedIndex={weaponIndex}
+                    onPrev={() => setWeaponIndex((i) => (i - 1 + WEAPONS.length) % WEAPONS.length)}
+                    onNext={() => setWeaponIndex((i) => (i + 1) % WEAPONS.length)}
+                    size="compact"
+                />
+
+                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                    Weapon Selector · compact · пусто (×0)
+                </span>
+                <WeaponSelector
+                    weapons={EMPTY_WEAPON_SLOT}
+                    selectedIndex={0}
+                    onPrev={noop}
+                    onNext={noop}
+                    size="compact"
+                />
+
                 <div className="h-0.5 bg-border" />
 
                 <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
