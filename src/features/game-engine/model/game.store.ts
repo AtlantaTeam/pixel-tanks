@@ -53,6 +53,18 @@ export const deriveOutcome = (playerHp: number, enemyHp: number): TBattleOutcome
 export const selectIsBotTurn = (s: Pick<TGameState, 'turn' | 'phase'>): boolean =>
     s.turn === 'enemy' && s.phase !== 'over';
 
+/**
+ * Показывать тост «патроны кончились» (issue #448): свой ход, без снарядов.
+ * Манёвр остаётся активным — тост только предупреждает про огонь, не блокирует
+ * ход. Единая точка правды для `AmmoEmptyToast` (собственный слой поверх арены)
+ * и `game-controls` (условие дизейбла кнопки ОГОНЬ), чтобы не разойтись при
+ * правке фазовой машины.
+ */
+export const selectShowAmmoEmptyToast = (
+    s: Pick<TGameState, 'turn' | 'phase' | 'weapons'>,
+): boolean =>
+    s.turn === 'player' && s.phase !== 'flight' && s.phase !== 'over' && s.weapons.length === 0;
+
 type TGameState = {
     angle: number;
     power: number;

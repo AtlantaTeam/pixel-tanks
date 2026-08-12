@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { POWER_MAX, POWER_MIN } from '../lib/power';
-import { deriveOutcome, MAX_HP, selectIsBotTurn, useGameStore } from './game.store';
+import {
+    deriveOutcome,
+    MAX_HP,
+    selectIsBotTurn,
+    selectShowAmmoEmptyToast,
+    useGameStore,
+} from './game.store';
 
 describe('game.store — запись реплея', () => {
     beforeEach(() => {
@@ -185,6 +191,42 @@ describe('game.store — предикат «ход бота» (selectIsBotTurn)'
 
     it('ложь: бой окончен, даже если ход был за соперником', () => {
         expect(selectIsBotTurn({ turn: 'enemy', phase: 'over' })).toBe(false);
+    });
+});
+
+describe('game.store — тост «патроны кончились» (selectShowAmmoEmptyToast)', () => {
+    it('истина: свой ход, снарядов нет', () => {
+        expect(selectShowAmmoEmptyToast({ turn: 'player', phase: 'aiming', weapons: [] })).toBe(
+            true,
+        );
+    });
+
+    it('ложь: снаряды ещё есть', () => {
+        expect(
+            selectShowAmmoEmptyToast({
+                turn: 'player',
+                phase: 'aiming',
+                weapons: [{ id: 0, name: 'Снаряд' }],
+            }),
+        ).toBe(false);
+    });
+
+    it('ложь: ход соперника (там уже лок)', () => {
+        expect(selectShowAmmoEmptyToast({ turn: 'enemy', phase: 'aiming', weapons: [] })).toBe(
+            false,
+        );
+    });
+
+    it('ложь: снаряд в полёте', () => {
+        expect(selectShowAmmoEmptyToast({ turn: 'player', phase: 'flight', weapons: [] })).toBe(
+            false,
+        );
+    });
+
+    it('ложь: бой окончен', () => {
+        expect(selectShowAmmoEmptyToast({ turn: 'player', phase: 'over', weapons: [] })).toBe(
+            false,
+        );
     });
 });
 
