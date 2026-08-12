@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { render, within } from '@testing-library/react';
 import { ScreensSection } from './screens-section';
 
 const SCREEN_TITLES = [
@@ -68,12 +68,37 @@ describe('ScreensSection', () => {
     });
 
     it('игровой экран показывает HUD-телеметрию и HP обеих сторон во всех кадрах', () => {
-        const { getAllByText } = render(<ScreensSection />);
+        const { getByTestId } = render(<ScreensSection />);
+        // Ряд кадров брейкпоинтов игрового экрана — свой testid (issue #427,
+        // отдельный от ряда состояний ниже, чтобы счёт вхождений не смешивался:
+        // «свой ход»/«спокойный HUD» из ряда состояний добавляют «ТВОЙ ХОД» ещё
+        // дважды, а этот тест считает именно четыре кадра брейкпоинтов).
+        const breakpoints = within(getByTestId('game-screen-breakpoints'));
 
-        // «Угол/Сила/Ветер» есть и в мини-HUD реплея — игровой экран добавляет к ним
-        // индикатор хода, он и считается по кадрам.
-        expect(getAllByText('Твой ход')).toHaveLength(FRAMES_PER_SCREEN);
-        expect(getAllByText('Огонь')).toHaveLength(FRAMES_PER_SCREEN);
+        expect(breakpoints.getAllByText('ТВОЙ ХОД')).toHaveLength(FRAMES_PER_SCREEN);
+        expect(breakpoints.getAllByText('Огонь')).toHaveLength(FRAMES_PER_SCREEN);
+    });
+
+    it('игровой экран показывает состояния боя отдельным рядом (issue #427)', () => {
+        const { getByTestId } = render(<ScreensSection />);
+        const states = within(getByTestId('game-screen-states'));
+
+        expect(states.getByText('Свой ход')).toBeInTheDocument();
+        expect(states.getByText('Ход бота')).toBeInTheDocument();
+        expect(states.getByText('Прицеливание')).toBeInTheDocument();
+        expect(states.getByText('Пустой боезапас')).toBeInTheDocument();
+        expect(states.getByText('Спокойный HUD')).toBeInTheDocument();
+
+        // Ход бота: пилюля хода — ровно одна (единственный кадр 'bot-turn' в
+        // ряду состояний). `toHaveLength(1)` ловит случайный дубль, который
+        // `> 0` пропустил бы молча (напр. если лок-оверлей начнёт печатать тот
+        // же кейс вместо «Ход соперника»).
+        expect(states.getAllByText('ХОД СОПЕРНИКА')).toHaveLength(1);
+        // …и лок палубы отдельной подписью (иной регистр — самостоятельный узел).
+        expect(states.getByText('Ход соперника')).toBeInTheDocument();
+        // Пустой боезапас: тост-предупреждение и disabled-подпись кнопки ОГОНЬ.
+        expect(states.getByText(/Патроны кончились/)).toBeInTheDocument();
+        expect(states.getByText('нет снарядов')).toBeInTheDocument();
     });
 
     it('utility-кадр показывает загрузку, 404 и ошибку одновременно', () => {
@@ -87,9 +112,10 @@ describe('ScreensSection', () => {
     it('десктопный вариант layout переиспользуется на кадрах 1280 и 1920', () => {
         const { getAllByText } = render(<ScreensSection />);
 
-        // Подсказка про мышь и стрелки есть только в desktop-варианте игрового экрана —
-        // значит она видна ровно дважды: на 1280 и на 1920.
-        expect(getAllByText(/Мышь и стрелки/)).toHaveLength(2);
+        // Клавиатурная подсказка есть только в desktop-варианте игрового экрана —
+        // значит она видна ровно дважды: на 1280 и на 1920 (состояния боя ниже
+        // рендерятся на мобильном варианте и её не показывают).
+        expect(getAllByText('Space выстрел')).toHaveLength(2);
     });
 
     it('не подменяет иконки эмодзи-глифами', () => {
