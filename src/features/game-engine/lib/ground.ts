@@ -136,27 +136,6 @@ export class Ground {
         this.layerDirty = true;
     };
 
-    /**
-     * Перекладывает уже сгенерированный рельеф в свободную зону новых инсетов
-     * (safe-зона, #454): линейный перенос профиля из текущей полосы высот в новую,
-     * без RNG и без интерполяции по ширине (размер канваса не меняется — меняется
-     * только высота оверлеев: брейкпоинт, safe-area). Идемпотентна: те же инсеты
-     * дают ту же полосу и те же высоты. Танки движок переставляет сам по новым
-     * `heights` (см. `GamePlay`).
-     */
-    applyInsets = (insets: TArenaInsets) => {
-        const prev = { min: this.heightMin, max: this.heightMax };
-        this.insets = insets;
-        const next = computeTerrainHeights(this.innerHeight, insets);
-        if (next.min === prev.min && next.max === prev.max) return;
-        this.heightMax = next.max;
-        this.heightMin = next.min;
-        for (let x = 0; x < this.heights.length; x++) {
-            this.heights[x] = floor(remapToBand(this.heights[x], prev, next));
-        }
-        this.layerDirty = true;
-    };
-
     fall = (x: number, y: number, radius: number) => {
         this.explosionHeights[x - radius] = { bulletY: y, delta: 2 };
         this.explosionHeights[x + radius] = this.explosionHeights[x - radius];

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
-import { computeTerrainHeights, EMPTY_ARENA_INSETS, type TArenaInsets } from './arena-insets';
+import { computeTerrainHeights, type TArenaInsets } from './arena-insets';
 import { Ground } from './ground';
 
 const WIDTH = 800;
@@ -180,68 +180,18 @@ describe('Ground: рельеф внутри свободной зоны (safe-з
     });
 });
 
-describe('Ground.applyInsets: перекладка рельефа в новую зону без RNG', () => {
-    it('не трогает RNG', () => {
-        const random = createSeededRandom(42);
-        const control = createSeededRandom(42);
-        const ground = new Ground(WIDTH, HEIGHT, random);
-        new Ground(WIDTH, HEIGHT, control);
-
-        ground.applyInsets({ top: 100, bottom: 120 });
-
-        expect(random()).toBe(control());
-    });
-
-    it('одинаковые инсеты — no-op (профиль не меняется)', () => {
-        const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(7), undefined, {
-            top: 100,
-            bottom: 120,
-        });
-        const before = [...ground.heights];
-
-        ground.applyInsets({ top: 100, bottom: 120 });
-
-        expect(ground.heights).toEqual(before);
-    });
-
-    it('перекладывает профиль в полосу новых инсетов', () => {
-        const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(7));
+describe('Ground.resize: перекладка рельефа в зону при смене размера канваса', () => {
+    it('после ресайза с инсетами рельеф остаётся внутри полосы новой высоты', () => {
         const insets: TArenaInsets = { top: 120, bottom: 140 };
+        const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(7), undefined, insets);
 
-        ground.applyInsets(insets);
+        ground.resize(WIDTH, 500);
 
-        const band = computeTerrainHeights(HEIGHT, insets);
+        const band = computeTerrainHeights(500, insets);
         ground.heights.forEach((h) => {
-            expect(h).toBeGreaterThanOrEqual(Math.floor(band.min));
-            expect(h).toBeLessThanOrEqual(Math.ceil(band.max));
-        });
-    });
-
-    it('сохраняет форму рельефа (относительный профиль) при перекладке', () => {
-        const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(7));
-        // Индекс самого высокого пика до перекладки — он же должен остаться самым
-        // высоким после (линейный перенос сохраняет порядок высот).
-        const peakBefore = ground.heights.indexOf(Math.max(...ground.heights));
-
-        ground.applyInsets({ top: 120, bottom: 140 });
-
-        const peakAfter = ground.heights.indexOf(Math.max(...ground.heights));
-        expect(peakAfter).toBe(peakBefore);
-    });
-
-    it('возврат к пустым инсетам восстанавливает исходную полосу высот', () => {
-        const seed = 33;
-        const base = new Ground(WIDTH, HEIGHT, createSeededRandom(seed));
-        const baseHeights = [...base.heights];
-
-        const roundTrip = new Ground(WIDTH, HEIGHT, createSeededRandom(seed));
-        roundTrip.applyInsets({ top: 120, bottom: 140 });
-        roundTrip.applyInsets(EMPTY_ARENA_INSETS);
-
-        // Перенос туда-обратно линеен, поэтому целочисленные высоты возвращаются
-        // к исходным с точностью до двойного округления (floor на каждой перекладке, ±2).
-        roundTrip.heights.forEach((h, x) => {
-            expect(Math.abs(h - baseHeights[x])).toBeLessThanOrEqual(2);
+            // ±1 — дрейф floor при линейном переносе профиля в новую полосу.
+            expect(h).toBeGreaterThanOrEqual(Math.floor(band.min) - 1);
+            expect(h).toBeLessThanOrEqual(Math.ceil(band.max) + 1);
         });
     });
 });

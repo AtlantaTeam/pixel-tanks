@@ -213,20 +213,20 @@ describe('GamePlay — инсеты арены (контракт safe-зоны, 
         expect(gamePlay.arenaZone.height).toBeGreaterThanOrEqual(0);
     });
 
-    it('переносит рельеф и танки в свободную зону при появлении инсетов (safe-зона, #454)', () => {
-        const { gamePlay, leftTank, rightTank, ground } = makeGamePlay();
+    it('НЕ перекладывает уже сгенерированный рельеф на смену инсетов (фидельность реплея, #454)', () => {
+        // Нижний инсет штатно уменьшается после первого выстрела (уходит подсказка
+        // жеста). Рельеф, сгенерированный под стартовый инсет и записанный в реплей,
+        // не должен смещаться на лету — иначе живой бой разошёлся бы с записью.
+        const { gamePlay, leftTank, ground } = makeGamePlay();
+        const heightsBefore = [...ground.heights];
+        const tankYBefore = leftTank.y;
 
-        gamePlay.setArenaInsets({ top: 120, bottom: 140 });
+        gamePlay.setArenaInsets({ top: 120, bottom: 90 });
 
-        const deckTopY = HEIGHT - 140;
-        const zoneTopY = 120;
-        // Оба танка сидят на поверхности рельефа и целиком в зоне: корпус (низ = y)
-        // не под палубой, верх корпуса (y - tankHeight) не под HUD.
-        for (const tank of [leftTank, rightTank]) {
-            expect(tank.y).toBe(HEIGHT - ground.heights[Math.floor(tank.x)]);
-            expect(tank.y).toBeLessThanOrEqual(deckTopY);
-            expect(tank.y - tank.tankHeight).toBeGreaterThanOrEqual(zoneTopY);
-        }
+        expect(ground.heights).toEqual(heightsBefore);
+        expect(leftTank.y).toBe(tankYBefore);
+        // Зона при этом пересчитана (её читают клэмпы жеста/пузыря).
+        expect(gamePlay.arenaZone).toEqual({ top: 120, height: HEIGHT - 210 });
     });
 
     it('до генерации рельефа setArenaInsets только считает зону (рельефа ещё нет)', () => {
