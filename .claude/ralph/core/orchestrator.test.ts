@@ -2311,6 +2311,29 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(runClaudeFn).toHaveBeenCalledTimes(1);
     });
 
+    it('#66 чистое дерево → коммита не случается вовсе', () => {
+        // Обратная сторона фикса: раннер коммитит ОСТАТОК, а не «на всякий случай». Пустой
+        // коммит после каждой итерации замусорил бы ветку фазы и сделал бы историю
+        // нечитаемой на ревью — а именно по ней человек понимает, что делала петля.
+        const logs: string[] = [];
+        const commitLeftoversFn = vi.fn(() => true);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
+        runLoop(
+            validCfg(),
+            ctx(mkState()),
+            deps(logs, {
+                once: true,
+                phaseIndexOfFn: () => 0,
+                ensureCleanFn: () => true,
+                commitLeftoversFn,
+                openIssuesFn: () => [{ number: 5, title: 'задача', labels: [] }],
+                runClaudeFn,
+            }),
+        );
+        expect(commitLeftoversFn).not.toHaveBeenCalled();
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+    });
+
     it('#66 НЕГАТИВНЫЙ: коммит остатка не удался → стоп, как раньше', () => {
         const logs: string[] = [];
         const state = mkState();
