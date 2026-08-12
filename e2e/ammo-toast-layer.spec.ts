@@ -8,6 +8,11 @@ import { fireOne, weaponCount } from './helpers';
  * арены/safe-area, одинаковая на всех трёх канонических вьюпортах, а не
  * `bottom-full` меняющегося по составу контейнера деки.
  *
+ * #449 добавляет ту же проверку для верхнего HUD (`top-hud`) — тост монтируется
+ * между деком и HUD (свой слой поверх арены), но геометрию HUD барьер #447 до
+ * этого не сверял с моментом появления тоста: высота и позиция панели обязаны
+ * остаться теми же 0px, что и у деки.
+ *
  * Одна последовательная сессия на все три вьюпорта (не три отдельных теста):
  * `fullyParallel` разводит тесты по воркерам-процессам, где модульный
  * аккумулятор расстояний не был бы общим — сравнение внутри одного теста
@@ -45,6 +50,8 @@ test('тост «патроны кончились» — свой слой по�
 
         const deckBoxBefore = await page.getByTestId('game-hud').boundingBox();
         expect(deckBoxBefore).not.toBeNull();
+        const hudBoxBefore = await page.getByTestId('top-hud').boundingBox();
+        expect(hudBoxBefore).not.toBeNull();
 
         await fireUntilEmptyAmmo(page);
 
@@ -55,6 +62,18 @@ test('тост «патроны кончились» — свой слой по�
         // Появление тоста не сдвинуло деку (0 px) — тост не её DOM-потомок.
         const deckBoxAfter = await page.getByTestId('game-hud').boundingBox();
         expect(deckBoxAfter).toEqual(deckBoxBefore);
+
+        // #449: то же самое — верхний HUD (панель телеметрии/HP) не сдвинулся и
+        // не поменял высоту, когда тост появился между деком и HUD.
+        const hudBoxAfter = await page.getByTestId('top-hud').boundingBox();
+        expect(
+            hudBoxAfter?.height,
+            `${viewport.name}: высота top-hud с тостом ${hudBoxAfter?.height}px vs без тоста ${hudBoxBefore?.height}px (разница ${Math.abs((hudBoxAfter?.height ?? 0) - (hudBoxBefore?.height ?? 0))}px)`,
+        ).toBe(hudBoxBefore?.height);
+        expect(
+            hudBoxAfter?.y,
+            `${viewport.name}: top-hud сдвинулся по Y — было ${hudBoxBefore?.y}px, стало ${hudBoxAfter?.y}px`,
+        ).toBe(hudBoxBefore?.y);
 
         // Тост не перехватывает клики по арене/палубе (pointer-events-none обёртки).
         const toastBox = await toast.boundingBox();

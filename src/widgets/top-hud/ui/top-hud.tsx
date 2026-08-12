@@ -80,7 +80,12 @@ function HpCard({
     );
 }
 
+/** Самая широкая из трёх подписей пилюли — резервирует её ширину (#449), см. ниже. */
+const TURN_PILL_SIZER = 'ХОД СОПЕРНИКА';
+
 function TurnPill({ turn, phase, hidden }: { turn: TSide; phase: TPhase; hidden?: boolean }) {
+    const label = turnPillLabel(turn, phase);
+
     return (
         <div
             aria-hidden={hidden || undefined}
@@ -96,8 +101,27 @@ function TurnPill({ turn, phase, hidden }: { turn: TSide; phase: TPhase; hidden?
             )}
         >
             <span aria-hidden className="size-2 shrink-0 bg-[color:var(--accent)]" />
-            <span className="font-display text-[13px] tracking-[0.08em] whitespace-nowrap text-[color:var(--accent)] uppercase [text-shadow:var(--glow)]">
-                {turnPillLabel(turn, phase)}
+            {/*
+                Ширина текста пилюли зафиксирована под самую длинную подпись (#449):
+                на планшете (768) первый ряд HUD (HP-блок + пилюля + иконки) — `flex-wrap`
+                без резерва под телеметрию, и без фикс-ширины сумма HP+пилюля+иконки
+                качается вокруг порога переноса. «ТВОЙ ХОД» (8 симв.) укладывается в
+                строку, «ХОД СОПЕРНИКА» (13 симв., ход бота) и «ВЫСТРЕЛ» — по разному
+                близко к порогу: иконки то остаются в первой строке, то переносятся во
+                вторую, и высота HUD «скачет» между фазами на ровно эту разницу (68px,
+                воспроизведено на 768). Тот же приём, что и `FixedNumeric` для числовых
+                ячеек: невидимый размерник с самой широкой подписью держит бокс
+                неизменным независимо от текущего текста. */}
+            <span className="grid justify-items-start">
+                <span
+                    aria-hidden
+                    className="invisible col-start-1 row-start-1 font-display text-[13px] tracking-[0.08em] whitespace-nowrap uppercase"
+                >
+                    {TURN_PILL_SIZER}
+                </span>
+                <span className="col-start-1 row-start-1 font-display text-[13px] tracking-[0.08em] whitespace-nowrap text-[color:var(--accent)] uppercase [text-shadow:var(--glow)]">
+                    {label}
+                </span>
             </span>
         </div>
     );

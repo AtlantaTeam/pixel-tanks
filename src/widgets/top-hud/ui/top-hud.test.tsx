@@ -31,8 +31,13 @@ describe('TopHud', () => {
         useGameStore.setState({ turn: 'enemy', phase: 'aiming' });
         const { getByTestId } = render(<TopHud />);
 
+        // Селектор исключает невидимый размерник (#449) — тот тоже содержит
+        // текст «ХОД СОПЕРНИКА» (резервирует ширину пилюли под самую длинную
+        // подпись), но у него `aria-hidden`, а у реальной подписи — нет.
         expect(
-            within(getByTestId('top-hud-mobile')).getByText('ХОД СОПЕРНИКА'),
+            within(getByTestId('top-hud-mobile')).getByText('ХОД СОПЕРНИКА', {
+                selector: 'span:not([aria-hidden])',
+            }),
         ).toBeInTheDocument();
     });
 
@@ -52,7 +57,9 @@ describe('TopHud', () => {
 
         // Пилюля остаётся в DOM (держит высоту ряда), но скрыта: `invisible`
         // (visibility:hidden) + `aria-hidden` — для глаза и скринридера её нет.
-        const pill = within(getByTestId('top-hud-mobile')).getByText('ХОД СОПЕРНИКА');
+        const pill = within(getByTestId('top-hud-mobile')).getByText('ХОД СОПЕРНИКА', {
+            selector: 'span:not([aria-hidden])',
+        });
         expect(pill).toBeInTheDocument();
         const pillBox = pill.closest('[aria-hidden="true"]');
         expect(pillBox).not.toBeNull();
@@ -63,7 +70,9 @@ describe('TopHud', () => {
         useGameStore.setState({ turn: 'enemy', phase: 'aiming' });
         const { getByTestId } = render(<TopHud />);
 
-        const pill = within(getByTestId('top-hud-mobile')).getByText('ХОД СОПЕРНИКА');
+        const pill = within(getByTestId('top-hud-mobile')).getByText('ХОД СОПЕРНИКА', {
+            selector: 'span:not([aria-hidden])',
+        });
         expect(pill.closest('[aria-hidden="true"]')).toBeNull();
     });
 
@@ -259,5 +268,59 @@ describe('TopHud', () => {
         expect(hpValue).toHaveClass('tabular-nums');
         expect(hpValue).toHaveClass('text-right');
         expect(hpValue.style.minWidth).toBe('7ch');
+    });
+
+    // #449 — барьер на регресс, найденный при написании e2e-теста по четырём
+    // фазам: на планшете (768) первый ряд десктопной раскладки (HP-блок + пилюля
+    // хода + иконки mute/пауза) собран `flex-wrap` без резерва под пилюлю. Три
+    // подписи пилюли («ТВОЙ ХОД» / «ХОД СОПЕРНИКА» / «ВЫСТРЕЛ») разной длины
+    // качали суммарную ширину ряда вокруг порога переноса — иконки то оставались
+    // в первой строке, то переносились во вторую, и `top-hud` терял/приобретал
+    // 68px высоты между фазами (воспроизведено e2e на 768). jsdom/happy-dom не
+    // считает реальный layout (`getBoundingClientRect` всегда 0), поэтому здесь —
+    // тот же приём, что и у числовых ячеек (`FixedNumeric`): проверяем, что
+    // невидимый размерник с самой длинной подписью существует в DOM независимо
+    // от текущего состояния, а не считаем пиксели.
+
+    it('ширина пилюли хода зарезервирована под самую длинную подпись при любом состоянии (#449)', () => {
+        const cases: Array<{ turn: 'player' | 'enemy'; phase: 'aiming' | 'flight' | 'over' }> = [
+            { turn: 'player', phase: 'aiming' },
+            { turn: 'enemy', phase: 'aiming' },
+            { turn: 'player', phase: 'flight' },
+            { turn: 'enemy', phase: 'flight' },
+            { turn: 'enemy', phase: 'over' },
+        ];
+        for (const state of cases) {
+            useGameStore.setState(state);
+            const { getByTestId, unmount } = render(<TopHud />);
+            const mobile = within(getByTestId('top-hud-mobile'));
+
+            const sizer = mobile.getByText('ХОД СОПЕРНИКА', { selector: '[aria-hidden="true"]' });
+            expect(sizer).toBeInTheDocument();
+            unmount();
+        }
+    });
+
+    it('высота колонки top-hud-mobile не зависит от хода бота и от раскрытия ветра (число рядов не меняется)', () => {
+        const states = [
+            { turn: 'player' as const, windRevealed: false },
+            { turn: 'enemy' as const, windRevealed: false },
+            { turn: 'player' as const, windRevealed: true },
+            { turn: 'enemy' as const, windRevealed: true },
+        ];
+        const rowCounts = states.map((state) => {
+            useGameStore.setState({ ...state, wind: MAX_WIND });
+            const { getByTestId, unmount } = render(<TopHud />);
+            // Прямые дети колонки — это ряды (#447: заметка о заморозке и
+            // раскрытие ветра выведены из потока `absolute`/остаются в той же
+            // грид-ячейке, а не добавляют новый ряд).
+            const rowCount = getByTestId('top-hud-mobile').children.length;
+            unmount();
+            return rowCount;
+        });
+
+        for (const count of rowCounts) {
+            expect(count).toBe(rowCounts[0]);
+        }
     });
 });
