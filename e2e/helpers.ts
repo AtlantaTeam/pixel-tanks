@@ -15,14 +15,17 @@ export async function expectGameOverDialog(page: Page): Promise<void> {
     await expect(dialog).toContainText('Урон');
 }
 
-/** Сколько снарядов осталось у игрока — по числу опций в селекте оружия HUD.
- *  Селект оружия — кастомный попап (не нативный `<select>`), опции в DOM живут
- *  только раскрытыми; читаем состав из `data-option-count` триггера — он актуален
- *  и в закрытом состоянии, поэтому счётчик не требует открывать список.
+/** Сколько снарядов осталось у игрока — по боезапасу селектора оружия палубы
+ *  (`WeaponSelector`, `widgets/game-controls`, issue #424). Три брейкпоинт-состава
+ *  палубы рендерят селектор одновременно (виден только один, CSS-переключение) —
+ *  значение в них одинаковое, поэтому берём первый попавшийся, не раскрывая список.
  *
- *  Общий хелпер для боёв (клавиатура/тач): контракт селекта един, правка не должна
+ *  Общий хелпер для боёв (клавиатура/тач): контракт селектора един, правка не должна
  *  расходиться по копиям. */
 export async function weaponCount(page: Page): Promise<number> {
-    const raw = await page.locator('#weapon-select').getAttribute('data-option-count');
+    const raw = await page
+        .locator('[data-testid="weapon-ammo"]')
+        .first()
+        .getAttribute('data-ammo-count');
     return raw === null ? 0 : Number(raw);
 }

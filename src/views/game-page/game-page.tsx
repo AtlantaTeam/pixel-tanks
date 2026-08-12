@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { GameCanvas, useGameStore } from '@/features/game-engine';
+import { useRef, useState } from 'react';
+import { GameCanvas, useGameStore, type TGameCanvasHandle } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
 import { GameControls } from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
@@ -12,20 +12,24 @@ type TGamePageProps = {
     seed?: string;
 };
 
+/**
+ * Арена — `position:absolute; inset:0` во весь экран (handoff «Боевой экран»),
+ * верхний HUD и палуба — оверлеи поверх неё, а не соседи во flex-колонке: иначе
+ * высота полос ужимала бы канвас на каждом брейкпоинте по-своему (см. докблок
+ * `TopHud`). Манёвр/выстрел палубы дёргают движок напрямую через общий ref
+ * (`TGameCanvasHandle`) — стор их не хранит.
+ */
 export function GamePage({ seed }: TGamePageProps = {}) {
     const [isPaused, setIsPaused] = useState(false);
     const resetGame = useGameStore((s) => s.resetGame);
+    const gameApiRef = useRef<TGameCanvasHandle>(null);
 
     return (
-        <main className="safe-area-inset flex h-dvh flex-col overflow-hidden">
+        <main className="safe-area-inset relative h-dvh overflow-hidden">
             <SceneMusic track="battle" />
-            <div className="relative flex-1 overflow-hidden">
-                <GameCanvas seed={seed} />
-                <TopHud onPauseClick={() => setIsPaused(true)} />
-            </div>
-            <div data-testid="game-hud" className="border-t border-border bg-panel">
-                <GameControls />
-            </div>
+            <GameCanvas ref={gameApiRef} seed={seed} />
+            <TopHud onPauseClick={() => setIsPaused(true)} />
+            <GameControls gameApiRef={gameApiRef} />
             <GameOverDialog seed={seed} />
             <PauseOverlay
                 open={isPaused}

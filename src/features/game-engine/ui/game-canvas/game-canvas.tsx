@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import type { TWeapon } from '@/shared/model';
@@ -24,6 +24,18 @@ type TGameCanvasProps = {
 };
 
 /**
+ * Императивный API движка для внешних контролов (палуба, `widgets/game-controls`):
+ * манёвр и выстрел живут на инстансе `GamePlay` внутри канваса, стор их не хранит
+ * (см. `commitPlayerShot`/`changeTankPosition`) — кнопкам палубы нужен способ их
+ * дёрнуть, не дублируя доступ к движку снаружи.
+ */
+export type TGameCanvasHandle = {
+    fire: () => void;
+    moveLeft: () => void;
+    moveRight: () => void;
+};
+
+/**
  * Единый путь выстрела игрока: запись хода в реплей (`recordFire` заодно считает
  * выстрел для статистики), выстрел движка, расход оружия. Один helper на обе схемы
  * ввода — клавиатуру и мышь/тач: правка выстрела не должна расходиться по копиям.
@@ -40,7 +52,10 @@ function commitPlayerShot(
     removeWeaponById(weapon.id);
 }
 
-export function GameCanvas({ seed }: TGameCanvasProps = {}) {
+export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(function GameCanvas(
+    { seed }: TGameCanvasProps,
+    ref,
+) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const gameRef = useRef<GamePlay | null>(null);
     const dragRef = useRef<TDragState | null>(null);
@@ -300,6 +315,27 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         commitPlayerShot(game, selectedWeapon, recordFire, removeWeaponById);
     };
 
+    /** Тот же гард, что у клавиатурного манёвра (`move-left`/`move-right`) — палуба
+     *  (`widgets/game-controls`) зовёт его через `TGameCanvasHandle`, дублировать
+     *  условие в кнопках снаружи движка нельзя (разъедется с клавиатурой). */
+    const moveTank = (delta: number) => {
+        const game = gameRef.current;
+        if (!game || game.isOver || game.isFireMode || game.isMoveMode || moves <= 0) return;
+        game.changeTankPosition(delta);
+        recordMove(delta);
+    };
+
+    useImperativeHandle(
+        ref,
+        () => ({
+            fire: fireSelectedWeapon,
+            moveLeft: () => moveTank(-150),
+            moveRight: () => moveTank(150),
+        }),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [selectedWeapon, moves, recordFire, removeWeaponById, recordMove],
+    );
+
     return (
         <div className="relative h-full w-full">
             <canvas
@@ -400,4 +436,4 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             )}
         </div>
     );
-}
+});

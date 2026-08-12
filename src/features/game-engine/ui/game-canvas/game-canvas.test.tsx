@@ -1,8 +1,9 @@
+import { createRef } from 'react';
 import { act, fireEvent, render } from '@testing-library/react';
 import { vi } from 'vitest';
 import { EBotReplyCategory, type TBotReply } from '@/entities/bot-messages';
 import { useGameStore } from '../../model/game.store';
-import { GameCanvas } from './game-canvas';
+import { GameCanvas, type TGameCanvasHandle } from './game-canvas';
 
 type TBotReplyCb = (reply: TBotReply) => void;
 type TCapturedCallbacks = {
@@ -26,9 +27,12 @@ vi.mock('../../lib/game-play', () => ({
         rightTank = BOT_TANK;
         leftTank = LEFT_TANK;
         isFireMode = false;
+        isMoveMode = false;
+        isOver = false;
         showAimPreview = false;
         onFire = vi.fn();
         activateMode = vi.fn();
+        changeTankPosition = vi.fn();
         getActiveAndTargetTanks = () => [LEFT_TANK, BOT_TANK];
         constructor(..._args: unknown[]) {
             captured.current = _args[2] as TCapturedCallbacks;
@@ -151,5 +155,53 @@ describe('GameCanvas', () => {
             captured.current?.onShotEnd?.();
         });
         expect(useGameStore.getState().phase).toBe('aiming');
+    });
+
+    // Императивный API (`TGameCanvasHandle`) — доступ палубы (`widgets/game-controls`)
+    // к манёвру/выстрелу без дублирования доступа к движку снаружи (см. докблок типа).
+    describe('императивный API (fire/moveLeft/moveRight)', () => {
+        it('fire() стреляет текущим выбранным оружием — как клик по канвасу', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ angle: 0.5, power: 12 });
+            const ref = createRef<TGameCanvasHandle>();
+            render(<GameCanvas ref={ref} seed={42} />);
+
+            act(() => {
+                ref.current?.fire();
+            });
+
+            expect(useGameStore.getState().replayMoves).toEqual([
+                { kind: 'fire', angle: 0.5, power: 12 },
+            ]);
+        });
+
+        it('moveRight() двигает танк и записывает манёвр в реплей', () => {
+            useGameStore.getState().resetGame();
+            const ref = createRef<TGameCanvasHandle>();
+            render(<GameCanvas ref={ref} seed={42} />);
+
+            act(() => {
+                ref.current?.moveRight();
+            });
+
+            expect(useGameStore.getState().replayMoves).toEqual([{ kind: 'move', delta: 150 }]);
+        });
+
+        it('moveLeft() ничего не делает, если ходы манёвра исчерпаны', () => {
+            useGameStore.getState().resetGame();
+            const ref = createRef<TGameCanvasHandle>();
+            render(<GameCanvas ref={ref} seed={42} />);
+            // startGame() при монтировании сбрасывает moves на MOVE_BUDGET — бюджет
+            // обнуляем ПОСЛЕ рендера, иначе mount-эффект его тут же перезапишет.
+            act(() => {
+                useGameStore.setState({ moves: 0 });
+            });
+
+            act(() => {
+                ref.current?.moveLeft();
+            });
+
+            expect(useGameStore.getState().replayMoves).toEqual([]);
+        });
     });
 });
