@@ -75,10 +75,14 @@ for (const viewport of VIEWPORTS) {
 }
 
 test.describe('Доступность движения — prefers-reduced-motion', () => {
-    test.use({ reducedMotion: 'reduce', viewport: { width: 1280, height: 800 } });
+    test.use({ viewport: { width: 1280, height: 800 } });
 
     test('лок ввода не крутит blink-анимацию маркера', async ({ page }) => {
         test.setTimeout(60_000);
+        // `test.use({ reducedMotion })` не типизирован в PlaywrightTestOptions этой
+        // версии (только `contextOptions`/`page.emulateMedia`) — эмулируем медиа-запрос
+        // напрямую на странице, эквивалентно контексту с `reducedMotion: 'reduce'`.
+        await page.emulateMedia({ reducedMotion: 'reduce' });
         await page.goto('/game?seed=42');
         await reachBotTurn(page);
 
