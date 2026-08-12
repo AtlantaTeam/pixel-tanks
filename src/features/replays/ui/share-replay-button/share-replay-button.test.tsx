@@ -7,9 +7,9 @@ afterEach(() => {
 });
 
 describe('ShareReplayButton', () => {
-    it('рендерит кнопку «Поделиться боем»', () => {
+    it('рендерит кнопку «Поделиться реплеем»', () => {
         render(<ShareReplayButton seed={42} width={800} height={600} moves={[]} />);
-        expect(screen.getByRole('button', { name: /Поделиться боем/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /Поделиться реплеем/i })).toBeInTheDocument();
     });
 
     it('по клику вызывает Web Share API со ссылкой на реплей', async () => {
@@ -24,7 +24,7 @@ describe('ShareReplayButton', () => {
                 moves={[{ kind: 'fire', angle: 1, power: 10 }]}
             />,
         );
-        fireEvent.click(screen.getByRole('button', { name: /Поделиться боем/i }));
+        fireEvent.click(screen.getByRole('button', { name: /Поделиться реплеем/i }));
 
         await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
         const payload = share.mock.calls[0][0];
@@ -36,7 +36,7 @@ describe('ShareReplayButton', () => {
         vi.stubGlobal('navigator', { clipboard: { writeText } });
 
         render(<ShareReplayButton seed={42} width={800} height={600} moves={[]} />);
-        fireEvent.click(screen.getByRole('button', { name: /Поделиться боем/i }));
+        fireEvent.click(screen.getByRole('button', { name: /Поделиться реплеем/i }));
 
         await screen.findByText(/скопирован/i);
     });

@@ -2,7 +2,7 @@ import type { HTMLAttributes } from 'react';
 import { clsx } from 'clsx';
 import { Icon, type TIconName } from '../icon';
 
-export type TToastVariant = 'success' | 'neutral' | 'error';
+export type TToastVariant = 'success' | 'neutral' | 'error' | 'warning';
 
 type TToastProps = HTMLAttributes<HTMLDivElement> & {
     variant: TToastVariant;
@@ -35,6 +35,14 @@ const VARIANT_CONFIG: Record<
         toastClassName:
             'border-t-danger border-r-danger border-b-danger border-l-danger shadow-[var(--glow-danger)]',
         iconClassName: 'text-danger',
+    },
+    // Боевой экран (handoff «Патроны кончились»): предупреждение, не ошибка —
+    // role="status" (polite), не "alert".
+    warning: {
+        role: 'status',
+        icon: 'warning',
+        toastClassName: 'border-t-warning border-r-warning border-b-warning border-l-warning',
+        iconClassName: 'text-warning',
     },
 };
 

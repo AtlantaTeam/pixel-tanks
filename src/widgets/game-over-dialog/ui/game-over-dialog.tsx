@@ -155,7 +155,7 @@ export function GameOverDialog({
             <Dialog
                 open={open}
                 variant={dialogVariant}
-                className="text-center"
+                className="max-w-[340px] text-center"
                 aria-labelledby={titleId}
             >
                 {/* Fluid-размер вместо фиксированного text-h1 (40px): длинное русское
@@ -190,24 +190,29 @@ export function GameOverDialog({
                         <ShareDailyResultButton points={points} seed={seed} />
                     </div>
                 ) : null}
-                {showBattleBound && battleSeed !== null && battleField !== null ? (
-                    <ShareReplayButton
-                        seed={battleSeed}
-                        width={battleField.width}
-                        height={battleField.height}
-                        moves={replayMoves}
-                    />
-                ) : null}
-                <div className="mt-6 flex flex-wrap justify-center">
+                {/* Кнопки стопкой (handoff «Game over»): Реванш — единственная
+                    залитая (primary), «Поделиться реплеем» — контурный accent,
+                    «В меню» — ghost. Главное действие обязано доминировать: две
+                    залитые кнопки соревновались бы за внимание. */}
+                <div className="mt-6 flex flex-col items-stretch gap-2">
                     <Button
+                        className="min-h-12 w-full"
                         onClick={() => {
                             resetGame();
                             window.location.reload();
                         }}
                     >
-                        Новая игра
+                        Реванш
                     </Button>
-                    <Link href="/" className={buttonClasses('ghost', 'md')}>
+                    {showBattleBound && battleSeed !== null && battleField !== null ? (
+                        <ShareReplayButton
+                            seed={battleSeed}
+                            width={battleField.width}
+                            height={battleField.height}
+                            moves={replayMoves}
+                        />
+                    ) : null}
+                    <Link href="/" className={buttonClasses('ghost', 'md', 'min-h-12 w-full')}>
                         В меню
                     </Link>
                 </div>

@@ -55,6 +55,21 @@ describe('Toast', () => {
         expect(toast.className).not.toMatch(/#[0-9a-fA-F]{3,6}/);
     });
 
+    it('рендерит warning как role=status (не alert) с сообщением', () => {
+        render(<Toast variant="warning" message="Патроны кончились" />);
+
+        const toast = screen.getByRole('status');
+        expect(toast).toHaveTextContent('Патроны кончились');
+    });
+
+    it('красит warning токеном --color-warning, без хардкода цвета', () => {
+        render(<Toast variant="warning" message="Патроны кончились" />);
+
+        const toast = screen.getByRole('status');
+        expect(toast.className).toMatch(/warning/);
+        expect(toast.className).not.toMatch(/#[0-9a-fA-F]{3,6}/);
+    });
+
     it('neutral красит бордер border-strong, а левый акцент — text-muted', () => {
         render(<Toast variant="neutral" message="Синхронизация…" />);
 

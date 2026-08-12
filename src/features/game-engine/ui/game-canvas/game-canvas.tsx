@@ -5,19 +5,69 @@ import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import type { TWeapon } from '@/shared/model';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
-import { useGameStore } from '../../model/game.store';
+import { selectIsBotTurn, useGameStore } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
 import { dealWeapons } from '../../lib/weapons';
 import { createFxRandom } from '../../lib/fx-random';
 import { calculateDragAim } from '../../lib/drag-aim';
+import {
+    calculateGestureAim,
+    clampBubbleAnchorY,
+    clampChipCenterX,
+    clampChipTop,
+    isPointInGestureZone,
+    isValidGestureZone,
+    type TGestureZone,
+} from '../../lib/gesture-aim';
 import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
+import { CHIP_WIDTH, GestureOverlay, type TGestureVisual } from '../gesture-overlay';
 
 type TDragState = {
     pointerId: number;
     startX: number;
     startY: number;
+    /** Левый/верхний угол контейнера канваса — клиентские координаты → локальные. */
+    containerLeft: number;
+    containerTop: number;
+    /** Зона жеста в клиентских координатах, замеряется один раз на старте оттяжки. */
+    zone: TGestureZone | null;
 };
+
+/**
+ * Габариты чипа предпросмотра для прижатия к зоне (`clampChipTop`/`clampChipCenterX`).
+ * Приблизительные: чип центрируется над пальцем, значения держат его над палубой и
+ * в пределах боковых границ зоны (нет горизонтального переполнения).
+ */
+const CHIP_HEIGHT = 92;
+/** Отступ чипа над пальцем: радиус кольца (28) + запас, чтобы палец не закрывал чип. */
+const CHIP_GAP = 46;
+/**
+ * Приблизительная высота чат-бабла бота (шапка «skull + имя» + 1–2 строки текста +
+ * паддинги + хвост) — для клэмпа `clampBubbleAnchorY`, как `CHIP_HEIGHT` выше:
+ * точная высота зависит от длины конкретной реплики, оценка держит бабл выше
+ * верхнего HUD с запасом, а не впритык.
+ */
+const BUBBLE_HEIGHT_ESTIMATE = 100;
+
+/**
+ * Инсеты зоны жеста по брейкпоинтам (Tailwind arbitrary values) — единственный
+ * источник правды геометрии зоны: от неё зависят гейт старта оттяжки
+ * (`isPointInGestureZone`), клэмп чипа (`clampChipTop`/`clampChipCenterX`) и клэмп
+ * бабла (`clampBubbleAnchorY`).
+ *
+ * Значения повторяют фактические высоты `TopHud` (верхний инсет) и палубы
+ * `GameControls` (нижний) на каждом брейкпоинте: <768 — 242/196, ≥768 — 128/168,
+ * ≥1024 — 78/124 (на десктопе полосы фиксированы: HUD `xl:h-[78px]`, дека
+ * `xl:h-[124px]`). Общими с версткой HUD/деки токенами их не сделать: на
+ * мобилке/планшете полосы content-sized — фиксированного числа, на которое можно
+ * сослаться, у них нет. Поэтому — одна документированная константа и правило:
+ * ⚠️ меняешь высоту `TopHud`/`GameControls` — правь эти инсеты, иначе зона тихо
+ * разъедется (e2e ловит лишь горизонтальный overflow и видимость лока, но НЕ
+ * вертикальное выравнивание зоны).
+ */
+const GESTURE_ZONE_INSET =
+    'top-[242px] right-[10px] bottom-[196px] left-[10px] md:top-[128px] md:bottom-[168px] lg:top-[78px] lg:bottom-[124px]';
 
 type TGameCanvasProps = {
     seed?: number | string;
@@ -57,6 +107,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     ref,
 ) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const zoneRef = useRef<HTMLDivElement>(null);
     const gameRef = useRef<GamePlay | null>(null);
     const dragRef = useRef<TDragState | null>(null);
     // После тач-жеста браузер шлёт синтетический click — глотаем его,
@@ -66,6 +117,8 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const [botBubble, setBotBubble] = useState<{ reply: TBotReply; x: number; y: number } | null>(
         null,
     );
+    // Визуал жеста (луч, кольцо, чип) — обновляется на pointermove, живёт в DOM-оверлее.
+    const [gestureVisual, setGestureVisual] = useState<TGestureVisual | null>(null);
 
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
@@ -95,6 +148,13 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const setWind = useGameStore((s) => s.setWind);
     const setPhase = useGameStore((s) => s.setPhase);
     const fireStore = useGameStore((s) => s.fire);
+    const turn = useGameStore((s) => s.turn);
+    const phase = useGameStore((s) => s.phase);
+    // Ход бота (handoff «Ход бота»): арена в маджента-рамке весь ход соперника —
+    // включая его собственный полёт снаряда (turn не флипается обратно, пока
+    // снаряд бота не долетит, см. `changeActiveTank`). Бой окончен — рамки нет,
+    // финал закрывает GameOverDialog.
+    const isBotTurn = selectIsBotTurn({ turn, phase });
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -137,10 +197,29 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     if (!bot) return;
                     // Bubble всегда над танком бота (справа). Эмитится не на каждый
                     // выстрел: свой промах/самострел бот молчит (см. game-play.emitBotReply).
+                    // Клэмп по зоне жеста (handoff: бабл «не заходит в полосы HUD») —
+                    // та же зона, что и у чипа прицела, её верхняя граница совпадает с
+                    // низом верхнего оверлея на любом брейкпоинте.
+                    const rawY = bot.y - bot.tankHeight;
+                    const containerRect = canvasRef.current?.getBoundingClientRect();
+                    const zoneRect = zoneRef.current?.getBoundingClientRect();
+                    const y =
+                        containerRect && zoneRect
+                            ? clampBubbleAnchorY(
+                                  rawY,
+                                  {
+                                      top: zoneRect.top - containerRect.top,
+                                      bottom: zoneRect.bottom - containerRect.top,
+                                      left: zoneRect.left - containerRect.left,
+                                      right: zoneRect.right - containerRect.left,
+                                  },
+                                  BUBBLE_HEIGHT_ESTIMATE,
+                              )
+                            : rawY;
                     setBotBubble({
                         reply,
                         x: bot.x + bot.tankWidth / 2,
-                        y: bot.y - bot.tankHeight,
+                        y,
                     });
                 },
                 // Логический размер поля этого боя — пишем в реплей вместе с seed.
@@ -366,10 +445,29 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     }
                     const game = gameRef.current;
                     if (!game?.leftTank?.isActive || game.isFireMode || game.isOver) return;
+                    const containerRect = e.currentTarget.getBoundingClientRect();
+                    const zoneRect = zoneRef.current?.getBoundingClientRect();
+                    const measured: TGestureZone | null = zoneRect
+                        ? {
+                              top: zoneRect.top,
+                              bottom: zoneRect.bottom,
+                              left: zoneRect.left,
+                              right: zoneRect.right,
+                          }
+                        : null;
+                    // Вырожденную зону (короткий landscape: оверлеи перекрылись) не
+                    // применяем — гейт fail-open, иначе целиться нельзя вовсе.
+                    const zone = measured && isValidGestureZone(measured) ? measured : null;
+                    // Оттяжку можно начинать только внутри зоны жеста (handoff):
+                    // старт на элементах HUD/палубе прицеливание не начинает.
+                    if (zone && !isPointInGestureZone({ x: e.clientX, y: e.clientY }, zone)) return;
                     dragRef.current = {
                         pointerId: e.pointerId,
                         startX: e.clientX,
                         startY: e.clientY,
+                        containerLeft: containerRect.left,
+                        containerTop: containerRect.top,
+                        zone,
                     };
                     game.setAimPreviewVisible(true);
                     try {
@@ -381,18 +479,49 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 onPointerMove={(e) => {
                     const drag = dragRef.current;
                     if (!drag || drag.pointerId !== e.pointerId) return;
-                    const aim = calculateDragAim(
+                    const aim = calculateGestureAim(
                         { x: drag.startX, y: drag.startY },
                         { x: e.clientX, y: e.clientY },
                     );
                     if (!aim) return;
+                    // При превышении максимума сила уже зафиксирована на POWER_MAX
+                    // внутри calculateGestureAim (клэмп) — в стор уходит то же значение.
                     setAngle(aim.angle);
                     setPower(aim.power);
+                    // Локальные координаты оверлея = клиентские минус угол контейнера.
+                    const originX = drag.startX - drag.containerLeft;
+                    const originY = drag.startY - drag.containerTop;
+                    const fingerX = e.clientX - drag.containerLeft;
+                    const fingerY = e.clientY - drag.containerTop;
+                    let chipTop = fingerY - CHIP_GAP - CHIP_HEIGHT;
+                    let chipCenterX = fingerX;
+                    if (drag.zone) {
+                        const zoneLocal: TGestureZone = {
+                            top: drag.zone.top - drag.containerTop,
+                            bottom: drag.zone.bottom - drag.containerTop,
+                            left: drag.zone.left - drag.containerLeft,
+                            right: drag.zone.right - drag.containerLeft,
+                        };
+                        chipTop = clampChipTop(fingerY, zoneLocal, CHIP_HEIGHT, CHIP_GAP);
+                        chipCenterX = clampChipCenterX(fingerX, zoneLocal, CHIP_WIDTH);
+                    }
+                    setGestureVisual({
+                        originX,
+                        originY,
+                        fingerX,
+                        fingerY,
+                        chipTop,
+                        chipCenterX,
+                        angle: aim.angle,
+                        power: aim.power,
+                        isMax: aim.isMax,
+                    });
                 }}
                 onPointerUp={(e) => {
                     const drag = dragRef.current;
                     if (!drag || drag.pointerId !== e.pointerId) return;
                     dragRef.current = null;
+                    setGestureVisual(null);
                     suppressClickRef.current = true;
                     const game = gameRef.current;
                     game?.setAimPreviewVisible(false);
@@ -415,6 +544,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 }}
                 onPointerCancel={() => {
                     dragRef.current = null;
+                    setGestureVisual(null);
                     gameRef.current?.setAimPreviewVisible(false);
                 }}
                 onMouseMove={(e) => {
@@ -439,6 +569,25 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     fireSelectedWeapon();
                 }}
             />
+            {/* Зона жеста (handoff): между верхним оверлеем и палубой. Всегда в DOM —
+                замеряется на старте оттяжки (гейт старта, прижатие чипа). Инсеты по
+                брейкпоинтам — в `GESTURE_ZONE_INSET` (там же правило синхронизации с
+                высотами HUD/деки). */}
+            <div
+                ref={zoneRef}
+                aria-hidden
+                className={`pointer-events-none absolute ${GESTURE_ZONE_INSET}`}
+            />
+            <GestureOverlay visual={gestureVisual} />
+            {/* Ход бота (handoff): маджента-рамка арены — без предсказания траектории,
+                игрок не должен заранее знать, попадёт ли соперник. */}
+            {isBotTurn && (
+                <div
+                    data-testid="arena-turn-ring"
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 shadow-[inset_0_0_0_3px_var(--color-enemy),inset_0_0_40px_rgba(201,0,255,.28)]"
+                />
+            )}
             {botBubble && (
                 <ChatBubble
                     reply={botBubble.reply}

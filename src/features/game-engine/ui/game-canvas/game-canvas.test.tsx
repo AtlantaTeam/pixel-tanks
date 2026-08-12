@@ -43,6 +43,14 @@ vi.mock('../../lib/game-play', () => ({
 }));
 
 describe('GameCanvas', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
     it('disables native touch gestures (scroll/zoom) on the canvas element', () => {
         const { container } = render(<GameCanvas seed={42} />);
         const canvas = container.querySelector('canvas');
@@ -60,8 +68,13 @@ describe('GameCanvas', () => {
         act(() => {
             captured.current?.onBotReply(reply);
         });
+        // Отдельный act: печать бабла (~35 мс/символ) стартует эффектом ПОСЛЕ
+        // монтирования — таймер должен успеть создаться до advanceTimersByTime.
+        act(() => {
+            vi.advanceTimersByTime(35 * reply.text.length);
+        });
 
-        const bubble = getByText('Hasta la vista, baby');
+        const bubble = getByText('Hasta la vista, baby').parentElement as HTMLElement;
         // x = bot.x + tankWidth / 2, y = bot.y - tankHeight (см. onBotReply).
         expect(bubble.style.left).toBe('220px');
         expect(bubble.style.top).toBe('120px');
@@ -76,6 +89,9 @@ describe('GameCanvas', () => {
 
         act(() => {
             captured.current?.onBotReply(reply);
+        });
+        act(() => {
+            vi.advanceTimersByTime(35 * reply.text.length);
         });
 
         // Найти relative-контейнер, который содержит canvas
@@ -139,6 +155,31 @@ describe('GameCanvas', () => {
         });
 
         expect(useGameStore.getState().turn).toBe('enemy');
+    });
+
+    it('показывает маджента-рамку арены на ходе бота (handoff «Ход бота»)', () => {
+        useGameStore.getState().resetGame();
+        const { queryByTestId } = render(<GameCanvas seed={42} />);
+
+        expect(queryByTestId('arena-turn-ring')).not.toBeInTheDocument();
+
+        act(() => {
+            captured.current?.onTurnChange?.('enemy');
+        });
+
+        expect(queryByTestId('arena-turn-ring')).toBeInTheDocument();
+    });
+
+    it('скрывает рамку арены после конца боя, даже если ход был за ботом', () => {
+        useGameStore.getState().resetGame();
+        const { queryByTestId } = render(<GameCanvas seed={42} />);
+
+        act(() => {
+            captured.current?.onTurnChange?.('enemy');
+            useGameStore.setState({ phase: 'over' });
+        });
+
+        expect(queryByTestId('arena-turn-ring')).not.toBeInTheDocument();
     });
 
     it('onShotStart переводит фазу в полёт, onShotEnd возвращает в прицеливание', () => {

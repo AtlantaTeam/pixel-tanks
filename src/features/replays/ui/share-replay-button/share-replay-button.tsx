@@ -9,7 +9,9 @@ type TShareReplayButtonProps = TReplay;
 export function ShareReplayButton({ seed, width, height, moves }: TShareReplayButtonProps) {
     return (
         <ShareButton
-            label="Поделиться боем"
+            label="Поделиться реплеем"
+            variant="outline"
+            fullWidth
             buildPayload={() =>
                 buildReplaySharePayload({
                     seed,

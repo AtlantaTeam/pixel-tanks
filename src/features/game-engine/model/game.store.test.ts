@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { POWER_MAX, POWER_MIN } from '../lib/power';
-import { deriveOutcome, MAX_HP, useGameStore } from './game.store';
+import { deriveOutcome, MAX_HP, selectIsBotTurn, useGameStore } from './game.store';
 
 describe('game.store — запись реплея', () => {
     beforeEach(() => {
@@ -171,6 +171,20 @@ describe('game.store — исход выводится из HP', () => {
 
     it('ничья: HP равны', () => {
         expect(deriveOutcome(20, 20)).toBe('draw');
+    });
+});
+
+describe('game.store — предикат «ход бота» (selectIsBotTurn)', () => {
+    it('истина: ходит соперник и бой идёт', () => {
+        expect(selectIsBotTurn({ turn: 'enemy', phase: 'flight' })).toBe(true);
+    });
+
+    it('ложь: ходит игрок', () => {
+        expect(selectIsBotTurn({ turn: 'player', phase: 'aiming' })).toBe(false);
+    });
+
+    it('ложь: бой окончен, даже если ход был за соперником', () => {
+        expect(selectIsBotTurn({ turn: 'enemy', phase: 'over' })).toBe(false);
     });
 });
 

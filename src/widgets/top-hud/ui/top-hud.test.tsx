@@ -46,6 +46,19 @@ describe('TopHud', () => {
         expect(within(getByTestId('top-hud-mobile')).getByText('ВЫСТРЕЛ')).toBeInTheDocument();
     });
 
+    it('скрывает пилюлю хода после конца боя (handoff «Game over»: индикатора хода быть не может)', () => {
+        useGameStore.setState({ turn: 'enemy', phase: 'over' });
+        const { getByTestId } = render(<TopHud />);
+
+        const mobile = within(getByTestId('top-hud-mobile'));
+        expect(mobile.queryByText('ХОД СОПЕРНИКА')).not.toBeInTheDocument();
+        expect(mobile.queryByText('ТВОЙ ХОД')).not.toBeInTheDocument();
+        expect(mobile.queryByText('ВЫСТРЕЛ')).not.toBeInTheDocument();
+
+        const desktop = within(getByTestId('top-hud-desktop'));
+        expect(desktop.queryByText('ХОД СОПЕРНИКА')).not.toBeInTheDocument();
+    });
+
     it('телеметрия приглушается и угол помечается «заморожен» на ходе бота', () => {
         useGameStore.setState({ turn: 'enemy' });
         const { getByTestId } = render(<TopHud />);

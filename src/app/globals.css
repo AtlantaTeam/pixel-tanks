@@ -272,6 +272,22 @@
     animation: crt-flicker 2.4s steps(3, end) infinite;
 }
 
+/* Лок ввода боевого экрана (handoff «Лок ввода»): мигающий маркер 10×10 по
+   центру оверлея — «сейчас нельзя», не «залипло». Гасится
+   motion-reduce:animate-none в месте использования (DeckLock). */
+@keyframes lock-blink {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.2;
+    }
+}
+@utility animate-lock-blink {
+    animation: lock-blink 1s step-end infinite;
+}
+
 /* Skeleton-плейсхолдер (§09 инвентаря): бегущий блик по градиенту surface→panel-raised.
    Гасится motion-reduce:animate-none в месте использования компонента. */
 @keyframes shimmer {
