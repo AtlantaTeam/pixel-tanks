@@ -228,6 +228,15 @@ describe('game.store — тост «патроны кончились» (selectS
             false,
         );
     });
+
+    it('ложь: дефолт стора (idle) — тост не вспыхивает на входе в бой', () => {
+        // Дефолт до startGame: player + пустой список + idle. Позитивный гард
+        // `phase === 'aiming'` не даёт тосту мелькнуть на кадр между paint'ом и
+        // эффектом GameCanvas (startGame+setWeapons).
+        expect(selectShowAmmoEmptyToast({ turn: 'player', phase: 'idle', weapons: [] })).toBe(
+            false,
+        );
+    });
 });
 
 describe('game.store — фаза хода', () => {

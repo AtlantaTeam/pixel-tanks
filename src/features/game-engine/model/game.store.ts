@@ -53,16 +53,22 @@ export const selectIsBotTurn = (s: Pick<TGameState, 'turn' | 'phase'>): boolean 
     s.turn === 'enemy' && s.phase !== 'over';
 
 /**
- * Показывать тост «патроны кончились» (issue #448): свой ход, без снарядов.
- * Манёвр остаётся активным — тост только предупреждает про огонь, не блокирует
- * ход. Источник для `AmmoEmptyToast` (собственный слой поверх арены). Дизейбл
- * кнопки ОГОНЬ в `game-controls` считается отдельно (`canFire`) — там условие
- * шире (свой ход И есть снаряды), а не только «патроны кончились».
+ * Показывать тост «патроны кончились» (issue #448): свой ход в фазе прицеливания,
+ * без снарядов. Манёвр остаётся активным — тост только предупреждает про огонь,
+ * не блокирует ход. Источник для `AmmoEmptyToast` (собственный слой поверх арены).
+ * Дизейбл кнопки ОГОНЬ в `game-controls` считается отдельно (`canFire`) — там
+ * условие шире (свой ход И есть снаряды), а не только «патроны кончились».
+ *
+ * Гард — позитивный (`phase === 'aiming'`), а не перечисление исключаемых фаз:
+ * дефолтное состояние стора (`phase: 'idle'`, `turn: 'player'`, `weapons: []`)
+ * рендерится на входе в бой ДО того, как эффект `GameCanvas` вызовет
+ * `startGame`+`setWeapons`. При `phase !== 'flight' && phase !== 'over'` тост
+ * вспыхнул бы на один кадр (`idle` проходит фильтр); `phase === 'aiming'` это
+ * закрывает и заодно отсекает пока не используемую фазу `resolving`.
  */
 export const selectShowAmmoEmptyToast = (
     s: Pick<TGameState, 'turn' | 'phase' | 'weapons'>,
-): boolean =>
-    s.turn === 'player' && s.phase !== 'flight' && s.phase !== 'over' && s.weapons.length === 0;
+): boolean => s.turn === 'player' && s.phase === 'aiming' && s.weapons.length === 0;
 
 type TGameState = {
     angle: number;
