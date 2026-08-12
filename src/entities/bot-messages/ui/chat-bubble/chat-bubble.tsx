@@ -10,6 +10,14 @@ import { EBotReplyCategory, type TBotReply } from '../../t-bot-reply';
 const DEFAULT_DURATION_MS = 3000;
 /** Печать реплики (handoff «Чат-бабл бота»): ~35 мс/символ. */
 const TYPING_MS_PER_CHAR = 35;
+/**
+ * Доля срока жизни бабла, за которую печать обязана завершиться. Печать не
+ * связана со сроком жизни напрямую (`text.length × TYPING_MS_PER_CHAR` против
+ * `durationMs`), поэтому длинная реплика без клэмпа обрывалась бы на полуслове,
+ * когда сработает таймер исчезновения. При превышении бюджета шаг печати
+ * ускоряется так, чтобы весь текст успел проявиться, а остаток срока — на чтение.
+ */
+const TYPING_BUDGET_RATIO = 0.6;
 
 const CATEGORY_COLOR: Record<EBotReplyCategory, string> = {
     [EBotReplyCategory.Happy]: 'var(--color-accent)',
@@ -35,7 +43,7 @@ type TChatBubbleProps = {
  *  рендера (паттерн React «adjusting state when a prop changes»), не в эффекте:
  *  так React перерендерит с нуля до коммита, без каскадного лишнего кадра,
  *  который дал бы сброс из `useEffect`. */
-function useTypedText(text: string): string {
+function useTypedText(text: string, durationMs: number): string {
     const reducedMotion = usePrefersReducedMotion();
     const [state, setState] = useState({ text, visibleChars: 0 });
     if (state.text !== text) {
@@ -44,14 +52,22 @@ function useTypedText(text: string): string {
 
     useEffect(() => {
         if (reducedMotion) return;
+        // Шаг печати ≤ TYPING_MS_PER_CHAR, но при необходимости ускоряется, чтобы
+        // весь текст уложился в бюджет `durationMs × TYPING_BUDGET_RATIO` — иначе
+        // длинная реплика обрывается на полуслове на таймере жизни бабла.
+        const budget = durationMs * TYPING_BUDGET_RATIO;
+        const step =
+            text.length > 0
+                ? Math.min(TYPING_MS_PER_CHAR, budget / text.length)
+                : TYPING_MS_PER_CHAR;
         let shown = 0;
         const id = setInterval(() => {
             shown += 1;
             setState((s) => ({ ...s, visibleChars: shown }));
             if (shown >= text.length) clearInterval(id);
-        }, TYPING_MS_PER_CHAR);
+        }, step);
         return () => clearInterval(id);
-    }, [text, reducedMotion]);
+    }, [text, reducedMotion, durationMs]);
 
     return reducedMotion ? text : text.slice(0, state.visibleChars);
 }
@@ -68,7 +84,7 @@ export function ChatBubble({
     onExpire,
     className,
 }: TChatBubbleProps) {
-    const typedText = useTypedText(reply.text);
+    const typedText = useTypedText(reply.text, durationMs);
     const color = CATEGORY_COLOR[reply.category];
 
     // onExpire держим в ref, чтобы его идентичность не пересоздавала таймер:

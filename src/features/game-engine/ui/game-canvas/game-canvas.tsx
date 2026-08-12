@@ -1,12 +1,11 @@
 'use client';
 
-import { clsx } from 'clsx';
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import type { TWeapon } from '@/shared/model';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
-import { useGameStore } from '../../model/game.store';
+import { selectIsBotTurn, useGameStore } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
 import { dealWeapons } from '../../lib/weapons';
 import { createFxRandom } from '../../lib/fx-random';
@@ -51,15 +50,27 @@ const CHIP_GAP = 46;
  */
 const BUBBLE_HEIGHT_ESTIMATE = 100;
 
+/**
+ * Инсеты зоны жеста по брейкпоинтам (Tailwind arbitrary values) — единственный
+ * источник правды геометрии зоны: от неё зависят гейт старта оттяжки
+ * (`isPointInGestureZone`), клэмп чипа (`clampChipTop`/`clampChipCenterX`) и клэмп
+ * бабла (`clampBubbleAnchorY`).
+ *
+ * Значения повторяют фактические высоты `TopHud` (верхний инсет) и палубы
+ * `GameControls` (нижний) на каждом брейкпоинте: <768 — 242/196, ≥768 — 128/168,
+ * ≥1024 — 78/124 (на десктопе полосы фиксированы: HUD `xl:h-[78px]`, дека
+ * `xl:h-[124px]`). Общими с версткой HUD/деки токенами их не сделать: на
+ * мобилке/планшете полосы content-sized — фиксированного числа, на которое можно
+ * сослаться, у них нет. Поэтому — одна документированная константа и правило:
+ * ⚠️ меняешь высоту `TopHud`/`GameControls` — правь эти инсеты, иначе зона тихо
+ * разъедется (e2e ловит лишь горизонтальный overflow и видимость лока, но НЕ
+ * вертикальное выравнивание зоны).
+ */
+const GESTURE_ZONE_INSET =
+    'top-[242px] right-[10px] bottom-[196px] left-[10px] md:top-[128px] md:bottom-[168px] lg:top-[78px] lg:bottom-[124px]';
+
 type TGameCanvasProps = {
     seed?: number | string;
-    /**
-     * Пунктирная рамка зоны жеста с меткой «ЗОНА ЖЕСТА» — аннотация макета для
-     * витрины/отладки, в проде выключена (handoff: «аннотация макета, а не элемент
-     * прода»). Сама зона (для гейта старта и прижатия чипа) работает независимо от
-     * флага — он управляет только видимостью рамки.
-     */
-    showGestureZone?: boolean;
 };
 
 /**
@@ -92,7 +103,7 @@ function commitPlayerShot(
 }
 
 export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(function GameCanvas(
-    { seed, showGestureZone = false }: TGameCanvasProps,
+    { seed }: TGameCanvasProps,
     ref,
 ) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -143,7 +154,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     // включая его собственный полёт снаряда (turn не флипается обратно, пока
     // снаряд бота не долетит, см. `changeActiveTank`). Бой окончен — рамки нет,
     // финал закрывает GameOverDialog.
-    const isBotTurn = turn === 'enemy' && phase !== 'over';
+    const isBotTurn = selectIsBotTurn({ turn, phase });
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -559,22 +570,14 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 }}
             />
             {/* Зона жеста (handoff): между верхним оверлеем и палубой. Всегда в DOM —
-                замеряется на старте оттяжки (гейт старта, прижатие чипа). Пунктирная
-                рамка с меткой — аннотация макета, видна только при showGestureZone. */}
+                замеряется на старте оттяжки (гейт старта, прижатие чипа). Инсеты по
+                брейкпоинтам — в `GESTURE_ZONE_INSET` (там же правило синхронизации с
+                высотами HUD/деки). */}
             <div
                 ref={zoneRef}
                 aria-hidden
-                className={clsx(
-                    'pointer-events-none absolute top-[242px] right-[10px] bottom-[196px] left-[10px] md:top-[128px] md:bottom-[168px] lg:top-[78px] lg:bottom-[124px]',
-                    showGestureZone && 'border-2 border-dashed border-accent opacity-30',
-                )}
-            >
-                {showGestureZone && (
-                    <span className="absolute top-1 right-1 font-ui text-[9px] tracking-[0.14em] text-accent uppercase">
-                        Зона жеста
-                    </span>
-                )}
-            </div>
+                className={`pointer-events-none absolute ${GESTURE_ZONE_INSET}`}
+            />
             <GestureOverlay visual={gestureVisual} />
             {/* Ход бота (handoff): маджента-рамка арены — без предсказания траектории,
                 игрок не должен заранее знать, попадёт ли соперник. */}

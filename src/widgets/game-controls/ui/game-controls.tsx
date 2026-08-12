@@ -2,7 +2,12 @@
 
 import { clsx } from 'clsx';
 import type { RefObject } from 'react';
-import { formatAngle, useGameStore, type TGameCanvasHandle } from '@/features/game-engine';
+import {
+    formatAngle,
+    selectIsBotTurn,
+    useGameStore,
+    type TGameCanvasHandle,
+} from '@/features/game-engine';
 import { Icon, WeaponSelector, type TIconName, type TWeaponSelectorWeapon } from '@/shared/ui';
 import type { TWeapon } from '@/shared/model';
 import { AmmoEmptyToast } from './ammo-empty-toast';
@@ -142,6 +147,8 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
     const power = useGameStore((s) => s.power);
     const turn = useGameStore((s) => s.turn);
     const phase = useGameStore((s) => s.phase);
+    // Ход бота — общий селектор стора (одна точка правды с `game-page`/`game-canvas`).
+    const isBotTurn = useGameStore(selectIsBotTurn);
 
     // Ход соперника/снаряд в полёте — палуба не должна принимать ввод (движок сам
     // отбрасывает такие вызовы, но кнопки обязаны выглядеть недоступными).
@@ -152,13 +159,7 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
     // финал закрывает GameOverDialog. `flight` перекрывает `bot-turn` — снаряд в
     // полёте важнее того, чей был ход (симметрично `turnPillLabel` в TopHud).
     const deckLockReason: TDeckLockReason | null =
-        phase === 'over'
-            ? null
-            : phase === 'flight'
-              ? 'flight'
-              : turn === 'enemy'
-                ? 'bot-turn'
-                : null;
+        phase === 'over' ? null : phase === 'flight' ? 'flight' : isBotTurn ? 'bot-turn' : null;
     // Тост «патроны кончились» — только на своём ходе: манёвр остаётся активным,
     // огонь недоступен (handoff «Патроны кончились»).
     const showAmmoEmptyToast = isPlayerTurn && weapons.length === 0;

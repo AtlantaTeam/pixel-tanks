@@ -42,6 +42,17 @@ const clampHp = (hp: number) => Math.min(MAX_HP, Math.max(0, hp));
 export const deriveOutcome = (playerHp: number, enemyHp: number): TBattleOutcome =>
     playerHp > enemyHp ? 'victory' : playerHp < enemyHp ? 'defeat' : 'draw';
 
+/**
+ * Ход бота: соперник ходит и бой ещё не окончен. Маджента-тема/рамка арены
+ * держится весь ход соперника — включая полёт его снаряда (`turn` не флипается
+ * обратно, пока снаряд бота не долетит); на финале снята, его темизирует
+ * `GameOverDialog`. Единая точка правды предиката «ход бота» для `game-page`
+ * (тема корня), `game-canvas` (рамка арены) и `game-controls` (лок палубы) —
+ * при правке фазовой машины (новая фаза и т.п.) копии не разъедутся.
+ */
+export const selectIsBotTurn = (s: Pick<TGameState, 'turn' | 'phase'>): boolean =>
+    s.turn === 'enemy' && s.phase !== 'over';
+
 type TGameState = {
     angle: number;
     power: number;

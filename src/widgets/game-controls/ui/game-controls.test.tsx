@@ -179,7 +179,7 @@ describe('GameControls (палуба)', () => {
         expect(queryByTestId('deck-lock')).not.toBeInTheDocument();
     });
 
-    it('лок не мигает при prefers-reduced-motion', () => {
+    it('маркер лока несёт класс motion-reduce:animate-none (поведение эмулирует e2e)', () => {
         setWeapons(3);
         useGameStore.setState({ turn: 'enemy', phase: 'aiming' });
         const { getByTestId } = renderDeck();

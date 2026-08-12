@@ -100,10 +100,14 @@ describe('ChatBubble', () => {
         const onExpire = vi.fn();
         render(<ChatBubble reply={happyReply} x={0} y={0} onExpire={onExpire} />);
 
-        vi.advanceTimersByTime(2999);
+        act(() => {
+            vi.advanceTimersByTime(2999);
+        });
         expect(onExpire).not.toHaveBeenCalled();
 
-        vi.advanceTimersByTime(1);
+        act(() => {
+            vi.advanceTimersByTime(1);
+        });
         expect(onExpire).toHaveBeenCalledTimes(1);
     });
 
@@ -111,7 +115,9 @@ describe('ChatBubble', () => {
         const onExpire = vi.fn();
         render(<ChatBubble reply={happyReply} x={0} y={0} durationMs={500} onExpire={onExpire} />);
 
-        vi.advanceTimersByTime(500);
+        act(() => {
+            vi.advanceTimersByTime(500);
+        });
         expect(onExpire).toHaveBeenCalledTimes(1);
     });
 
@@ -122,7 +128,9 @@ describe('ChatBubble', () => {
         );
 
         unmount();
-        vi.advanceTimersByTime(500);
+        act(() => {
+            vi.advanceTimersByTime(500);
+        });
 
         expect(onExpire).not.toHaveBeenCalled();
     });
@@ -134,14 +142,20 @@ describe('ChatBubble', () => {
             <ChatBubble reply={happyReply} x={0} y={0} durationMs={1000} onExpire={onExpire} />,
         );
 
-        vi.advanceTimersByTime(700);
+        act(() => {
+            vi.advanceTimersByTime(700);
+        });
         rerender(
             <ChatBubble reply={angryReply} x={0} y={0} durationMs={1000} onExpire={onExpire} />,
         );
-        vi.advanceTimersByTime(700);
+        act(() => {
+            vi.advanceTimersByTime(700);
+        });
         expect(onExpire).not.toHaveBeenCalled();
 
-        vi.advanceTimersByTime(300);
+        act(() => {
+            vi.advanceTimersByTime(300);
+        });
         expect(onExpire).toHaveBeenCalledTimes(1);
     });
 
