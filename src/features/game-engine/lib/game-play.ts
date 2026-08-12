@@ -47,6 +47,32 @@ export type TGamePlayCallbacks = {
      * экране получит другой рельеф и другой счёт (см. `@/entities/replays`).
      */
     onFieldInit?: (size: { width: number; height: number }) => void;
+    /**
+     * Сообщает ветер боя (px/тик², как `this.wind`) сразу после генерации при
+     * старте боя — верхний HUD (ячейка ВЕТЕР, handoff «Состояние») держит его
+     * в сторе, а не читает движок напрямую.
+     */
+    onWindInit?: (wind: number) => void;
+    /**
+     * Сообщает сторону, чей сейчас ход: один раз при старте боя (игрок всегда
+     * первый) и на каждой передаче хода (`changeActiveTank`). Пилюля хода и
+     * заморозка телеметрии на ходе бота (handoff «Состояние») читают это из
+     * стора, а не гадают по `isFireMode`/`isActive` движка.
+     */
+    onTurnChange?: (turn: 'player' | 'enemy') => void;
+    /**
+     * Снаряд создан и полетел (`fire()`, и для игрока, и для бота) — HUD лочит
+     * ввод и подписывает пилюлю «ВЫСТРЕЛ» (handoff «Лок ввода»).
+     */
+    onShotStart?: () => void;
+    /**
+     * Взрыв доигран, снаряд убран, ход передан (`moveBullet`) — HUD снимает
+     * лок «ВЫСТРЕЛ». На добивании (isGameOver) этот колбэк не срабатывает:
+     * движок замораживается раньше (см. `GameCanvas`, isOver), сцена застывает
+     * на кадре добивания под модалкой — счёт остаётся честным «конец боя»,
+     * а не мигает обратно в «аим».
+     */
+    onShotEnd?: () => void;
 };
 
 /** Опции движка. `fixedLogicalSize` включает режим воспроизведения реплея. */
@@ -347,6 +373,7 @@ export class GamePlay {
         const { leftTankWeapons, rightTankWeapons } = this.allWeapons;
         this.ground = new Ground(this.innerWidth, this.innerHeight, this.random, sand);
         this.wind = generateWind(this.random);
+        this.callbacks.onWindInit?.(this.wind);
         const leftTankX = floor(this.innerWidth / 4);
         const leftTankY = this.innerHeight - this.ground.heights[leftTankX];
         this.leftTank = new Tank(
@@ -360,6 +387,9 @@ export class GamePlay {
             leftGunpoint,
         );
         this.leftTank.isActive = true;
+        // Игрок всегда ходит первым (см. §GDD) — HUD узнаёт об этом здесь же,
+        // не дожидаясь первой передачи хода через changeActiveTank.
+        this.callbacks.onTurnChange?.('player');
 
         const rightTankX = floor((this.innerWidth * 3) / 4);
         const rightTankY = this.innerHeight - this.ground.heights[rightTankX];
@@ -388,6 +418,7 @@ export class GamePlay {
             [this.leftTank.isActive, this.rightTank.isActive] = this.leftTank.isActive
                 ? [false, true]
                 : [true, false];
+            this.callbacks.onTurnChange?.(this.leftTank.isActive ? 'player' : 'enemy');
             this.fullRedraw();
         }
     };
@@ -640,6 +671,7 @@ export class GamePlay {
             return;
         }
         this.bullet = undefined;
+        this.callbacks.onShotEnd?.();
         this.changeActiveTank();
     };
 
@@ -740,6 +772,7 @@ export class GamePlay {
 
     fire = (activeTank: Tank, targetTank: Tank, ground: Ground, weaponType: TWeapon) => {
         this.lastShooterIsLeft = activeTank === this.leftTank;
+        this.callbacks.onShotStart?.();
         this.activateMode('fire');
         this.bullet = new Bullet(
             this.innerWidth,

@@ -57,6 +57,9 @@ function makeGamePlay() {
         onMovesChange: vi.fn(),
         onPowerChange: vi.fn(),
         onBotReply: vi.fn(),
+        onTurnChange: vi.fn(),
+        onShotStart: vi.fn(),
+        onShotEnd: vi.fn(),
     };
     const random = createSeededRandom(1);
     const ground = new Ground(WIDTH, HEIGHT, random);
@@ -79,7 +82,7 @@ function makeGamePlay() {
 
     const bullet = new Bullet(WIDTH, HEIGHT, ground, leftTank, rightTank, 0);
 
-    return { gamePlay, callbacks, leftTank, rightTank, bullet };
+    return { gamePlay, callbacks, leftTank, rightTank, ground, bullet };
 }
 
 describe('GamePlay.moveBullet — разрешение попадания на многокадровом взрыве', () => {
@@ -129,5 +132,48 @@ describe('GamePlay.moveBullet — разрешение попадания на �
         expect(playSfx).toHaveBeenCalledTimes(1);
         expect(playSfx).toHaveBeenCalledWith('miss');
         expect(callbacks.onTankHit).not.toHaveBeenCalled();
+    });
+});
+
+describe('GamePlay — колбэки хода и ветра (handoff «Состояние»)', () => {
+    it('changeActiveTank сообщает новую сторону хода после передачи хода', () => {
+        const { gamePlay, callbacks } = makeGamePlay();
+
+        gamePlay.changeActiveTank();
+
+        expect(callbacks.onTurnChange).toHaveBeenCalledWith('enemy');
+
+        gamePlay.changeActiveTank();
+
+        expect(callbacks.onTurnChange).toHaveBeenLastCalledWith('player');
+    });
+
+    it('fire() сообщает начало выстрела (лок ввода/пилюля «ВЫСТРЕЛ»)', () => {
+        const { gamePlay, callbacks, leftTank, rightTank, ground } = makeGamePlay();
+        vi.spyOn(getAudioEngine(), 'playSfx').mockImplementation(() => Promise.resolve());
+
+        gamePlay.fire(leftTank, rightTank, ground, WEAPON);
+
+        expect(callbacks.onShotStart).toHaveBeenCalledTimes(1);
+    });
+
+    it('moveBullet сообщает конец выстрела ровно один раз, когда взрыв доигран', () => {
+        const { gamePlay, callbacks, rightTank, bullet } = makeGamePlay();
+        bullet.isTankHit = false;
+        bullet.isHit = () => true;
+        gamePlay.bullet = bullet;
+        void rightTank;
+
+        // explosionMaxRadius = 50: взрыв доигрывает 50 кадров, затем bullet
+        // очищается и ход передаётся — до этого onShotEnd молчит.
+        for (let frame = 0; frame < 49; frame += 1) {
+            gamePlay.moveBullet(ctxStub);
+        }
+        expect(callbacks.onShotEnd).not.toHaveBeenCalled();
+
+        gamePlay.moveBullet(ctxStub);
+
+        expect(callbacks.onShotEnd).toHaveBeenCalledTimes(1);
+        expect(gamePlay.bullet).toBeUndefined();
     });
 });

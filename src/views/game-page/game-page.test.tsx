@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 import { GamePage } from './game-page';
 
 describe('GamePage', () => {
@@ -17,25 +17,30 @@ describe('GamePage', () => {
         expect(main).toHaveClass('safe-area-inset');
     });
 
-    it('includes a link to design-system page', () => {
-        const { getByRole } = render(<GamePage seed="42" />);
-        const link = getByRole('link', { name: /витрина|showcase/i });
+    // Ссылка на витрину переехала в паузу (handoff «Что делать в кодовой
+    // базе»): плавающая иконка поверх арены перекрывала верхний HUD (#423).
+    describe('ссылка на витрину компонентов (в паузе)', () => {
+        function openPause() {
+            const { getByTestId, getAllByRole } = render(<GamePage seed="42" />);
+            fireEvent.click(
+                within(getByTestId('top-hud-mobile')).getByRole('button', { name: 'Пауза' }),
+            );
+            return { getAllByRole };
+        }
 
-        expect(link).toBeInTheDocument();
-        expect(link).toHaveAttribute('href', '/design-system');
-    });
+        it('открывается кнопкой паузы верхнего HUD и ведёт на /design-system', () => {
+            const { getAllByRole } = openPause();
+            const link = getAllByRole('link', { name: /витрина|showcase/i })[0];
 
-    it('design-system link has accessible aria-label', () => {
-        const { getByRole } = render(<GamePage seed="42" />);
-        const link = getByRole('link', { name: /витрина|showcase/i });
+            expect(link).toBeInTheDocument();
+            expect(link).toHaveAttribute('href', '/design-system');
+        });
 
-        expect(link).toHaveAccessibleName(/витрина|showcase/i);
-    });
+        it('имеет доступное имя', () => {
+            const { getAllByRole } = openPause();
+            const link = getAllByRole('link', { name: /витрина|showcase/i })[0];
 
-    it('design-system link has minimum touch target size', () => {
-        const { getByRole } = render(<GamePage seed="42" />);
-        const link = getByRole('link', { name: /витрина|showcase/i });
-
-        expect(link).toHaveClass('min-h-11', 'min-w-11');
+            expect(link).toHaveAccessibleName(/витрина|showcase/i);
+        });
     });
 });

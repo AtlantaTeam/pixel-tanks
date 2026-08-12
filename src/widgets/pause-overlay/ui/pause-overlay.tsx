@@ -1,9 +1,11 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
+import Link from 'next/link';
 import { ThemeScope } from '@/shared/lib/theme';
 import {
     Button,
+    buttonClasses,
     Dialog,
     Icon,
     SegmentedControl,
@@ -172,6 +174,18 @@ export function PauseOverlay({
                             Выйти в меню
                         </Button>
                     </div>
+                    {/* Ссылка на витрину компонентов: раньше плавающая иконка
+                        поверх арены перекрывала верхний HUD (handoff «Что делать
+                        в кодовой базе» — «перенести в паузу»). Здесь она никому
+                        не мешает и доступна тем же жестом «пауза», что и раньше
+                        мьют/настройки. */}
+                    <Link
+                        href="/design-system"
+                        className={buttonClasses('ghost', 'sm', 'mx-0 w-full gap-2')}
+                    >
+                        <Icon name="eye" size={14} />
+                        Витрина компонентов
+                    </Link>
                 </div>
             </Dialog>
         </ThemeScope>

@@ -56,7 +56,7 @@ describe('HPBar', () => {
         const { getByText } = render(<HPBar label="Игрок 1" value={72} faction="player" />);
 
         expect(getByText('Игрок 1')).toBeInTheDocument();
-        expect(getByText('HP 72 / 100')).toBeInTheDocument();
+        expect(getByText('72/100')).toBeInTheDocument();
     });
 
     it('renders the star icon for the player faction', () => {
@@ -86,7 +86,7 @@ describe('HPBar', () => {
 
         const fill = container.querySelector('[data-testid="hp-bar-fill"]') as HTMLElement;
         expect(fill.style.width).toBe('50%');
-        expect(getByText('HP 75 / 150')).toBeInTheDocument();
+        expect(getByText('75/150')).toBeInTheDocument();
     });
 
     it('computes color thresholds as percentages of a custom max', () => {

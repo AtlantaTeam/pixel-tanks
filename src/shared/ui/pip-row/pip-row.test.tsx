@@ -87,4 +87,13 @@ describe('PipRow', () => {
 
         expect((container.firstChild as HTMLElement).className).toContain('custom-pip-row');
     });
+
+    it('renders smaller pips at a custom size (handoff: ветер до пристрелки — 10×10)', () => {
+        const { container } = render(<PipRow pips={[true, false]} size={10} />);
+
+        const pip = container.querySelector('[data-testid="pip"]') as HTMLElement;
+        expect(pip).not.toHaveClass('size-3.5');
+        expect(pip.style.width).toBe('10px');
+        expect(pip.style.height).toBe('10px');
+    });
 });

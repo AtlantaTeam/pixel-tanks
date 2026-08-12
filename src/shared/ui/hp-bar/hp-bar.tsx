@@ -44,8 +44,11 @@ export function HPBar({ label, value, faction, max = DEFAULT_HP_MAX, className }
                     />
                     {label}
                 </span>
-                <span className="font-ui text-label text-text-muted tabular-nums">
-                    HP {clamped} / {max}
+                {/* handoff «HP-карточка»: компактно «72/100», без «HP»-префикса и
+                    без пробелов вокруг «/» — строка не должна переноситься на
+                    узкой карточке (`flex:1 1 180px`). */}
+                <span className="font-ui text-[10px] whitespace-nowrap text-text-muted tabular-nums">
+                    {clamped}/{max}
                 </span>
             </div>
             <div

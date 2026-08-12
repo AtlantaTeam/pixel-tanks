@@ -1,153 +1,44 @@
 'use client';
 
 import { useGameStore } from '@/features/game-engine';
-import { BOT_NAME } from '@/shared/config';
-import { useMuteState } from '@/shared/lib/audio';
-import { useAnimatedValue } from '@/shared/lib/animation';
-import { Button, Icon, Select } from '@/shared/ui';
-import { useHoldRepeat } from '../lib/use-hold-repeat';
+import { Select } from '@/shared/ui';
 import { KeyboardSchemeHint } from './keyboard-scheme-hint';
 
-const noop = () => {};
-
-const formatAngle = (radians: number) => {
-    const normalized = radians < 0 ? -radians : 2 * Math.PI - radians;
-
-    return ((normalized * 180) / Math.PI) | 0;
-};
-
+/**
+ * Нижняя палуба (временная): выбор оружия + клавиатурная подсказка. HP,
+ * mute/пауза и телеметрия (угол/сила/ветер/пипы) переехали в `widgets/top-hud`
+ * (#423) — здесь их больше нет, дублировать нечего. Селектор оружия, манёвр и
+ * кнопка ОГОНЬ по макету `handoff.md` — отдельная issue трека («нижняя
+ * палуба»), пока он остаётся нативным `Select`.
+ */
 export function GameControls() {
-    const power = useGameStore((s) => s.power);
-    const angle = useGameStore((s) => s.angle);
-    const moves = useGameStore((s) => s.moves);
-    const playerHp = useGameStore((s) => s.hp.player);
-    const enemyHp = useGameStore((s) => s.hp.enemy);
     const weapons = useGameStore((s) => s.weapons);
     const selectedWeapon = useGameStore((s) => s.selectedWeapon);
-
-    const increaseAngle = useGameStore((s) => s.increaseAngle);
-    const increasePower = useGameStore((s) => s.increasePower);
     const selectWeapon = useGameStore((s) => s.selectWeapon);
-
-    const { isMuted, toggle: toggleMute } = useMuteState();
-
-    // HP и ходы обновляются в сторе скачком (попадание, ход) — HUD плавно
-    // дотягивает отображаемое число к нему, а не дёргается мгновенно.
-    const displayedPlayerHp = Math.round(useAnimatedValue(playerHp));
-    const displayedEnemyHp = Math.round(useAnimatedValue(enemyHp));
-    const displayedMoves = Math.round(useAnimatedValue(moves));
 
     return (
         <div className="flex flex-col gap-2 p-2 sm:gap-4 sm:p-4">
-            <div className="flex items-center justify-end">
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={toggleMute}
-                    aria-label={isMuted ? 'Включить звук' : 'Выключить звук'}
-                    title={isMuted ? 'Включить звук' : 'Выключить звук'}
+            <div className="flex justify-center">
+                <Select
+                    id="weapon-select"
+                    label="Оружие"
+                    className="w-36"
+                    value={selectedWeapon?.id ?? ''}
+                    onValueChange={(value) => {
+                        const next = weapons.find((w) => w.id === Number(value));
+                        if (next) selectWeapon(next);
+                    }}
                 >
-                    <Icon name={isMuted ? 'mute' : 'sound'} />
-                </Button>
-            </div>
-
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center sm:gap-4">
-                <div className="flex flex-col items-center gap-2">
-                    <div className="font-ui text-xs text-text-muted">Игрок</div>
-                    <div className="font-ui text-hud-xl text-primary tabular-nums [text-shadow:var(--glow-text)]">
-                        {displayedPlayerHp}
-                    </div>
-                </div>
-
-                <div className="flex flex-wrap items-end justify-center gap-2 sm:gap-4">
-                    <Counter
-                        label="Мощность"
-                        value={power}
-                        onDec={() => increasePower(-1)}
-                        onInc={() => increasePower(1)}
-                    />
-                    <Counter
-                        label="Угол"
-                        value={formatAngle(angle)}
-                        onDec={() => increaseAngle(Math.PI / 180)}
-                        onInc={() => increaseAngle(-Math.PI / 180)}
-                    />
-                    <Select
-                        id="weapon-select"
-                        label="Оружие"
-                        className="w-36"
-                        value={selectedWeapon?.id ?? ''}
-                        onValueChange={(value) => {
-                            const next = weapons.find((w) => w.id === Number(value));
-                            if (next) selectWeapon(next);
-                        }}
-                    >
-                        {weapons.map((w) => (
-                            <option key={w.id} value={w.id}>
-                                {w.name} #{w.id}
-                            </option>
-                        ))}
-                    </Select>
-                    <Counter label="Ходы" value={displayedMoves} />
-                </div>
-
-                <div className="flex flex-col items-center gap-2">
-                    <div className="font-ui text-xs text-text-muted">{BOT_NAME}</div>
-                    <div className="font-ui text-hud-xl text-danger tabular-nums [text-shadow:var(--glow-text)]">
-                        {displayedEnemyHp}
-                    </div>
-                </div>
+                    {weapons.map((w) => (
+                        <option key={w.id} value={w.id}>
+                            {w.name} #{w.id}
+                        </option>
+                    ))}
+                </Select>
             </div>
 
             <div className="border-t border-border pt-2 sm:pt-4">
                 <KeyboardSchemeHint />
-            </div>
-        </div>
-    );
-}
-
-type TCounterProps = {
-    label: string;
-    value: number | string;
-    onDec?: () => void;
-    onInc?: () => void;
-};
-
-function Counter({ label, value, onDec, onInc }: TCounterProps) {
-    // Удержание кнопки авто-повторяет шаг — набирать значение по одному тыку было
-    // долго (#264). Counter общий: hold работает и для «Мощности», и для «Угла».
-    // Для угла это паритет с авто-репитом стрелок; угол в сторе не заворачивается
-    // по 2π, так что долгим удержанием HUD покажет градусы вне 0..360 — косметика
-    // (физика периодична по cos/sin), нормализацию не трогаем в рамках #264.
-    // `useHoldRepeat` владеет и onClick — тап/клавиатура дают ровно один шаг.
-    const decHold = useHoldRepeat(onDec ?? noop);
-    const incHold = useHoldRepeat(onInc ?? noop);
-
-    return (
-        <div className="flex flex-col items-center gap-1">
-            <span className="text-xs text-text-muted">{label}</span>
-            <div className="flex items-center gap-2">
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    disabled={!onDec}
-                    aria-label={`${label} меньше`}
-                    {...decHold}
-                >
-                    −
-                </Button>
-                <span className="min-w-[3rem] text-center font-ui text-sm tabular-nums">
-                    {value}
-                </span>
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    disabled={!onInc}
-                    aria-label={`${label} больше`}
-                    {...incHold}
-                >
-                    +
-                </Button>
             </div>
         </div>
     );

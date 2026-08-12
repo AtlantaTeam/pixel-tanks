@@ -1,39 +1,43 @@
-import Link from 'next/link';
-import { GameCanvas } from '@/features/game-engine';
+'use client';
+
+import { useState } from 'react';
+import { GameCanvas, useGameStore } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
-import { Icon } from '@/shared/ui';
 import { GameControls } from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
+import { PauseOverlay } from '@/widgets/pause-overlay';
+import { TopHud } from '@/widgets/top-hud';
 
 type TGamePageProps = {
     seed?: string;
 };
 
 export function GamePage({ seed }: TGamePageProps = {}) {
+    const [isPaused, setIsPaused] = useState(false);
+    const resetGame = useGameStore((s) => s.resetGame);
+
     return (
         <main className="safe-area-inset flex h-dvh flex-col overflow-hidden">
             <SceneMusic track="battle" />
             <div className="relative flex-1 overflow-hidden">
                 <GameCanvas seed={seed} />
+                <TopHud onPauseClick={() => setIsPaused(true)} />
             </div>
             <div data-testid="game-hud" className="border-t border-border bg-panel">
                 <GameControls />
             </div>
             <GameOverDialog seed={seed} />
-            <Link
-                href="/design-system"
-                aria-label="Витрина компонентов"
-                style={{
-                    top: 'max(1rem, env(safe-area-inset-top))',
-                    right: 'max(1rem, env(safe-area-inset-right))',
+            <PauseOverlay
+                open={isPaused}
+                onResume={() => setIsPaused(false)}
+                onRestart={() => {
+                    resetGame();
+                    window.location.reload();
                 }}
-                className="fixed z-40 flex min-h-11 min-w-11 items-center justify-center rounded-sm bg-panel-raised text-text-muted opacity-50 transition-all hover:text-primary hover:opacity-100 focus-visible:ring-2 focus-visible:ring-primary"
-            >
-                {/* `eye` (смотреть/витрина), а не `settings`-шестерёнка: ссылка ведёт в
-                    каталог-витрину компонентов, а не в настройки — иконка не должна врать
-                    зрячему (для SR она декоративна, `aria-hidden`; смысл несёт aria-label). */}
-                <Icon name="eye" size={16} />
-            </Link>
+                onExitToMenu={() => {
+                    window.location.href = '/';
+                }}
+            />
         </main>
     );
 }
