@@ -57,6 +57,10 @@ export function HPBar({ label, value, faction, max = DEFAULT_HP_MAX, className }
                     моноширинных цифр не двигает соседей — HUD не «скачет». */}
                 <span
                     className="inline-block shrink-0 text-right font-ui text-[10px] whitespace-nowrap text-text-muted tabular-nums"
+                    // Резерв «N/N»: цифры max, «/», цифры max = length*2 + 1. `ch`
+                    // тут = ширина цифры только потому, что font-ui (JetBrains Mono)
+                    // моноширинный (и «/» = 1ch, `tabular-nums` избыточен, но не
+                    // мешает). Станет HUD-шрифт пропорциональным — резерв разъедется.
                     style={{ minWidth: `${String(max).length * 2 + 1}ch` }}
                 >
                     {clamped}/{max}

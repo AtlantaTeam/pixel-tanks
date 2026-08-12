@@ -86,6 +86,23 @@ test('тост «патроны кончились» — свой слой по�
             );
             expect(hitsToast).toBe(false);
 
+            // Тост не наезжает на деку: его низ выше верха деки текущего брейкпоинта
+            // (зазор). `TOAST_BOTTOM_PX` калибрована по самой высокой — мобильной —
+            // деке (`MOBILE_DECK_HEIGHT_PX`), поэтому именно на мобилке зазор самый
+            // тонкий; вырастет состав/паддинги деки — упадёт здесь, с подсказкой на
+            // причину, а не тихо разъедется (пробел, который ловил лишь косвенно).
+            const deckTestId = {
+                'mobile-390': 'game-deck-mobile',
+                'tablet-768': 'game-deck-tablet',
+                'desktop-1280': 'game-deck-desktop',
+            }[viewport.name] as string;
+            const deckBox = await page.getByTestId(deckTestId).boundingBox();
+            expect(deckBox).not.toBeNull();
+            expect(
+                toastBox.y + toastBox.height,
+                `${viewport.name}: тост наехал на ${deckTestId} — низ тоста ${toastBox.y + toastBox.height}px, верх деки ${deckBox?.y}px`,
+            ).toBeLessThanOrEqual(deckBox?.y ?? 0);
+
             distancesFromBottom.push(viewport.height - (toastBox.y + toastBox.height));
         }
 
