@@ -112,6 +112,18 @@
             {
                 "milestone": "Экран боя ralph · Фаза 4: Витрина и визрегрессия",
                 "branch": "feature/game-screen-4-showcase"
+            },
+            {
+                "milestone": "Мобильная эргономика боя · Фаза 1: HUD не скачет",
+                "branch": "feature/mobile-ergo-1-stable-hud"
+            },
+            {
+                "milestone": "Мобильная эргономика боя · Фаза 2: Компактные оверлеи",
+                "branch": "feature/mobile-ergo-2-compact"
+            },
+            {
+                "milestone": "Мобильная эргономика боя · Фаза 3: Safe-зона арены и масштаб мира",
+                "branch": "feature/mobile-ergo-3-arena"
             }
         ]
     },
