@@ -1293,8 +1293,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
             throw new Error(`Комментарии PR: некорректный номер (${JSON.stringify(prNumber)}).`);
         }
         const surfaces: Array<{ endpoint: string; isSummary: boolean }> = [
-            { endpoint: `repos/{owner}/{repo}/issues/${String(prNumber)}/comments`, isSummary: false },
-            { endpoint: `repos/{owner}/{repo}/pulls/${String(prNumber)}/comments`, isSummary: false },
+            {
+                endpoint: `repos/{owner}/{repo}/issues/${String(prNumber)}/comments`,
+                isSummary: false,
+            },
+            {
+                endpoint: `repos/{owner}/{repo}/pulls/${String(prNumber)}/comments`,
+                isSummary: false,
+            },
             { endpoint: `repos/{owner}/{repo}/pulls/${String(prNumber)}/reviews`, isSummary: true },
         ];
         const out: ReviewComment[] = [];
@@ -1530,11 +1536,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // номер — карточка ВСЁ РАВНО создана, поэтому null, а не исключение: откатывать
     // нечего, а падение здесь заставило бы петлю повторить создание и наплодить дубли.
     function createIssue(
-        {
-            title,
-            body,
-            labels: names,
-        }: { title: string; body: string; labels: readonly string[] },
+        { title, body, labels: names }: { title: string; body: string; labels: readonly string[] },
         { runArgvFn = shArgv }: { runArgvFn?: typeof shArgv } = {},
     ): number | null {
         const args = ['issue', 'create', '--title', title, '--body', body];
@@ -2253,6 +2255,56 @@ export function createOrchestrator(env: OrchestratorEnv) {
         return true;
     }
 
+    // #66: коммит остатка сессии. Сессия может оставить работу незакоммиченной по причинам,
+    // которых не перечислить заранее: упёрлась в `maxTurns` посреди работы; решила «дождусь
+    // зелёных тестов, потом закоммичу» (а «потом» у неё нет — жизнь кончается вместе с
+    // ходом); увидела процесс раннера в `ps` и приняла РОДИТЕЛЯ за конкурента за дерево.
+    // Каждый раз петля вставала до человека, и человек делал ровно то же самое: `git add -A
+    // && git commit`. Раз действие всегда одно, его делает раннер.
+    //
+    // Почему это не ослабляет барьер: качество сторожит не чистота дерева, а ГЕЙТ — он
+    // гоняет все чеки на точном sha PR-головы и красное не мерджит. Прежняя остановка
+    // защищала не от плохого кода, а от старта следующей сессии поверх чужой полу-работы
+    // (M2) — и коммит закрывает ровно это, не теряя саму работу.
+    //
+    // Отказ git (нет прав, битый индекс) оставляет состояние дерева НЕИЗВЕСТНЫМ — это
+    // fail-closed стоп, как было: «не знаю» здесь дороже лишней остановки.
+    function commitLeftovers(
+        context: string,
+        {
+            shFn = sh,
+            shArgvFn = shArgv,
+            logFn = log,
+        }: { shFn?: ShFn; shArgvFn?: typeof shArgv; logFn?: LogFn } = {},
+    ): boolean {
+        let dirtyNow = '';
+        try {
+            dirtyNow = shFn('git status --porcelain');
+        } catch (e) {
+            logFn(`⚠ git status упал (${context}): ${(e as Error).message}`);
+            return false;
+        }
+        if (!dirtyNow) return true;
+        try {
+            shArgvFn('git', ['add', '-A']);
+            shArgvFn('git', [
+                'commit',
+                '--no-verify',
+                '-m',
+                `wip(ralph): остаток сессии — ${context}`,
+            ]);
+        } catch (e) {
+            logFn(
+                `⛔ Остаток сессии (${context}) не удалось закоммитить: ${(e as Error).message}\n${dirtyNow}`,
+            );
+            return false;
+        }
+        logFn(
+            `📦 Остаток сессии закоммичен (${context}) — работа сохранена, качество проверит гейт:\n${dirtyNow}`,
+        );
+        return true;
+    }
+
     // #390 (инцидент 28.07.2026, фаза 4 #204): claude завершился с кодом 1, но дерево было
     // грязным (сессия успела наработать файлы и не успела закоммитить). Раннер честно
     // пошёл на следующую итерацию, там сработал общий ensureClean — но с непричастным
@@ -2331,6 +2383,22 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 `⚠ Не удалось сохранить вывод упавшей сессии Issue #${issue.number} в ${sessionPath} ` +
                     `(${(e as Error).message}) — диагностику продолжаем по git status.`,
             );
+        }
+        // #67: 127 и 126 — отказ СРЕДЫ, а не сессии: бинаря кодер-рантайма нет (127) либо
+        // он не исполняется (126). Это решается ДО git status и независимо от дерева:
+        // продолжать нечем — следующая итерация упадёт так же и за секунду, а петля сожжёт
+        // бюджет вхолостую и упрётся в maxIterations без единого полезного действия.
+        // Брейкер `maxNoProgress` тут не спасает: он считает итерации, а не время, и три
+        // пустых проходят за пять секунд (полигон, 12.08: Claude CLI обновил сам себя
+        // посреди прогона — `/usr/bin/claude: No such file or directory`).
+        if (code === 127 || code === 126) {
+            const envMsg =
+                `⛔ Кодер-рантайм недоступен (код ${code}) на Issue #${issue.number} — стоп: это отказ среды, ` +
+                'а не сессии. Проверь, что бинарь на месте и исполняется (обновление CLI, права, PATH).\n' +
+                `Вывод сессии: ${sessionPath}`;
+            logFn(envMsg);
+            pushEventFn(envMsg, cfg);
+            return { stop: true };
         }
         let dirtyNow: string;
         try {
@@ -2821,7 +2889,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // #51: требование держится на посылке «деплой есть». Её и проверяем сначала —
             // иначе барьер вынуждает вписать в конфиг заведомую ложь, лишь бы пройти старт.
             const healthUrl = cfg.deployCheck && cfg.deployCheck.healthUrl;
-            if (deployEnabledFn() && (typeof healthUrl !== 'string' || !/^https?:\/\//.test(healthUrl)))
+            if (
+                deployEnabledFn() &&
+                (typeof healthUrl !== 'string' || !/^https?:\/\//.test(healthUrl))
+            )
                 failFn(
                     'Профиль prod: deployCheck.healthUrl не задан или не http(s)-адрес — пост-мердж ' +
                         'healthcheck (#164) в prod обязателен, иначе каждая смердженная фаза даёт красный ' +
@@ -3024,6 +3095,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         addBlockedLabelFn?: typeof addBlockedLabel;
         runClaudeFn?: typeof runClaude;
         ensureCleanFn?: typeof ensureClean;
+        commitLeftoversFn?: typeof commitLeftovers;
         handleCrashedCoderSessionFn?: typeof handleCrashedCoderSession;
         phaseMergedFn?: (phase: { branch: string }) => boolean;
         mergedPhasePrFn?: (phase: { branch: string }) => number | null;
@@ -3105,6 +3177,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             addBlockedLabelFn = adapters.taskSource.addBlockedLabel,
             runClaudeFn = runClaude,
             ensureCleanFn = ensureClean,
+            commitLeftoversFn = commitLeftovers,
             handleCrashedCoderSessionFn = handleCrashedCoderSession,
             phaseMergedFn = adapters.taskSource.isPhaseMerged,
             mergedPhasePrFn = adapters.taskSource.mergedPullRequestNumber,
@@ -3180,7 +3253,12 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // M2: между итерациями дерево должно быть чистым — сессия могла быть убита по
             // maxTurns посреди работы, и следующая (возможно, другой моделью по другому
             // issue) не должна стартовать поверх её полу-работы.
-            if (!dry && !ensureCleanFn(`итерация фазы "${phase.milestone}"`)) break;
+            // #66: дерево грязное — это остаток прошлой сессии, а не повод вставать.
+            // Коммитим его и идём дальше; стоп остаётся только если сам коммит не удался
+            // (тогда состояние дерева неизвестно — fail-closed).
+            if (!dry && !ensureCleanFn(`итерация фазы "${phase.milestone}"`)) {
+                if (!commitLeftoversFn(`итерация фазы "${phase.milestone}"`)) break;
+            }
 
             // #199: синк доски идёт и здесь, не только после мерджа. Issues закрываются
             // АСИНХРОННО — GitHub обрабатывает `Closes #N` уже после попадания коммита в
@@ -3469,7 +3547,6 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     break;
                 }
 
-
                 // #45: намерения сессий по PR — это ВЕРДИКТ, а не косметика. Гейт читает
                 // метки PR и комментарии, а не файл-запрос: не применённое намерение
                 // означает, что блока для гейта нет, и фаза уедет в main с дефектом,
@@ -3536,7 +3613,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     try {
                         const existingPr = findOpenPrFn(phase.branch);
                         if (existingPr) {
-                            logFn(`⏭ PR #${String(existingPr.number)} ветки ${phase.branch} уже открыт — создавать не нужно.`);
+                            logFn(
+                                `⏭ PR #${String(existingPr.number)} ветки ${phase.branch} уже открыт — создавать не нужно.`,
+                            );
                         } else {
                             const created = createPrFn({
                                 branch: phase.branch,
@@ -3817,7 +3896,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                     health = checkProdHealthFn(cfg, { logFn });
                                 }
                                 // #369: классификация — через шов деплой-проверки (та же функция).
-                                const verdict = adapters.deployCheck.classifyOutcome(outcome, health);
+                                const verdict = adapters.deployCheck.classifyOutcome(
+                                    outcome,
+                                    health,
+                                );
                                 if (verdict.red) {
                                     block = {
                                         milestone: phase.milestone,
@@ -4226,7 +4308,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         .map(([, cmd]) => cmd)
                         .join(', ');
                     const healCode = runClaudeFn(
-                        buildGateHealPrompt({ branch: phase.branch, checkName: redCheck.name, checkCmd: redCheck.cmd, excerpt: redCheck.excerpt, gateCmdList }),
+                        buildGateHealPrompt({
+                            branch: phase.branch,
+                            checkName: redCheck.name,
+                            checkCmd: redCheck.cmd,
+                            excerpt: redCheck.excerpt,
+                            gateCmdList,
+                        }),
                         {
                             model: healRoute?.model ?? cfg.model,
                             maxTurns,
@@ -4960,6 +5048,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         runLoop,
         loadState,
         ensureClean,
+        commitLeftovers,
         // #390: экспорт для юнитов (saveSessionOutput — сама запись+редактирование секретов,
         // handleCrashedCoderSession — диагностика падения кодер-сессии в runLoop).
         saveSessionOutput,

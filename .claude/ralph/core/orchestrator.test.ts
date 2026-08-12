@@ -2233,6 +2233,9 @@ describe('runLoop — основной while-цикл: итерации коде
             ctx(mkState()),
             deps(logs, {
                 ensureCleanFn: () => false,
+                // #66: после ensureClean раннер пробует закоммитить остаток; здесь дерево
+                // не предмет теста, поэтому коммит «не удался» — цикл выходит сразу, как и был.
+                commitLeftoversFn: () => false,
                 monitorConfigPath: '/tmp/ralph.config.json',
                 ensureMonitorAliveFn,
             }),
@@ -2280,15 +2283,71 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(pushEventFn.mock.calls[0][2]).toMatchObject({ logFn: expect.any(Function) });
     });
 
-    it('грязное дерево между итерациями (ensureClean=false, dry=false) → стоп до issues', () => {
+    // #66: сессия может оставить работу незакоммиченной по причинам, которых не перечислить:
+    // упёрлась в maxTurns, решила «дождусь зелёных тестов», приняла процесс раннера в `ps`
+    // за конкурента. Каждый раз петля вставала до человека, а человек делал ровно
+    // `git add -A && git commit`. Теперь это делает раннер: работа не теряется, а качество
+    // по-прежнему сторожит гейт — он гоняет чеки на точном sha PR-головы.
+    it('#66 остаток сессии коммитится раннером, цикл продолжается', () => {
+        const logs: string[] = [];
+        const state = mkState();
+        const commitLeftoversFn = vi.fn(() => true);
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                once: true,
+                phaseIndexOfFn: () => 0,
+                // Дерево грязное — раньше это был стоп до человека.
+                ensureCleanFn: () => false,
+                commitLeftoversFn,
+                openIssuesFn: () => [{ number: 5, title: 'задача', labels: [] }],
+                runClaudeFn,
+            }),
+        );
+        expect(commitLeftoversFn).toHaveBeenCalled();
+        // Цикл НЕ встал: сессия по карточке запустилась.
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('#66 НЕГАТИВНЫЙ: коммит остатка не удался → стоп, как раньше', () => {
+        const logs: string[] = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                ensureCleanFn: () => false,
+                // git отказал (нет прав, конфликт индекса) — состояние дерева неизвестно,
+                // и это ровно тот случай, ради которого проверка чистоты и стоит.
+                commitLeftoversFn: () => false,
+                openIssuesFn: () => [{ number: 5, title: 'задача', labels: [] }],
+                runClaudeFn,
+            }),
+        );
+        expect(runClaudeFn).not.toHaveBeenCalled();
+    });
+
+    it('грязное дерево между итерациями, коммит остатка не удался → стоп до issues', () => {
+        // #66 изменил смысл: само по себе грязное дерево больше не стоп — раннер коммитит
+        // остаток и идёт дальше. Стопом остаётся невозможность закоммитить: тогда состояние
+        // дерева неизвестно, а «не знаю» здесь дороже лишней остановки (fail-closed).
         const logs: string[] = [];
         const openIssuesFn = vi.fn(() => []);
         runLoop(
             validCfg(),
             ctx(mkState()),
-            deps(logs, { phaseIndexOfFn: () => 0, ensureCleanFn: () => false, openIssuesFn }),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                ensureCleanFn: () => false,
+                commitLeftoversFn: () => false,
+                openIssuesFn,
+            }),
         );
-        // Прервались на ensureClean — очередь issues даже не запрашивалась.
+        // Прервались до очереди — issues даже не запрашивались.
         expect(openIssuesFn).not.toHaveBeenCalled();
     });
 
@@ -4379,6 +4438,27 @@ describe('handleCrashedCoderSession — падение кодер-сессии: 
             );
         },
     );
+
+    // #67: 127 (и 126) — это ОТКАЗ СРЕДЫ, а не «сессия не справилась»: бинаря кодер-рантайма
+    // нет или он не исполняется. Продолжать нечем — следующая итерация упадёт так же, за
+    // секунду, и петля сожжёт весь бюджет вхолостую. Поймано на полигоне 12.08: Claude CLI
+    // обновил сам себя посреди прогона, и три итерации сгорели за пять секунд.
+    it.each([127, 126])('#67 код %i (отказ среды) → stop:true даже при чистом дереве', (code) => {
+        const logs: string[] = [];
+        const pushEventFn = vi.fn();
+        const result = handleCrashedCoderSession(issue, code, 'command not found', {
+            shFn: () => '',
+            logFn: (m: string) => logs.push(m),
+            pushEventFn,
+            saveSessionOutputFn: () => {},
+            cfg: {} as unknown,
+        });
+        expect(result).toEqual({ stop: true });
+        // Сообщение называет причину классом, а не кодом: человеку в пуше нужно понять,
+        // что чинить — среду, а не задачу.
+        expect(logs.join('\n')).toMatch(/рантайм/i);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+    });
 
     it('чистое дерево после падения → stop:false, прежнее поведение (fail-open), пуш не зовётся', () => {
         const logs: string[] = [];
@@ -7334,7 +7414,12 @@ describe('applySessionRequests: намерения сессии применяе
             phase: PHASE,
             dry: false,
             readFn: () =>
-                line({ kind: 'pr-comment', comment: '⚪ [nit] протух', path: 'e2e/a.spec.ts', line: 119 }),
+                line({
+                    kind: 'pr-comment',
+                    comment: '⚪ [nit] протух',
+                    path: 'e2e/a.spec.ts',
+                    line: 119,
+                }),
             writeFn: () => {},
             removeFn: () => {},
             taskSource: ts,
