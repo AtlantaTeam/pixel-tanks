@@ -187,6 +187,24 @@ describe('GameCanvas', () => {
             expect(useGameStore.getState().replayMoves).toEqual([{ kind: 'move', delta: 150 }]);
         });
 
+        it('moveRight() ничего не делает на ходе бота (leftTank не активен)', () => {
+            useGameStore.getState().resetGame();
+            const ref = createRef<TGameCanvasHandle>();
+            render(<GameCanvas ref={ref} seed={42} />);
+            // Ход бота: активен правый танк — тот же гард, что у клавиатуры/выстрела,
+            // иначе манёвр сдвинул бы чужой танк и записал ложный ход в реплей.
+            LEFT_TANK.isActive = false;
+            try {
+                act(() => {
+                    ref.current?.moveRight();
+                });
+
+                expect(useGameStore.getState().replayMoves).toEqual([]);
+            } finally {
+                LEFT_TANK.isActive = true;
+            }
+        });
+
         it('moveLeft() ничего не делает, если ходы манёвра исчерпаны', () => {
             useGameStore.getState().resetGame();
             const ref = createRef<TGameCanvasHandle>();

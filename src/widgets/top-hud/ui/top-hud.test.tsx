@@ -97,13 +97,22 @@ describe('TopHud', () => {
         expect((ammoPip as HTMLElement).style.background).toBe('var(--color-accent)');
     });
 
-    it('угол на ходе игрока красится фиксированным accent-токеном (Tailwind text-accent)', () => {
+    it('значение угла красится фиксированным accent-токеном (Tailwind text-accent) независимо от хода', () => {
         useGameStore.setState({ turn: 'enemy' });
         const { getByTestId } = render(<TopHud />);
 
         const mobile = getByTestId('top-hud-mobile');
         const angleValue = mobile.querySelector('.text-accent');
         expect(angleValue).toBeInTheDocument();
+    });
+
+    it('дизейблит кнопки ± угла/силы, пока в полёте свой снаряд (turn=player, phase=flight)', () => {
+        useGameStore.setState({ turn: 'player', phase: 'flight' });
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        expect(mobile.getByRole('button', { name: 'Угол больше' })).toBeDisabled();
+        expect(mobile.getByRole('button', { name: 'Сила больше' })).toBeDisabled();
     });
 
     it('меняет угол по кнопкам ± на мобилке', () => {

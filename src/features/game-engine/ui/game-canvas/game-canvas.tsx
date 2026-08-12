@@ -320,7 +320,20 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
      *  условие в кнопках снаружи движка нельзя (разъедется с клавиатурой). */
     const moveTank = (delta: number) => {
         const game = gameRef.current;
-        if (!game || game.isOver || game.isFireMode || game.isMoveMode || moves <= 0) return;
+        // Гард по isActive — как у клавиатурного манёвра (onKeyDown стартует с
+        // `!game?.leftTank?.isActive` return) и выстрела (`fireSelectedWeapon`):
+        // без него вызов на ходе бота сдвинул бы активный (правый, бот) танк и
+        // записал ложный ход в реплей. Сейчас это маскируют disabled-кнопки
+        // палубы, но гард обязан жить в движке, а не только в разметке снаружи.
+        if (
+            !game ||
+            game.isOver ||
+            !game.leftTank?.isActive ||
+            game.isFireMode ||
+            game.isMoveMode ||
+            moves <= 0
+        )
+            return;
         game.changeTankPosition(delta);
         recordMove(delta);
     };

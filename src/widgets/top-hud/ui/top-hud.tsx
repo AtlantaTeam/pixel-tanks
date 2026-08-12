@@ -8,6 +8,7 @@ import {
     MOVE_BUDGET,
     useGameStore,
     WEAPONS_AMOUNT,
+    WIND_DISPLAY_SCALE,
     windDirection,
     windMagnitude,
     type TPhase,
@@ -144,8 +145,9 @@ function CellShell({
     );
 }
 
-/** 18px моб. / 22px десктоп, tabular-nums, glow-text (handoff «Числовые
- *  ячейки»); цвет — фиксированный токен пропом, не тематический `--accent`. */
+/** 18px моб. (`compact`) / 40px десктоп (`--text-hud-xl`), tabular-nums, glow-text
+ *  (handoff «Числовые ячейки»); цвет — фиксированный токен пропом, не тематический
+ *  `--accent`. */
 function CellValue({
     compact,
     valueClassName,
@@ -256,7 +258,9 @@ function WindCell({
 }) {
     const direction = windDirection(wind);
     const magnitude = windMagnitude(wind);
-    const pips = Array.from({ length: 3 }, (_, index) => index < magnitude);
+    // Число пипов = верх шкалы силы (`WIND_DISPLAY_SCALE`), тот же, что и максимум
+    // magnitude — иначе смена шкалы разведёт число пипов и потолок значения.
+    const pips = Array.from({ length: WIND_DISPLAY_SCALE }, (_, index) => index < magnitude);
 
     return (
         <CellShell label="Ветер">
@@ -349,6 +353,11 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
     const displayedEnemyHp = Math.round(useAnimatedValue(enemyHp));
 
     const isBotTurn = turn === 'enemy';
+    // ± угла/силы лочатся и на ходе бота, и пока в полёте свой снаряд: клик на
+    // выстреле иначе крутил бы ствол прямо в полёте (sync-эффект пишет угол в
+    // движок) — расходится с палубой (`phase !== 'flight'`) и клавиатурой
+    // (гард `!isFireMode`), где ввод на выстреле уже залочен.
+    const trimFrozen = isBotTurn || phase === 'flight';
     const angleLabel = isBotTurn ? 'Угол · заморожен' : 'Угол';
     const angleValue = `${formatAngle(angle)}°`;
     const ammoPips = Array.from({ length: AMMO_TOTAL }, (_, index) => index < weapons.length);
@@ -390,7 +399,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         label={angleLabel}
                         value={angleValue}
                         valueClassName="text-accent"
-                        frozen={isBotTurn}
+                        frozen={trimFrozen}
                         onDec={() => increaseAngle(Math.PI / 180)}
                         onInc={() => increaseAngle(-Math.PI / 180)}
                         decLabel="Угол меньше"
@@ -400,7 +409,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         label="Сила"
                         value={power}
                         valueClassName="text-warning"
-                        frozen={isBotTurn}
+                        frozen={trimFrozen}
                         onDec={() => increasePower(-1)}
                         onInc={() => increasePower(1)}
                         decLabel="Сила меньше"

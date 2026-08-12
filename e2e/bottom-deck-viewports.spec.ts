@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { reachBotTurn } from './helpers';
 
 // Канонические вьюпорты проекта (CLAUDE.md «Адаптив») + планшет (целевое устройство
 // раскладки палубы, issue #424, три состава: мобилка/планшет/десктоп) + лендскейп —
@@ -39,3 +40,35 @@ for (const viewport of VIEWPORTS) {
         });
     });
 }
+
+// Ход бота на десктопе: палуба переходит в недоступное состояние (кнопки disabled).
+// Стартовый ход игрока это не покрывает — отдельный сценарий с turn='enemy'
+// проверяет, что смена состояния не ломает раскладку и не переполняет по ширине.
+test.describe('Палуба — ход бота (desktop-1280)', () => {
+    test.use({ viewport: { width: 1280, height: 800 } });
+
+    test('видна целиком и не переполняет по ширине на ходе бота', async ({ page }) => {
+        test.setTimeout(60_000);
+        await page.goto('/game?seed=42');
+        await reachBotTurn(page);
+
+        const deck = page.getByTestId('game-hud');
+        await expect(deck).toBeVisible();
+
+        const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+        const clientWidth = await page.evaluate(() => document.documentElement.clientWidth);
+        expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+
+        const deckBox = await deck.boundingBox();
+        expect(deckBox).not.toBeNull();
+        if (deckBox) {
+            expect(deckBox.x).toBeGreaterThanOrEqual(0);
+            expect(deckBox.x + deckBox.width).toBeLessThanOrEqual(1280);
+        }
+
+        await page.screenshot({
+            path: 'screenshots/bottom-deck-bot-turn-desktop-1280.png',
+            fullPage: false,
+        });
+    });
+});
