@@ -20,4 +20,10 @@ describe('ENGINE_COLORS', () => {
         expect(cssPrimary).toBeDefined();
         expect(ENGINE_COLORS.primary).toBe(cssPrimary);
     });
+
+    it('зеркалит --color-accent из globals.css (сегмент направления жеста)', () => {
+        const cssAccent = readCssToken('--color-accent');
+        expect(cssAccent).toBeDefined();
+        expect(ENGINE_COLORS.accent).toBe(cssAccent);
+    });
 });

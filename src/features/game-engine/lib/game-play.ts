@@ -8,7 +8,7 @@ import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
-import { calculateAimPreviewDots } from './aim-preview';
+import { directionSegmentEnd, directionSegmentLength } from './gesture-aim';
 import { ParticlePool, damageFlashBurst, groundBurst } from './particle-pool';
 import { CameraShake } from './camera-shake';
 import { SlowMotion } from './slow-motion';
@@ -26,6 +26,16 @@ const HIT_SHAKE_TRAUMA = 0.85;
 const SHAKE_CLEAR_PAD = 4;
 /** Базовый интервал шага симуляции (~66 к/с). Slow-mo растягивает его. */
 const BASE_FRAME_INTERVAL_MS = 15;
+
+/**
+ * Пунктир сегмента направления (handoff: `stroke-dasharray:6 8`). Модульные
+ * константы, а не литералы в кадре: `ctx.setLineDash` копирует массив, поэтому
+ * переиспользуем один и тот же — никаких аллокаций в кадре (`.claude/rules/canvas.md`).
+ */
+const SEGMENT_DASH: readonly number[] = [6, 8];
+const NO_DASH: readonly number[] = [];
+/** Прозрачность сегмента направления (handoff: `opacity:.85`). */
+const SEGMENT_OPACITY = 0.85;
 
 export type TTanksWeapons = {
     leftTankWeapons: TWeapon[];
@@ -153,10 +163,10 @@ export class GamePlay {
     // Тряска была в прошлом кадре — чтобы один раз «доосадить» сцену в базовое
     // положение, когда дрожание закончилось (иначе остаётся суб-пиксельный сдвиг).
     private wasShaking = false;
-    // Буферы линии прицела: переиспользуются каждый кадр драга вместо аллокации
-    // нового массива точек (правило .claude/rules/canvas.md).
-    private readonly aimPreviewFrom: TCoords = { x: 0, y: 0 };
-    private readonly aimPreviewDotsBuffer: TCoords[] = [];
+    // Буферы сегмента направления: переиспользуются каждый кадр драга вместо
+    // аллокации новых точек (правило .claude/rules/canvas.md).
+    private readonly aimSegmentFrom: TCoords = { x: 0, y: 0 };
+    private readonly aimSegmentTo: TCoords = { x: 0, y: 0 };
 
     constructor(
         canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -207,23 +217,37 @@ export class GamePlay {
         if (!visible) this.fullRedraw();
     };
 
+    /**
+     * Короткий сегмент направления от ствола (handoff «Прицеливание `aim`»): ~12%
+     * пути, пунктир `6 8`, `var(--accent)`, `opacity:.85`. Точку падения НЕ рисуем —
+     * полная дуга отменяет пристрелку из GDD (вердикт handoff по п.3). Луч оттяжки,
+     * кольцо пальца и чип живут в DOM-оверлее (`ui/gesture-overlay`), где доступны
+     * токены и текст; здесь — только заякоренный на стволе сегмент в canvas-координатах.
+     */
     private drawAimPreview(ctx: CanvasRenderingContext2D) {
         if (!this.leftTank || !this.rightTank) return;
         const [activeTank] = this.getActiveAndTargetTanks(this.leftTank, this.rightTank);
-        this.aimPreviewFrom.x = activeTank.gunpointX;
-        this.aimPreviewFrom.y = activeTank.gunpointY;
-        const dots = calculateAimPreviewDots(
-            this.aimPreviewFrom,
+        this.aimSegmentFrom.x = activeTank.gunpointX;
+        this.aimSegmentFrom.y = activeTank.gunpointY;
+        const length = directionSegmentLength(activeTank.power);
+        directionSegmentEnd(
+            this.aimSegmentFrom,
             activeTank.gunpointAngle,
-            activeTank.power,
-            undefined,
-            this.aimPreviewDotsBuffer,
+            length,
+            this.aimSegmentTo,
         );
-        const dotSize = 3;
-        ctx.fillStyle = ENGINE_COLORS.primary;
-        for (const dot of dots) {
-            ctx.fillRect(dot.x - dotSize / 2, dot.y - dotSize / 2, dotSize, dotSize);
-        }
+        ctx.save();
+        ctx.globalAlpha = SEGMENT_OPACITY;
+        ctx.strokeStyle = ENGINE_COLORS.accent;
+        ctx.lineWidth = 2;
+        // setLineDash копирует массив внутрь — модульная константа, без аллокации.
+        ctx.setLineDash(SEGMENT_DASH as number[]);
+        ctx.beginPath();
+        ctx.moveTo(this.aimSegmentFrom.x, this.aimSegmentFrom.y);
+        ctx.lineTo(this.aimSegmentTo.x, this.aimSegmentTo.y);
+        ctx.stroke();
+        ctx.setLineDash(NO_DASH as number[]);
+        ctx.restore();
     }
 
     changeTankPower = (delta: number) => {

@@ -6,4 +6,5 @@
  */
 export const ENGINE_COLORS = {
     primary: '#ffc21f',
+    accent: '#48ff00',
 } as const;
