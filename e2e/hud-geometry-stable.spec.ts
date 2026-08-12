@@ -209,8 +209,11 @@ test.describe('Ширина ячеек и координаты кнопок ± �
     // псевдоэлемента); реальную тач-цель — размер бокса псевдоэлемента `::before`
     // (`getComputedStyle` даёт его width/height), он и есть кликабельная область
     // (браузерный hit-test через `elementFromPoint` попадает в кнопку по всей его
-    // площади). Зазор между целями считаем через центры: две центрированные ≥44px
-    // цели разведены ≥8px ⟺ расстояние между центрами ≥52px.
+    // площади). Зазор между целями считаем через центры: фактическая тач-цель —
+    // псевдоэлемент `before:-inset-2.5` = 52×52px (не 44px), поэтому две
+    // центрированные 52px-цели разведены на ≥8px ⟺ расстояние между центрами ≥60px.
+    // Полный бюджет ≥8px по всем кнопкам HUD честно меряет `overlay-budget.spec`
+    // по реальному боксу псевдоэлемента — здесь дублируем его для пары ±.
     test('кнопки ± компактны (32–36px), тач-цель ≥44 с зазором ≥8px до соседней', async ({
         page,
     }) => {
@@ -258,13 +261,13 @@ test.describe('Ширина ячеек и координаты кнопок ± �
             .poll(async () => (await angleValue.textContent())?.trim())
             .not.toBe(angleBefore);
 
-        // Зазор между ≥44px тач-целями ≥8px ⟺ центры разведены ≥52px.
+        // Зазор между 52×52 тач-целями ≥8px ⟺ центры разведены ≥60px.
         const minusCenter = minusBox.x + minusBox.width / 2;
         const plusCenter = plusBox.x + plusBox.width / 2;
         expect(
             plusCenter - minusCenter,
-            `центры ± угла: ${plusCenter} − ${minusCenter} = ${plusCenter - minusCenter}px (нужно ≥52 для зазора ≥8 между 44px-целями)`,
-        ).toBeGreaterThanOrEqual(52);
+            `центры ± угла: ${plusCenter} − ${minusCenter} = ${plusCenter - minusCenter}px (нужно ≥60 для зазора ≥8 между 52px-целями)`,
+        ).toBeGreaterThanOrEqual(60);
     });
 
     test('иконки mute/пауза сохраняют тач-цель ≥44×44', async ({ page }) => {

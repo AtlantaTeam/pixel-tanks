@@ -19,7 +19,7 @@ import { useAnimatedValue } from '@/shared/lib/animation';
 import { useMuteState } from '@/shared/lib/audio';
 import { useHoldRepeat } from '@/shared/lib/interaction';
 import { themeAttrs } from '@/shared/lib/theme';
-import { Button, HPBar, Icon, PipRow } from '@/shared/ui';
+import { Button, HPBar, Icon, PipRow, type THPBarLayout } from '@/shared/ui';
 
 /** Ник профиля — плейсхолдер до auth (шаг 7, handoff «HP-карточка»). */
 const PLAYER_NAME_PLACEHOLDER = 'Rex Commander';
@@ -65,7 +65,7 @@ function HpCard({
     active: boolean;
     /** `inline` — компактная карточка мобильного HUD (#450): имя/полоса/число в
      *  одну строку и меньший паддинг. Планшет/десктоп остаются `stacked`. */
-    layout?: 'stacked' | 'inline';
+    layout?: THPBarLayout;
 }) {
     return (
         <div
@@ -266,18 +266,14 @@ function NumberCell({
     label,
     value,
     valueClassName,
-    compact,
 }: {
     label: string;
     value: ReactNode;
     valueClassName: string;
-    compact?: boolean;
 }) {
     return (
         <CellShell label={label}>
-            <CellValue compact={compact} valueClassName={valueClassName}>
-                {value}
-            </CellValue>
+            <CellValue valueClassName={valueClassName}>{value}</CellValue>
         </CellShell>
     );
 }
@@ -287,10 +283,10 @@ function NumberCell({
  * но **зона нажатия ≥44×44** — псевдоэлемент `before` растягивает hit-area за
  * визуальный бокс, НЕ увеличивая раскладку (он `absolute`, из потока выведен).
  * Клик по площади псевдоэлемента диспатчится самой кнопке — стандартный приём
- * расширения тач-цели без раздувания вёрстки. `before:-inset-2` расширяет бокс на
- * 8px во все стороны → 48×48 hit-area (запас над 44); соседние ± разведены
+ * расширения тач-цели без раздувания вёрстки. `before:-inset-2.5` расширяет бокс на
+ * 10px во все стороны → 52×52 hit-area (запас над 44); соседние ± разведены
  * значением так, что зазор между hit-областями ≥8px (замер — e2e
- * `hud-geometry-stable`).
+ * `overlay-budget`, реальный бокс псевдоэлемента).
  */
 function TrimButton({
     disabled,
@@ -317,7 +313,7 @@ function TrimButton({
                 'active:translate-y-0.5',
                 'disabled:cursor-not-allowed disabled:border-transparent disabled:bg-muted disabled:text-text-dim',
                 // Зона нажатия ≥44×44 (#450): невидимый слой `before`, расширяющий
-                // бокс кнопки на 8px во все стороны (`-inset-2`) → 48×48 тач-цель
+                // бокс кнопки на 10px во все стороны (`-inset-2.5`) → 52×52 тач-цель
                 // шире визуального бокса, раскладку не растит (absolute вне потока).
                 "before:absolute before:-inset-2.5 before:content-['']",
             )}
@@ -601,7 +597,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         decLabel="Сила меньше"
                         incLabel="Сила больше"
                         // Доп. отступ слева (#452): тач-цель кнопок ± шире визуального
-                        // бокса (`TrimButton`, псевдоэлемент 48×48) — без этого зазор
+                        // бокса (`TrimButton`, псевдоэлемент 52×52) — без этого зазор
                         // между «Угол больше» и «Сила меньше» падал до 2px хит-зон
                         // вплотную к соседней ячейке (бюджет ≥8px, замер `overlay-budget`).
                         className="ml-2"

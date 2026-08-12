@@ -3,7 +3,16 @@ import type { ReactNode } from 'react';
 import { MOVE_BUDGET, WEAPONS_AMOUNT, WIND_DISPLAY_SCALE } from '@/features/game-engine';
 import { BOT_NAME, MAX_HP } from '@/shared/config';
 import { ThemeScope } from '@/shared/lib/theme';
-import { Button, ChatBubble, HPBar, Icon, PipRow, Toast, WeaponSelector } from '@/shared/ui';
+import {
+    Button,
+    ChatBubble,
+    HPBar,
+    Icon,
+    PipRow,
+    Toast,
+    WeaponSelector,
+    type THPBarLayout,
+} from '@/shared/ui';
 import { ArenaPlaceholder } from './arena-placeholder';
 import { noop } from './_demo';
 import type { TScreenVariant } from './frameset';
@@ -60,7 +69,7 @@ function HpCard({
     label: string;
     value: number;
     active: boolean;
-    layout?: 'stacked' | 'inline';
+    layout?: THPBarLayout;
 }) {
     return (
         <div

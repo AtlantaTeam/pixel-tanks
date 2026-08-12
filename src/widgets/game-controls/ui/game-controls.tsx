@@ -62,7 +62,9 @@ function ManeuverButton({
             aria-label={direction === 'left' ? 'Сдвинуть влево' : 'Сдвинуть вправо'}
             className={clsx(
                 'flex shrink-0 cursor-pointer items-center justify-center border-[length:var(--border-w)] border-border-strong bg-panel-raised text-text transition-colors hover:border-[color:var(--accent)] focus-visible:outline-none focus-visible:border-[color:var(--accent)] disabled:cursor-not-allowed disabled:border-transparent disabled:bg-muted disabled:text-text-dim',
-                // 56×64 (handoff «Кнопки манёвра») — w-14/h-16 дефолтной Tailwind-шкалы.
+                // compact: 44×44 (h-11 w-11) — минимальная тач-цель компактной палубы
+                // (#451); иначе 56×64 (handoff «Кнопки манёвра») — w-14/h-16 дефолтной
+                // Tailwind-шкалы.
                 compact ? 'h-11 w-11' : 'h-16 w-14',
             )}
         >
