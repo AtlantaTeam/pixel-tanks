@@ -112,10 +112,12 @@ function HudIconButtons() {
 function CellShell({
     label,
     compact,
+    className,
     children,
 }: {
     label: string;
     compact?: boolean;
+    className?: string;
     children: ReactNode;
 }) {
     return (
@@ -124,6 +126,7 @@ function CellShell({
                 HUD_SURFACE,
                 'flex flex-col gap-0.5 border-[length:var(--border-w)] border-border',
                 compact ? 'shrink-0 px-1 py-0.5' : 'px-2.5 py-1.5',
+                className,
             )}
         >
             <span className="font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase">
@@ -213,14 +216,17 @@ function TrimCell({
     value,
     valueClassName,
     frozen,
+    className,
 }: {
     label: string;
     value: ReactNode;
     valueClassName: string;
     frozen: boolean;
+    /** Доп. отступ от соседней ячейки (#452) — 1:1 с боевым `TrimCell`. */
+    className?: string;
 }) {
     return (
-        <CellShell label={label} compact>
+        <CellShell label={label} compact className={className}>
             <div className="flex items-center gap-0.5">
                 <TrimButton ariaLabel={`${label} меньше`} disabled={frozen}>
                     −
@@ -569,6 +575,7 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                             value={64}
                             valueClassName="text-warning"
                             frozen={scene.isBotTurn}
+                            className="ml-2"
                         />
                         <WindCell compact />
                         <div className="flex shrink-0 flex-col justify-center gap-1">

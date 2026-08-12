@@ -342,6 +342,7 @@ function TrimCell({
     onInc,
     decLabel,
     incLabel,
+    className,
 }: {
     label: string;
     value: ReactNode;
@@ -353,6 +354,8 @@ function TrimCell({
     onInc: () => void;
     decLabel: string;
     incLabel: string;
+    /** Доп. отступ от соседней ячейки (#452) — см. использование у «Сила». */
+    className?: string;
 }) {
     // Удержание кнопки авто-повторяет шаг (#264) — тап/клавиатура дают один
     // шаг, `useHoldRepeat` сам решает, глотать ли клик после автоповтора.
@@ -360,7 +363,7 @@ function TrimCell({
     const incHold = useHoldRepeat(onInc);
 
     return (
-        <CellShell label={label} compact>
+        <CellShell label={label} compact className={className}>
             <div className="flex items-center gap-0.5">
                 <TrimButton disabled={frozen} ariaLabel={decLabel} holdProps={decHold}>
                     −
@@ -597,6 +600,11 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         onInc={() => increasePower(1)}
                         decLabel="Сила меньше"
                         incLabel="Сила больше"
+                        // Доп. отступ слева (#452): тач-цель кнопок ± шире визуального
+                        // бокса (`TrimButton`, псевдоэлемент 48×48) — без этого зазор
+                        // между «Угол больше» и «Сила меньше» падал до 2px хит-зон
+                        // вплотную к соседней ячейке (бюджет ≥8px, замер `overlay-budget`).
+                        className="ml-2"
                     />
                     <WindCell wind={wind} windRevealed={windRevealed} compact />
                     {/* Снаряды и ходы — компактной колонкой (пипы 8px): два ряда
