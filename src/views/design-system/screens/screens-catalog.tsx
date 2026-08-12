@@ -1,7 +1,8 @@
-import type { ComponentType } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 import { DailyScreenFrame } from './daily-screen-frame';
 import { frameset, type TScreenVariant } from './frameset';
 import { GameScreenFrame } from './game-screen-frame';
+import { GameScreenStatesRow } from './game-screen-states';
 import { LoginScreenFrame } from './login-screen-frame';
 import { OnboardingScreenFrame } from './onboarding-screen-frame';
 import { ProfileScreenFrame } from './profile-screen-frame';
@@ -13,6 +14,11 @@ type TScreenEntry = {
     title: string;
     note: string;
     Component: ComponentType<{ variant: TScreenVariant }>;
+    /** Доп. ряд под кадрами брейкпоинтов — состояния экрана (handoff
+     *  «Взаимодействия и состояния»), которых по определению нет в четырёх
+     *  срезах одного и того же (дефолтного) состояния. Пока нужен только
+     *  игровому экрану (#427) — остальные экраны его не задают. */
+    renderStates?: () => ReactNode;
 };
 
 /** Заголовки и note — дословно из design-inventory.dc.html §11 (JS-конфиг `screens`),
@@ -48,6 +54,7 @@ const SCREENS: TScreenEntry[] = [
         title: 'Игровой экран (mobile-first)',
         note: 'Canvas + HUD + тач-рогатка; десктоп — HUD-бар сверху',
         Component: GameScreenFrame,
+        renderStates: () => <GameScreenStatesRow />,
     },
     {
         title: 'Utility · загрузка / 404 / ошибка',
@@ -61,7 +68,7 @@ const FRAMES = frameset();
 export function ScreensCatalog() {
     return (
         <div className="flex min-w-0 flex-col gap-10">
-            {SCREENS.map(({ title, note, Component }) => (
+            {SCREENS.map(({ title, note, Component, renderStates }) => (
                 <section key={title} className="flex min-w-0 flex-col gap-4">
                     <div className="flex flex-wrap items-baseline gap-3 border-b-[length:var(--border-w)] border-border pb-2.5">
                         <h3 className="font-display text-h2 text-text uppercase">{title}</h3>
@@ -69,13 +76,17 @@ export function ScreensCatalog() {
                     </div>
                     {/* Кадры — фиксированной ширины (до 576px у wide), поэтому на узком
                         окне прокручивается сама лента, а не страница витрины. */}
-                    <div className="flex min-w-0 flex-wrap items-start gap-5 overflow-x-auto pb-2">
+                    <div
+                        data-testid={renderStates ? 'game-screen-breakpoints' : undefined}
+                        className="flex min-w-0 flex-wrap items-start gap-5 overflow-x-auto pb-2"
+                    >
                         {FRAMES.map((frame) => (
                             <ScreenFrame key={frame.label} frame={frame}>
                                 <Component variant={frame.variant} />
                             </ScreenFrame>
                         ))}
                     </div>
+                    {renderStates?.()}
                 </section>
             ))}
         </div>
