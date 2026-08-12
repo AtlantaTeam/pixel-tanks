@@ -10,6 +10,7 @@ import { GamePlay } from '../../lib/game-play';
 import { dealWeapons } from '../../lib/weapons';
 import { createFxRandom } from '../../lib/fx-random';
 import { calculateDragAim } from '../../lib/drag-aim';
+import { installGameDebugHook, uninstallGameDebugHook } from '../../lib/game-debug';
 import {
     calculateGestureAim,
     clampBubbleAnchorY,
@@ -244,10 +245,15 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
         );
         gameRef.current = game;
         game.loadImages();
+        // Read-only e2e-хук (issue #456): барьер safe-зоны/пропорций читает
+        // прямоугольники корпуса танков через window.__gameDebug — у канваса
+        // нет DOM-узла на танк, который снял бы Playwright boundingBox().
+        installGameDebugHook(() => gameRef.current);
 
         return () => {
             game.destroy();
             gameRef.current = null;
+            uninstallGameDebugHook();
             resetGame();
             setBotBubble(null);
         };
