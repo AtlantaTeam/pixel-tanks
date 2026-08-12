@@ -1582,9 +1582,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         taskSource?: TaskSourceAdapter;
         logFn?: typeof log;
         pushEventFn?: typeof pushEvent;
-    }): { applied: number; failed: boolean } {
+    }): { applied: number; failed: boolean; closedIssues: number[] } {
         const raw = readFn();
-        if (!raw || raw.trim() === '') return { applied: 0, failed: false };
+        if (!raw || raw.trim() === '') return { applied: 0, failed: false, closedIssues: [] };
 
         let requests: TSessionRequest[];
         try {
@@ -1596,9 +1596,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 cfg,
                 { logFn },
             );
-            return { applied: 0, failed: true };
+            return { applied: 0, failed: true, closedIssues: [] };
         }
-        if (requests.length === 0) return { applied: 0, failed: false };
+        if (requests.length === 0) return { applied: 0, failed: false, closedIssues: [] };
 
         if (dry) {
             logFn(
@@ -1606,8 +1606,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     .map((r) => r.kind)
                     .join(', ')}), не применяю.`,
             );
-            return { applied: 0, failed: false };
+            return { applied: 0, failed: false, closedIssues: [] };
         }
+
+        // #65: чьи карточки петля закрыла САМА. Списки issue у форжа согласуются с
+        // задержкой, и очередь, прочитанная через секунды после закрытия, отдаёт карточку
+        // как открытую — петля берёт её повторно и жжёт целую сессию впустую. Собственное
+        // действие надёжнее чужого списка.
+        const closedIssues: number[] = [];
 
         for (let i = 0; i < requests.length; i += 1) {
             const req = requests[i];
@@ -1689,6 +1695,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     taskSource.commentOnIssue(req.issue, req.comment);
                     if (req.kind === 'close') {
                         taskSource.closeIssue(req.issue);
+                        closedIssues.push(req.issue);
                         logFn(`✅ Issue #${String(req.issue)} закрыт по просьбе сессии.`);
                     } else if (req.kind === 'block') {
                         taskSource.blockIssue(req.issue);
@@ -1720,7 +1727,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     cfg,
                     { logFn },
                 );
-                return { applied: i, failed: true };
+                return { applied: i, failed: true, closedIssues };
             }
         }
         // #62: файл УДАЛЯЕТСЯ, а не опустошается. Пустой остаток остаётся untracked-файлом
@@ -1741,9 +1748,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 cfg,
                 { logFn },
             );
-            return { applied: requests.length, failed: true };
+            return { applied: requests.length, failed: true, closedIssues };
         }
-        return { applied: requests.length, failed: false };
+        return { applied: requests.length, failed: false, closedIssues };
     }
 
     // Боевые чтение/запись файла-запроса. Отсутствие файла — норма (сессия ничего не
@@ -3132,6 +3139,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // HITL-итерации тоже засчитываются в бюджет, а «ровно одна итерация» в ONCE
         // гарантируется локальным счётчиком, breaker в ONCE не срабатывает.
         let iterationsThisRun = 0;
+        // #65: номера, закрытые намерениями сессий в этом прогоне (см. фильтр очереди ниже).
+        const closedThisRun = new Set<number>();
 
         while (true) {
             const idx = phaseIndexOfFn(state);
@@ -3182,7 +3191,15 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // best-effort — на прогон фазы это не влияет никак.
             if (!dry) syncProjectBoardFn();
 
-            const issues = openIssuesFn(phase.milestone);
+            // #65: очередь минус карточки, закрытые ЭТИМ прогоном. Форж отдаёт списки с
+            // задержкой, и через секунды после закрытия карточка ещё числится открытой —
+            // петля брала её повторно и жгла целую сессию на сделанной работе (поймано на
+            // полигоне дважды подряд, после #424 и #425). Своему действию доверяем больше,
+            // чем чужому списку; C2 при этом не ослаблен — blocked и чужие карточки
+            // очередь считает по-прежнему, отфильтровано только собственное закрытие.
+            const issues = openIssuesFn(phase.milestone).filter(
+                (i) => !closedThisRun.has(i.number),
+            );
 
             if (issues.length > 0) {
                 state.count++;
@@ -3274,7 +3291,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 // Отказ применения петлю здесь не роняет (внутри — лог и пуш): issue
                 // остался открытым, его подберёт следующая итерация, а хвост запроса
                 // сохранён и повторится.
-                applySessionRequestsFn({ cfg, dry, logFn, pushEventFn });
+                const intents = applySessionRequestsFn({ cfg, dry, logFn, pushEventFn });
+                // `?? []` — не тихий дефолт, а совместимость шва: подменённая реализация
+                // (тест, чужой taskSource) может не знать про поле. Потеря фильтра здесь
+                // возвращает прежнее поведение — лишнюю сессию, — но не неверный мердж.
+                for (const n of intents.closedIssues ?? []) closedThisRun.add(n);
 
                 // Кодер-итерация: ненулевой код САМ ПО СЕБЕ не фатален — issue остался
                 // открытым, его возьмёт следующая чистая сессия, а breaker ограничит

@@ -2292,6 +2292,33 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(openIssuesFn).not.toHaveBeenCalled();
     });
 
+    // #65: форж отдаёт список issue с задержкой — карточка, закрытая намерением секунду
+    // назад, ещё числится открытой. Петля брала её повторно и жгла целую сессию на уже
+    // сделанной работе (поймано здесь трижды: после #423, #424 и #425). Здесь шов
+    // НАМЕРЕННО врёт в списке, как врал форж, а петля обязана поверить своему закрытию.
+    it('#65 карточка, закрытая намерением прогона, второй раз не берётся', () => {
+        const logs: string[] = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn<RunClaudeFake>(() => 0);
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                phaseIndexOfFn: () => 0,
+                openIssuesFn: () => [{ number: 5, title: 'задача', labels: [] }],
+                applySessionRequestsFn: () => ({ applied: 1, failed: false, closedIssues: [5] }),
+                pickModelFn: () => 'claude-picked',
+                runClaudeFn,
+            }),
+        );
+        // Кодер-сессия по #5 ровно одна: дальше очередь для петли пуста, и она уходит
+        // в цикл сдачи фазы, а не крутит ту же карточку до упора в maxIterations.
+        const coderCalls = runClaudeFn.mock.calls.filter(
+            ([, opts]) => (opts as { model?: string }).model === 'claude-picked',
+        );
+        expect(coderCalls).toHaveLength(1);
+    });
+
     it('кодер-итерация в ONCE: одна claude-сессия нужной моделью и стоп', () => {
         const logs: string[] = [];
         const state = mkState();
@@ -7443,6 +7470,31 @@ describe('applySessionRequests: намерения сессии применяе
         // правки игнор-листа, и в её дереве строки ещё нет.
         expect(written).toEqual([]);
         expect(removed).toBe(1);
+    });
+
+    // #65: форж отдаёт списки issue с задержкой. Петля закрывает карточку намерением,
+    // через секунды читает очередь — и видит её открытой. Собственное действие надёжнее
+    // чужого списка, поэтому applySessionRequests сообщает, кого закрыл.
+    it('#65 возвращает номера карточек, закрытых в этом батче', () => {
+        const { ts } = fakeTaskSource();
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            dry: false,
+            readFn: () =>
+                [
+                    line({ kind: 'close', issue: 7, comment: 'что сделано' }),
+                    line({ kind: 'close', issue: 9, comment: 'и эта тоже' }),
+                    line({ kind: 'block', issue: 11, comment: 'нужен человек' }),
+                ].join('\n'),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn: () => {},
+        });
+        // Только close: заблокированная карточка остаётся в очереди намеренно —
+        // «очередь пуста» ≠ «фаза готова» (C2), blocked её не покидает.
+        expect(res.closedIssues).toEqual([7, 9]);
     });
 
     it('blocked: метка на карточке и комментарий, что нужно от человека', () => {
