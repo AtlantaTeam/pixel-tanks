@@ -35,17 +35,25 @@ export function HPBar({ label, value, faction, max = DEFAULT_HP_MAX, className }
 
     return (
         <div className={clsx('flex flex-col gap-[5px]', className)}>
-            <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 font-ui text-caption font-bold text-text">
+            <div className="flex items-center justify-between gap-1.5">
+                <span className="flex min-w-0 items-center gap-1.5 font-ui text-caption font-bold text-text">
                     <Icon
                         name={faction === 'enemy' ? 'skull' : 'star'}
                         size={14}
-                        className={faction === 'enemy' ? 'text-enemy' : 'text-accent'}
+                        className={clsx(
+                            'shrink-0',
+                            faction === 'enemy' ? 'text-enemy' : 'text-accent',
+                        )}
                     />
-                    {label}
+                    {/* handoff «HP-карточка»: имя — ник профиля, длина не гарантирована —
+                        обрезаем многоточием, а не переносим на узкой карточке. */}
+                    <span className="overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
                 </span>
-                <span className="font-ui text-label text-text-muted tabular-nums">
-                    HP {clamped} / {max}
+                {/* handoff «HP-карточка»: компактно «72/100», без «HP»-префикса и
+                    без пробелов вокруг «/» — строка не должна переноситься и не
+                    должна схлопываться раньше имени на узкой карточке. */}
+                <span className="shrink-0 font-ui text-[10px] whitespace-nowrap text-text-muted tabular-nums">
+                    {clamped}/{max}
                 </span>
             </div>
             <div

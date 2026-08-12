@@ -48,6 +48,14 @@ type TGameState = {
     moves: number;
     /** HP сторон (0..MAX_HP). Заменяют очковую модель: попадание снимает урон. */
     hp: { player: number; enemy: number };
+    /** Чей сейчас ход — верхний HUD красит пилюлю и глушит телеметрию по ней. */
+    turn: TSide;
+    /**
+     * Ветер боя (px/тик², как `GamePlay.wind`): постоянный, задаётся один раз при
+     * старте боя (`onWindInit`). До первого выстрела HUD показывает только грубую
+     * силу (пипы), после — точное значение (см. `windRevealed`).
+     */
+    wind: number;
     weapons: TWeapon[];
     selectedWeapon: TWeapon | null;
     /** Фаза хода — экран лочит ввод по ней (см. `TPhase`). */
@@ -102,6 +110,10 @@ type TGameActions = {
      */
     applyDamage: (target: TSide, amount: number, endsBattle?: boolean) => void;
     setPhase: (phase: TPhase) => void;
+    /** Меняет сторону хода (движок зовёт при старте боя и на каждой передаче хода). */
+    setTurn: (turn: TSide) => void;
+    /** Запоминает ветер боя (движок зовёт один раз при старте боя). */
+    setWind: (wind: number) => void;
     /**
      * Выстрел игрока в фазовой машине: только из фазы прицеливания (`aiming`),
      * переводит в полёт и раскрывает ветер. Задел под HUD-фазу трека (см. `TPhase`):
@@ -143,6 +155,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     power: 10,
     moves: MOVE_BUDGET,
     hp: fullHp(),
+    turn: 'player',
+    wind: 0,
     weapons: [],
     selectedWeapon: null,
     phase: 'idle',
@@ -180,6 +194,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             return { hp };
         }),
     setPhase: (phase) => set({ phase }),
+    setTurn: (turn) => set({ turn }),
+    setWind: (wind) => set({ wind }),
     fire: () => set((s) => (s.phase !== 'aiming' ? {} : { phase: 'flight', windRevealed: true })),
     recordPlayerHit: () => set((s) => ({ hits: s.hits + 1 })),
     setWeapons: (weapons) => set({ weapons }),
@@ -207,6 +223,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             isGameOver: false,
             hp: fullHp(),
             moves: MOVE_BUDGET,
+            turn: 'player',
+            wind: 0,
             phase: 'aiming',
             windRevealed: false,
             shotsFired: 0,
@@ -225,6 +243,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             power: 10,
             moves: MOVE_BUDGET,
             hp: fullHp(),
+            turn: 'player',
+            wind: 0,
             weapons: [],
             selectedWeapon: null,
             phase: 'idle',

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import type { TWeapon } from '@/shared/model';
@@ -24,6 +24,18 @@ type TGameCanvasProps = {
 };
 
 /**
+ * Императивный API движка для внешних контролов (палуба, `widgets/game-controls`):
+ * манёвр и выстрел живут на инстансе `GamePlay` внутри канваса, стор их не хранит
+ * (см. `commitPlayerShot`/`changeTankPosition`) — кнопкам палубы нужен способ их
+ * дёрнуть, не дублируя доступ к движку снаружи.
+ */
+export type TGameCanvasHandle = {
+    fire: () => void;
+    moveLeft: () => void;
+    moveRight: () => void;
+};
+
+/**
  * Единый путь выстрела игрока: запись хода в реплей (`recordFire` заодно считает
  * выстрел для статистики), выстрел движка, расход оружия. Один helper на обе схемы
  * ввода — клавиатуру и мышь/тач: правка выстрела не должна расходиться по копиям.
@@ -40,7 +52,10 @@ function commitPlayerShot(
     removeWeaponById(weapon.id);
 }
 
-export function GameCanvas({ seed }: TGameCanvasProps = {}) {
+export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(function GameCanvas(
+    { seed }: TGameCanvasProps,
+    ref,
+) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const gameRef = useRef<GamePlay | null>(null);
     const dragRef = useRef<TDragState | null>(null);
@@ -70,16 +85,25 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
     const selectWeapon = useGameStore((s) => s.selectWeapon);
     const removeWeaponById = useGameStore((s) => s.removeWeaponById);
     const setGameOver = useGameStore((s) => s.setGameOver);
+    const startGame = useGameStore((s) => s.startGame);
     const resetGame = useGameStore((s) => s.resetGame);
     const setBattleSeed = useGameStore((s) => s.setBattleSeed);
     const setBattleField = useGameStore((s) => s.setBattleField);
     const recordMove = useGameStore((s) => s.recordMove);
     const recordFire = useGameStore((s) => s.recordFire);
+    const setTurn = useGameStore((s) => s.setTurn);
+    const setWind = useGameStore((s) => s.setWind);
+    const setPhase = useGameStore((s) => s.setPhase);
+    const fireStore = useGameStore((s) => s.fire);
 
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
 
+        // Фазовая машина верхнего HUD (handoff «Состояние») — старт боя ДО
+        // setBattleSeed/setWeapons ниже: startGame сбрасывает battleSeed/battleField
+        // в null, следующие строки тут же наполняют их заново.
+        startGame();
         // Размер бэкинг-стора canvas (dpr, resize) полностью на стороне GamePlay.fit().
         const battleSeed = seed ?? Date.now();
         setBattleSeed(battleSeed);
@@ -121,6 +145,15 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
                 },
                 // Логический размер поля этого боя — пишем в реплей вместе с seed.
                 onFieldInit: ({ width, height }) => setBattleField(width, height),
+                // Верхний HUD (handoff «Состояние»): ветер — один раз при старте
+                // боя, ход и лок ввода — на каждой передаче/выстреле.
+                onWindInit: (wind) => setWind(wind),
+                onTurnChange: (turn) => setTurn(turn),
+                // fireStore сама решает, раскрывать ли ветер (только из aiming,
+                // см. game.store.fire) — тот же вызов годится и для игрока, и для
+                // бота: у обоих выстрел — это переход aiming → flight.
+                onShotStart: () => fireStore(),
+                onShotEnd: () => setPhase('aiming'),
             },
             createSeededRandom(battleSeed),
             // Отдельный поток для косметики (частицы, тряска): их FPS-зависимое
@@ -282,6 +315,40 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
         commitPlayerShot(game, selectedWeapon, recordFire, removeWeaponById);
     };
 
+    /** Тот же гард, что у клавиатурного манёвра (`move-left`/`move-right`) — палуба
+     *  (`widgets/game-controls`) зовёт его через `TGameCanvasHandle`, дублировать
+     *  условие в кнопках снаружи движка нельзя (разъедется с клавиатурой). */
+    const moveTank = (delta: number) => {
+        const game = gameRef.current;
+        // Гард по isActive — как у клавиатурного манёвра (onKeyDown стартует с
+        // `!game?.leftTank?.isActive` return) и выстрела (`fireSelectedWeapon`):
+        // без него вызов на ходе бота сдвинул бы активный (правый, бот) танк и
+        // записал ложный ход в реплей. Сейчас это маскируют disabled-кнопки
+        // палубы, но гард обязан жить в движке, а не только в разметке снаружи.
+        if (
+            !game ||
+            game.isOver ||
+            !game.leftTank?.isActive ||
+            game.isFireMode ||
+            game.isMoveMode ||
+            moves <= 0
+        )
+            return;
+        game.changeTankPosition(delta);
+        recordMove(delta);
+    };
+
+    useImperativeHandle(
+        ref,
+        () => ({
+            fire: fireSelectedWeapon,
+            moveLeft: () => moveTank(-150),
+            moveRight: () => moveTank(150),
+        }),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [selectedWeapon, moves, recordFire, removeWeaponById, recordMove],
+    );
+
     return (
         <div className="relative h-full w-full">
             <canvas
@@ -382,4 +449,4 @@ export function GameCanvas({ seed }: TGameCanvasProps = {}) {
             )}
         </div>
     );
-}
+});

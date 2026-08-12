@@ -106,7 +106,17 @@ export function Dialog({
             {...props}
         >
             <Panel
-                className={clsx('w-full max-w-md', className)}
+                className={clsx(
+                    'w-full max-w-md',
+                    // Модалка — fixed поверх вьюпорта: контент (напр. пауза со
+                    // ссылкой на витрину) может оказаться выше короткого мобильного
+                    // вьюпорта (landscape 390px) — скроллим Panel, а не даём ей
+                    // вылезти за экран без возможности дотянуться до нижних кнопок.
+                    // Статичный срез витрины живёт в потоке страницы — там скролл
+                    // не нужен, высота вьюпорта его не ограничивает.
+                    !isStatic && 'max-h-[calc(100dvh-2rem)] overflow-y-auto',
+                    className,
+                )}
                 style={{ ...DIALOG_PANEL_STYLE, ...style }}
             >
                 {children}

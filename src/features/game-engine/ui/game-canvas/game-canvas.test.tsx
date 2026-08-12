@@ -1,15 +1,23 @@
+import { createRef } from 'react';
 import { act, fireEvent, render } from '@testing-library/react';
 import { vi } from 'vitest';
 import { EBotReplyCategory, type TBotReply } from '@/entities/bot-messages';
 import { useGameStore } from '../../model/game.store';
-import { GameCanvas } from './game-canvas';
+import { GameCanvas, type TGameCanvasHandle } from './game-canvas';
 
 type TBotReplyCb = (reply: TBotReply) => void;
+type TCapturedCallbacks = {
+    onBotReply: TBotReplyCb;
+    onWindInit?: (wind: number) => void;
+    onTurnChange?: (turn: 'player' | 'enemy') => void;
+    onShotStart?: () => void;
+    onShotEnd?: () => void;
+};
 
 // Захватываем колбэки, которые GameCanvas передаёт в GamePlay, чтобы дёрнуть
 // onBotReply без полной симуляции боя. Позиция танка бота — фиксированная.
 const { captured, BOT_TANK, LEFT_TANK } = vi.hoisted(() => ({
-    captured: { current: null as { onBotReply: TBotReplyCb } | null },
+    captured: { current: null as TCapturedCallbacks | null },
     BOT_TANK: { x: 200, tankWidth: 40, y: 150, tankHeight: 30 },
     LEFT_TANK: { isActive: true, gunpointAngle: 0.5, power: 12 },
 }));
@@ -19,12 +27,15 @@ vi.mock('../../lib/game-play', () => ({
         rightTank = BOT_TANK;
         leftTank = LEFT_TANK;
         isFireMode = false;
+        isMoveMode = false;
+        isOver = false;
         showAimPreview = false;
         onFire = vi.fn();
         activateMode = vi.fn();
+        changeTankPosition = vi.fn();
         getActiveAndTargetTanks = () => [LEFT_TANK, BOT_TANK];
         constructor(..._args: unknown[]) {
-            captured.current = _args[2] as { onBotReply: TBotReplyCb };
+            captured.current = _args[2] as TCapturedCallbacks;
         }
         loadImages() {}
         destroy() {}
@@ -96,5 +107,119 @@ describe('GameCanvas', () => {
         expect(useGameStore.getState().replayMoves).toEqual([
             { kind: 'fire', angle: 0.5, power: 12 },
         ]);
+    });
+
+    it('стартует фазовую машину верхнего HUD при монтировании (aiming, ход игрока)', () => {
+        useGameStore.getState().resetGame();
+
+        render(<GameCanvas seed={42} />);
+
+        const state = useGameStore.getState();
+        expect(state.phase).toBe('aiming');
+        expect(state.turn).toBe('player');
+    });
+
+    it('onWindInit запоминает ветер боя в сторе', () => {
+        useGameStore.getState().resetGame();
+        render(<GameCanvas seed={42} />);
+
+        act(() => {
+            captured.current?.onWindInit?.(-0.006);
+        });
+
+        expect(useGameStore.getState().wind).toBe(-0.006);
+    });
+
+    it('onTurnChange переключает сторону хода в сторе', () => {
+        useGameStore.getState().resetGame();
+        render(<GameCanvas seed={42} />);
+
+        act(() => {
+            captured.current?.onTurnChange?.('enemy');
+        });
+
+        expect(useGameStore.getState().turn).toBe('enemy');
+    });
+
+    it('onShotStart переводит фазу в полёт, onShotEnd возвращает в прицеливание', () => {
+        useGameStore.getState().resetGame();
+        render(<GameCanvas seed={42} />);
+        expect(useGameStore.getState().phase).toBe('aiming');
+
+        act(() => {
+            captured.current?.onShotStart?.();
+        });
+        expect(useGameStore.getState().phase).toBe('flight');
+
+        act(() => {
+            captured.current?.onShotEnd?.();
+        });
+        expect(useGameStore.getState().phase).toBe('aiming');
+    });
+
+    // Императивный API (`TGameCanvasHandle`) — доступ палубы (`widgets/game-controls`)
+    // к манёвру/выстрелу без дублирования доступа к движку снаружи (см. докблок типа).
+    describe('императивный API (fire/moveLeft/moveRight)', () => {
+        it('fire() стреляет текущим выбранным оружием — как клик по канвасу', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ angle: 0.5, power: 12 });
+            const ref = createRef<TGameCanvasHandle>();
+            render(<GameCanvas ref={ref} seed={42} />);
+
+            act(() => {
+                ref.current?.fire();
+            });
+
+            expect(useGameStore.getState().replayMoves).toEqual([
+                { kind: 'fire', angle: 0.5, power: 12 },
+            ]);
+        });
+
+        it('moveRight() двигает танк и записывает манёвр в реплей', () => {
+            useGameStore.getState().resetGame();
+            const ref = createRef<TGameCanvasHandle>();
+            render(<GameCanvas ref={ref} seed={42} />);
+
+            act(() => {
+                ref.current?.moveRight();
+            });
+
+            expect(useGameStore.getState().replayMoves).toEqual([{ kind: 'move', delta: 150 }]);
+        });
+
+        it('moveRight() ничего не делает на ходе бота (leftTank не активен)', () => {
+            useGameStore.getState().resetGame();
+            const ref = createRef<TGameCanvasHandle>();
+            render(<GameCanvas ref={ref} seed={42} />);
+            // Ход бота: активен правый танк — тот же гард, что у клавиатуры/выстрела,
+            // иначе манёвр сдвинул бы чужой танк и записал ложный ход в реплей.
+            LEFT_TANK.isActive = false;
+            try {
+                act(() => {
+                    ref.current?.moveRight();
+                });
+
+                expect(useGameStore.getState().replayMoves).toEqual([]);
+            } finally {
+                LEFT_TANK.isActive = true;
+            }
+        });
+
+        it('moveLeft() ничего не делает, если ходы манёвра исчерпаны', () => {
+            useGameStore.getState().resetGame();
+            const ref = createRef<TGameCanvasHandle>();
+            render(<GameCanvas ref={ref} seed={42} />);
+            // startGame() при монтировании сбрасывает moves на MOVE_BUDGET — бюджет
+            // обнуляем ПОСЛЕ рендера, иначе mount-эффект его тут же перезапишет.
+            act(() => {
+                useGameStore.setState({ moves: 0 });
+            });
+
+            act(() => {
+                ref.current?.moveLeft();
+            });
+
+            expect(useGameStore.getState().replayMoves).toEqual([]);
+        });
     });
 });

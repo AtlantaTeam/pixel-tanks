@@ -101,6 +101,49 @@ describe('WeaponSelector', () => {
         expect(queryByText('Фугас')).not.toBeInTheDocument();
     });
 
+    it('exposes ammo count as a data attribute for e2e reads', () => {
+        const { getByTestId } = render(
+            <WeaponSelector
+                weapons={WEAPONS}
+                selectedIndex={1}
+                onPrev={() => {}}
+                onNext={() => {}}
+            />,
+        );
+
+        expect(getByTestId('weapon-ammo')).toHaveAttribute('data-ammo-count', '4');
+    });
+
+    describe('пустой боезапас (ammo === 0)', () => {
+        const EMPTY_WEAPONS = [{ name: 'Фугас', icon: 'wpn-фугас' as const, ammo: 0 }];
+
+        it('красит счётчик патронов в danger', () => {
+            const { getByText } = render(
+                <WeaponSelector
+                    weapons={EMPTY_WEAPONS}
+                    selectedIndex={0}
+                    onPrev={() => {}}
+                    onNext={() => {}}
+                />,
+            );
+
+            expect(getByText('×0')).toHaveClass('text-danger');
+        });
+
+        it('приглушает панель (opacity)', () => {
+            const { getByTestId } = render(
+                <WeaponSelector
+                    weapons={EMPTY_WEAPONS}
+                    selectedIndex={0}
+                    onPrev={() => {}}
+                    onNext={() => {}}
+                />,
+            );
+
+            expect(getByTestId('weapon-ammo')).toHaveClass('opacity-55');
+        });
+    });
+
     it('accepts a custom className', () => {
         const { container } = render(
             <WeaponSelector

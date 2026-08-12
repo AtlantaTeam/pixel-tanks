@@ -56,7 +56,7 @@ describe('HPBar', () => {
         const { getByText } = render(<HPBar label="Игрок 1" value={72} faction="player" />);
 
         expect(getByText('Игрок 1')).toBeInTheDocument();
-        expect(getByText('HP 72 / 100')).toBeInTheDocument();
+        expect(getByText('72/100')).toBeInTheDocument();
     });
 
     it('renders the star icon for the player faction', () => {
@@ -86,7 +86,7 @@ describe('HPBar', () => {
 
         const fill = container.querySelector('[data-testid="hp-bar-fill"]') as HTMLElement;
         expect(fill.style.width).toBe('50%');
-        expect(getByText('HP 75 / 150')).toBeInTheDocument();
+        expect(getByText('75/150')).toBeInTheDocument();
     });
 
     it('computes color thresholds as percentages of a custom max', () => {
@@ -102,6 +102,18 @@ describe('HPBar', () => {
 
         const fill = container.querySelector('[data-testid="hp-bar-fill"]') as HTMLElement;
         expect(fill.style.width).toBe('100%');
+    });
+
+    it('truncates a long name with ellipsis instead of wrapping onto a second line (handoff)', () => {
+        const { getByText, container } = render(
+            <HPBar label="Очень длинное имя, которое не влезает" value={72} faction="player" />,
+        );
+
+        const nameSpan = getByText('Очень длинное имя, которое не влезает');
+        expect(nameSpan).toHaveClass('overflow-hidden', 'text-ellipsis', 'whitespace-nowrap');
+
+        const row = container.querySelector('.min-w-0')?.parentElement;
+        expect(row).toHaveClass('justify-between');
     });
 
     it('exposes progressbar semantics for assistive tech', () => {

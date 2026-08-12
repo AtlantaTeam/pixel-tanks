@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { TSegmentedControlOption } from '@/shared/ui';
+import type { TSegmentedControlOption, TWeaponSelectorWeapon } from '@/shared/ui';
 import {
     Avatar,
     Button,
@@ -32,6 +32,10 @@ const DIFFICULTY_OPTIONS: TSegmentedControlOption<'rookie' | 'shooter' | 'termin
 ];
 
 const WEAPONS = DEMO_WEAPONS;
+
+// Статичный срез «боезапас исчерпан» (ammo=0) для витрины/визрегрессии: сигнал
+// ×0 danger живёт в WeaponSelector как состояние компонента (см. его докблок).
+const EMPTY_WEAPON_SLOT: TWeaponSelectorWeapon[] = [{ name: 'Фугас', icon: 'wpn-фугас', ammo: 0 }];
 
 /** design-inventory.dc.html §08 «Новые компоненты»: инвентарь атомов данных и
  *  контролов из shared/ui со всеми состояниями в одной сетке карточек. */
@@ -179,6 +183,17 @@ export function AtomicComponentsSection() {
                             label="ходов"
                         />
                     </div>
+                    {/* Уменьшенный размер (size=10): грубая сила ветра до пристрелки
+                        в ячейке ВЕТЕР верхнего HUD — тот же пип, компактнее. */}
+                    <div className="flex items-center gap-2.5">
+                        <span className="w-16 font-ui text-label text-text-muted">Ветер 10×10</span>
+                        <PipRow
+                            pips={[true, true, false]}
+                            color="var(--color-warning)"
+                            size={10}
+                            label="грубая сила ветра"
+                        />
+                    </div>
                 </div>
             </div>
 
@@ -191,6 +206,13 @@ export function AtomicComponentsSection() {
                     <HPBar label="72 — норма" value={72} faction="player" />
                     <HPBar label="38 — риск" value={38} faction="enemy" />
                     <HPBar label="12 — критично" value={12} faction="enemy" />
+                    {/* Длинный ник — усечение многоточием на узкой карточке (handoff
+                        «HP-карточка»): имя не переносится и не сдвигает счётчик HP. */}
+                    <HPBar
+                        label="Александр Неудержимый Командор Резервной Эскадрильи"
+                        value={64}
+                        faction="player"
+                    />
                 </div>
             </div>
 
@@ -203,6 +225,18 @@ export function AtomicComponentsSection() {
                     selectedIndex={weaponIndex}
                     onPrev={() => setWeaponIndex((i) => (i - 1 + WEAPONS.length) % WEAPONS.length)}
                     onNext={() => setWeaponIndex((i) => (i + 1) % WEAPONS.length)}
+                />
+
+                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                    Weapon Selector · пусто (×0)
+                </span>
+                {/* Боезапас исчерпан (ammo=0): ×0 danger + приглушённый контур —
+                    сигнал «стрелять нечем», не просто низкий заряд. */}
+                <WeaponSelector
+                    weapons={EMPTY_WEAPON_SLOT}
+                    selectedIndex={0}
+                    onPrev={noop}
+                    onNext={noop}
                 />
 
                 <div className="h-0.5 bg-border" />

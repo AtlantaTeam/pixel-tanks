@@ -399,6 +399,62 @@ describe('game.store — добивание в режиме реплея (endsBa
     });
 });
 
+describe('game.store — чей ход', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('покоящийся стор и свежий startGame — ход игрока', () => {
+        expect(useGameStore.getState().turn).toBe('player');
+
+        useGameStore.getState().setTurn('enemy');
+        useGameStore.getState().startGame();
+
+        expect(useGameStore.getState().turn).toBe('player');
+    });
+
+    it('setTurn переключает сторону хода', () => {
+        useGameStore.getState().setTurn('enemy');
+
+        expect(useGameStore.getState().turn).toBe('enemy');
+    });
+
+    it('resetGame возвращает ход игроку', () => {
+        useGameStore.getState().setTurn('enemy');
+
+        useGameStore.getState().resetGame();
+
+        expect(useGameStore.getState().turn).toBe('player');
+    });
+});
+
+describe('game.store — ветер боя', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('покоящийся стор без ветра', () => {
+        expect(useGameStore.getState().wind).toBe(0);
+    });
+
+    it('setWind запоминает ветер боя', () => {
+        useGameStore.getState().setWind(-0.006);
+
+        expect(useGameStore.getState().wind).toBe(-0.006);
+    });
+
+    it('startGame и resetGame обнуляют ветер предыдущего боя', () => {
+        useGameStore.getState().setWind(0.009);
+
+        useGameStore.getState().startGame();
+        expect(useGameStore.getState().wind).toBe(0);
+
+        useGameStore.getState().setWind(0.009);
+        useGameStore.getState().resetGame();
+        expect(useGameStore.getState().wind).toBe(0);
+    });
+});
+
 describe('game.store — startGame стартует чистую запись реплея', () => {
     beforeEach(() => {
         useGameStore.getState().resetGame();

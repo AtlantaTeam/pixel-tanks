@@ -1,39 +1,47 @@
-import Link from 'next/link';
-import { GameCanvas } from '@/features/game-engine';
+'use client';
+
+import { useRef, useState } from 'react';
+import { GameCanvas, useGameStore, type TGameCanvasHandle } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
-import { Icon } from '@/shared/ui';
 import { GameControls } from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
+import { PauseOverlay } from '@/widgets/pause-overlay';
+import { TopHud } from '@/widgets/top-hud';
 
 type TGamePageProps = {
     seed?: string;
 };
 
+/**
+ * Арена — `position:absolute; inset:0` во весь экран (handoff «Боевой экран»),
+ * верхний HUD и палуба — оверлеи поверх неё, а не соседи во flex-колонке: иначе
+ * высота полос ужимала бы канвас на каждом брейкпоинте по-своему (см. докблок
+ * `TopHud`). Манёвр/выстрел палубы дёргают движок напрямую через общий ref
+ * (`TGameCanvasHandle`) — стор их не хранит.
+ */
 export function GamePage({ seed }: TGamePageProps = {}) {
+    const [isPaused, setIsPaused] = useState(false);
+    const resetGame = useGameStore((s) => s.resetGame);
+    const gameApiRef = useRef<TGameCanvasHandle>(null);
+
     return (
-        <main className="safe-area-inset flex h-dvh flex-col overflow-hidden">
+        <main className="safe-area-inset relative h-dvh overflow-hidden">
             <SceneMusic track="battle" />
-            <div className="relative flex-1 overflow-hidden">
-                <GameCanvas seed={seed} />
-            </div>
-            <div data-testid="game-hud" className="border-t border-border bg-panel">
-                <GameControls />
-            </div>
+            <GameCanvas ref={gameApiRef} seed={seed} />
+            <TopHud onPauseClick={() => setIsPaused(true)} />
+            <GameControls gameApiRef={gameApiRef} />
             <GameOverDialog seed={seed} />
-            <Link
-                href="/design-system"
-                aria-label="Витрина компонентов"
-                style={{
-                    top: 'max(1rem, env(safe-area-inset-top))',
-                    right: 'max(1rem, env(safe-area-inset-right))',
+            <PauseOverlay
+                open={isPaused}
+                onResume={() => setIsPaused(false)}
+                onRestart={() => {
+                    resetGame();
+                    window.location.reload();
                 }}
-                className="fixed z-40 flex min-h-11 min-w-11 items-center justify-center rounded-sm bg-panel-raised text-text-muted opacity-50 transition-all hover:text-primary hover:opacity-100 focus-visible:ring-2 focus-visible:ring-primary"
-            >
-                {/* `eye` (смотреть/витрина), а не `settings`-шестерёнка: ссылка ведёт в
-                    каталог-витрину компонентов, а не в настройки — иконка не должна врать
-                    зрячему (для SR она декоративна, `aria-hidden`; смысл несёт aria-label). */}
-                <Icon name="eye" size={16} />
-            </Link>
+                onExitToMenu={() => {
+                    window.location.href = '/';
+                }}
+            />
         </main>
     );
 }
