@@ -10,7 +10,6 @@ import {
 } from '@/features/game-engine';
 import { Icon, WeaponSelector, type TIconName, type TWeaponSelectorWeapon } from '@/shared/ui';
 import type { TWeapon } from '@/shared/model';
-import { AmmoEmptyToast } from './ammo-empty-toast';
 import { DeckLock, type TDeckLockReason } from './deck-lock';
 import { KeyboardSchemeHint } from './keyboard-scheme-hint';
 
@@ -160,9 +159,6 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
     // полёте важнее того, чей был ход (симметрично `turnPillLabel` в TopHud).
     const deckLockReason: TDeckLockReason | null =
         phase === 'over' ? null : phase === 'flight' ? 'flight' : isBotTurn ? 'bot-turn' : null;
-    // Тост «патроны кончились» — только на своём ходе: манёвр остаётся активным,
-    // огонь недоступен (handoff «Патроны кончились»).
-    const showAmmoEmptyToast = isPlayerTurn && weapons.length === 0;
 
     const currentSlot: TWeaponSelectorWeapon | null = selectedWeapon
         ? {
@@ -185,10 +181,6 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
 
     return (
         <div data-testid="game-hud" className="pointer-events-none absolute inset-x-0 bottom-0 z-6">
-            {/* Тост «патроны кончились» — над палубой (bottom-full текущего
-                контейнера деки): автоматически над тем составом, что показан по
-                брейкпоинту, без дублирования брейкпоинтных отступов. */}
-            {showAmmoEmptyToast && <AmmoEmptyToast />}
             {/* Мобилка (<768): колонка — селектор, манёвр+ОГОНЬ, подсказка жеста. */}
             <div
                 data-testid="game-deck-mobile"

@@ -101,6 +101,17 @@ describe('WeaponSelector', () => {
         expect(queryByText('Фугас')).not.toBeInTheDocument();
     });
 
+    it('глушит панель тихого фолбэка (пустой список), а не рисует активным слотом', () => {
+        // В живой игре кончившийся боезапас приходит пустым списком (weapon ===
+        // undefined), а не слотом с ammo===0. Пустая панель обязана читаться как
+        // «нечем стрелять» (муто-рамка), а не светиться --accent как заряженный.
+        const { getByTestId } = render(
+            <WeaponSelector weapons={[]} selectedIndex={0} onPrev={() => {}} onNext={() => {}} />,
+        );
+
+        expect(getByTestId('weapon-ammo')).toHaveClass('opacity-55');
+    });
+
     it('exposes ammo count as a data attribute for e2e reads', () => {
         const { getByTestId } = render(
             <WeaponSelector

@@ -9,7 +9,7 @@ import {
 } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
 import { themeAttrs } from '@/shared/lib/theme';
-import { GameControls } from '@/widgets/game-controls';
+import { AmmoEmptyToast, GameControls } from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
 import { PauseOverlay } from '@/widgets/pause-overlay';
 import { TopHud } from '@/widgets/top-hud';
@@ -23,7 +23,9 @@ type TGamePageProps = {
  * верхний HUD и палуба — оверлеи поверх неё, а не соседи во flex-колонке: иначе
  * высота полос ужимала бы канвас на каждом брейкпоинте по-своему (см. докблок
  * `TopHud`). Манёвр/выстрел палубы дёргают движок напрямую через общий ref
- * (`TGameCanvasHandle`) — стор их не хранит.
+ * (`TGameCanvasHandle`) — стор их не хранит. `AmmoEmptyToast` — сосед палубы
+ * здесь же, не её DOM-потомок (issue #448): свой слой поверх арены, позиция
+ * не зависит от состава/высоты деки по брейкпоинту.
  */
 export function GamePage({ seed }: TGamePageProps = {}) {
     const [isPaused, setIsPaused] = useState(false);
@@ -43,6 +45,7 @@ export function GamePage({ seed }: TGamePageProps = {}) {
             <SceneMusic track="battle" />
             <GameCanvas ref={gameApiRef} seed={seed} />
             <TopHud onPauseClick={() => setIsPaused(true)} />
+            <AmmoEmptyToast />
             <GameControls gameApiRef={gameApiRef} />
             <GameOverDialog seed={seed} />
             <PauseOverlay

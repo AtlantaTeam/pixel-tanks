@@ -51,8 +51,18 @@ export function HPBar({ label, value, faction, max = DEFAULT_HP_MAX, className }
                 </span>
                 {/* handoff «HP-карточка»: компактно «72/100», без «HP»-префикса и
                     без пробелов вокруг «/» — строка не должна переноситься и не
-                    должна схлопываться раньше имени на узкой карточке. */}
-                <span className="shrink-0 font-ui text-[10px] whitespace-nowrap text-text-muted tabular-nums">
+                    должна схлопываться раньше имени на узкой карточке. Ширина
+                    зарезервирована под максимум диапазона («100/100») и выровнена
+                    вправо (#447): при смене значения (`100/100` → `91/100`) число
+                    моноширинных цифр не двигает соседей — HUD не «скачет». */}
+                <span
+                    className="inline-block shrink-0 text-right font-ui text-[10px] whitespace-nowrap text-text-muted tabular-nums"
+                    // Резерв «N/N»: цифры max, «/», цифры max = length*2 + 1. `ch`
+                    // тут = ширина цифры только потому, что font-ui (JetBrains Mono)
+                    // моноширинный (и «/» = 1ch, `tabular-nums` избыточен, но не
+                    // мешает). Станет HUD-шрифт пропорциональным — резерв разъедется.
+                    style={{ minWidth: `${String(max).length * 2 + 1}ch` }}
+                >
                     {clamped}/{max}
                 </span>
             </div>

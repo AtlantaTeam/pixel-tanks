@@ -81,6 +81,24 @@ export async function fireOne(
     return count;
 }
 
+/**
+ * Доводит бой до фазы полёта снаряда: тот же прицел на врага, что и `reachBotTurn`
+ * (ствол к −45°, немного мощности), один выстрел — и ждёт, пока `deck-lock`
+ * покажет причину «flight» (`DeckLock`, `phase === 'flight'`, issue #449). Полёт
+ * снаряда — отдельное состояние геометрии HUD между своим ходом и ходом соперника,
+ * у которого раньше не было точки входа в e2e.
+ */
+export async function reachFlightPhase(page: Page): Promise<void> {
+    await expect(page.getByTestId('game-hud')).toBeVisible();
+    await expect.poll(() => weaponCount(page)).toBeGreaterThan(0);
+    for (let i = 0; i < 45; i++) await page.keyboard.press('ArrowLeft');
+    for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('Space');
+    await expect(page.getByTestId('deck-lock')).toContainText('Снаряд в полёте', {
+        timeout: 10_000,
+    });
+}
+
 /** Сколько снарядов осталось у игрока — по боезапасу селектора оружия палубы
  *  (`WeaponSelector`, `widgets/game-controls`, issue #424). Три брейкпоинт-состава
  *  палубы рендерят селектор одновременно (виден только один, CSS-переключение) —

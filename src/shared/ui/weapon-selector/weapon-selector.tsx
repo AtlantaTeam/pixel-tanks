@@ -26,7 +26,11 @@ const ARROW_BUTTON_CLASSES =
  *
  *  Контракт: вызывающий код обязан держать `selectedIndex` в границах `weapons`.
  *  При выходе за границы (или пустом `weapons`) центральная панель рендерится
- *  пустой — это безопасный, но «тихий» фолбэк без диагностики, а не штатный режим. */
+ *  пустой и приглушённой (муто-рамка, как штатное «×0»), а не активным
+ *  accent-слотом — это безопасный, но «тихий» фолбэк без диагностики, а не
+ *  штатный режим. Высоту панели фолбэк держит невидимым размерником (чтобы палуба
+ *  не «скакала», когда у игрока кончаются снаряды и `game-controls` отдаёт пустой
+ *  список). */
 export function WeaponSelector({
     weapons,
     selectedIndex,
@@ -35,12 +39,17 @@ export function WeaponSelector({
     className,
 }: TWeaponSelectorProps) {
     const weapon = weapons[selectedIndex];
-    // «Пусто» (handoff «Селектор оружия»): ×0 — сигнал «стрелять нечем», не просто
-    // низкий боезапас, поэтому цвет и контур меняются, а не просто гаснут. Это
-    // состояние КОМПОНЕНТА (витрина `/design-system`, тесты); живая палуба его пока
-    // не производит — при нуле снарядов `game-controls` отдаёт пустой список (стор
-    // обнуляет `selectedWeapon`), а сигнал «нечем стрелять» несёт дизейбл «ОГОНЬ».
-    const isEmpty = weapon != null && weapon.ammo === 0;
+    // «Пусто» (handoff «Селектор оружия»): сигнал «стрелять нечем», не просто
+    // низкий боезапас, поэтому контур глушится (муто-рамка без --accent/--glow),
+    // а не рисуется как активный слот. Два пути к этому состоянию:
+    //   • слот с `ammo === 0` — штатное «×0» (витрина `/design-system`, тесты);
+    //   • пустой список / выход за границы — «тихий фолбэк»: в живой игре при нуле
+    //     снарядов `game-controls` отдаёт пустой список (стор обнуляет
+    //     `selectedWeapon`), поэтому `weapon` тут `undefined`.
+    // Оба красятся одинаково приглушённо: пустая панель НЕ должна светиться
+    // accent'ом как заряженный слот. Сигнал «нечем стрелять» дополнительно несёт
+    // дизейбл кнопки «ОГОНЬ» в `game-controls`.
+    const isEmpty = weapon == null || weapon.ammo === 0;
 
     return (
         <div className={clsx('flex items-stretch gap-0.5', className)}>
@@ -62,7 +71,7 @@ export function WeaponSelector({
                         : 'border-[color:var(--accent)] shadow-[var(--glow)]',
                 )}
             >
-                {weapon && (
+                {weapon ? (
                     <>
                         <Icon
                             name={weapon.icon}
@@ -83,6 +92,21 @@ export function WeaponSelector({
                             </span>
                         </div>
                     </>
+                ) : (
+                    // Пустой список / выход за границы — «тихий фолбэк» (см. докблок).
+                    // Держим высоту центральной панели невидимым размерником в две
+                    // строки (имя + ×N) тем же приёмом, что `FixedNumeric`/пилюля хода
+                    // в `top-hud`: без него палуба «скачет» на ~7px, когда у игрока
+                    // кончаются снаряды и `game-controls` отдаёт пустой список
+                    // (`weaponSlots = []`). Пусто остаётся пустым визуально —
+                    // размерник невидим и вне дерева доступности.
+                    <span
+                        aria-hidden
+                        className="invisible flex flex-col items-center gap-0.5 text-center"
+                    >
+                        <span className="font-ui text-[15px] font-bold">Оружие</span>
+                        <span className="font-ui text-label tracking-[0.1em] uppercase">×0</span>
+                    </span>
                 )}
             </div>
             <button

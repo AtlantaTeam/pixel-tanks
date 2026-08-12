@@ -188,27 +188,9 @@ describe('GameControls (палуба)', () => {
         expect(marker).toHaveClass('motion-reduce:animate-none');
     });
 
-    it('показывает тост «патроны кончились» на своём ходе без снарядов, манёвр остаётся активным', () => {
+    it('не рендерит тост «патроны кончились» — свой слой поверх арены, монтируется отдельно от палубы (#448)', () => {
         setWeapons(0);
         useGameStore.setState({ moves: 2 });
-        const { getByRole, getAllByLabelText } = renderDeck();
-
-        expect(getByRole('status')).toHaveTextContent('Патроны кончились');
-        for (const button of getAllByLabelText('Сдвинуть влево')) {
-            expect(button).not.toBeDisabled();
-        }
-    });
-
-    it('не показывает тост «патроны кончились», пока есть снаряды', () => {
-        setWeapons(3);
-        const { queryByRole } = renderDeck();
-
-        expect(queryByRole('status')).not.toBeInTheDocument();
-    });
-
-    it('не показывает тост «патроны кончились» на ходе соперника (там уже лок)', () => {
-        setWeapons(0);
-        useGameStore.setState({ turn: 'enemy' });
         const { queryByRole } = renderDeck();
 
         expect(queryByRole('status')).not.toBeInTheDocument();
