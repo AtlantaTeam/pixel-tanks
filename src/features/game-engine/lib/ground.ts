@@ -1,10 +1,25 @@
 import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
 import type { TSeededRandom } from '@/shared/lib/random';
+import { computeTerrainHeights, EMPTY_ARENA_INSETS, type TArenaInsets } from './arena-insets';
 
 type TExplosion = {
     bulletY: number;
     delta: number;
 };
+
+type THeightBand = { min: number; max: number };
+
+/**
+ * Линейно переносит высоту рельефа из одной полосы в другую, сохраняя её
+ * относительное положение внутри полосы (форму карты). Пустая старая полоса
+ * (span 0) — вырожденный ровный рельеф: кладём всё в низ новой полосы.
+ */
+function remapToBand(value: number, prev: THeightBand, next: THeightBand): number {
+    const prevSpan = prev.max - prev.min;
+    const nextSpan = next.max - next.min;
+    const rel = prevSpan > 0 ? (value - prev.min) / prevSpan : 0;
+    return next.min + rel * nextSpan;
+}
 
 export class Ground {
     private stepMax: number;
@@ -18,6 +33,12 @@ export class Ground {
     private explosionHeights: (number | TExplosion)[];
     private innerWidth: number;
     private innerHeight: number;
+    /**
+     * Инсеты оверлеев (HUD/палуба): рельеф генерируется и рескейлится внутри
+     * свободной зоны арены (safe-зона, issue #454) — низ поднят на нижний инсет,
+     * амплитуда от высоты зоны. Пустые инсеты = поведение до safe-зоны (весь канвас).
+     */
+    private insets: TArenaInsets;
     private random: TSeededRandom;
     isFalling = false;
     // Статичный террейн — offscreen-слой (.claude/rules/canvas.md: «статичные
@@ -34,14 +55,19 @@ export class Ground {
         innerHeight: number,
         random: TSeededRandom,
         sandImage?: HTMLImageElement,
+        insets: TArenaInsets = EMPTY_ARENA_INSETS,
     ) {
         this.random = random;
         this.stepMax = 3;
         this.stepChange = 0.3;
         this.innerWidth = innerWidth;
         this.innerHeight = innerHeight;
-        this.heightMax = floor(innerHeight / 2);
-        this.heightMin = this.heightMax / 4;
+        this.insets = insets;
+        // Границы рельефа — из свободной зоны, а не из полной высоты канваса
+        // (safe-зона, #454). Пустые инсеты дают ровно прежние floor(H/2), floor(H/2)/4.
+        const { min, max } = computeTerrainHeights(innerHeight, insets);
+        this.heightMax = max;
+        this.heightMin = min;
         this.color = 'orange';
         this.sandImage = sandImage;
         this.sandImagePattern = null;
@@ -79,17 +105,23 @@ export class Ground {
     };
 
     // Пересчитывает рельеф под новый размер: интерполяция профиля по ширине и
-    // пропорциональный масштаб по высоте. В отличие от generate() не трогает RNG —
-    // поворот экрана не меняет форму карты и не ломает детерминизм seed'а;
-    // кратеры, уже вычтенные из heights, сохраняются в форме профиля.
+    // перенос из старой полосы высот в новую по вертикали. В отличие от generate()
+    // не трогает RNG — поворот экрана не меняет форму карты и не ломает детерминизм
+    // seed'а; кратеры, уже вычтенные из heights, сохраняются в форме профиля.
+    //
+    // Полоса высот берётся из свободной зоны (safe-зона, #454): низ поднят на нижний
+    // инсет, амплитуда от высоты зоны. Для пустых инсетов полоса пропорциональна
+    // высоте канваса, поэтому перенос совпадает с прежним масштабом scaleY —
+    // поведение до safe-зоны сохраняется.
     resize = (innerWidth: number, innerHeight: number) => {
         const oldHeights = this.heights;
         const oldWidth = oldHeights.length;
-        const scaleY = innerHeight / this.innerHeight;
+        const prev = { min: this.heightMin, max: this.heightMax };
         this.innerWidth = innerWidth;
         this.innerHeight = innerHeight;
-        this.heightMax = floor(innerHeight / 2);
-        this.heightMin = this.heightMax / 4;
+        const next = computeTerrainHeights(innerHeight, this.insets);
+        this.heightMax = next.max;
+        this.heightMin = next.min;
         this.heights = new Array<number>(innerWidth);
         this.explosionHeights = new Array<number>(innerWidth).fill(0);
         const step = innerWidth > 1 ? (oldWidth - 1) / (innerWidth - 1) : 0;
@@ -98,7 +130,29 @@ export class Ground {
             const x0 = Math.floor(t);
             const x1 = Math.min(x0 + 1, oldWidth - 1);
             const frac = t - x0;
-            this.heights[x] = floor((oldHeights[x0] * (1 - frac) + oldHeights[x1] * frac) * scaleY);
+            const interp = oldHeights[x0] * (1 - frac) + oldHeights[x1] * frac;
+            this.heights[x] = floor(remapToBand(interp, prev, next));
+        }
+        this.layerDirty = true;
+    };
+
+    /**
+     * Перекладывает уже сгенерированный рельеф в свободную зону новых инсетов
+     * (safe-зона, #454): линейный перенос профиля из текущей полосы высот в новую,
+     * без RNG и без интерполяции по ширине (размер канваса не меняется — меняется
+     * только высота оверлеев: брейкпоинт, safe-area). Идемпотентна: те же инсеты
+     * дают ту же полосу и те же высоты. Танки движок переставляет сам по новым
+     * `heights` (см. `GamePlay`).
+     */
+    applyInsets = (insets: TArenaInsets) => {
+        const prev = { min: this.heightMin, max: this.heightMax };
+        this.insets = insets;
+        const next = computeTerrainHeights(this.innerHeight, insets);
+        if (next.min === prev.min && next.max === prev.max) return;
+        this.heightMax = next.max;
+        this.heightMin = next.min;
+        for (let x = 0; x < this.heights.length; x++) {
+            this.heights[x] = floor(remapToBand(this.heights[x], prev, next));
         }
         this.layerDirty = true;
     };

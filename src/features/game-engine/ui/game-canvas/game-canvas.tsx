@@ -223,8 +223,10 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                         y,
                     });
                 },
-                // Логический размер поля этого боя — пишем в реплей вместе с seed.
-                onFieldInit: ({ width, height }) => setBattleField(width, height),
+                // Логический размер поля и инсеты safe-зоны этого боя — пишем в
+                // реплей вместе с seed: рельеф генерится внутри зоны, без инсетов
+                // воспроизведение получит другой рельеф (#454).
+                onFieldInit: ({ width, height, insets }) => setBattleField(width, height, insets),
                 // Верхний HUD (handoff «Состояние»): ветер — один раз при старте
                 // боя, ход и лок ввода — на каждой передаче/выстреле.
                 onWindInit: (wind) => setWind(wind),

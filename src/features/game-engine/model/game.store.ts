@@ -134,6 +134,14 @@ type TGameState = {
      * без него воспроизведение на другом экране даст другой рельеф и счёт.
      */
     battleField: { width: number; height: number } | null;
+    /**
+     * Инсеты safe-зоны, под которые сгенерирован рельеф текущего боя (issue #454).
+     * Пишутся в реплей вместе с размером поля: рельеф генерится ВНУТРИ свободной
+     * зоны, поэтому без инсетов воспроизведение получило бы другой рельеф и другой
+     * счёт. Ставятся движком в `onFieldInit` (те инсеты, что были активны в момент
+     * генерации), сбрасываются в `startGame`/`resetGame` как и `battleField`.
+     */
+    battleInsets: TArenaInsets | null;
     /** Ходы игрока текущего боя в порядке совершения (см. `@/entities/replays`). */
     replayMoves: TReplayMove[];
     /**
@@ -185,7 +193,8 @@ type TGameActions = {
     startGame: () => void;
     resetGame: () => void;
     setBattleSeed: (seed: number | string) => void;
-    setBattleField: (width: number, height: number) => void;
+    /** Записывает размер поля и инсеты safe-зоны боя (движок зовёт в `onFieldInit`). */
+    setBattleField: (width: number, height: number, insets: TArenaInsets) => void;
     recordMove: (delta: number) => void;
     /**
      * Записывает выстрел игрока в реплей и считает его для статистики конца боя:
@@ -230,6 +239,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     finalStats: null,
     battleSeed: null,
     battleField: null,
+    battleInsets: null,
     replayMoves: [],
     arenaInsets: EMPTY_ARENA_INSETS,
 
@@ -298,6 +308,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             // нового боя унаследовал бы ходы предыдущего (склеенная ссылка).
             battleSeed: null,
             battleField: null,
+            battleInsets: null,
             replayMoves: [],
         }),
     resetGame: () =>
@@ -319,10 +330,12 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             finalStats: null,
             battleSeed: null,
             battleField: null,
+            battleInsets: null,
             replayMoves: [],
         }),
     setBattleSeed: (battleSeed) => set({ battleSeed }),
-    setBattleField: (width, height) => set({ battleField: { width, height } }),
+    setBattleField: (width, height, insets) =>
+        set({ battleField: { width, height }, battleInsets: insets }),
     recordMove: (delta) =>
         set((s) => ({ replayMoves: [...s.replayMoves, { kind: 'move', delta }] })),
     recordFire: (angle, power) =>

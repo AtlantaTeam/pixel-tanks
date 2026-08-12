@@ -213,6 +213,33 @@ describe('GamePlay — инсеты арены (контракт safe-зоны, 
         expect(gamePlay.arenaZone.height).toBeGreaterThanOrEqual(0);
     });
 
+    it('переносит рельеф и танки в свободную зону при появлении инсетов (safe-зона, #454)', () => {
+        const { gamePlay, leftTank, rightTank, ground } = makeGamePlay();
+
+        gamePlay.setArenaInsets({ top: 120, bottom: 140 });
+
+        const deckTopY = HEIGHT - 140;
+        const zoneTopY = 120;
+        // Оба танка сидят на поверхности рельефа и целиком в зоне: корпус (низ = y)
+        // не под палубой, верх корпуса (y - tankHeight) не под HUD.
+        for (const tank of [leftTank, rightTank]) {
+            expect(tank.y).toBe(HEIGHT - ground.heights[Math.floor(tank.x)]);
+            expect(tank.y).toBeLessThanOrEqual(deckTopY);
+            expect(tank.y - tank.tankHeight).toBeGreaterThanOrEqual(zoneTopY);
+        }
+    });
+
+    it('до генерации рельефа setArenaInsets только считает зону (рельефа ещё нет)', () => {
+        const { gamePlay } = makeGamePlay();
+        // Эмулируем состояние до initPaint: рельефа и танков нет.
+        gamePlay.ground = undefined;
+        gamePlay.leftTank = undefined;
+        gamePlay.rightTank = undefined;
+
+        expect(() => gamePlay.setArenaInsets({ top: 100, bottom: 100 })).not.toThrow();
+        expect(gamePlay.arenaZone).toEqual({ top: 100, height: HEIGHT - 200 });
+    });
+
     it('fit пересчитывает зону под новую высоту канваса (ресайз/поворот)', () => {
         // Без fixedLogicalSize fit читает реальный rect канваса — эмулируем поворот
         // через мутируемую высоту мока. (makeGamePlay фиксирует размер под реплей,

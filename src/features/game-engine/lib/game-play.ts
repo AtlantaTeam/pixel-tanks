@@ -58,11 +58,14 @@ export type TGamePlayCallbacks = {
     onPowerChange: (delta: number) => void;
     onBotReply: (reply: TBotReply) => void;
     /**
-     * Сообщает логический размер поля, на котором стартовал бой (CSS-пиксели).
-     * Живой бой пишет его в реплей — без размера воспроизведение на другом
-     * экране получит другой рельеф и другой счёт (см. `@/entities/replays`).
+     * Сообщает логический размер поля и инсеты safe-зоны, на которых стартовал бой
+     * (CSS-пиксели). Живой бой пишет их в реплей — без размера И инсетов
+     * воспроизведение получит другой рельеф (рельеф генерится внутри свободной
+     * зоны, #454) и другой счёт (см. `@/entities/replays`). Инсеты — те, что были
+     * активны в момент генерации рельефа: фидельность реплея гарантирована тем, что
+     * записаны ровно они.
      */
-    onFieldInit?: (size: { width: number; height: number }) => void;
+    onFieldInit?: (size: { width: number; height: number; insets: TArenaInsets }) => void;
     /**
      * Сообщает ветер боя (px/тик², как `this.wind`) сразу после генерации при
      * старте боя — верхний HUD (ячейка ВЕТЕР, handoff «Состояние») держит его
@@ -226,11 +229,32 @@ export class GamePlay {
      * Принимает инсеты оверлеев из стора (`GameCanvas` зовёт на каждой смене
      * `arenaInsets` — брейкпоинт, safe-area, будущая фаза боя) и пересчитывает
      * свободную зону. Идемпотентна: те же инсеты дают ту же зону.
+     *
+     * Если рельеф уже сгенерирован (бой идёт), перекладывает его в новую зону
+     * (safe-зона, #454): низ поднимается на новый нижний инсет, амплитуда — от
+     * новой высоты зоны, форма карты сохраняется (без RNG). Танки переставляются
+     * на новую поверхность, сцена перерисовывается. До генерации рельефа (инсеты
+     * пришли раньше первого кадра) — только пересчёт зоны, рельеф родится под них.
      */
     setArenaInsets = (insets: TArenaInsets) => {
         this.arenaInsets = insets;
         this.recomputeArenaZone();
+        if (this.ground && this.leftTank && this.rightTank) {
+            this.ground.applyInsets(insets);
+            this.reseatTanks();
+            this.fullRedraw();
+        }
     };
+
+    /** Ставит оба танка на текущую поверхность рельефа по их x (safe-зона, #454). */
+    private reseatTanks() {
+        if (!this.ground || !this.leftTank || !this.rightTank) return;
+        for (const tank of [this.leftTank, this.rightTank]) {
+            tank.y = this.innerHeight - this.ground.heights[floor(tank.x)];
+            tank.dx = 0;
+            tank.dy = 0;
+        }
+    }
 
     /** Пересчёт свободной зоны из текущих `innerHeight` и `arenaInsets`. */
     private recomputeArenaZone() {
@@ -431,11 +455,24 @@ export class GamePlay {
             this.ctx = canvas.getContext('2d');
         }
         this.fit();
-        // Размер, на котором реально пойдёт физика этого боя, — его пишет реплей.
-        this.callbacks.onFieldInit?.({ width: this.innerWidth, height: this.innerHeight });
+        // Размер и инсеты safe-зоны, на которых реально пойдёт физика этого боя, —
+        // их пишет реплей. Инсеты берём те, что активны сейчас (их успел донести
+        // `setArenaInsets` до асинхронного initPaint) — рельеф генерится под них,
+        // и ровно они записываются: реплей воспроизведёт тот же рельеф.
+        this.callbacks.onFieldInit?.({
+            width: this.innerWidth,
+            height: this.innerHeight,
+            insets: this.arenaInsets,
+        });
         const { leftTank, leftGunpoint, sand, rightTank, rightGunpoint } = GamePlay.images;
         const { leftTankWeapons, rightTankWeapons } = this.allWeapons;
-        this.ground = new Ground(this.innerWidth, this.innerHeight, this.random, sand);
+        this.ground = new Ground(
+            this.innerWidth,
+            this.innerHeight,
+            this.random,
+            sand,
+            this.arenaInsets,
+        );
         this.wind = generateWind(this.random);
         this.callbacks.onWindInit?.(this.wind);
         const leftTankX = floor(this.innerWidth / 4);

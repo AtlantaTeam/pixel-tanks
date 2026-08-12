@@ -86,6 +86,7 @@ export function GameOverDialog({
     const moves = useGameStore((s) => s.moves);
     const battleSeed = useGameStore((s) => s.battleSeed);
     const battleField = useGameStore((s) => s.battleField);
+    const battleInsets = useGameStore((s) => s.battleInsets);
     const replayMoves = useGameStore((s) => s.replayMoves);
     const resetGame = useGameStore((s) => s.resetGame);
     const submittedRef = useRef(false);
@@ -209,6 +210,7 @@ export function GameOverDialog({
                             seed={battleSeed}
                             width={battleField.width}
                             height={battleField.height}
+                            insets={battleInsets ?? undefined}
                             moves={replayMoves}
                         />
                     ) : null}

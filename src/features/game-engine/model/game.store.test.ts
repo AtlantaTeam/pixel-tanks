@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { EMPTY_ARENA_INSETS } from '../lib/arena-insets';
 import { POWER_MAX, POWER_MIN } from '../lib/power';
 import {
     deriveOutcome,
@@ -28,10 +29,11 @@ describe('game.store — запись реплея', () => {
         expect(useGameStore.getState().battleSeed).toBe(42);
     });
 
-    it('запоминает логический размер поля боя', () => {
-        useGameStore.getState().setBattleField(1440, 810);
+    it('запоминает логический размер поля и инсеты safe-зоны боя', () => {
+        useGameStore.getState().setBattleField(1440, 810, { top: 120, bottom: 140 });
 
         expect(useGameStore.getState().battleField).toEqual({ width: 1440, height: 810 });
+        expect(useGameStore.getState().battleInsets).toEqual({ top: 120, bottom: 140 });
     });
 
     it('запоминает строковый seed боя', () => {
@@ -98,13 +100,14 @@ describe('game.store — запись реплея', () => {
 
     it('resetGame очищает seed боя, размер поля и записанные ходы', () => {
         useGameStore.getState().setBattleSeed('daily-2026-07-19');
-        useGameStore.getState().setBattleField(800, 600);
+        useGameStore.getState().setBattleField(800, 600, EMPTY_ARENA_INSETS);
         useGameStore.getState().recordMove(150);
 
         useGameStore.getState().resetGame();
 
         expect(useGameStore.getState().battleSeed).toBeNull();
         expect(useGameStore.getState().battleField).toBeNull();
+        expect(useGameStore.getState().battleInsets).toBeNull();
         expect(useGameStore.getState().replayMoves).toEqual([]);
     });
 });
@@ -549,7 +552,7 @@ describe('game.store — startGame стартует чистую запись р
 
     it('сбрасывает ходы, seed и размер поля предыдущего боя', () => {
         useGameStore.getState().setBattleSeed(42);
-        useGameStore.getState().setBattleField(800, 600);
+        useGameStore.getState().setBattleField(800, 600, { top: 100, bottom: 100 });
         useGameStore.getState().recordFire(0.1, 5);
 
         useGameStore.getState().startGame();
@@ -558,6 +561,7 @@ describe('game.store — startGame стартует чистую запись р
         expect(state.replayMoves).toEqual([]);
         expect(state.battleSeed).toBeNull();
         expect(state.battleField).toBeNull();
+        expect(state.battleInsets).toBeNull();
     });
 });
 
