@@ -34,13 +34,9 @@ export function calculateGestureAim(
     return { angle: aim.angle, power: aim.power, isMax: aim.power >= powerMax };
 }
 
-/**
- * Заякоренная на стволе визуализация прицела — короткий сегмент направления —
- * заменена на полноценную дугу предпросмотра траектории (issue #475): она
- * считается тем же кодом, что и полёт снаряда (`fillTrajectoryPreview` →
- * `advanceProjectile`), учитывает ветер и силу и рисуется движком
- * (`GamePlay.drawAimPreview`). Расчёт луча оттяжки/чипа остаётся здесь.
- */
+// Короткий сегмент направления удалён (issue #475): его заменила дуга предпросмотра
+// траектории — считается тем же кодом, что и полёт (`fillTrajectoryPreview`), и рисуется
+// движком (`GamePlay.drawAimPreview`). Расчёт луча оттяжки/чипа остаётся здесь.
 
 /** Прямоугольная зона жеста (клиентские или локальные координаты — важна лишь пара). */
 export type TGestureZone = { top: number; bottom: number; left: number; right: number };

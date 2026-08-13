@@ -46,7 +46,14 @@ export const TRAJECTORY_PREVIEW_STRIDE = 2;
 
 /** Стартовые параметры дуги предпросмотра — позиция ствола, прицел и ветер боя. */
 export type TTrajectoryPreviewInput = {
-    /** Точка вылета снаряда (`Tank.calcBulletStartPos`) — начало дуги. */
+    /**
+     * Начало дуги — точка крепления ствола (`Tank.gunpointX/gunpointY`), которую
+     * передаёт `GamePlay.drawAimPreview`. Реальный снаряд стартует чуть дальше по
+     * стволу — из `Tank.calcBulletStartPos()` = gunpoint + `gunpointWidth`·(cos,sin),
+     * поэтому дуга параллельно смещена от истинной траектории на длину ствола
+     * (~35·scale px). Направление и кривизна совпадают с полётом (тот же
+     * `advanceProjectile`), но НАЧАЛО дуги — у крепления ствола, не в дульном срезе.
+     */
     x: number;
     y: number;
     /** Угол ствола (радианы, конвенция `Tank.gunpointAngle`). */
@@ -55,6 +62,12 @@ export type TTrajectoryPreviewInput = {
     power: number;
     /** Ветер боя (px/тик², как `GamePlay.wind`) — дуга обязана его учитывать. */
     wind: number;
+    /**
+     * Гравитация снаряда (px/тик², как `Bullet.gravity`) — пробрасывается явно, чтобы
+     * дуга и полёт считали ускорение одним числом. Появись у оружия своя гравитация,
+     * без явного проброса дуга молча разъехалась бы с полётом (issue #475).
+     */
+    gravity: number;
     /** Логическая высота поля — гейт гравитации у нижней стены (как `Bullet.move`). */
     innerHeight: number;
     /** Радиус снаряда — тот же гейт гравитации/выхода за пол. */
@@ -95,7 +108,12 @@ export function fillTrajectoryPreview(
     let count = 0;
     for (let p = 0; p < limit; p++) {
         for (let s = 0; s < stride; s++) {
-            advanceProjectile(step, input.wind, step.y + input.radius < input.innerHeight);
+            advanceProjectile(
+                step,
+                input.wind,
+                step.y + input.radius < input.innerHeight,
+                input.gravity,
+            );
         }
         const node = out[count];
         node.x = step.x;

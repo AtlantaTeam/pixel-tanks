@@ -211,7 +211,13 @@ describe('SegmentedControl', () => {
         expect(segment.className).toMatch(/focus-visible:outline-\[var\(--accent\)\]/);
     });
 
-    it('распределяет сегменты поровну по ширине контейнера', () => {
+    // Равную ширину сегментов НЕЛЬЗЯ мерить здесь через offsetWidth: component-тесты
+    // идут в happy-dom (vitest.config.ts, environment: 'happy-dom'), а он не считает
+    // layout — offsetWidth у всех элементов = 0, и `toBe(firstWidth)` зелёный при
+    // ЛЮБОМ CSS, даже сломанном. Поэтому проверяем детерминированный контракт классов
+    // (flex-1 → flex: 1 1 0% → равная ширина), а фактическую раскладку меряет
+    // Playwright-e2e (как top-hud по вьюпортам).
+    it('даёт каждому сегменту flex-1 — из него следует равная ширина', () => {
         render(
             <SegmentedControl
                 label="Сложность"
@@ -221,17 +227,12 @@ describe('SegmentedControl', () => {
             />,
         );
 
-        const buttons = screen.getAllByRole('radio');
-        const widths = buttons.map((btn) => (btn as HTMLButtonElement).offsetWidth);
-
-        // Все кнопки должны иметь одинаковую ширину
-        const firstWidth = widths[0];
-        widths.forEach((width) => {
-            expect(width).toBe(firstWidth);
+        screen.getAllByRole('radio').forEach((btn) => {
+            expect(btn.className).toMatch(/\bflex-1\b/);
         });
     });
 
-    it('не меняет ширину сегментов при переключении активного', () => {
+    it('держит flex-1 на сегментах при переключении активного (ширина не зависит от выбора)', () => {
         const { rerender } = render(
             <SegmentedControl
                 label="Сложность"
@@ -241,10 +242,10 @@ describe('SegmentedControl', () => {
             />,
         );
 
-        const getWidths = () =>
-            screen.getAllByRole('radio').map((btn) => (btn as HTMLButtonElement).offsetWidth);
+        const everySegmentHasFlex1 = () =>
+            screen.getAllByRole('radio').every((btn) => /\bflex-1\b/.test(btn.className));
 
-        const widthsBefore = getWidths();
+        expect(everySegmentHasFlex1()).toBe(true);
 
         rerender(
             <SegmentedControl
@@ -255,14 +256,10 @@ describe('SegmentedControl', () => {
             />,
         );
 
-        const widthsAfter = getWidths();
-
-        widthsBefore.forEach((width, index) => {
-            expect(widthsAfter[index]).toBe(width);
-        });
+        expect(everySegmentHasFlex1()).toBe(true);
     });
 
-    it('распределяет поровну даже при разных длинах подписей', () => {
+    it('держит flex-1 + overflow-hidden при разной длине подписей (текст не распирает сегмент)', () => {
         render(
             <SegmentedControl
                 label="Группа"
@@ -276,13 +273,11 @@ describe('SegmentedControl', () => {
             />,
         );
 
-        const buttons = screen.getAllByRole('radio');
-        const widths = buttons.map((btn) => (btn as HTMLButtonElement).offsetWidth);
-
-        // Все кнопки должны иметь одинаковую ширину, несмотря на разные длины текста
-        const firstWidth = widths[0];
-        widths.forEach((width) => {
-            expect(width).toBe(firstWidth);
+        // flex-1 (равная базовая ширина) + overflow-hidden (длинный текст усекается,
+        // а не растягивает сегмент) вместе держат равную ширину при любом тексте.
+        screen.getAllByRole('radio').forEach((btn) => {
+            expect(btn.className).toMatch(/\bflex-1\b/);
+            expect(btn.className).toMatch(/\boverflow-hidden\b/);
         });
     });
 });

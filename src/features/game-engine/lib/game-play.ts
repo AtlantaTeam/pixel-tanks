@@ -14,7 +14,7 @@ import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
-import { fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
+import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
 import { formatAngle } from './format-angle';
 import { ParticlePool, damageFlashBurst, groundBurst } from './particle-pool';
 import { CameraShake } from './camera-shake';
@@ -311,6 +311,11 @@ export class GamePlay {
      *
      * Луч оттяжки, кольцо пальца и чип живут в DOM-оверлее (`ui/gesture-overlay`),
      * где доступны токены и текст; здесь — заякоренная на стволе дуга в canvas-координатах.
+     *
+     * Начало дуги — точка крепления ствола (`gunpointX/gunpointY`), а не дульный срез
+     * (`Tank.calcBulletStartPos` = gunpoint + длина ствола): дуга параллельно смещена
+     * от истинной траектории на длину ствола (~35·scale px), направление и кривизна при
+     * этом совпадают с полётом (тот же `advanceProjectile`, ветер и гравитация).
      */
     private drawAimPreview(ctx: CanvasRenderingContext2D) {
         if (!this.leftTank || !this.rightTank) return;
@@ -324,6 +329,9 @@ export class GamePlay {
                 angle: activeTank.gunpointAngle,
                 power: activeTank.power,
                 wind: this.wind,
+                // Та же гравитация, что и у реального снаряда (`Bullet.gravity`),
+                // проброшена явно — дуга и полёт считают ускорение одним числом (#475).
+                gravity: BULLET_GRAVITY,
                 innerHeight: this.innerHeight,
                 radius: WORLD_UNITS.bulletRadius * activeTank.scale,
             },

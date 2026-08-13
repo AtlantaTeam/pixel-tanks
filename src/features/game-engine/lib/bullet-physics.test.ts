@@ -78,6 +78,7 @@ describe('fillTrajectoryPreview', () => {
         angle: -Math.PI / 4,
         power: 15,
         wind: 0,
+        gravity: BULLET_GRAVITY,
         innerHeight: 600,
         radius: 2,
     };
@@ -154,6 +155,18 @@ describe('fillTrajectoryPreview', () => {
             }
         }
         expect(gravityOut[count - 1].y).toBeGreaterThan(straight.y);
+    });
+
+    it('использует gravity из input, а не зашитый дефолт', () => {
+        // Гравитацию пробрасывает вызывающий (issue #475): удвоенная тянет дугу ниже,
+        // чем дефолтная. Если бы input.gravity игнорировался (брался дефолт), обе дуги
+        // совпали бы — тест бы упал.
+        const input = { ...BASE_INPUT, innerHeight: 100000 };
+        const strong = makeBuffer(TRAJECTORY_PREVIEW_POINTS);
+        const weak = makeBuffer(TRAJECTORY_PREVIEW_POINTS);
+        const sc = fillTrajectoryPreview({ ...input, gravity: BULLET_GRAVITY * 2 }, strong);
+        const wc = fillTrajectoryPreview({ ...input, gravity: BULLET_GRAVITY }, weak);
+        expect(strong[sc - 1].y).toBeGreaterThan(weak[wc - 1].y);
     });
 
     it('не пишет за пределы буфера короче points — возвращает длину буфера', () => {

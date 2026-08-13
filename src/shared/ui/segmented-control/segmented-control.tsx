@@ -80,6 +80,10 @@ export function SegmentedControl<TValue extends string>({
                         type="button"
                         role="radio"
                         aria-checked={active}
+                        // Длинная подпись усекается (overflow-hidden + text-ellipsis под
+                        // flex-1) — тултип отдаёт полный текст зрячему, как скринридеру
+                        // его отдаёт имя radio.
+                        title={option.label}
                         tabIndex={active || (!hasActiveOption && index === 0) ? 0 : -1}
                         onClick={() => onChange(option.value)}
                         onKeyDown={(event) => handleKeyDown(event, index)}
