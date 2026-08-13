@@ -186,6 +186,69 @@ describe('SkyScene.resize / draw', () => {
         expect(offscreenCtx.createLinearGradient).toHaveBeenCalledTimes(2);
     });
 
+    it('размер облачного тайла не зависит от высоты канваса (#510)', () => {
+        // Раньше высота слоя считалась долей ВЫСОТЫ канваса, а ширина тайла выводилась
+        // из неё по пропорции арта. На 390×844 полоса растягивалась до 2.3 ширин экрана —
+        // вместо десятка облачков было видно два в двойном увеличении. Поворот телефона
+        // при этом менял размер облаков, хотя ширина оставалась той же.
+        const near = fakeImage(1024, 146);
+        const sizesAt = (width: number, height: number) => {
+            const scene = new SkyScene({ seed: 1, reducedMotion: false, images: { near } });
+            const ctx = createFakeCtx();
+            scene.resize(width, height);
+            scene.draw(ctx as unknown as CanvasRenderingContext2D);
+            const call = ctx.drawImage.mock.calls.find((c) => c[0] === near) as unknown as number[];
+            return { tileWidth: call[3], tileHeight: call[4] };
+        };
+        expect(sizesAt(390, 844)).toEqual(sizesAt(390, 500));
+    });
+
+    it('облака кладутся в натуральном размере арта — 1 пиксель арта на 1 пиксель устройства (#510)', () => {
+        // Масштаб одобренного макета (`docs/game-visuals/iteration-2/mockup-day.png`):
+        // замер дал 0.95 device-px на пиксель арта, то есть натуральный размер.
+        const original = window.devicePixelRatio;
+        Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+        try {
+            const near = fakeImage(1024, 146);
+            const scene = new SkyScene({ seed: 1, reducedMotion: false, images: { near } });
+            const ctx = createFakeCtx();
+            // Ширина заведомо больше потолка (см. следующий тест), чтобы он не вмешался.
+            scene.resize(1600, 900);
+            scene.draw(ctx as unknown as CanvasRenderingContext2D);
+            const call = ctx.drawImage.mock.calls.find((c) => c[0] === near) as unknown as number[];
+            expect(call[3]).toBe(512);
+            expect(call[4]).toBe(73);
+        } finally {
+            Object.defineProperty(window, 'devicePixelRatio', {
+                value: original,
+                configurable: true,
+            });
+        }
+    });
+
+    it('на узком экране без ретины тайл ограничен шириной канваса (#510)', () => {
+        // dpr 1 + узкое окно: натуральный размер дал бы тайл 1024 px на 390 px экрана —
+        // снова одно облако вполнеба. Потолок держит несколько облаков в кадре.
+        const original = window.devicePixelRatio;
+        Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+        try {
+            const near = fakeImage(1024, 146);
+            const scene = new SkyScene({ seed: 1, reducedMotion: false, images: { near } });
+            const ctx = createFakeCtx();
+            scene.resize(390, 844);
+            scene.draw(ctx as unknown as CanvasRenderingContext2D);
+            const call = ctx.drawImage.mock.calls.find((c) => c[0] === near) as unknown as number[];
+            expect(call[3]).toBeLessThanOrEqual(Math.round(390 * 1.15));
+            // Пропорция арта при этом сохраняется — облака не сплющиваются.
+            expect(call[3] / call[4]).toBeCloseTo(1024 / 146, 1);
+        } finally {
+            Object.defineProperty(window, 'devicePixelRatio', {
+                value: original,
+                configurable: true,
+            });
+        }
+    });
+
     it('без offscreen не аллоцирует канвас на каждый кадр (запоминает недоступность)', () => {
         let created = 0;
         const noCtxCanvas = {
