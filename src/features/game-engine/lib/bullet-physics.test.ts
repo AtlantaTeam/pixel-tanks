@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
-import type { TCoords, TWeapon } from '@/shared/model';
+import { EWeaponKind, type TCoords, type TWeapon } from '@/shared/model';
 import {
     advanceProjectile,
     BULLET_GRAVITY,
@@ -17,7 +17,7 @@ import { Tank } from './tank';
 
 const WIDTH = 800;
 const HEIGHT = 600;
-const WEAPONS: TWeapon[] = [{ id: 0, name: 'Снаряд #0' }];
+const WEAPONS: TWeapon[] = [{ id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive }];
 
 const ctxStub = {
     save: () => undefined,

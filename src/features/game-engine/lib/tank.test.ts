@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TTankWheelSpec as TSkinWheelSpec } from '@/entities/tank-skins';
 import { createSeededRandom } from '@/shared/lib/random';
-import type { TWeapon } from '@/shared/model';
+import { EWeaponKind, type TWeapon } from '@/shared/model';
 import { Ground } from './ground';
 import { drawTankWheels, Tank, wheelRotationDelta, type TTankWheelSpec } from './tank';
 import { WORLD_UNITS } from './world-scale';
@@ -18,7 +18,7 @@ void _wheelSpecMatch;
 
 const WIDTH = 800;
 const HEIGHT = 600;
-const WEAPON: TWeapon = { id: 0, name: 'Снаряд' };
+const WEAPON: TWeapon = { id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive };
 
 // happy-dom не предоставляет Path2D. Заглушка хранит прямоугольник хит-зоны и его
 // возвращает — ровно то, что читает Bullet.checkTankHit и проверяет этот тест.

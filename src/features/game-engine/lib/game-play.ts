@@ -23,20 +23,21 @@ import { Bullet } from './bullet';
 import { generateWind } from './wind';
 import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
 import { formatAngle } from './format-angle';
-import { ParticlePool, damageFlashBurst, groundBurst } from './particle-pool';
+import { ParticlePool, damageFlashBurst, groundBurst, groundColumnBurst } from './particle-pool';
+import { weaponSpecFor } from './weapon-specs';
 import { CameraShake } from './camera-shake';
 import { SlowMotion } from './slow-motion';
 import { BulletTrail } from './bullet-trail';
 import { ENGINE_COLORS } from './engine-palette';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
 
-/** Ёмкости пула хватает на одновременный залп земли и вспышку урона. */
-const PARTICLE_CAPACITY = 96;
+/**
+ * Ёмкости пула хватает на одновременный залп земли и вспышку урона. Максимальный
+ * залп любого типа оружия плюс `damageFlash` укладывается в неё (issue #483,
+ * проверено `particle-pool.test.ts`) — `emitBurst` молча обрезает по ёмкости.
+ */
+export const PARTICLE_CAPACITY = 96;
 
-/** Травма screen shake при промахе (взрыв по земле) — короткий толчок. */
-const MISS_SHAKE_TRAUMA = 0.5;
-/** Травма при прямом попадании в танк — заметно сильнее промаха. */
-const HIT_SHAKE_TRAUMA = 0.85;
 /** Запас очистки при сдвиге сцены во время тряски, CSS-пиксели. */
 const SHAKE_CLEAR_PAD = 4;
 /** Базовый интервал шага симуляции (~66 к/с). Slow-mo растягивает его. */
@@ -223,6 +224,10 @@ export class GamePlay {
     // Затухающий след снаряда: точки следа сами очищают свой прошлый прямоугольник
     // (см. bullet-trail.ts), поэтому полёт снаряда не требует fullRedraw каждый кадр.
     private readonly trail: BulletTrail;
+    // Цвет следа текущего снаряда (issue #483): держится за бой, чтобы хвост следа
+    // догорал в цвете своего типа даже после того, как снаряд убран (`bullet` уже
+    // undefined, а `trail.draw` ещё чистит/гасит точки несколько кадров).
+    private trailColor: string = ENGINE_COLORS.primary;
     // Отметка последнего кадра rAF: реальный dt для затухания shake/slow-mo,
     // считается КАЖДЫЙ кадр (в т.ч. пропущенные throttle'ом).
     private lastFrameTs = 0;
@@ -740,7 +745,7 @@ export class GamePlay {
             if (particlesAlive) this.particles.update();
             this.fullRedraw();
         } else if (
-            (this.isFireMode && (!this.bullet || this.bullet.explosionRadius)) ||
+            (this.isFireMode && (!this.bullet || this.bullet.detonated)) ||
             this.ground.isFalling
         ) {
             if (this.bullet) {
@@ -785,7 +790,9 @@ export class GamePlay {
             this.particles.draw(this.ctx);
         }
         if (trailActive) {
-            this.trail.draw(this.ctx);
+            // Цвет следа — тип текущего снаряда; после его убирания хвост догорает
+            // в том же цвете (`trailColor` держится за бой).
+            this.trail.draw(this.ctx, this.bullet?.spec.trail.color ?? this.trailColor);
         }
 
         // fullRedraw мог оставить сдвиг тряски в трансформе — сбрасываем в базу,
@@ -883,45 +890,32 @@ export class GamePlay {
     moveBullet = (ctx: CanvasRenderingContext2D) => {
         if (!this.isFireMode || !this.bullet) return;
         this.bullet.move();
-        // explosionRadius === 0 значит снаряд ещё летит (взрыв этого тика не начат) —
-        // след кладём только вдоль полёта, не поверх растущего взрыва.
-        if (this.bullet.explosionRadius === 0) {
-            this.trail.emit(this.bullet.x, this.bullet.y);
+        // Снаряд ещё летит (не детонировал) — след кладём только вдоль полёта, не
+        // поверх растущего взрыва. Гейт по `detonated`, а не `explosionRadius === 0`:
+        // у кластера радиус сбрасывается в ноль на каждой смене очага (ловушка #483).
+        if (!this.bullet.detonated) {
+            this.trail.emit(
+                this.bullet.x,
+                this.bullet.y,
+                this.bullet.spec.trail.life,
+                this.bullet.spec.trail.size,
+            );
         }
         if (this.bullet.isHit(ctx)) {
-            // explosionRadius === 0 только в первый кадр взрыва — разрешение попадания
-            // (звук, очки, подскок танка, косметика) эмитим один раз, дальше
-            // drawExplosion его инкрементирует и повторного разрешения не будет.
-            if (this.bullet.explosionRadius === 0) {
-                if (this.bullet.isTankHit) {
-                    this.particles.emitBurst(damageFlashBurst(this.bullet.x, this.bullet.y));
-                    // Попадание в танк: сильная тряска + короткий slow-mo для веса удара.
-                    this.camera.addTrauma(HIT_SHAKE_TRAUMA);
-                    this.slowMo.trigger();
-                } else {
-                    this.particles.emitBurst(groundBurst(this.bullet.x, this.bullet.y));
-                    // Промах по земле: только лёгкая тряска, без замедления.
-                    this.camera.addTrauma(MISS_SHAKE_TRAUMA);
-                }
-                this.emitBotReply();
-
-                if (this.bullet.isTankHit && this.bullet.hittedTank) {
-                    void this.audio.playSfx('hit');
-                    this.bullet.hittedTank.jumpOnHit(
-                        this.bullet.power,
-                        this.bullet.gravity,
-                        this.bullet.dx,
-                    );
-                    this.callbacks.onTankHit({
-                        hittedIsLeft: this.bullet.hittedTank === this.leftTank,
-                        leftActive: !!this.leftTank?.isActive,
-                        power: this.bullet.power,
-                    });
-                } else {
-                    void this.audio.playSfx('miss');
-                }
+            // Разовая раздача попадания (урон, звук, подскок, slow-mo) — по явному
+            // флагу детонации, ОДИН раз: многоочаговый кластер иначе раздал бы урон
+            // и звук трижды (ловушка #483).
+            if (!this.bullet.detonated) {
+                this.bullet.detonated = true;
+                this.resolveDetonation();
             }
             this.bullet.drawExplosion(ctx);
+            // Смена очага кластера: частицы и тряска нового очага + один
+            // принудительный fullRedraw, иначе круг предыдущего очага останется грязью.
+            if (this.bullet.consumeFocusAdvanced()) {
+                this.emitFocusBurst();
+                this.fullRedraw();
+            }
         }
 
         if (!this.bullet.isFinished) {
@@ -932,6 +926,62 @@ export class GamePlay {
         this.callbacks.onShotEnd?.();
         this.changeActiveTank();
     };
+
+    /**
+     * Разовая раздача детонации (issue #483): попадание в танк — вспышка урона,
+     * сильная тряска и slow-mo; промах — частицы/тряска первого очага земли и
+     * slow-mo только у типов с `slowMoOnMiss` (мощный заряд). Тряска/частицы
+     * последующих очагов кластера идут отдельно (`emitFocusBurst` на смене очага).
+     */
+    private resolveDetonation() {
+        if (!this.bullet || !this.leftTank || !this.rightTank) return;
+        const { spec } = this.bullet;
+        if (this.bullet.isTankHit) {
+            this.particles.emitBurst(
+                damageFlashBurst(this.bullet.explosionCenterX, this.bullet.explosionCenterY),
+            );
+            this.camera.addTrauma(spec.shakeHit);
+            this.slowMo.trigger();
+        } else {
+            this.emitFocusBurst();
+            if (spec.slowMoOnMiss) this.slowMo.trigger();
+        }
+        this.emitBotReply();
+
+        if (this.bullet.isTankHit && this.bullet.hittedTank) {
+            void this.audio.playSfx('hit');
+            this.bullet.hittedTank.jumpOnHit(
+                this.bullet.power,
+                this.bullet.gravity,
+                this.bullet.dx,
+            );
+            this.callbacks.onTankHit({
+                hittedIsLeft: this.bullet.hittedTank === this.leftTank,
+                leftActive: !!this.leftTank?.isActive,
+                power: this.bullet.power,
+            });
+        } else {
+            void this.audio.playSfx('miss');
+        }
+    }
+
+    /**
+     * Комья земли и лёгкая тряска ОДНОГО очага (текущего) при взрыве по земле.
+     * Роющий бьёт узким столбом (`groundColumn`), остальные — широким веером.
+     * Прямое попадание в танк частиц земли не даёт (вспышка урона — в
+     * `resolveDetonation`). Позиция — центр текущего очага (кластер смещает очаги).
+     */
+    private emitFocusBurst() {
+        if (!this.bullet || this.bullet.isTankHit) return;
+        const { spec } = this.bullet;
+        const x = this.bullet.explosionCenterX;
+        const y = this.bullet.explosionCenterY;
+        const burst = spec.groundColumn
+            ? groundColumnBurst(x, y, spec.groundBurstCount)
+            : groundBurst(x, y, spec.groundBurstCount);
+        this.particles.emitBurst(burst);
+        this.camera.addTrauma(spec.shakeMiss);
+    }
 
     botFire = () => {
         if (!this.leftTank || !this.rightTank || !this.ground) return;
@@ -1032,6 +1082,10 @@ export class GamePlay {
         this.lastShooterIsLeft = activeTank === this.leftTank;
         this.callbacks.onShotStart?.();
         this.activateMode('fire');
+        // Тип оружия задаёт спеку взрыва (issue #483) — Bullet читает из неё числа
+        // в drawExplosion/draw. Спека разделяется по ссылке (общий объект на тип).
+        const spec = weaponSpecFor(weaponType.kind);
+        this.trailColor = spec.trail.color;
         this.bullet = new Bullet(
             this.innerWidth,
             this.innerHeight,
@@ -1039,6 +1093,7 @@ export class GamePlay {
             activeTank,
             targetTank,
             this.wind,
+            spec,
         );
         void this.audio.playSfx('fire');
         activeTank.fire(weaponType);

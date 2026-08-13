@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
 import { getAudioEngine } from '@/shared/lib/audio';
-import type { TWeapon } from '@/shared/model';
+import { EWeaponKind, type TWeapon } from '@/shared/model';
 import { GamePlay, type TGamePlayCallbacks } from './game-play';
 import { Ground } from './ground';
 import { Tank } from './tank';
@@ -43,7 +43,7 @@ const ctxStub = {
 
 const WIDTH = 800;
 const HEIGHT = 600;
-const WEAPON: TWeapon = { id: 0, name: 'Снаряд' };
+const WEAPON: TWeapon = { id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive };
 
 /**
  * Собирает `GamePlay` с двумя танками и грунтом, готовый к прогону `moveBullet`.

@@ -1,12 +1,12 @@
 import { floor } from '@/shared/lib/canvas';
+import { EWeaponKind } from '@/shared/model';
 import { advanceProjectile, BULLET_GRAVITY } from './bullet-physics';
 import { Ground } from './ground';
 import { Tank } from './tank';
-import { computeWorldScale, WORLD_UNITS } from './world-scale';
+import { WORLD_UNITS } from './world-scale';
+import { paintExplosionFocus, WEAPON_SPECS, type TWeaponSpec } from './weapon-specs';
 
 export class Bullet {
-    static readonly label = 'Снаряд';
-
     radius: number;
     private mass: number;
     x: number;
@@ -23,7 +23,31 @@ export class Bullet {
     elasticity: number;
     private wind: number;
     explosionRadius: number;
-    private explosionMaxRadius: number;
+    /** Базовый радиус взрыва (`WORLD_UNITS.explosionMaxRadius · scale`) — очаги считаются в его долях. */
+    private baseExplosionRadius: number;
+    /**
+     * Тип оружия (issue #483): числа взрыва (стопы градиента, рост, кратер, очаги)
+     * читаются из спеки. Дефолт — фугас (замороженный дефолт движка), поэтому
+     * снаряд без явной спеки ведёт себя ровно как до задачи. Спека — общий на все
+     * снаряды типа объект по ссылке (не утяжеляет `virtualFire` бота).
+     */
+    readonly spec: TWeaponSpec;
+    /**
+     * Индекс текущего очага взрыва (кластер отыгрывает три подряд). Явный индекс
+     * вместо перегруженного `explosionRadius === 0` (ловушка #483): иначе
+     * многоочаговый кластер раздал бы урон и звук трижды.
+     */
+    focusIndex = 0;
+    /**
+     * Снаряд детонировал: разовая раздача урона/звука/slow-mo идёт по этому флагу,
+     * а не по `explosionRadius === 0` (который сбрасывается на каждой смене очага).
+     */
+    detonated = false;
+    /**
+     * Очаг только что сменился — `game-play` заберёт (частицы+тряска на новый очаг,
+     * принудительный `fullRedraw` для кластера). Сбрасывается забором.
+     */
+    focusAdvanced = false;
     private color: string;
     innerWidth: number;
     innerHeight: number;
@@ -41,9 +65,11 @@ export class Bullet {
         activeTank: Tank,
         targetTank: Tank,
         wind = 0,
+        spec: TWeaponSpec = WEAPON_SPECS[EWeaponKind.HighExplosive],
     ) {
         this.activeTank = activeTank;
         this.targetTank = targetTank;
+        this.spec = spec;
         // Радиус снаряда и взрыва масштабируются вместе с телом танка (масштаб мира,
         // #455): снаряд берёт коэффициент у стрелявшего танка. scale === 1 — канон
         // прежних констант (радиус 2, взрыв 50). Хит-детект по земле и стенам, а также
@@ -61,8 +87,8 @@ export class Bullet {
         this.elasticity = 1;
         this.wind = wind;
         this.explosionRadius = 0;
-        this.explosionMaxRadius = WORLD_UNITS.explosionMaxRadius * scale;
-        this.color = '#000000';
+        this.baseExplosionRadius = WORLD_UNITS.explosionMaxRadius * scale;
+        this.color = spec.bulletColor ?? '#000000';
         this.innerWidth = innerWidth;
         this.innerHeight = innerHeight;
         this.ground = ground;
@@ -75,12 +101,34 @@ export class Bullet {
      * размер, а снаряд и радиус кратера оставались бы прежними — визуальный разрыв.
      * На реплей не влияет: там размер зафиксирован записью (`fixedLogicalSize`), ресайза
      * нет. Радиус взрыва во время самого взрыва не трогаем (`drawExplosion` ведёт свой
-     * `explosionRadius` от нуля к максимуму) — меняем только целевой максимум.
+     * `explosionRadius` от нуля к максимуму) — меняем только базовый радиус очагов.
      */
     setScale(scale: number) {
         this.radius = WORLD_UNITS.bulletRadius * scale;
         this.mass = this.radius;
-        this.explosionMaxRadius = WORLD_UNITS.explosionMaxRadius * scale;
+        this.baseExplosionRadius = WORLD_UNITS.explosionMaxRadius * scale;
+    }
+
+    /** Центр текущего очага по X: точка попадания плюс смещение очага (кластер). */
+    get explosionCenterX(): number {
+        return this.x + this.spec.foci[this.focusIndex].dxFactor * this.baseExplosionRadius;
+    }
+
+    /** Центр текущего очага по Y (очаги смещены только по X; глубина кратера — отдельно). */
+    get explosionCenterY(): number {
+        return this.y;
+    }
+
+    /** Максимальный радиус текущего очага (доля базового радиуса взрыва). */
+    private get focusMaxRadius(): number {
+        return this.spec.foci[this.focusIndex].radiusFactor * this.baseExplosionRadius;
+    }
+
+    /** Забор флага смены очага: возвращает true один раз на каждый новый очаг. */
+    consumeFocusAdvanced(): boolean {
+        if (!this.focusAdvanced) return false;
+        this.focusAdvanced = false;
+        return true;
     }
 
     move() {
@@ -153,34 +201,44 @@ export class Bullet {
         ctx.restore();
     };
 
+    /**
+     * Отыгрывает один кадр взрыва текущего очага: растущий круг радиальным
+     * градиентом (стопы и палитра из спеки). Дорос до максимума очага — кратер
+     * (`ground.fall`) и переход к следующему очагу; очаги кончились — `isFinished`.
+     * Один конечный автомат на все типы: различия — только числа спеки.
+     *
+     * Ничего не рисуется за пределами `explosionRadius` (ловушка #483): ударная
+     * волна мощного заряда — обод РОВНО по фронту (`r = explosionRadius`), без колец
+     * и ореолов впереди. Радиус кратера (`craterRadiusFactor`) и его глубина
+     * (`craterYOffsetFactor`) идут через `floor` — дробный радиус ломает `ground.fall`.
+     */
     drawExplosion = (ctx: CanvasRenderingContext2D) => {
         this.dx = 0;
         this.dy = 0;
         this.radius = 0;
 
-        const gradient = ctx.createRadialGradient(
-            this.x,
-            this.y,
-            this.explosionRadius / 10,
-            this.x,
-            this.y,
-            this.explosionRadius + this.explosionRadius / 2,
-        );
+        const cx = this.explosionCenterX;
+        const cy = this.explosionCenterY;
+        const { colors, growthPerFrame, craterRadiusFactor, craterYOffsetFactor } = this.spec;
 
-        gradient.addColorStop(0, '#f37575ff');
-        gradient.addColorStop(0.3, '#ff0000ee');
-        gradient.addColorStop(1, '#571a1a55');
+        // Единый примитив кадра взрыва (общий с витриной): градиент до фронта плюс
+        // обод ударной волны РОВНО по фронту, ничего впереди него (ловушка #483).
+        paintExplosionFocus(ctx, cx, cy, this.explosionRadius, colors, this.spec.shockwave);
 
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.explosionRadius, 0, 2 * Math.PI, true);
-        ctx.fill();
-        ctx.closePath();
-        this.explosionRadius += 1;
-        if (this.explosionRadius >= this.explosionMaxRadius) {
-            this.ground.fall(floor(this.x), floor(this.y), this.explosionRadius);
-            this.isFinished = true;
+        this.explosionRadius += growthPerFrame;
+        if (this.explosionRadius >= this.focusMaxRadius) {
+            const craterRadius = floor(craterRadiusFactor * this.explosionRadius);
+            const craterY = floor(cy + craterYOffsetFactor * this.explosionRadius);
+            this.ground.fall(floor(cx), craterY, craterRadius);
             this.explosionRadius = 0;
+            this.focusIndex += 1;
+            if (this.focusIndex >= this.spec.foci.length) {
+                this.isFinished = true;
+            } else {
+                // Следующий очаг стартует после `fall` предыдущего — `game-play`
+                // заберёт (частицы/тряска на очаг + принудительный fullRedraw).
+                this.focusAdvanced = true;
+            }
         }
 
         return true;
@@ -192,12 +250,13 @@ export class Bullet {
 
     draw(ctx: CanvasRenderingContext2D) {
         if (this.isPositionChanged()) {
-            ctx.clearRect(this.lastX, this.lastY, this.radius * 2, this.radius * 2);
+            const size = this.radius * 2 * this.spec.bulletSizeFactor;
+            ctx.clearRect(this.lastX, this.lastY, size, size);
 
             if (ctx.fillStyle !== this.color) {
                 ctx.fillStyle = this.color;
             }
-            ctx.fillRect(this.x, this.y, this.radius * 2, this.radius * 2);
+            ctx.fillRect(this.x, this.y, size, size);
             this.lastX = this.x;
             this.lastY = this.y;
         }

@@ -200,8 +200,11 @@ type TGameActions = {
      * Записывает выстрел игрока в реплей и считает его для статистики конца боя:
      * `shotsFired` по построению равен числу ходов `kind: 'fire'`, поэтому счётчик
      * инкрементится здесь же — один источник истины, рассинхрон невозможен.
+     *
+     * `weaponId` — ординал типа оружия (`WEAPON_KIND_ORDER`, issue #483). Фугас (0)
+     * или отсутствие в реплей не пишется — запись остаётся совместимой со старыми.
      */
-    recordFire: (angle: number, power: number) => void;
+    recordFire: (angle: number, power: number, weaponId?: number) => void;
     /**
      * Публикует фактическую высоту одного оверлея (верхнего HUD или нижней
      * палубы) в инсеты арены. Обновляет ровно одну грань, не трогая соседнюю —
@@ -338,9 +341,14 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
         set({ battleField: { width, height }, battleInsets: insets }),
     recordMove: (delta) =>
         set((s) => ({ replayMoves: [...s.replayMoves, { kind: 'move', delta }] })),
-    recordFire: (angle, power) =>
+    recordFire: (angle, power, weaponId) =>
         set((s) => ({
-            replayMoves: [...s.replayMoves, { kind: 'fire', angle, power }],
+            replayMoves: [
+                ...s.replayMoves,
+                weaponId
+                    ? { kind: 'fire', angle, power, weaponId }
+                    : { kind: 'fire', angle, power },
+            ],
             shotsFired: s.shotsFired + 1,
         })),
     setArenaInset: (edge, height) =>

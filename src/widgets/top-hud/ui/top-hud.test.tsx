@@ -1,6 +1,7 @@
 import { render, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_WIND, useGameStore } from '@/features/game-engine';
+import { EWeaponKind } from '@/shared/model';
 import { BOT_NAME, POWER_MAX } from '@/shared/config';
 import { TopHud } from './top-hud';
 
@@ -117,7 +118,10 @@ describe('TopHud', () => {
     });
 
     it('пипы снарядов и ходов красятся фиксированными токенами, не темой хода соперника', () => {
-        useGameStore.setState({ turn: 'enemy', weapons: [{ id: 0, name: 'Снаряд' }] });
+        useGameStore.setState({
+            turn: 'enemy',
+            weapons: [{ id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive }],
+        });
         const { getByTestId } = render(<TopHud />);
 
         const mobile = within(getByTestId('top-hud-mobile'));

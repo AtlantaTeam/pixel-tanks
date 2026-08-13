@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
 import { floor } from '@/shared/lib/canvas';
-import type { TWeapon } from '@/shared/model';
+import { EWeaponKind, WEAPON_KIND_ORDER, type TWeapon } from '@/shared/model';
+import { weaponSpecFor } from './weapon-specs';
 import { decodeReplay, encodeReplay, type TReplay } from '@/entities/replays';
 import { MAX_HP } from '@/shared/config';
 import { EMPTY_ARENA_INSETS } from './arena-insets';
@@ -34,7 +35,7 @@ import { computeWorldScale } from './world-scale';
 
 const WIDTH = 800;
 const HEIGHT = 600;
-const WEAPON: TWeapon = { id: 0, name: 'Снаряд' };
+const WEAPON: TWeapon = { id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive };
 
 /** Собирает запись боя с размером поля по умолчанию (800×600). */
 const battle = (seed: number | string, moves: TReplay['moves']): TReplay => ({
@@ -161,7 +162,13 @@ const simulateBattleHp = (replay: TReplay): THp => {
         refreshHitArea(player);
         refreshHitArea(enemy);
 
-        const bullet = new Bullet(width, height, ground, player, enemy, wind);
+        // Тип оружия по записанному ординалу (issue #483) — как воспроизведение в
+        // `replay-driver`. Только тип влияет на кратер/рельеф; урон = power для всех.
+        const kind =
+            move.weaponId !== undefined
+                ? WEAPON_KIND_ORDER[move.weaponId]
+                : EWeaponKind.HighExplosive;
+        const bullet = new Bullet(width, height, ground, player, enemy, wind, weaponSpecFor(kind));
         let steps = 0;
         bullet.move();
         while (!bullet.isHit(ctxStub) && steps < MAX_BULLET_STEPS) {
@@ -221,6 +228,29 @@ describe('детерминизм реплея: сериализованный б
         expect(decoded).not.toBeNull();
 
         expect(simulateBattleHp(decoded!)).toEqual(simulateBattleHp(replay));
+    });
+
+    it('реплей с набором разных типов оружия воспроизводится идентично (issue #483)', () => {
+        const mixed: TReplay = battle(42, [
+            { kind: 'fire', angle: -0.895, power: 8, weaponId: 1 },
+            move(-40),
+            { kind: 'fire', angle: -0.6, power: 12, weaponId: 2 },
+            { kind: 'fire', angle: -0.5, power: 10, weaponId: 3 },
+        ]);
+        const decoded = decodeReplay(encodeReplay(mixed));
+        expect(decoded).not.toBeNull();
+        // Типы каждого выстрела переживают сериализацию бит-в-бит.
+        expect(decoded).toEqual(mixed);
+        expect(simulateBattleHp(decoded!)).toEqual(simulateBattleHp(mixed));
+    });
+
+    it('запись без weaponId (до issue #483) играет как фугас', () => {
+        const explicitHe: TReplay = battle(42, [
+            { kind: 'fire', angle: -0.895, power: 8, weaponId: 0 },
+        ]);
+        const legacy: TReplay = battle(42, [fire(-0.895, 8)]);
+
+        expect(simulateBattleHp(explicitHe)).toEqual(simulateBattleHp(legacy));
     });
 
     it('запись с инсетами safe-зоны воспроизводится идентично после encode → decode', () => {

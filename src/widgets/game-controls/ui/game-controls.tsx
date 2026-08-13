@@ -11,7 +11,7 @@ import {
     type TGameCanvasHandle,
 } from '@/features/game-engine';
 import { Icon, WeaponSelector, type TIconName, type TWeaponSelectorWeapon } from '@/shared/ui';
-import type { TWeapon } from '@/shared/model';
+import { EWeaponKind, type TWeapon } from '@/shared/model';
 import { DeckLock, type TDeckLockReason } from './deck-lock';
 import { KeyboardSchemeHint } from './keyboard-scheme-hint';
 
@@ -19,19 +19,18 @@ import { KeyboardSchemeHint } from './keyboard-scheme-hint';
  *  подложка + blur держат читаемость текстовой подсказки поверх шумной/светлой арены. */
 const HUD_SURFACE = 'bg-[rgba(8,12,8,0.80)] backdrop-blur-[4px] shadow-[0_0_0_1px_rgba(0,0,0,.9)]';
 
-/** GDD §9-E: имена арсенала → иконка. Движок пока раздаёт один тип снаряда
- *  (`Bullet.label === 'Снаряд'`, см. `dealWeapons`) — variety оружия отдельная
- *  задача трека, поэтому незнакомое имя просто падает на нейтральную иконку
- *  вместо падения/пустого рендера. */
-const WEAPON_ICONS: Partial<Record<string, TIconName>> = {
-    Фугас: 'wpn-фугас',
-    'Мощный заряд': 'wpn-мощный',
-    Кластер: 'wpn-кластер',
-    Роющий: 'wpn-роющий',
+/** GDD §9-E: тип оружия → иконка. Связь по `kind`-enum, а не по строке имени
+ *  (issue #483): движок раздаёт четыре типа, и иконки больше не падают в fallback.
+ *  Нейтральный `fire` остаётся страховкой на неизвестный тип. */
+const WEAPON_ICONS: Record<EWeaponKind, TIconName> = {
+    [EWeaponKind.HighExplosive]: 'wpn-фугас',
+    [EWeaponKind.Heavy]: 'wpn-мощный',
+    [EWeaponKind.Cluster]: 'wpn-кластер',
+    [EWeaponKind.Digger]: 'wpn-роющий',
 };
 
-function weaponIcon(name: string): TIconName {
-    return WEAPON_ICONS[name] ?? 'fire';
+function weaponIcon(kind: EWeaponKind): TIconName {
+    return WEAPON_ICONS[kind] ?? 'fire';
 }
 
 type TGameControlsProps = {
@@ -199,8 +198,8 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
     const currentSlot: TWeaponSelectorWeapon | null = selectedWeapon
         ? {
               name: selectedWeapon.name,
-              icon: weaponIcon(selectedWeapon.name),
-              ammo: weapons.filter((w) => w.name === selectedWeapon.name).length,
+              icon: weaponIcon(selectedWeapon.kind),
+              ammo: weapons.filter((w) => w.kind === selectedWeapon.kind).length,
           }
         : null;
     const weaponSlots = currentSlot ? [currentSlot] : [];
@@ -219,6 +218,11 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
         <div
             ref={insetRef}
             data-testid="game-hud"
+            // Всего снарядов у игрока (всех типов): стабильный монотонный сигнал для
+            // e2e (issue #483) — селектор палубы показывает боезапас ВЫБРАННОГО типа,
+            // который скачет при авто-переключении оружия после выстрела, а этот
+            // счётчик убывает ровно на 1 за выстрел.
+            data-weapons-remaining={weapons.length}
             className="pointer-events-none absolute inset-x-0 bottom-0 z-6"
         >
             {/* Мобилка (<768): колонка — селектор, манёвр+ОГОНЬ, подсказка жеста

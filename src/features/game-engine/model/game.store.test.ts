@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { EWeaponKind } from '@/shared/model';
 import { EMPTY_ARENA_INSETS } from '../lib/arena-insets';
 import { POWER_MAX, POWER_MIN } from '../lib/power';
 import {
@@ -210,7 +211,7 @@ describe('game.store — тост «патроны кончились» (selectS
             selectShowAmmoEmptyToast({
                 turn: 'player',
                 phase: 'aiming',
-                weapons: [{ id: 0, name: 'Снаряд' }],
+                weapons: [{ id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive }],
             }),
         ).toBe(false);
     });

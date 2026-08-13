@@ -1,15 +1,16 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
 import { floor } from '@/shared/lib/canvas';
-import type { TWeapon } from '@/shared/model';
+import { EWeaponKind, type TWeapon } from '@/shared/model';
 import { Bullet } from './bullet';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { WORLD_UNITS } from './world-scale';
+import { WEAPON_SPECS } from './weapon-specs';
 
 const WIDTH = 800;
 const HEIGHT = 600;
-const WEAPONS: TWeapon[] = [{ id: 0, name: 'Снаряд #0' }];
+const WEAPONS: TWeapon[] = [{ id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive }];
 
 // Физика не должна требовать реального Canvas: ctx нужен только Path2D-проверке попадания в танк
 const ctxStub = {
@@ -218,5 +219,146 @@ describe('Bullet.setScale — перемасштабирование при ре
         }
         expect(bullet.isFinished).toBe(true);
         expect(frames).toBeGreaterThan(WORLD_UNITS.explosionMaxRadius);
+    });
+});
+
+describe('Bullet: типы оружия (issue #483)', () => {
+    // Взрыв рисует радиальный градиент и обод ударной волны — минимальный ctx.
+    const explosionCtx = {
+        createRadialGradient: () => ({ addColorStop: () => undefined }),
+        beginPath: () => undefined,
+        arc: () => undefined,
+        fill: () => undefined,
+        stroke: () => undefined,
+        closePath: () => undefined,
+        fillStyle: '',
+        strokeStyle: '',
+        lineWidth: 0,
+    } as unknown as CanvasRenderingContext2D;
+
+    const makeBulletWithSpec = (kind: EWeaponKind, seed = 7) => {
+        const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(seed));
+        const active = makeTank(100, -Math.PI / 4, 12);
+        const target = makeTank(600, Math.PI, 12);
+        const bullet = new Bullet(WIDTH, HEIGHT, ground, active, target, 0, WEAPON_SPECS[kind]);
+        return { bullet, ground };
+    };
+
+    const runExplosion = (bullet: Bullet) => {
+        let frames = 0;
+        while (!bullet.isFinished && frames < 2000) {
+            bullet.drawExplosion(explosionCtx);
+            frames += 1;
+        }
+        return frames;
+    };
+
+    it('фугас: ровно один очаг, один кратер', () => {
+        const { bullet, ground } = makeBulletWithSpec(EWeaponKind.HighExplosive);
+        const fall = vi.spyOn(ground, 'fall');
+        runExplosion(bullet);
+        expect(fall).toHaveBeenCalledTimes(1);
+    });
+
+    it('кластер: три последовательных очага, три кратера в разных точках', () => {
+        const { bullet, ground } = makeBulletWithSpec(EWeaponKind.Cluster);
+        const fall = vi.spyOn(ground, 'fall');
+        bullet.x = 300;
+        bullet.y = 200;
+        runExplosion(bullet);
+        expect(fall).toHaveBeenCalledTimes(3);
+        // Центральный очаг в точке попадания, боковые — по фиксированным смещениям.
+        const xs = fall.mock.calls.map((c) => c[0]);
+        expect(xs[0]).toBe(300);
+        expect(xs[1]).toBeLessThan(300);
+        expect(xs[2]).toBeGreaterThan(300);
+        expect(bullet.isFinished).toBe(true);
+    });
+
+    it('кластер помечает смену очага для game-play (частицы+fullRedraw на очаг)', () => {
+        const { bullet } = makeBulletWithSpec(EWeaponKind.Cluster);
+        let advances = 0;
+        let frames = 0;
+        while (!bullet.isFinished && frames < 2000) {
+            bullet.drawExplosion(explosionCtx);
+            if (bullet.consumeFocusAdvanced()) advances += 1;
+            frames += 1;
+        }
+        // Два перехода на три очага (после 1-го и 2-го).
+        expect(advances).toBe(2);
+    });
+
+    it('роющий: кратер узкий и смещён вниз (глубокая воронка)', () => {
+        const { bullet: digger, ground: g1 } = makeBulletWithSpec(EWeaponKind.Digger);
+        const { bullet: he, ground: g2 } = makeBulletWithSpec(EWeaponKind.HighExplosive);
+        digger.x = he.x = 300;
+        digger.y = he.y = 200;
+        const diggerFall = vi.spyOn(g1, 'fall');
+        const heFall = vi.spyOn(g2, 'fall');
+        runExplosion(digger);
+        runExplosion(he);
+        const [, diggerY, diggerR] = diggerFall.mock.calls[0];
+        const [, heY, heR] = heFall.mock.calls[0];
+        // Кратер роющего глубже (ниже точки попадания) и уже фугасного.
+        expect(diggerY).toBeGreaterThan(heY);
+        expect(diggerR).toBeLessThan(heR);
+    });
+
+    it('мощный заряд: взрыв крупнее фугаса (кратер шире)', () => {
+        const { bullet: heavy, ground: g1 } = makeBulletWithSpec(EWeaponKind.Heavy);
+        const { bullet: he, ground: g2 } = makeBulletWithSpec(EWeaponKind.HighExplosive);
+        const heavyFall = vi.spyOn(g1, 'fall');
+        const heFall = vi.spyOn(g2, 'fall');
+        runExplosion(heavy);
+        runExplosion(he);
+        expect(heavyFall.mock.calls[0][2]).toBeGreaterThan(heFall.mock.calls[0][2]);
+    });
+
+    it('детерминизм: тот же тип и вход дают те же кратеры', () => {
+        const { bullet: a, ground: ga } = makeBulletWithSpec(EWeaponKind.Cluster);
+        const { bullet: b, ground: gb } = makeBulletWithSpec(EWeaponKind.Cluster);
+        const fa = vi.spyOn(ga, 'fall');
+        const fb = vi.spyOn(gb, 'fall');
+        runExplosion(a);
+        runExplosion(b);
+        expect(fa.mock.calls).toEqual(fb.mock.calls);
+    });
+
+    it('снаряд без явной спеки — фугас (совместимость)', () => {
+        const { bullet } = makeBullet(-Math.PI / 4, 10, 0);
+        expect(bullet.spec.kind).toBe(EWeaponKind.HighExplosive);
+    });
+
+    // Критерий #483: ни один эффект не рисуется за пределами текущего explosionRadius
+    // (никаких колец и ореолов впереди фронта). Записываем радиус каждой дуги —
+    // заливки взрыва И обода ударной волны — и сверяем с радиусом фронта этого кадра.
+    it.each([
+        EWeaponKind.HighExplosive,
+        EWeaponKind.Heavy,
+        EWeaponKind.Cluster,
+        EWeaponKind.Digger,
+    ])('ничего не рисуется за фронтом взрыва (%s)', (kind) => {
+        const radii: number[] = [];
+        const recordingCtx = {
+            createRadialGradient: () => ({ addColorStop: () => undefined }),
+            beginPath: () => undefined,
+            arc: (_x: number, _y: number, r: number) => radii.push(r),
+            fill: () => undefined,
+            stroke: () => undefined,
+            closePath: () => undefined,
+            fillStyle: '',
+            strokeStyle: '',
+            lineWidth: 0,
+        } as unknown as CanvasRenderingContext2D;
+
+        const { bullet } = makeBulletWithSpec(kind);
+        let frames = 0;
+        while (!bullet.isFinished && frames < 2000) {
+            radii.length = 0;
+            const front = bullet.explosionRadius;
+            bullet.drawExplosion(recordingCtx);
+            for (const r of radii) expect(r).toBeLessThanOrEqual(front);
+            frames += 1;
+        }
     });
 });

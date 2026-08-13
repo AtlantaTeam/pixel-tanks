@@ -70,6 +70,29 @@ export function groundBurst(x: number, y: number, count = 24): TBurstConfig {
 }
 
 /**
+ * Выброс земли роющего снаряда (issue #483): комья бьют узким столбом почти
+ * вертикально вверх (угол −0.65π…−0.35π) и падают сильнее обычного (gravity 0.28) —
+ * читается как прокоп грунта, а не широкий веер фугаса. Палитра грунта.
+ */
+export function groundColumnBurst(x: number, y: number, count = 12): TBurstConfig {
+    return {
+        x,
+        y,
+        count,
+        colors: GROUND_PARTICLE_COLORS,
+        speedMin: 2,
+        speedMax: 6,
+        angleMin: -Math.PI * 0.65,
+        angleMax: -Math.PI * 0.35,
+        lifeMin: 20,
+        lifeMax: 38,
+        sizeMin: 2,
+        sizeMax: 4,
+        gravity: 0.28,
+    };
+}
+
+/**
  * Вспышка урона при прямом попадании в танк: искры разлетаются радиально,
  * ярко и коротко, почти без гравитации. `count` — задел под деградацию на слабых
  * устройствах (см. `groundBurst`); сейчас всегда дефолт, device-tier → count в бэклоге (#53).

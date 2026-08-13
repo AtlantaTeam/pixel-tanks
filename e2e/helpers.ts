@@ -99,17 +99,18 @@ export async function reachFlightPhase(page: Page): Promise<void> {
     });
 }
 
-/** Сколько снарядов осталось у игрока — по боезапасу селектора оружия палубы
- *  (`WeaponSelector`, `widgets/game-controls`, issue #424). Три брейкпоинт-состава
- *  палубы рендерят селектор одновременно (виден только один, CSS-переключение) —
- *  значение в них одинаковое, поэтому берём первый попавшийся, не раскрывая список.
+/** Сколько снарядов ВСЕГО осталось у игрока (всех типов) — по атрибуту
+ *  `data-weapons-remaining` палубы (`widgets/game-controls`, issue #483). Берём
+ *  общий боезапас, а НЕ `data-ammo-count` селектора: тот показывает боезапас
+ *  выбранного типа, который скачет при авто-переключении оружия после выстрела
+ *  (арсенал теперь неоднородный). Общий счётчик убывает ровно на 1 за выстрел —
+ *  монотонный сигнал, на который опираются `fireOne` и проверки конца боя.
  *
- *  Общий хелпер для боёв (клавиатура/тач): контракт селектора един, правка не должна
- *  расходиться по копиям. */
+ *  Общий хелпер для боёв (клавиатура/тач): контракт един, правка не расходится. */
 export async function weaponCount(page: Page): Promise<number> {
     const raw = await page
-        .locator('[data-testid="weapon-ammo"]')
+        .locator('[data-testid="game-hud"]')
         .first()
-        .getAttribute('data-ammo-count');
+        .getAttribute('data-weapons-remaining');
     return raw === null ? 0 : Number(raw);
 }
