@@ -198,7 +198,7 @@ describe('SkyScene.resize / draw', () => {
         expect(scene.cloudField().length).toBeGreaterThan(tall.length);
     });
 
-    it('видимый размер облака одинаков при любой плотности экрана (#510, #514)', () => {
+    it('размер облака — доля ширины экрана, а не фикс в CSS (#523)', () => {
         const original = window.devicePixelRatio;
         Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
         try {
@@ -212,9 +212,19 @@ describe('SkyScene.resize / draw', () => {
             ) as unknown as number[][];
             expect(cloudCalls.length).toBeGreaterThan(0);
             for (const call of cloudCalls) {
-                // Спрайт 384 арт-px → 192 CSS-px, как в одобренном кадре.
+                // 15% ширины: на 1280 это 192 CSS-px — размер из одобренного кадра.
                 expect(call[3]).toBe(192);
             }
+
+            // На телефоне облако НЕ остаётся 192 px (это было бы полэкрана): доля та же.
+            const narrow = new SkyScene({ seed: 1, reducedMotion: false, images });
+            const narrowCtx = createFakeCtx();
+            narrow.resize(390, 844);
+            narrow.draw(narrowCtx as unknown as CanvasRenderingContext2D);
+            const narrowCall = narrowCtx.drawImage.mock.calls.find(
+                (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
+            ) as unknown as number[];
+            expect(narrowCall[3]).toBeLessThan(80);
         } finally {
             Object.defineProperty(window, 'devicePixelRatio', {
                 value: original,

@@ -1,5 +1,5 @@
 import { getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
-import { buildCloudField, windFactor, type TCloudInstance } from './cloud-field';
+import { buildCloudField, cloudSpriteWidth, windFactor, type TCloudInstance } from './cloud-field';
 import { wrapOffset } from './sky-parallax';
 import { pickSkyPreset, pickSkyPresetById, type TSkyPreset, type TSkyPresetId } from './sky-preset';
 
@@ -13,14 +13,6 @@ export type TSkyImages = {
     cloud2?: HTMLImageElement;
     cloud3?: HTMLImageElement;
 };
-
-/**
- * Масштаб облачного спрайта: CSS-пикселей на пиксель арта. Половина — потому что
- * одобренный кадр снят на ретине (dpr 2) с натуральным размером арта, и облако в
- * 384 арт-px заняло 192 CSS-px. На ретине это по-прежнему ровно один пиксель арта на
- * пиксель устройства, то есть пиксельная сетка не мылится.
- */
-const CLOUD_ART_SCALE = 0.5;
 
 type TSkySceneOptions = {
     seed: number | string;
@@ -245,12 +237,15 @@ export class SkyScene {
         for (const cloud of this.field) {
             const image = this.images[cloud.sprite];
             if (!image || !image.width || !image.height) continue;
-            // Видимый размер фиксирован в CSS-пикселях: половина арта. Одобренный кадр
-            // `live-desktop.png` снят при dpr 2 с натуральным размером арта — облако
-            // 384 арт-px заняло там 192 CSS-px. Привязывать размер к dpr нельзя: на
-            // экране без ретины то же облако стало бы вдвое крупнее макета (#514).
-            const spriteWidth = Math.max(1, Math.round(image.width * CLOUD_ART_SCALE));
-            const spriteHeight = Math.max(1, Math.round(image.height * CLOUD_ART_SCALE));
+            // Размер — доля ширины экрана (`cloudSpriteWidth`), а не фиксированные
+            // CSS-пиксели: 192 px совпадали с десктопным эталоном, но на 390 занимали
+            // половину ширины (#523). К dpr привязывать тоже нельзя — на экране без
+            // ретины облако выходило вдвое крупнее макета (#514).
+            const spriteWidth = cloudSpriteWidth(width);
+            const spriteHeight = Math.max(
+                1,
+                Math.round((image.height * spriteWidth) / image.width),
+            );
             // Поле шире экрана на спрайт: облако уезжает за край и въезжает с другого,
             // не исчезая на глазах.
             const span = width + spriteWidth;
