@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { SkyBackground } from '../sky-background';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
+import { POWER_MAX } from '@/shared/config';
 import { WEAPON_KIND_ORDER, type TWeapon } from '@/shared/model';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { getStoredTankSkinId, selectTankSkinForSeed } from '@/entities/tank-skins';
@@ -25,6 +26,11 @@ import {
 import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
 import { CHIP_WIDTH, GestureOverlay, type TGestureVisual } from '../gesture-overlay';
+import {
+    DesktopHoverChip,
+    DESKTOP_CHIP_WIDTH,
+    type TDesktopHoverChipVisual,
+} from '../desktop-hover-chip';
 
 type TDragState = {
     pointerId: number;
@@ -141,6 +147,9 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     );
     // Визуал жеста (луч, кольцо, чип) — обновляется на pointermove, живёт в DOM-оверлее.
     const [gestureVisual, setGestureVisual] = useState<TGestureVisual | null>(null);
+    // Визуал наведения мышью на десктопе (#544): чип у ствола при hover мышью.
+    const [desktopHoverChipVisual, setDesktopHoverChipVisual] =
+        useState<TDesktopHoverChipVisual | null>(null);
 
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
@@ -299,6 +308,14 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     useEffect(() => {
         if (isGameOver) gameRef.current?.stop();
     }, [isGameOver]);
+
+    // Desktop hover chip скрывается при выстреле (#544): фаза полёта означает
+    // что снаряд в полёте и чип наведения мышью больше не нужен.
+    useEffect(() => {
+        if (phase === 'flight') {
+            setDesktopHoverChipVisual(null);
+        }
+    }, [phase]);
 
     // Sync store → engine (когда меняем угол/мощность через UI)
     useEffect(() => {
@@ -596,17 +613,66 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 }}
                 onMouseMove={(e) => {
                     const game = gameRef.current;
-                    if (!game || !game.leftTank?.isActive || game.isFireMode || !game.ctx) return;
+                    if (!game || !game.leftTank?.isActive || !game.ctx) return;
+
                     const curAngle = Math.atan2(
                         floor(e.clientY - e.currentTarget.offsetTop) - game.leftTank.gunpointY,
                         floor(e.clientX - e.currentTarget.offsetLeft) - game.leftTank.gunpointX,
                     );
-                    setAngle(curAngle);
+
+                    if (!game.isFireMode) {
+                        setAngle(curAngle);
+                    }
+
+                    // Desktop hover chip (#544): чип наведения мышью у ствола танка,
+                    // только при наведении и не во время выстрела.
+                    if (game.isFireMode) {
+                        setDesktopHoverChipVisual(null);
+                        return;
+                    }
+
+                    const containerRect = e.currentTarget.getBoundingClientRect();
+                    const zoneRect = zoneRef.current?.getBoundingClientRect();
+                    if (!containerRect || !zoneRect) return;
+
+                    const containerLeft = containerRect.left;
+                    const containerTop = containerRect.top;
+
+                    // Позиция ствола танка в локальных координатах контейнера.
+                    const gunpointX = game.leftTank.gunpointX;
+                    const gunpointY = game.leftTank.gunpointY;
+
+                    // Чип позиционируется над стволом, на расстояние CHIP_GAP.
+                    let chipTop = gunpointY - CHIP_GAP - CHIP_HEIGHT;
+                    let chipCenterX = gunpointX;
+
+                    // Применяем клэмпы зоны жеста (тот же алгоритм, что на мобиле).
+                    const zoneLocal: TGestureZone = {
+                        top: zoneRect.top - containerTop,
+                        bottom: zoneRect.bottom - containerTop,
+                        left: zoneRect.left - containerLeft,
+                        right: zoneRect.right - containerLeft,
+                    };
+                    chipTop = clampChipTop(gunpointY, zoneLocal, CHIP_HEIGHT, CHIP_GAP);
+                    chipCenterX = clampChipCenterX(gunpointX, zoneLocal, DESKTOP_CHIP_WIDTH);
+
+                    // Получаем силу и максимум из стора.
+                    const currentPower = power;
+                    const isMax = currentPower >= POWER_MAX;
+
+                    setDesktopHoverChipVisual({
+                        chipCenterX,
+                        chipTop,
+                        angle: curAngle,
+                        power: isMax ? POWER_MAX : currentPower,
+                        isMax,
+                    });
                 }}
                 onWheel={(e) => gameRef.current?.changeTankPower(e.deltaY > 0 ? -1 : 1)}
                 onMouseLeave={() => {
                     const game = gameRef.current;
                     if (game?.isAngleMode) game.activateMode('idle');
+                    setDesktopHoverChipVisual(null);
                 }}
                 onClick={() => {
                     if (suppressClickRef.current) {
@@ -627,6 +693,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 className={`pointer-events-none absolute ${GESTURE_ZONE_INSET}`}
             />
             <GestureOverlay visual={gestureVisual} />
+            <DesktopHoverChip visual={desktopHoverChipVisual} />
             {/* Ход бота (handoff): маджента-рамка арены — без предсказания траектории,
                 игрок не должен заранее знать, попадёт ли соперник. */}
             {isBotTurn && (
