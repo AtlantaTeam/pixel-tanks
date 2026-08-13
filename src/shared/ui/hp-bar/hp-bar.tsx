@@ -32,10 +32,13 @@ function hpFillClass(percent: number) {
 
 /** Иконка стороны (star/skull) + имя с усечением — фиксированный маркер «свой
  *  танк»/«враг», НЕ тематический `--accent` (не перекрашивается под data-faction
- *  предка). `min-w-0` — обязателен, чтобы `text-ellipsis` сработал во flex-строке. */
+ *  предка). `min-w-0` — обязателен, чтобы `text-ellipsis` сработал во flex-строке.
+ *  Максимальная ширина ника (#540): 6ch на мобилке, 16ch на планшете/десктопе —
+ *  разделение по приоритету сброса. На планшете (768) ник целиком без усечения,
+ *  на десктопе (1280+) тоже. */
 function HpName({ label, faction }: { label: string; faction: THPBarFaction }) {
     return (
-        <span className="flex min-w-0 items-center gap-1.5 font-ui text-caption font-bold text-text">
+        <span className="flex min-w-0 max-w-[6ch] md:max-w-[16ch] items-center gap-1.5 font-ui text-caption font-bold text-text">
             <Icon
                 name={faction === 'enemy' ? 'skull' : 'star'}
                 size={14}

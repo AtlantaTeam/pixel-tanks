@@ -36,6 +36,28 @@ for (const viewport of VIEWPORTS) {
                 fullPage: false,
             });
         });
+
+        test('ник не усекается на больших экранах (#540)', async ({ page }) => {
+            await page.goto('/game?seed=42');
+
+            const hud = page.getByTestId('top-hud');
+            await expect(hud).toBeVisible();
+
+            // На всех вьюпортах ник должен быть видим без усечения (не более 16 символов)
+            // На 768+ ник полностью видим как «Rex Commander» (12 символов)
+            const playerNames = await page
+                .locator('[data-testid="top-hud"] span:has-text("Rex")')
+                .all();
+            for (const nameSpan of playerNames) {
+                const text = await nameSpan.textContent();
+                // Проверяем что ник не обрезан многоточием (…)
+                expect(text).not.toContain('…');
+                // На планшете (768) и выше ник должен быть видим полностью
+                if (viewport.width >= 768) {
+                    expect(text?.trim()).toBe('Rex Commander');
+                }
+            }
+        });
     });
 }
 
