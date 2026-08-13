@@ -141,6 +141,9 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const arenaInsets = useGameStore((s) => s.arenaInsets);
     const moves = useGameStore((s) => s.moves);
     const selectedWeapon = useGameStore((s) => s.selectedWeapon);
+    // Ветер боя — небу: облака плывут по нему, а не всегда вправо (#518). Значение
+    // постоянно весь бой (`generateWind` на старте), поэтому сцена не пересоздаётся.
+    const wind = useGameStore((s) => s.wind);
     const weapons = useGameStore((s) => s.weapons);
 
     const setAngle = useGameStore((s) => s.setAngle);
@@ -467,7 +470,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             {/* Слоистое небо под рельефом (#479): отдельный канвас за игровым.
                 Игровой канвас прозрачен (`clearRect` открывает это небо вместо
                 чёрного фона), поэтому `bg-bg` с него снят. */}
-            <SkyBackground seed={battleSeed} className="absolute inset-0" />
+            <SkyBackground seed={battleSeed} wind={wind} className="absolute inset-0" />
             <canvas
                 ref={canvasRef}
                 className="game-canvas relative block h-full w-full touch-none"

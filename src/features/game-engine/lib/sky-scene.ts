@@ -1,5 +1,5 @@
 import { getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
-import { buildCloudField, type TCloudInstance } from './cloud-field';
+import { buildCloudField, windFactor, type TCloudInstance } from './cloud-field';
 import { wrapOffset } from './sky-parallax';
 import { pickSkyPreset, pickSkyPresetById, type TSkyPreset, type TSkyPresetId } from './sky-preset';
 
@@ -25,6 +25,11 @@ const CLOUD_ART_SCALE = 0.5;
 type TSkySceneOptions = {
     seed: number | string;
     reducedMotion: boolean;
+    /**
+     * Ветер боя (px/тик², как `GamePlay.wind`). Знак несёт направление облаков, модуль —
+     * скорость (#518). Постоянен весь бой, поэтому меняется не в полёте, а от боя к бою.
+     */
+    wind?: number;
     /** Явный пресет — для витрины. Иначе выбирается по сиду. */
     preset?: TSkyPresetId;
     images?: TSkyImages;
@@ -49,6 +54,8 @@ export class SkyScene {
     private readonly images: TSkyImages;
     private readonly createCanvas: () => HTMLCanvasElement;
     private readonly seed: number | string;
+    /** Множитель скорости и направления от ветра боя (#518). */
+    private readonly wind: number;
     private field: TCloudInstance[];
     /** Накопленное время сцены, мс. Позиция облака = старт + скорость × elapsed. */
     private elapsed = 0;
@@ -70,6 +77,7 @@ export class SkyScene {
         this.images = options.images ?? {};
         this.createCanvas = options.createCanvas ?? defaultCreateCanvas;
         this.seed = options.seed;
+        this.wind = windFactor(options.wind ?? 0);
         // Ширина ещё неизвестна (resize придёт следом) — поле строится под дефолт и
         // пересобирается в resize, когда ширина изменилась.
         this.field = buildCloudField(this.seed, 0);
@@ -247,9 +255,12 @@ export class SkyScene {
             // не исчезая на глазах.
             const span = width + spriteWidth;
             // Сколько миллисекунд на один пиксель устройства при этой скорости.
-            const msPerDevicePixel = devicePixel / cloud.speed;
+            // Ветер меняет темп (модуль) и сторону (знак) — каданс от этого не ломается:
+            // шаг по-прежнему целый пиксель через равный интервал.
+            const msPerDevicePixel = devicePixel / (cloud.speed * Math.abs(this.wind));
             const steps = Math.floor(this.elapsed / msPerDevicePixel);
-            const travelled = snap(cloud.xFrac * span) + steps * devicePixel;
+            const direction = this.wind < 0 ? -1 : 1;
+            const travelled = snap(cloud.xFrac * span) + direction * steps * devicePixel;
             const x = wrapOffset(travelled, span) - spriteWidth;
             ctx.drawImage(image, x, snap(height * cloud.yFrac), spriteWidth, spriteHeight);
         }
