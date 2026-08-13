@@ -20,21 +20,57 @@ type TCloudLayerSpec = {
     image: TCloudImageKey;
     /** Скорость параллакса, px/мс. Дальний слой медленнее ближнего — так рождается глубина. */
     speed: number;
-    /** Высота слоя как доля высоты канваса. */
-    heightFrac: number;
     /** Верх слоя как доля высоты канваса (0 — верх экрана). */
     topFrac: number;
 };
 
 /**
  * Конфиг облачных слоёв: дальний (медленный) и ближний (быстрый). Разные скорости —
- * это и есть параллакс (PRD «2–3 слоя, разная скорость»). Верх/высота держат оба
- * слоя в верхней половине неба, над рельефом.
+ * это и есть параллакс (PRD «2–3 слоя, разная скорость»). `topFrac` держит оба слоя
+ * в верхней половине неба, над рельефом; РАЗМЕР слоя здесь не задаётся — см.
+ * `cloudTileSize` (#510).
  */
 export const CLOUD_LAYER_SPECS: readonly TCloudLayerSpec[] = [
-    { image: 'far', speed: 0.006, heightFrac: 0.11, topFrac: 0.07 },
-    { image: 'near', speed: 0.017, heightFrac: 0.15, topFrac: 0.18 },
+    { image: 'far', speed: 0.006, topFrac: 0.07 },
+    { image: 'near', speed: 0.017, topFrac: 0.18 },
 ];
+
+/**
+ * Доля ширины канваса, шире которой облачный тайл не растягивается. 1.15 — чуть шире
+ * экрана: в кадр попадает почти вся полоса арта, то есть несколько облаков, а не одно
+ * в увеличении. Нужен только там, где натуральный размер арта крупнее экрана: узкое
+ * окно без ретины (dpr 1, ширина < ~890 px).
+ */
+const CLOUD_TILE_MAX_WIDTH_FRAC = 1.15;
+
+/**
+ * Размер облачного тайла в CSS-пикселях: **натуральный размер арта**, то есть один
+ * пиксель арта на один пиксель устройства.
+ *
+ * Так был снят одобренный макет (`docs/game-visuals/iteration-2/mockup-day.png`): замер
+ * дал 0.95 device-px на пиксель арта. Прежняя формула считала высоту слоя долей ВЫСОТЫ
+ * канваса, а ширину выводила из неё, — на 390×844 полоса растягивалась до 2.3 ширин
+ * экрана, и вместо десятка облачков было видно два в двойном увеличении (#510). Побочно
+ * та формула давала дробный масштаб, от которого пиксельная сетка арта мылилась.
+ *
+ * Высота канваса в расчёт не входит намеренно: поворот телефона не должен менять размер
+ * облаков при той же ширине.
+ */
+export function cloudTileSize(
+    image: { width: number; height: number },
+    canvasWidth: number,
+    dpr: number,
+): { tileWidth: number; tileHeight: number } {
+    const natural = image.width / Math.max(dpr, 0.01);
+    const tileWidth = Math.max(
+        1,
+        Math.round(Math.min(natural, canvasWidth * CLOUD_TILE_MAX_WIDTH_FRAC)),
+    );
+    // Высота — от итоговой ширины по пропорции арта: облака не сплющиваются, когда
+    // сработал потолок.
+    const tileHeight = Math.max(1, Math.round((image.height * tileWidth) / image.width));
+    return { tileWidth, tileHeight };
+}
 
 type TCloudLayer = {
     spec: TCloudLayerSpec;
@@ -220,18 +256,20 @@ export class SkyScene {
      * Рисует облачные слои с бесшовным ГОРИЗОНТАЛЬНЫМ повтором. `wrapOffset` и
      * зеркалирование соседних тайлов держат стык только по X — вертикального
      * повтора/зеркалирования НЕТ: слой рассчитан на узкую верхнюю полосу неба
-     * (`topFrac`/`heightFrac`) и растягивается по вертикали в один тайл. Если в
-     * будущем `heightFrac` заметно вырастет — арт растянется, а не затайлится.
+     * и кладётся в один тайл по высоте.
+     *
+     * Размер тайла — натуральный размер арта (`cloudTileSize`), от высоты канваса он
+     * не зависит (#510).
      */
     private drawClouds(ctx: CanvasRenderingContext2D, width: number, height: number): void {
         ctx.save();
         ctx.globalAlpha = this.preset.cloudAlpha;
+        const dpr = getDevicePixelRatio();
         for (const layer of this.layers) {
             const image = this.images[layer.spec.image];
             if (!image || !image.width || !image.height) continue;
-            const layerHeight = Math.round(height * layer.spec.heightFrac);
+            const { tileWidth, tileHeight: layerHeight } = cloudTileSize(image, width, dpr);
             const top = Math.round(height * layer.spec.topFrac);
-            const tileWidth = Math.max(1, Math.round((image.width * layerHeight) / image.height));
             // Смещение завёрнуто по ширине тайла, чтобы слой бесшовно повторялся.
             const shift = wrapOffset(layer.offset, tileWidth);
             // Зеркалим соседние тайлы: арт не идеально бесшовен по краям (см.
