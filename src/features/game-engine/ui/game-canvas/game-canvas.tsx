@@ -1,6 +1,7 @@
 'use client';
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { SkyBackground } from '../sky-background';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import type { TWeapon } from '@/shared/model';
@@ -115,6 +116,11 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     // чтобы тап/оттяжка не приводили к повторному выстрелу мышиной схемой.
     const suppressClickRef = useRef(false);
 
+    // Сид боя фиксируем один раз на монтирование: тот же сид получают и движок
+    // (рельеф/ветер/бот), и фоновое небо (`SkyBackground`) — пресет и стартовое
+    // положение облаков совпадают с боем. Без seed-пропа — случайный бой (Date.now).
+    const [battleSeed] = useState<number | string>(() => seed ?? Date.now());
+
     const [botBubble, setBotBubble] = useState<{ reply: TBotReply; x: number; y: number } | null>(
         null,
     );
@@ -167,7 +173,6 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
         // в null, следующие строки тут же наполняют их заново.
         startGame();
         // Размер бэкинг-стора canvas (dpr, resize) полностью на стороне GamePlay.fit().
-        const battleSeed = seed ?? Date.now();
         setBattleSeed(battleSeed);
         const allWeapons = dealWeapons();
         setWeapons(allWeapons.leftTankWeapons);
@@ -449,9 +454,13 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
 
     return (
         <div className="relative h-full w-full">
+            {/* Слоистое небо под рельефом (#479): отдельный канвас за игровым.
+                Игровой канвас прозрачен (`clearRect` открывает это небо вместо
+                чёрного фона), поэтому `bg-bg` с него снят. */}
+            <SkyBackground seed={battleSeed} className="absolute inset-0" />
             <canvas
                 ref={canvasRef}
-                className="game-canvas block h-full w-full touch-none bg-bg"
+                className="game-canvas relative block h-full w-full touch-none"
                 onPointerDown={(e) => {
                     // Мышь оставляем на своей схеме (движение — угол, клик — выстрел);
                     // жест «оттяни и отпусти» — для touch/pen.
