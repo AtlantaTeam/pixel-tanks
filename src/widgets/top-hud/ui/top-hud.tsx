@@ -817,6 +817,10 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
     // движок) — расходится с палубой (`phase !== 'flight'`) и клавиатурой
     // (гард `!isFireMode`), где ввод на выстреле уже залочен.
     const trimFrozen = isBotTurn || phase === 'flight';
+    // Бейдж "Заморожено" показываем только на ходе бота, но НЕ во время его
+    // полёта (#539): на полёте плашка "ВЫСТРЕЛ" уже сообщает о состоянии,
+    // дополнительный бейдж — лишнее сообщение об одном и том же.
+    const showFreezeBadge = isBotTurn && phase !== 'flight';
     const angleLabel = isBotTurn ? 'Угол · заморожен' : 'Угол';
     const angleValue = `${formatAngle(angle)}°`;
     const ammoPips = Array.from({ length: AMMO_TOTAL }, (_, index) => index < weapons.length);
@@ -1029,7 +1033,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         своим `flex-1`. */}
                     <div className="flex shrink-0 items-center gap-2">
                         <TurnPillOrNothing turn={turn} phase={phase} />
-                        <FreezeBadgeOrNothing visible={isBotTurn} />
+                        <FreezeBadgeOrNothing visible={showFreezeBadge} />
                         <HudIconButtons onPauseClick={onPauseClick} />
                     </div>
                 </div>

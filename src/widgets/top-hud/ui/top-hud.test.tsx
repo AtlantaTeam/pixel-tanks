@@ -99,6 +99,20 @@ describe('TopHud', () => {
         ).not.toBeInTheDocument();
     });
 
+    it('бейдж «Заморожено» скрыт во время полёта снаряда (даже если это полёт снаряда бота)', () => {
+        // На полёте плашка "ВЫСТРЕЛ" уже сообщает о состоянии, дополнительный
+        // бейдж "Заморожено" — лишнее (#539).
+        useGameStore.setState({ turn: 'enemy', phase: 'flight' });
+        const { getByTestId } = render(<TopHud />);
+
+        // Пилюля "ВЫСТРЕЛ" видима
+        expect(within(getByTestId('top-hud-desktop')).getByText('ВЫСТРЕЛ')).toBeInTheDocument();
+        // Бейдж "Заморожено" скрыт видимостью (invisible), остаётся в DOM для
+        // резервирования места в макете (#447 — тот же приём)
+        const badge = getByTestId('freeze-badge');
+        expect(badge).toHaveClass('invisible');
+    });
+
     it('до первого выстрела ветер показывает только грубые пипы, без точного числа', () => {
         useGameStore.setState({ wind: MAX_WIND, windRevealed: false });
         const { getByTestId } = render(<TopHud />);

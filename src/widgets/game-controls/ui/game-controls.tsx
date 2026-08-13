@@ -4,7 +4,6 @@ import { clsx } from 'clsx';
 import type { RefObject } from 'react';
 import {
     formatAngle,
-    selectIsBotTurn,
     selectShowGestureHint,
     useArenaInset,
     useGameStore,
@@ -12,7 +11,6 @@ import {
 } from '@/features/game-engine';
 import { Icon, WeaponSelector, type TIconName, type TWeaponSelectorWeapon } from '@/shared/ui';
 import { EWeaponKind, type TWeapon } from '@/shared/model';
-import { DeckLock, type TDeckLockReason } from './deck-lock';
 import { KeyboardSchemeHint } from './keyboard-scheme-hint';
 
 /** Контраст над любым скином (handoff, решение E) — та же строка, что в `top-hud`:
@@ -172,8 +170,6 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
     const power = useGameStore((s) => s.power);
     const turn = useGameStore((s) => s.turn);
     const phase = useGameStore((s) => s.phase);
-    // Ход бота — общий селектор стора (одна точка правды с `game-page`/`game-canvas`).
-    const isBotTurn = useGameStore(selectIsBotTurn);
     // Подсказка жеста живёт до первого выстрела ТЕКУЩЕГО боя (#451) — источник
     // в сторе (`shotsFired`), не локальный `useState`: иначе подсказка вернулась
     // бы после ремаунта `GameControls` посреди боя.
@@ -189,11 +185,6 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
     const isPlayerTurn = turn === 'player' && phase !== 'flight' && phase !== 'over';
     const canManeuver = isPlayerTurn && moves > 0;
     const canFire = isPlayerTurn && weapons.length > 0;
-    // Лок ввода (handoff, общий для хода бота и полёта): бой окончен — лока нет,
-    // финал закрывает GameOverDialog. `flight` перекрывает `bot-turn` — снаряд в
-    // полёте важнее того, чей был ход (симметрично `turnPillLabel` в TopHud).
-    const deckLockReason: TDeckLockReason | null =
-        phase === 'over' ? null : phase === 'flight' ? 'flight' : isBotTurn ? 'bot-turn' : null;
 
     const currentSlot: TWeaponSelectorWeapon | null = selectedWeapon
         ? {
@@ -321,11 +312,6 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
                 </div>
                 <KeyboardSchemeHint />
             </div>
-
-            {/* Лок ввода — поверх ВСЕГО контейнера деки (inset-0 родителя `absolute`
-                выше — сам служит containing block, отдельный relative не нужен),
-                поэтому автоматически покрывает состав активного брейкпоинта. */}
-            <DeckLock reason={deckLockReason} />
         </div>
     );
 }
