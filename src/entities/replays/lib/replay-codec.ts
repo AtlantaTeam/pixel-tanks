@@ -2,13 +2,14 @@ import { POWER_MAX, POWER_MIN } from '@/shared/config';
 import type { TReplay, TReplayMove } from '../t-replay';
 
 /**
- * Бинарный формат записи боя (версия 2), затем base64url без padding:
+ * Бинарный формат записи боя, затем base64url без padding:
  *
  * ```
  * [версия u8] [тип seed u8]
  *   seed-число:  float64
  *   seed-строка: [длина u16] [байты UTF-8]
- * [width u16] [height u16]   — логический размер поля боя
+ * [width u16] [height u16]              — логический размер поля боя
+ * [insetTop u16] [insetBottom u16]      — ТОЛЬКО версия 3: инсеты safe-зоны
  * далее ходы до конца буфера:
  *   move: [тег u8 = 0] [delta int16]
  *   fire: [тег u8 = 1] [angle float64] [power u8]
@@ -18,8 +19,17 @@ import type { TReplay, TReplayMove } from '../t-replay';
  * квантование даёт другую траекторию и ломает идентичность реплея. Размер поля
  * (v2) хранится в формате, потому что вся физика в абсолютных пикселях — без него
  * ссылка с десктопа, открытая на телефоне, дала бы другой рельеф и другой счёт.
+ *
+ * **Версия 3** добавляет инсеты safe-зоны (issue #454): рельеф генерится ВНУТРИ
+ * свободной зоны между оверлеями, поэтому без инсетов воспроизведение получило бы
+ * другой рельеф. Инсеты пишутся как u16 (пиксели, `Ground` всё равно целочислен —
+ * см. `computeTerrainHeights`, там же округление). Версия 2 читается по-прежнему —
+ * её записи не имеют инсетов (рельеф во весь канвас, как и был записан). Записи без
+ * инсетов (или с нулевыми) кодируются версией 2 — компактность и совместимость
+ * старых ссылок.
  */
-const REPLAY_FORMAT_VERSION = 2;
+const REPLAY_FORMAT_VERSION_V2 = 2;
+const REPLAY_FORMAT_VERSION_V3 = 3;
 
 const SEED_TYPE_NUMBER = 0;
 const SEED_TYPE_STRING = 1;
@@ -33,6 +43,8 @@ const MOVE_RECORD_SIZE = 3;
 const FIRE_RECORD_SIZE = 10;
 /** Байты на размер поля: width u16 + height u16. */
 const FIELD_SIZE = 4;
+/** Байты на инсеты safe-зоны (только v3): top u16 + bottom u16. */
+const INSETS_SIZE = 4;
 
 const INT16_MIN = -32768;
 const INT16_MAX = 32767;
@@ -119,7 +131,28 @@ export const encodeReplay = (replay: TReplay): string => {
     assertInRange(replay.width, MIN_FIELD_DIMENSION, MAX_FIELD_DIMENSION, 'ширина поля');
     assertInRange(replay.height, MIN_FIELD_DIMENSION, MAX_FIELD_DIMENSION, 'высота поля');
 
-    let size = 2 + (seedBytes ? 2 + seedBytes.length : 8) + FIELD_SIZE;
+    // Инсеты хранятся целыми (u16): рельеф всё равно целочислен. Нулевые/отсутствующие
+    // инсеты → версия 2 (компактнее и совместимо со старыми ссылками), иначе v3.
+    //
+    // Нормализуем ровно как движок (`normalizeInset` + округление в
+    // `computeTerrainHeights`): битые и отрицательные значения → 0. FSD запрещает
+    // импорт из `features` в `entities`, поэтому нормализация здесь продублирована —
+    // важно, чтобы один и тот же мусор (например, отрицательный инсет из
+    // `getBoundingClientRect`) кодек и рельеф трактовали ОДИНАКОВО: раньше рельеф молча
+    // зажимал такой инсет в 0, а кодек падал на `assertInRange(..., 0, ...)`.
+    const normInset = (value: number) =>
+        Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+    const insetTop = replay.insets ? normInset(replay.insets.top) : 0;
+    const insetBottom = replay.insets ? normInset(replay.insets.bottom) : 0;
+    const hasInsets = insetTop !== 0 || insetBottom !== 0;
+    if (hasInsets) {
+        assertInRange(insetTop, 0, UINT16_MAX, 'верхний инсет');
+        assertInRange(insetBottom, 0, UINT16_MAX, 'нижний инсет');
+    }
+    const version = hasInsets ? REPLAY_FORMAT_VERSION_V3 : REPLAY_FORMAT_VERSION_V2;
+
+    let size =
+        2 + (seedBytes ? 2 + seedBytes.length : 8) + FIELD_SIZE + (hasInsets ? INSETS_SIZE : 0);
     for (const move of replay.moves) {
         size += move.kind === 'move' ? MOVE_RECORD_SIZE : FIRE_RECORD_SIZE;
     }
@@ -127,7 +160,7 @@ export const encodeReplay = (replay: TReplay): string => {
     const bytes = new Uint8Array(size);
     const view = new DataView(bytes.buffer);
     let offset = 0;
-    bytes[offset++] = REPLAY_FORMAT_VERSION;
+    bytes[offset++] = version;
     if (seedBytes) {
         bytes[offset++] = SEED_TYPE_STRING;
         view.setUint16(offset, seedBytes.length);
@@ -144,6 +177,13 @@ export const encodeReplay = (replay: TReplay): string => {
     offset += 2;
     view.setUint16(offset, replay.height);
     offset += 2;
+
+    if (hasInsets) {
+        view.setUint16(offset, insetTop);
+        offset += 2;
+        view.setUint16(offset, insetBottom);
+        offset += 2;
+    }
 
     for (const move of replay.moves) {
         if (move.kind === 'move') {
@@ -168,7 +208,9 @@ export const encodeReplay = (replay: TReplay): string => {
  */
 export const decodeReplay = (code: string): TReplay | null => {
     const bytes = fromBase64Url(code);
-    if (!bytes || bytes.length < 2 || bytes[0] !== REPLAY_FORMAT_VERSION) return null;
+    if (!bytes || bytes.length < 2) return null;
+    const version = bytes[0];
+    if (version !== REPLAY_FORMAT_VERSION_V2 && version !== REPLAY_FORMAT_VERSION_V3) return null;
     const view = new DataView(bytes.buffer);
     let offset = 1;
 
@@ -196,6 +238,19 @@ export const decodeReplay = (code: string): TReplay | null => {
     offset += 2;
     if (width < MIN_FIELD_DIMENSION || height < MIN_FIELD_DIMENSION) return null;
 
+    // Инсеты safe-зоны — только в v3. Значения u16 (0..65535) структурно валидны
+    // всегда; зону из них зажимает движок (`computeArenaZone`), поэтому «инсет
+    // больше поля» не роняет декодер, а даёт вырожденную зону при воспроизведении.
+    let insets: TReplay['insets'];
+    if (version === REPLAY_FORMAT_VERSION_V3) {
+        if (offset + INSETS_SIZE > bytes.length) return null;
+        const top = view.getUint16(offset);
+        offset += 2;
+        const bottom = view.getUint16(offset);
+        offset += 2;
+        insets = { top, bottom };
+    }
+
     const moves: TReplayMove[] = [];
     while (offset < bytes.length) {
         // Слишком длинная запись — скорее раздутый crafted-код, чем реальный бой.
@@ -220,5 +275,5 @@ export const decodeReplay = (code: string): TReplay | null => {
             return null;
         }
     }
-    return { seed, width, height, moves };
+    return insets ? { seed, width, height, insets, moves } : { seed, width, height, moves };
 };

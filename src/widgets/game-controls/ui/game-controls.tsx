@@ -6,6 +6,7 @@ import {
     formatAngle,
     selectIsBotTurn,
     selectShowGestureHint,
+    useArenaInset,
     useGameStore,
     type TGameCanvasHandle,
 } from '@/features/game-engine';
@@ -179,6 +180,11 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
     // бы после ремаунта `GameControls` посреди боя.
     const showGestureHint = useGameStore(selectShowGestureHint);
 
+    // Публикуем фактическую высоту палубы в нижний инсет арены (контракт safe-зоны,
+    // #453): высота меняется по брейкпоинтам и от подсказки жеста (#451) — движок
+    // читает её из стора, а не хардкодит (см. `useArenaInset`).
+    const insetRef = useArenaInset<HTMLDivElement>('bottom');
+
     // Ход соперника/снаряд в полёте — палуба не должна принимать ввод (движок сам
     // отбрасывает такие вызовы, но кнопки обязаны выглядеть недоступными).
     const isPlayerTurn = turn === 'player' && phase !== 'flight' && phase !== 'over';
@@ -210,7 +216,11 @@ export function GameControls({ gameApiRef }: TGameControlsProps) {
     const moveRight = () => gameApiRef.current?.moveRight();
 
     return (
-        <div data-testid="game-hud" className="pointer-events-none absolute inset-x-0 bottom-0 z-6">
+        <div
+            ref={insetRef}
+            data-testid="game-hud"
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-6"
+        >
             {/* Мобилка (<768): колонка — селектор, манёвр+ОГОНЬ, подсказка жеста
                 (только до первого выстрела боя, #451). Бюджет ≤150px без
                 подсказки / ≤175px с ней (390×844) — компактные размеры селектора

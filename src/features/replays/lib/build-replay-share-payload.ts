@@ -9,10 +9,11 @@ export function buildReplaySharePayload({
     seed,
     width,
     height,
+    insets,
     moves,
     origin,
 }: TBuildReplayShareInput): TSharePayload {
-    const code = encodeReplay({ seed, width, height, moves });
+    const code = encodeReplay({ seed, width, height, insets, moves });
     return {
         title: `${APP_NAME} — Реплей боя`,
         text: `Смотри мой бой в ${APP_NAME}!`,

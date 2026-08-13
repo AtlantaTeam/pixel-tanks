@@ -6,6 +6,7 @@ import {
     formatAngle,
     MAX_HP,
     MOVE_BUDGET,
+    useArenaInset,
     useGameStore,
     WEAPONS_AMOUNT,
     WIND_DISPLAY_SCALE,
@@ -518,6 +519,11 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
     const displayedPlayerHp = Math.round(useAnimatedValue(playerHp));
     const displayedEnemyHp = Math.round(useAnimatedValue(enemyHp));
 
+    // Публикуем фактическую высоту HUD в верхний инсет арены (контракт safe-зоны,
+    // #453): высота разная по брейкпоинтам и от safe-area — движок читает её из
+    // стора, а не хардкодит (см. `useArenaInset`).
+    const insetRef = useArenaInset<HTMLDivElement>('top');
+
     const isBotTurn = turn === 'enemy';
     // ± угла/силы лочатся и на ходе бота, и пока в полёте свой снаряд: клик на
     // выстреле иначе крутил бы ствол прямо в полёте (sync-эффект пишет угол в
@@ -531,6 +537,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
 
     return (
         <div
+            ref={insetRef}
             data-testid="top-hud"
             {...themeAttrs({ faction: isBotTurn ? 'enemy' : undefined })}
             className="pointer-events-none absolute inset-x-0 top-0 z-6 flex flex-col gap-2 p-2.5"

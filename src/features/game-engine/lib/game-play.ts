@@ -4,6 +4,12 @@ import { getAudioEngine } from '@/shared/lib/audio';
 import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
 import { pickBotReply, resolveBotReplyCategory, type TBotReply } from '@/entities/bot-messages';
+import {
+    computeArenaZone,
+    EMPTY_ARENA_INSETS,
+    type TArenaInsets,
+    type TArenaZone,
+} from './arena-insets';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
@@ -14,6 +20,7 @@ import { CameraShake } from './camera-shake';
 import { SlowMotion } from './slow-motion';
 import { BulletTrail } from './bullet-trail';
 import { ENGINE_COLORS } from './engine-palette';
+import { computeWorldScale } from './world-scale';
 
 /** Ёмкости пула хватает на одновременный залп земли и вспышку урона. */
 const PARTICLE_CAPACITY = 96;
@@ -52,11 +59,14 @@ export type TGamePlayCallbacks = {
     onPowerChange: (delta: number) => void;
     onBotReply: (reply: TBotReply) => void;
     /**
-     * Сообщает логический размер поля, на котором стартовал бой (CSS-пиксели).
-     * Живой бой пишет его в реплей — без размера воспроизведение на другом
-     * экране получит другой рельеф и другой счёт (см. `@/entities/replays`).
+     * Сообщает логический размер поля и инсеты safe-зоны, на которых стартовал бой
+     * (CSS-пиксели). Живой бой пишет их в реплей — без размера И инсетов
+     * воспроизведение получит другой рельеф (рельеф генерится внутри свободной
+     * зоны, #454) и другой счёт (см. `@/entities/replays`). Инсеты — те, что были
+     * активны в момент генерации рельефа: фидельность реплея гарантирована тем, что
+     * записаны ровно они.
      */
-    onFieldInit?: (size: { width: number; height: number }) => void;
+    onFieldInit?: (size: { width: number; height: number; insets: TArenaInsets }) => void;
     /**
      * Сообщает ветер боя (px/тик², как `this.wind`) сразу после генерации при
      * старте боя — верхний HUD (ячейка ВЕТЕР, handoff «Состояние») держит его
@@ -111,6 +121,28 @@ export class GamePlay {
     static images: { [p: string]: HTMLImageElement } = {};
     innerWidth: number;
     innerHeight: number;
+    /**
+     * Инсеты оверлеев (HUD сверху, палуба снизу), которыми они закрывают арену
+     * (контракт safe-зоны, issue #453). Публикует их стор боя (`arenaInsets`),
+     * доносит `GameCanvas` через `setArenaInsets`. По умолчанию пусто — движок
+     * ведёт себя как раньше (зона = весь канвас), пока оверлеи не сообщили высоту.
+     */
+    arenaInsets: TArenaInsets = EMPTY_ARENA_INSETS;
+    /**
+     * Свободная (не закрытая оверлеями) зона арены — производная от `innerHeight`
+     * и `arenaInsets` (см. `computeArenaZone`). Хранится как поле и пересчитывается
+     * на изменение любого входа: смену инсетов (`setArenaInsets` — брейкпоинт,
+     * safe-area) и ресайз/поворот (`fit` меняет `innerHeight`) — это движковый
+     * контракт safe-зоны (#453).
+     *
+     * **Отрисовка это поле пока не читает.** Фактические потребители зоны выводят её
+     * себе сами, не через `arenaZone`: рельеф — из инсетов чистой `computeTerrainHeights`
+     * (`Ground`, #454), а клэмпы жеста/пузыря — из DOM-узла `zoneRef` в `GameCanvas`
+     * (там доступны реальные высоты сверстанных оверлеев). Поле держим как единый
+     * движковый источник зоны на случай, когда рисование само начнёт из него исходить;
+     * тесты (`game-play.test.ts`) фиксируют его пересчёт.
+     */
+    arenaZone: TArenaZone = { top: 0, height: 0 };
     mousePos: TCoords | null;
     maxGameDifficulty = 5;
     gameDifficulty = 1;
@@ -198,6 +230,33 @@ export class GamePlay {
             this.innerWidth = rect.width;
             this.innerHeight = rect.height;
         }
+        this.recomputeArenaZone();
+    }
+
+    /**
+     * Принимает инсеты оверлеев из стора (`GameCanvas` зовёт на каждой смене
+     * `arenaInsets` — брейкпоинт, safe-area, фаза боя) и пересчитывает свободную
+     * зону. Идемпотентна: те же инсеты дают ту же зону.
+     *
+     * **Рельеф намеренно НЕ перекладывается** на смену инсетов во время боя
+     * (safe-зона, #454): рельеф генерится один раз в `initPaint` под инсеты,
+     * активные тогда, и ровно они пишутся в реплей (`onFieldInit`). Перекладка на
+     * лету рассинхронила бы живой бой с записью — нижний инсет штатно уменьшается
+     * после первого выстрела (пропадает подсказка жеста, #451), палуба становится
+     * ниже. Рельеф, сгенерированный под БОЛЬШИЙ стартовый инсет, при этом остаётся
+     * выше укоротившейся палубы — танки видны, а запись воспроизводится один в один.
+     * Инсеты приходят в движок до асинхронного `initPaint` (оверлеи публикуют их
+     * синхронно на монтировании, спрайты грузятся сетью), поэтому рельеф рождается
+     * уже в зоне без всякой перекладки.
+     */
+    setArenaInsets = (insets: TArenaInsets) => {
+        this.arenaInsets = insets;
+        this.recomputeArenaZone();
+    };
+
+    /** Пересчёт свободной зоны из текущих `innerHeight` и `arenaInsets`. */
+    private recomputeArenaZone() {
+        this.arenaZone = computeArenaZone(this.innerHeight, this.arenaInsets);
     }
 
     changeTankPosition = (delta: number) => {
@@ -319,6 +378,9 @@ export class GamePlay {
         if (canvas.height !== backingHeight) canvas.height = backingHeight;
         this.innerWidth = cssWidth;
         this.innerHeight = cssHeight;
+        // Высота канваса могла измениться (ресайз/поворот) — свободная зона от неё
+        // производна, пересчитываем вместе с логическим размером.
+        this.recomputeArenaZone();
         if (this.ctx) {
             this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
@@ -345,8 +407,9 @@ export class GamePlay {
         const prevHeight = this.innerHeight;
         if (!this.fit()) return;
         if (prevWidth !== this.innerWidth || prevHeight !== this.innerHeight) {
-            this.rescaleTerrainAndTanks();
-            this.rescaleBullet(prevWidth, prevHeight);
+            const worldScale = computeWorldScale(this.innerWidth);
+            this.rescaleTerrainAndTanks(worldScale);
+            this.rescaleBullet(prevWidth, prevHeight, worldScale);
         }
         // Даже при смене только dpr бэкинг-стор пересоздан (canvas очищен) —
         // перерисовка нужна безусловно.
@@ -354,8 +417,10 @@ export class GamePlay {
     };
 
     // Пересчитывает террейн под новый размер (Ground.resize — без RNG, форма и
-    // детерминизм сохраняются) и переставляет танки пропорционально.
-    private rescaleTerrainAndTanks = () => {
+    // детерминизм сохраняются) и переставляет танки пропорционально. Масштаб мира
+    // (issue #455) считается один раз в applyResize и передаётся сюда, чтобы танки и
+    // снаряд в полёте (rescaleBullet) масштабировались одним и тем же коэффициентом.
+    private rescaleTerrainAndTanks = (worldScale: number) => {
         if (!this.leftTank || !this.rightTank || !this.ground) return;
         this.ground.resize(this.innerWidth, this.innerHeight);
         const leftTankX = floor(this.innerWidth / 4);
@@ -366,6 +431,7 @@ export class GamePlay {
         ] as const) {
             tank.innerWidth = this.innerWidth;
             tank.innerHeight = this.innerHeight;
+            tank.setScale(worldScale);
             tank.x = x;
             tank.y = this.innerHeight - this.ground.heights[x];
             tank.dx = 0;
@@ -374,8 +440,12 @@ export class GamePlay {
     };
 
     // Снаряд в полёте переносится в новые координаты пропорционально: сброс терял бы
-    // уже израсходованное оружие и подвешивал ход на игроке (ревью PR #41).
-    private rescaleBullet = (prevWidth: number, prevHeight: number) => {
+    // уже израсходованное оружие и подвешивал ход на игроке (ревью PR #41). Радиус
+    // снаряда и взрыва тоже масштабируются новым коэффициентом (issue #455) — тем же,
+    // что получают танки, — иначе после ресайза корпус стал бы больше, а снаряд и
+    // кратер остались бы прежнего размера. Эффект косметический (на реплей не влияет:
+    // там размер зафиксирован записью, ресайза нет).
+    private rescaleBullet = (prevWidth: number, prevHeight: number, worldScale: number) => {
         if (!this.bullet) return;
         this.bullet.x = floor((this.bullet.x * this.innerWidth) / prevWidth);
         this.bullet.y = floor((this.bullet.y * this.innerHeight) / prevHeight);
@@ -383,6 +453,7 @@ export class GamePlay {
         this.bullet.lastY = this.bullet.y;
         this.bullet.innerWidth = this.innerWidth;
         this.bullet.innerHeight = this.innerHeight;
+        this.bullet.setScale(worldScale);
     };
 
     initPaint = () => {
@@ -391,13 +462,30 @@ export class GamePlay {
             this.ctx = canvas.getContext('2d');
         }
         this.fit();
-        // Размер, на котором реально пойдёт физика этого боя, — его пишет реплей.
-        this.callbacks.onFieldInit?.({ width: this.innerWidth, height: this.innerHeight });
+        // Размер и инсеты safe-зоны, на которых реально пойдёт физика этого боя, —
+        // их пишет реплей. Инсеты берём те, что активны сейчас (их успел донести
+        // `setArenaInsets` до асинхронного initPaint) — рельеф генерится под них,
+        // и ровно они записываются: реплей воспроизведёт тот же рельеф.
+        this.callbacks.onFieldInit?.({
+            width: this.innerWidth,
+            height: this.innerHeight,
+            insets: this.arenaInsets,
+        });
         const { leftTank, leftGunpoint, sand, rightTank, rightGunpoint } = GamePlay.images;
         const { leftTankWeapons, rightTankWeapons } = this.allWeapons;
-        this.ground = new Ground(this.innerWidth, this.innerHeight, this.random, sand);
+        this.ground = new Ground(
+            this.innerWidth,
+            this.innerHeight,
+            this.random,
+            sand,
+            this.arenaInsets,
+        );
         this.wind = generateWind(this.random);
         this.callbacks.onWindInit?.(this.wind);
+        // Масштаб мира от ширины арены (issue #455): танки/ствол/снаряд/взрыв
+        // считаются в мировых единицах и рисуются через этот коэффициент. В режиме
+        // реплея innerWidth зафиксирован записью → scale тот же, что при записи.
+        const worldScale = computeWorldScale(this.innerWidth);
         const leftTankX = floor(this.innerWidth / 4);
         const leftTankY = this.innerHeight - this.ground.heights[leftTankX];
         this.leftTank = new Tank(
@@ -409,6 +497,7 @@ export class GamePlay {
             leftTankWeapons,
             leftTank,
             leftGunpoint,
+            worldScale,
         );
         this.leftTank.isActive = true;
         // Игрок всегда ходит первым (см. §GDD) — HUD узнаёт об этом здесь же,
@@ -426,6 +515,7 @@ export class GamePlay {
             rightTankWeapons,
             rightTank,
             rightGunpoint,
+            worldScale,
         );
         if (this.ctx) {
             this.ground.draw(this.ctx);

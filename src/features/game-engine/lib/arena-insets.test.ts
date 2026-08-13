@@ -1,0 +1,178 @@
+import { describe, expect, it } from 'vitest';
+import {
+    computeArenaZone,
+    computeTerrainHeights,
+    EMPTY_ARENA_INSETS,
+    normalizeInset,
+    TANK_TOP_CLEARANCE,
+    type TArenaInsets,
+} from './arena-insets';
+
+describe('normalizeInset', () => {
+    it('пропускает неотрицательное конечное значение как есть', () => {
+        expect(normalizeInset(0)).toBe(0);
+        expect(normalizeInset(284)).toBe(284);
+        expect(normalizeInset(12.5)).toBe(12.5);
+    });
+
+    it('приводит отрицательное к нулю', () => {
+        expect(normalizeInset(-1)).toBe(0);
+        expect(normalizeInset(-9999)).toBe(0);
+    });
+
+    it('приводит NaN и бесконечности к нулю', () => {
+        expect(normalizeInset(Number.NaN)).toBe(0);
+        expect(normalizeInset(Number.POSITIVE_INFINITY)).toBe(0);
+        expect(normalizeInset(Number.NEGATIVE_INFINITY)).toBe(0);
+    });
+});
+
+describe('computeArenaZone', () => {
+    it('без инсетов зона равна всему канвасу', () => {
+        expect(computeArenaZone(844, EMPTY_ARENA_INSETS)).toEqual({ top: 0, height: 844 });
+    });
+
+    it('вычитает верхний и нижний инсеты из высоты канваса', () => {
+        const insets: TArenaInsets = { top: 280, bottom: 200 };
+        expect(computeArenaZone(844, insets)).toEqual({ top: 280, height: 364 });
+    });
+
+    it('пересчитывает зону при ресайзе (та же ориентация, другая высота)', () => {
+        const insets: TArenaInsets = { top: 120, bottom: 100 };
+        // Окно уменьшилось по высоте — зона обязана пересчитаться под новую высоту.
+        expect(computeArenaZone(800, insets)).toEqual({ top: 120, height: 580 });
+        expect(computeArenaZone(600, insets)).toEqual({ top: 120, height: 380 });
+    });
+
+    it('пересчитывает зону при смене ориентации (portrait ↔ landscape)', () => {
+        const insets: TArenaInsets = { top: 120, bottom: 100 };
+        // Поворот телефона: высота канваса меняется с 844 (portrait) на 390
+        // (landscape) — свободная зона схлопывается пропорционально.
+        expect(computeArenaZone(844, insets).height).toBe(624);
+        expect(computeArenaZone(390, insets).height).toBe(170);
+    });
+
+    it('при нулевых инсетах зона занимает весь канвас', () => {
+        expect(computeArenaZone(500, { top: 0, bottom: 0 })).toEqual({ top: 0, height: 500 });
+    });
+
+    it('аномально большие инсеты дают нулевую, а не отрицательную высоту зоны', () => {
+        // Перекрытие оверлеев (короткий landscape): сумма инсетов больше высоты.
+        const zone = computeArenaZone(844, { top: 600, bottom: 600 });
+        expect(zone.height).toBe(0);
+        expect(zone.height).toBeGreaterThanOrEqual(0);
+    });
+
+    it('один верхний инсет больше высоты канваса зажимается, высота зоны — ноль', () => {
+        const zone = computeArenaZone(844, { top: 1000, bottom: 0 });
+        expect(zone.top).toBe(844);
+        expect(zone.height).toBe(0);
+    });
+
+    it('битые инсеты (NaN/Infinity/отрицательные) не роняют зону в NaN/минус', () => {
+        const zone = computeArenaZone(844, {
+            top: Number.NaN,
+            bottom: Number.NEGATIVE_INFINITY,
+        });
+        expect(zone).toEqual({ top: 0, height: 844 });
+    });
+
+    it('нулевая или отрицательная высота канваса даёт пустую зону', () => {
+        expect(computeArenaZone(0, { top: 50, bottom: 50 })).toEqual({ top: 0, height: 0 });
+        expect(computeArenaZone(-100, EMPTY_ARENA_INSETS)).toEqual({ top: 0, height: 0 });
+    });
+});
+
+describe('computeTerrainHeights', () => {
+    it('без инсетов вырождается в прежнюю формулу рельефа (floor(H/2), floor(H/2)/4)', () => {
+        // Обратная совместимость: пустые инсеты обязаны давать те же границы, что
+        // движок до safe-зоны, — иначе реплеи, записанные раньше, разошлись бы.
+        expect(computeTerrainHeights(844, EMPTY_ARENA_INSETS)).toEqual({ min: 422 / 4, max: 422 });
+        expect(computeTerrainHeights(600, EMPTY_ARENA_INSETS)).toEqual({ min: 300 / 4, max: 300 });
+        // Нечётная высота: пик = floor(H/2), низина = floor(H/2)/4.
+        expect(computeTerrainHeights(601, EMPTY_ARENA_INSETS)).toEqual({ min: 300 / 4, max: 300 });
+    });
+
+    it('нулевые инсеты эквивалентны пустым', () => {
+        expect(computeTerrainHeights(844, { top: 0, bottom: 0 })).toEqual(
+            computeTerrainHeights(844, EMPTY_ARENA_INSETS),
+        );
+    });
+
+    it('поднимает низ рельефа на нижний инсет: низина не уходит под палубу', () => {
+        const insets: TArenaInsets = { top: 120, bottom: 160 };
+        const { min } = computeTerrainHeights(844, insets);
+        // Самая низкая поверхность = canvasHeight - min. Она обязана лежать на
+        // базовой линии (низ свободной зоны) или выше — то есть выше палубы.
+        const lowestSurfaceY = 844 - min;
+        const deckTopY = 844 - insets.bottom;
+        expect(lowestSurfaceY).toBeLessThanOrEqual(deckTopY);
+    });
+
+    it('считает амплитуду от высоты зоны, а не канваса', () => {
+        const insets: TArenaInsets = { top: 100, bottom: 100 };
+        const field = 844 - 200; // высота свободной зоны
+        const { min, max } = computeTerrainHeights(844, insets);
+        const bottom = 100;
+        // Пик над низом канваса = нижний инсет + половина ВЫСОТЫ ЗОНЫ.
+        expect(max).toBe(bottom + Math.floor(field / 2));
+        expect(min).toBe(bottom + Math.floor(field / 2) / 4);
+    });
+
+    it('пик оставляет клиренс под корпус танка и ствол: не уходит под верхний оверлей', () => {
+        // Узкая по вертикали зона: без клиренса пик поднял бы танк со стволом под HUD.
+        const insets: TArenaInsets = { top: 300, bottom: 300 };
+        const { max } = computeTerrainHeights(844, insets);
+        const peakSurfaceY = 844 - max;
+        const zoneTopY = insets.top;
+        // Корпус (30) + ствол (≈35) от поверхности вверх обязаны уместиться в зону.
+        expect(peakSurfaceY).toBeGreaterThanOrEqual(zoneTopY);
+        expect(peakSurfaceY - zoneTopY).toBeGreaterThanOrEqual(TANK_TOP_CLEARANCE - 1);
+    });
+
+    it('вся поверхность рельефа лежит внутри свободной зоны (390×844)', () => {
+        // Целевой вьюпорт критерия готовности. Инсеты близки к реальным на мобилке.
+        const insets: TArenaInsets = { top: 140, bottom: 150 };
+        const zone = computeArenaZone(844, insets);
+        const { min, max } = computeTerrainHeights(844, insets);
+        // Пики (surface = 844 - max) не выше верха зоны с клиренсом; низины
+        // (surface = 844 - min) не ниже низа зоны.
+        expect(844 - max).toBeGreaterThanOrEqual(zone.top);
+        expect(844 - min).toBeLessThanOrEqual(zone.top + zone.height);
+    });
+
+    it('крошечная зона не даёт перевёрнутую полосу (max ≥ min)', () => {
+        const { min, max } = computeTerrainHeights(200, { top: 90, bottom: 90 });
+        expect(max).toBeGreaterThanOrEqual(min);
+    });
+
+    it('клиренс масштабируется вместе с телом танка на широкой арене (#455)', () => {
+        // Короткая по высоте зона, где клиренс реально связывает пик. На широком
+        // экране (scale 1.5) корпус и ствол крупнее, поэтому резерв под HUD обязан
+        // быть больше фиксированных 72 px — иначе ствол уехал бы под верхний оверлей.
+        // Зона высотой 140: клиренс реально связывает пик и на scale 1, и на 1.5,
+        // не упираясь в нижнюю границу амплитуды (низину).
+        const insets: TArenaInsets = { top: 90, bottom: 90 };
+        const canvasHeight = 320;
+        const zoneTopY = insets.top;
+
+        // Опорная ширина (scale === 1) — резерв ровно базовый клиренс.
+        const base = computeTerrainHeights(canvasHeight, insets, 1000);
+        expect(canvasHeight - base.max - zoneTopY).toBeGreaterThanOrEqual(TANK_TOP_CLEARANCE - 1);
+
+        // Широкая арена (scale === 1.5) — резерв масштабируется вместе с танком.
+        const wide = computeTerrainHeights(canvasHeight, insets, 2000);
+        expect(canvasHeight - wide.max - zoneTopY).toBeGreaterThanOrEqual(
+            TANK_TOP_CLEARANCE * 1.5 - 1,
+        );
+        // Больший клиренс опускает пик рельефа ниже, чем на опорной ширине.
+        expect(wide.max).toBeLessThan(base.max);
+    });
+
+    it('без явной ширины клиренс равен базовому (scale === 1) — обратная совместимость', () => {
+        const insets: TArenaInsets = { top: 90, bottom: 90 };
+        expect(computeTerrainHeights(320, insets)).toEqual(
+            computeTerrainHeights(320, insets, 1000),
+        );
+    });
+});

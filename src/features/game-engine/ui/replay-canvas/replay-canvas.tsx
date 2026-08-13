@@ -78,6 +78,11 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
             // физика в абсолютных пикселях, иначе рельеф/ветер/траектории разойдутся.
             { fixedLogicalSize: { width: replay.width, height: replay.height } },
         );
+        // Инсеты safe-зоны записи — ДО генерации рельефа (loadImages → initPaint):
+        // рельеф генерится внутри свободной зоны (#454), поэтому воспроизведение
+        // обязано взять те же инсеты, иначе рельеф и счёт разойдутся с живым боем.
+        // Записи до safe-зоны инсетов не имеют — рельеф во весь канвас, как и был.
+        if (replay.insets) game.setArenaInsets(replay.insets);
         game.loadImages();
 
         const driver = new ReplayDriver(replay.moves, createReplayEngineAdapter(game));

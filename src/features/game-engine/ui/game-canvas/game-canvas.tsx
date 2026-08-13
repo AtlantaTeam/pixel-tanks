@@ -10,6 +10,7 @@ import { GamePlay } from '../../lib/game-play';
 import { dealWeapons } from '../../lib/weapons';
 import { createFxRandom } from '../../lib/fx-random';
 import { calculateDragAim } from '../../lib/drag-aim';
+import { installGameDebugHook, uninstallGameDebugHook } from '../../lib/game-debug';
 import {
     calculateGestureAim,
     clampBubbleAnchorY,
@@ -122,6 +123,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
 
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
+    const arenaInsets = useGameStore((s) => s.arenaInsets);
     const moves = useGameStore((s) => s.moves);
     const selectedWeapon = useGameStore((s) => s.selectedWeapon);
     const weapons = useGameStore((s) => s.weapons);
@@ -222,8 +224,10 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                         y,
                     });
                 },
-                // Логический размер поля этого боя — пишем в реплей вместе с seed.
-                onFieldInit: ({ width, height }) => setBattleField(width, height),
+                // Логический размер поля и инсеты safe-зоны этого боя — пишем в
+                // реплей вместе с seed: рельеф генерится внутри зоны, без инсетов
+                // воспроизведение получит другой рельеф (#454).
+                onFieldInit: ({ width, height, insets }) => setBattleField(width, height, insets),
                 // Верхний HUD (handoff «Состояние»): ветер — один раз при старте
                 // боя, ход и лок ввода — на каждой передаче/выстреле.
                 onWindInit: (wind) => setWind(wind),
@@ -241,10 +245,15 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
         );
         gameRef.current = game;
         game.loadImages();
+        // Read-only e2e-хук (issue #456): барьер safe-зоны/пропорций читает
+        // прямоугольники корпуса танков через window.__gameDebug — у канваса
+        // нет DOM-узла на танк, который снял бы Playwright boundingBox().
+        installGameDebugHook(() => gameRef.current);
 
         return () => {
             game.destroy();
             gameRef.current = null;
+            uninstallGameDebugHook();
             resetGame();
             setBotBubble(null);
         };
@@ -282,6 +291,16 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             game.activateMode('angle');
         }
     }, [angle, power]);
+
+    // Инсеты арены → движок (контракт safe-зоны, #453): оверлеи публикуют свои
+    // высоты в стор (`useArenaInset`), движок хранит производную свободную зону.
+    // Тот же паттерн store→engine, что и синк угла/мощности выше: React-состояние
+    // не участвует в кадровом цикле, движок держит зону в поле `arenaZone`. Рельеф
+    // при этом выводит свою полосу из тех же инсетов напрямую (`computeTerrainHeights`
+    // в `Ground`, #454), а клэмпы жеста/пузыря — из DOM-узла `zoneRef` ниже.
+    useEffect(() => {
+        gameRef.current?.setArenaInsets(arenaInsets);
+    }, [arenaInsets]);
 
     // Управление клавиатурой
     useEffect(() => {

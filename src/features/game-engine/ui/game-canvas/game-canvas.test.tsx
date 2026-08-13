@@ -33,6 +33,7 @@ vi.mock('../../lib/game-play', () => ({
         onFire = vi.fn();
         activateMode = vi.fn();
         changeTankPosition = vi.fn();
+        setArenaInsets = vi.fn();
         getActiveAndTargetTanks = () => [LEFT_TANK, BOT_TANK];
         constructor(..._args: unknown[]) {
             captured.current = _args[2] as TCapturedCallbacks;

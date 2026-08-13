@@ -36,6 +36,20 @@ describe('buildReplaySharePayload', () => {
         expect(decodeReplay(code)).toEqual({ seed, width, height, moves });
     });
 
+    it('прокидывает инсеты safe-зоны в ссылку (декодируются обратно)', () => {
+        const { url } = buildReplaySharePayload({
+            seed: 7,
+            width: 390,
+            height: 844,
+            insets: { top: 140, bottom: 150 },
+            moves: [{ kind: 'fire' as const, angle: -0.9, power: 8 }],
+            origin: 'https://example.com',
+        });
+        const code = url.split('/replay/')[1];
+
+        expect(decodeReplay(code)?.insets).toEqual({ top: 140, bottom: 150 });
+    });
+
     it('возвращает непустые title и text', () => {
         const { title, text } = buildReplaySharePayload({
             seed: 1,

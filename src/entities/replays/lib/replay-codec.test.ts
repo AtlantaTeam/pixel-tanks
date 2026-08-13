@@ -48,6 +48,99 @@ describe('encodeReplay / decodeReplay', () => {
         expect(decoded?.height).toBe(810);
     });
 
+    it('восстанавливает инсеты safe-зоны (round-trip, v3)', () => {
+        const replay: TReplay = {
+            seed: 's',
+            width: 390,
+            height: 844,
+            insets: { top: 140, bottom: 150 },
+            moves: [fire(-0.9, 8), move(-150)],
+        };
+
+        expect(decodeReplay(encodeReplay(replay))).toEqual(replay);
+    });
+
+    it('округляет дробные инсеты до пикселя (рельеф целочислен)', () => {
+        const decoded = decodeReplay(
+            encodeReplay({
+                seed: 's',
+                width: 390,
+                height: 844,
+                insets: { top: 139.6, bottom: 150.2 },
+                moves: [],
+            }),
+        );
+
+        expect(decoded?.insets).toEqual({ top: 140, bottom: 150 });
+    });
+
+    it('нулевые инсеты кодируются версией 2 (без инсетов) — компактность и совместимость', () => {
+        const withZero = encodeReplay({
+            seed: 's',
+            width: 800,
+            height: 600,
+            insets: { top: 0, bottom: 0 },
+            moves: [fire(1, 5)],
+        });
+        const without = encodeReplay({ seed: 's', width: 800, height: 600, moves: [fire(1, 5)] });
+
+        // Нулевые инсеты не отличают запись от записи без инсетов вовсе.
+        expect(withZero).toBe(without);
+        expect(decodeReplay(withZero)?.insets).toBeUndefined();
+    });
+
+    it('запись без инсетов (v2) декодируется без поля insets', () => {
+        const decoded = decodeReplay(encodeReplay(battle('s', [fire(1, 5)])));
+
+        expect(decoded).not.toBeNull();
+        expect(decoded?.insets).toBeUndefined();
+    });
+
+    it('битые инсеты (отрицательные/NaN/Infinity) нормализуются в 0, не роняя кодек', () => {
+        // Кодек трактует мусор как движок (`computeTerrainHeights` зажимает через
+        // `normalizeInset`): отрицательный/битый инсет → 0, а не throw на assertInRange.
+        const withGarbage = encodeReplay({
+            seed: 's',
+            width: 800,
+            height: 600,
+            insets: { top: -5, bottom: Number.NaN },
+            moves: [fire(1, 5)],
+        });
+        const without = encodeReplay({ seed: 's', width: 800, height: 600, moves: [fire(1, 5)] });
+
+        // Оба инсета обнулились → запись неотличима от записи без инсетов (v2).
+        expect(withGarbage).toBe(without);
+        expect(decodeReplay(withGarbage)?.insets).toBeUndefined();
+    });
+
+    it('битый инсет обнуляется, но валидный сосед сохраняется (v3)', () => {
+        const decoded = decodeReplay(
+            encodeReplay({
+                seed: 's',
+                width: 800,
+                height: 600,
+                insets: { top: -10, bottom: 200 },
+                moves: [],
+            }),
+        );
+
+        expect(decoded?.insets).toEqual({ top: 0, bottom: 200 });
+    });
+
+    it('только один непустой инсет тоже пишется (v3)', () => {
+        const decoded = decodeReplay(
+            encodeReplay({
+                seed: 1,
+                width: 800,
+                height: 600,
+                insets: { top: 0, bottom: 200 },
+                moves: [],
+            }),
+        );
+
+        expect(decoded?.insets).toEqual({ top: 0, bottom: 200 });
+    });
+
     it('угол выстрела восстанавливается бит-в-бит (float64, без квантования)', () => {
         const angle = -2.7182818284590455;
         const decoded = decodeReplay(encodeReplay(battle('s', [fire(angle, 20)])));

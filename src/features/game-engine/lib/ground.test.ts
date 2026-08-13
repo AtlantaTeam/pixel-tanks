@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
+import { computeTerrainHeights, type TArenaInsets } from './arena-insets';
 import { Ground } from './ground';
 
 const WIDTH = 800;
@@ -132,6 +133,65 @@ describe('Ground.resize', () => {
         expect(ground.heights).toHaveLength(637);
         ground.heights.forEach((height) => {
             expect(Number.isInteger(height)).toBe(true);
+        });
+    });
+});
+
+describe('Ground: рельеф внутри свободной зоны (safe-зона, #454)', () => {
+    const INSETS: TArenaInsets = { top: 140, bottom: 150 };
+
+    it('явно пустые инсеты дают тот же рельеф, что и без аргумента', () => {
+        const withArg = new Ground(WIDTH, HEIGHT, createSeededRandom(42), undefined, {
+            top: 0,
+            bottom: 0,
+        });
+        const withoutArg = new Ground(WIDTH, HEIGHT, createSeededRandom(42));
+
+        expect(withArg.heights).toEqual(withoutArg.heights);
+    });
+
+    it('детерминирован по seed и при непустых инсетах', () => {
+        const first = new Ground(WIDTH, HEIGHT, createSeededRandom(7), undefined, INSETS);
+        const second = new Ground(WIDTH, HEIGHT, createSeededRandom(7), undefined, INSETS);
+
+        expect(first.heights).toEqual(second.heights);
+    });
+
+    it('поднимает рельеф в зону: поверхность не под палубой и не под HUD', () => {
+        const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(2026), undefined, INSETS);
+        const zoneTopY = INSETS.top;
+        const deckTopY = HEIGHT - INSETS.bottom;
+
+        ground.heights.forEach((h) => {
+            const surfaceY = HEIGHT - h;
+            // Ни одна точка поверхности не уходит под палубу (ниже её верха) и не
+            // залезает под HUD (выше верха зоны).
+            expect(surfaceY).toBeLessThanOrEqual(deckTopY);
+            expect(surfaceY).toBeGreaterThanOrEqual(zoneTopY);
+        });
+    });
+
+    it('инсеты сдвигают рельеф вверх относительно поведения без safe-зоны', () => {
+        const full = new Ground(WIDTH, HEIGHT, createSeededRandom(99));
+        const zoned = new Ground(WIDTH, HEIGHT, createSeededRandom(99), undefined, INSETS);
+
+        // При поднятой базовой линии низины (минимальная высота) выше, чем без зоны.
+        expect(Math.min(...zoned.heights)).toBeGreaterThan(Math.min(...full.heights));
+    });
+});
+
+describe('Ground.resize: перекладка рельефа в зону при смене размера канваса', () => {
+    it('после ресайза с инсетами рельеф остаётся внутри полосы новой высоты', () => {
+        const insets: TArenaInsets = { top: 120, bottom: 140 };
+        const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(7), undefined, insets);
+
+        ground.resize(WIDTH, 500);
+
+        const band = computeTerrainHeights(500, insets);
+        ground.heights.forEach((h) => {
+            // ±1 — дрейф floor при линейном переносе профиля в новую полосу.
+            expect(h).toBeGreaterThanOrEqual(Math.floor(band.min) - 1);
+            expect(h).toBeLessThanOrEqual(Math.ceil(band.max) + 1);
         });
     });
 });

@@ -177,3 +177,103 @@ describe('GamePlay — колбэки хода и ветра (handoff «Сост
         expect(gamePlay.bullet).toBeUndefined();
     });
 });
+
+describe('GamePlay — инсеты арены (контракт safe-зоны, #453)', () => {
+    it('по умолчанию свободная зона равна всему полю (инсетов нет)', () => {
+        const { gamePlay } = makeGamePlay();
+
+        expect(gamePlay.arenaInsets).toEqual({ top: 0, bottom: 0 });
+        expect(gamePlay.arenaZone).toEqual({ top: 0, height: HEIGHT });
+    });
+
+    it('setArenaInsets вычитает высоты оверлеев из свободной зоны', () => {
+        const { gamePlay } = makeGamePlay();
+
+        gamePlay.setArenaInsets({ top: 180, bottom: 120 });
+
+        expect(gamePlay.arenaZone).toEqual({ top: 180, height: HEIGHT - 180 - 120 });
+    });
+
+    it('обновляется при изменении высоты любого оверлея', () => {
+        const { gamePlay } = makeGamePlay();
+
+        gamePlay.setArenaInsets({ top: 180, bottom: 120 });
+        // Вырос нижний оверлей (подсказка жеста) — зона сжимается снизу.
+        gamePlay.setArenaInsets({ top: 180, bottom: 160 });
+
+        expect(gamePlay.arenaZone.height).toBe(HEIGHT - 180 - 160);
+    });
+
+    it('аномально большие инсеты не уводят высоту зоны в отрицательную', () => {
+        const { gamePlay } = makeGamePlay();
+
+        gamePlay.setArenaInsets({ top: HEIGHT, bottom: HEIGHT });
+
+        expect(gamePlay.arenaZone.height).toBe(0);
+        expect(gamePlay.arenaZone.height).toBeGreaterThanOrEqual(0);
+    });
+
+    it('НЕ перекладывает уже сгенерированный рельеф на смену инсетов (фидельность реплея, #454)', () => {
+        // Нижний инсет штатно уменьшается после первого выстрела (уходит подсказка
+        // жеста). Рельеф, сгенерированный под стартовый инсет и записанный в реплей,
+        // не должен смещаться на лету — иначе живой бой разошёлся бы с записью.
+        const { gamePlay, leftTank, ground } = makeGamePlay();
+        const heightsBefore = [...ground.heights];
+        const tankYBefore = leftTank.y;
+
+        gamePlay.setArenaInsets({ top: 120, bottom: 90 });
+
+        expect(ground.heights).toEqual(heightsBefore);
+        expect(leftTank.y).toBe(tankYBefore);
+        // Зона при этом всё равно пересчитана — движковый контракт safe-зоны (#453)
+        // держит `arenaZone` актуальной, даже когда рельеф под неё не перекладывают.
+        expect(gamePlay.arenaZone).toEqual({ top: 120, height: HEIGHT - 210 });
+    });
+
+    it('до генерации рельефа setArenaInsets только считает зону (рельефа ещё нет)', () => {
+        const { gamePlay } = makeGamePlay();
+        // Эмулируем состояние до initPaint: рельефа и танков нет.
+        gamePlay.ground = undefined;
+        gamePlay.leftTank = undefined;
+        gamePlay.rightTank = undefined;
+
+        expect(() => gamePlay.setArenaInsets({ top: 100, bottom: 100 })).not.toThrow();
+        expect(gamePlay.arenaZone).toEqual({ top: 100, height: HEIGHT - 200 });
+    });
+
+    it('fit пересчитывает зону под новую высоту канваса (ресайз/поворот)', () => {
+        // Без fixedLogicalSize fit читает реальный rect канваса — эмулируем поворот
+        // через мутируемую высоту мока. (makeGamePlay фиксирует размер под реплей,
+        // поэтому здесь собираем движок напрямую.)
+        let rectHeight = 800;
+        const canvas = {
+            getBoundingClientRect: () => ({ width: 400, height: rectHeight }),
+            width: 0,
+            height: 0,
+            offsetWidth: 400,
+            offsetHeight: rectHeight,
+        } as unknown as HTMLCanvasElement;
+        const noopCallbacks: TGamePlayCallbacks = {
+            onTankHit: vi.fn(),
+            onGameOverCheck: vi.fn(),
+            onMovesChange: vi.fn(),
+            onPowerChange: vi.fn(),
+            onBotReply: vi.fn(),
+        };
+        const gamePlay = new GamePlay(
+            { current: canvas },
+            { leftTankWeapons: [WEAPON], rightTankWeapons: [WEAPON] },
+            noopCallbacks,
+            createSeededRandom(1),
+            createSeededRandom(2),
+        );
+        gamePlay.setArenaInsets({ top: 100, bottom: 100 });
+        expect(gamePlay.arenaZone).toEqual({ top: 100, height: 600 });
+
+        // Поворот: канвас стал ниже — fit подхватывает новую высоту, зона сжимается.
+        rectHeight = 400;
+        gamePlay.fit();
+
+        expect(gamePlay.arenaZone).toEqual({ top: 100, height: 200 });
+    });
+});

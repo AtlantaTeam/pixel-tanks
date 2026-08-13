@@ -6,7 +6,7 @@ import { buildReplaySharePayload } from '../../lib/build-replay-share-payload';
 
 type TShareReplayButtonProps = TReplay;
 
-export function ShareReplayButton({ seed, width, height, moves }: TShareReplayButtonProps) {
+export function ShareReplayButton({ seed, width, height, insets, moves }: TShareReplayButtonProps) {
     return (
         <ShareButton
             label="Поделиться реплеем"
@@ -17,6 +17,7 @@ export function ShareReplayButton({ seed, width, height, moves }: TShareReplayBu
                     seed,
                     width,
                     height,
+                    insets,
                     moves,
                     origin: window.location.origin,
                 })
