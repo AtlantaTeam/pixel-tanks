@@ -93,10 +93,14 @@ function HpCard({
                 // паддинг — паддинг только держит контент от клипа на самом
                 // тесном (32px) бюджете.
                 layout === 'inline' ? 'px-1.5 py-1' : 'p-1.5 xl:p-2',
+                // Без glow (#548, разбор §2): HP — класс 2 «раз в ход», карточка
+                // держит активную сторону только цветом рамки. Glow остаётся
+                // только у угла/силы (класс 1) — иначе на кадре прицеливания
+                // светится и HP, и пилюля хода, и телеметрия одновременно.
                 active
                     ? faction === 'player'
-                        ? 'border-accent shadow-[var(--glow-accent),0_0_0_1px_rgba(0,0,0,.9)]'
-                        : 'border-enemy shadow-[var(--glow-enemy),0_0_0_1px_rgba(0,0,0,.9)]'
+                        ? 'border-accent'
+                        : 'border-enemy'
                     : 'border-border',
             )}
         >
@@ -137,7 +141,10 @@ function TurnPill({
                 // бейдж + иконки) конкурирует с HP-картами за ширину строки — HP по
                 // спеке обязан схлопываться последним (handoff «HP-карточка»), значит
                 // резерв под самую длинную подпись пилюли (#449) надо ужать первым.
-                'flex min-h-10 min-w-0 items-center gap-1.5 border-[length:var(--border-w)] border-[color:var(--accent)] px-2 py-2 shadow-[var(--glow)] xl:gap-2 xl:px-3',
+                // Без shadow-glow (#548): пилюля хода — класс 3 «состояние»,
+                // остаётся цветной плашкой (рамка + текст в --accent), не
+                // источником свечения — glow держат только угол и сила.
+                'flex min-h-10 min-w-0 items-center gap-1.5 border-[length:var(--border-w)] border-[color:var(--accent)] px-2 py-2 xl:gap-2 xl:px-3',
                 // На десктопе сосед по ряду — HP-блок с flex-1: без shrink-0 он забирает
                 // всё свободное место, и пилюля сжимается ниже контента («ТВОЙ» / «ХОД»
                 // в две строки). В мобильном ряду соседи — только кнопки фиксированной
@@ -173,7 +180,7 @@ function TurnPill({
                 >
                     {TURN_PILL_SIZER}
                 </span>
-                <span className="col-start-1 row-start-1 font-display text-[11px] tracking-[0.02em] whitespace-nowrap text-[color:var(--accent)] uppercase [text-shadow:var(--glow)] xl:text-[13px] xl:tracking-[0.08em]">
+                <span className="col-start-1 row-start-1 font-display text-[11px] tracking-[0.02em] whitespace-nowrap text-[color:var(--accent)] uppercase xl:text-[13px] xl:tracking-[0.08em]">
                     {label}
                 </span>
             </span>
@@ -307,28 +314,35 @@ function CellShell({
 }
 
 /** 18px моб. (`compact`) / 22px планшет / 40px десктоп xl (`--text-hud-xl`),
- *  tabular-nums, glow-text (handoff «Числовые ячейки»); цвет — фиксированный
- *  токен пропом, не тематический `--accent`.
+ *  tabular-nums; цвет — фиксированный токен пропом, не тематический `--accent`.
  *  На 768–1279 (#538) значение — 22px, не 40: `--text-hud-xl` держит ряд
  *  телеметрии высотой ~71px — вместе с рядом 1 и зазорами это раздувало полосу
  *  HUD выше объявленного зоне жеста инсета 128px. С xl (1280, полоса 78px c
- *  запасом) возвращается канон кода — `--text-hud-xl`. */
+ *  запасом) возвращается канон кода — `--text-hud-xl`.
+ *  `glow` (#548, разбор §2) — text-shadow только для класса 1 «непрерывно»
+ *  (угол, сила): раньше glow-text висел на КАЖДОЙ числовой ячейке (включая
+ *  раскрытое число ветра), и на кадре прицеливания светилось всё сразу —
+ *  «светится почти всё, значит не светится ничто». Дефолт `false` — опт-ин,
+ *  не опт-аут, чтобы новый вызывающий не получил glow молча. */
 function CellValue({
     compact,
     valueClassName,
     ariaHidden,
+    glow,
     children,
 }: {
     compact?: boolean;
     valueClassName: string;
     ariaHidden?: boolean;
+    glow?: boolean;
     children: ReactNode;
 }) {
     return (
         <span
             aria-hidden={ariaHidden}
             className={clsx(
-                'font-ui font-bold tabular-nums [text-shadow:var(--glow-text)]',
+                'font-ui font-bold tabular-nums',
+                glow && '[text-shadow:var(--glow-text)]',
                 // leading-none (#538, только !compact): `text-[22px]` — произвольное
                 // значение без своего `--text-*--line-height` (в отличие от
                 // `--text-hud-xl`, у него `line-height:1` уже в токене) — без сброса
@@ -361,12 +375,15 @@ function FixedNumeric({
     compact,
     valueClassName,
     sizer,
+    glow,
     children,
 }: {
     compact?: boolean;
     valueClassName: string;
     /** Самое широкое значение диапазона — задаёт неизменную ширину бокса. */
     sizer: ReactNode;
+    /** См. `CellValue.glow` (#548) — угол/сила прокидывают `true`. */
+    glow?: boolean;
     children: ReactNode;
 }) {
     return (
@@ -374,12 +391,14 @@ function FixedNumeric({
             <CellValue
                 compact={compact}
                 ariaHidden
+                glow={glow}
                 valueClassName={clsx(valueClassName, 'invisible col-start-1 row-start-1')}
             >
                 {sizer}
             </CellValue>
             <CellValue
                 compact={compact}
+                glow={glow}
                 valueClassName={clsx(valueClassName, 'col-start-1 row-start-1')}
             >
                 {children}
@@ -393,6 +412,7 @@ function NumberCell({
     value,
     valueClassName,
     sizer,
+    glow,
 }: {
     label: string;
     value: ReactNode;
@@ -402,15 +422,19 @@ function NumberCell({
      *  не «ездят» при смене числа знаков (угол `1°`…`345°`, сила `1`…`20`). Без
      *  `sizer` ячейка тянется по содержимому (обратная совместимость). */
     sizer?: ReactNode;
+    /** См. `CellValue.glow` (#548) — только угол/сила (класс 1). */
+    glow?: boolean;
 }) {
     return (
         <CellShell label={label}>
             {sizer !== undefined ? (
-                <FixedNumeric valueClassName={valueClassName} sizer={sizer}>
+                <FixedNumeric valueClassName={valueClassName} sizer={sizer} glow={glow}>
                     {value}
                 </FixedNumeric>
             ) : (
-                <CellValue valueClassName={valueClassName}>{value}</CellValue>
+                <CellValue valueClassName={valueClassName} glow={glow}>
+                    {value}
+                </CellValue>
             )}
         </CellShell>
     );
@@ -480,6 +504,7 @@ function TrimCell({
     decLabel,
     incLabel,
     className,
+    glow,
 }: {
     label: string;
     value: ReactNode;
@@ -493,6 +518,8 @@ function TrimCell({
     incLabel: string;
     /** Доп. отступ от соседней ячейки (#452) — см. использование у «Сила». */
     className?: string;
+    /** См. `CellValue.glow` (#548) — только угол/сила (класс 1). */
+    glow?: boolean;
 }) {
     // Удержание кнопки авто-повторяет шаг (#264) — тап/клавиатура дают один
     // шаг, `useHoldRepeat` сам решает, глотать ли клик после автоповтора.
@@ -512,7 +539,7 @@ function TrimCell({
                 >
                     −
                 </TrimButton>
-                <FixedNumeric compact valueClassName={valueClassName} sizer={sizer}>
+                <FixedNumeric compact valueClassName={valueClassName} sizer={sizer} glow={glow}>
                     {value}
                 </FixedNumeric>
                 <TrimButton
@@ -923,6 +950,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         onInc={() => increaseAngle(-Math.PI / 180)}
                         decLabel="Угол меньше"
                         incLabel="Угол больше"
+                        glow
                     />
                     <TrimCell
                         label="Сила"
@@ -934,6 +962,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         onInc={() => increasePower(1)}
                         decLabel="Сила меньше"
                         incLabel="Сила больше"
+                        glow
                         // Доп. отступ слева (#452): тач-цель кнопок ± шире визуального
                         // бокса (`TrimButton`, псевдоэлемент 52×52) — без этого зазор
                         // между «Угол больше» и «Сила меньше» падал до 2px хит-зон
@@ -1124,12 +1153,14 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                             value={angleValue}
                             valueClassName="text-accent"
                             sizer="360°"
+                            glow
                         />
                         <NumberCell
                             label="Сила"
                             value={power}
                             valueClassName="text-warning"
                             sizer={POWER_MAX}
+                            glow
                         />
                         <WindCell wind={wind} windRevealed={windRevealed} />
                     </div>
@@ -1143,7 +1174,17 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                             узком xl (1280) телеметрия — нешринкающийся ряд, обычный
                             паддинг `CellShell` в оставшийся бюджет ширины не влезает
                             (см. докблок `tight` в `CellShell`). */}
-                        <CellShell label="Снаряды" tight>
+                        {/* «Снаряды» скрыты на xl (#548, разбор §2/§3): на десктопе
+                            (≥1280) селектор палубы уже показывает боезапас выбранного
+                            оружия («Фугас ×2», `game-controls.tsx`) — ячейка дублирует
+                            эту цифру и занимает ~90px в самом тесном месте полосы.
+                            На планшете (768–1279) палуба показывает то же самое, но
+                            там ячейка остаётся — бюджет ширины там не жмёт так, как на
+                            узком xl (#489), а разбор ограничивает удаление явно
+                            десктопом. `xl:hidden` (не размонтирование): ячейка не несёт
+                            своего состояния, спрятать классом дешевле и не меняет
+                            поведение ниже xl. */}
+                        <CellShell label="Снаряды" tight className="xl:hidden">
                             <ResourcePipVisual
                                 pips={ammoPips}
                                 color="var(--color-accent)"
