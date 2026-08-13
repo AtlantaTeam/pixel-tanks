@@ -31,6 +31,7 @@ import { BulletTrail } from './bullet-trail';
 import { GhostTrail, ghostDashUnit } from './ghost-trail';
 import { ENGINE_COLORS } from './engine-palette';
 import { computeSceneLight, type TSceneLight } from './scene-light';
+import { pickPrecipPreset, precipGroundTint, type TPrecipPreset } from './precipitation';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
 
 /**
@@ -220,6 +221,12 @@ export class GamePlay {
      * без света, совместимость с тестами/реплеем).
      */
     private readonly sceneLight: TSceneLight | undefined;
+    /**
+     * Погодный пресет боя (#546) — из того же сида, что и небо/свет. Нужен только для
+     * тонировки рельефа при `prefers-reduced-motion` (частицы осадков рисует отдельный
+     * слой `PrecipitationLayer` над канвасом). `undefined` — сид не передан.
+     */
+    private readonly precipPreset: TPrecipPreset | undefined;
     private leftSkinImages: TTankSkinImages | undefined;
     private rightSkinImages: TTankSkinImages | undefined;
     // Кто стрелял последним: isActive у обоих танков уже false к моменту разрешения
@@ -290,6 +297,8 @@ export class GamePlay {
         this.leftSkinId = options?.leftSkinId ?? DEFAULT_TANK_SKIN_ID;
         this.rightSkinId = options?.rightSkinId ?? DEFAULT_TANK_SKIN_ID;
         this.sceneLight = options?.seed !== undefined ? computeSceneLight(options.seed) : undefined;
+        this.precipPreset =
+            options?.seed !== undefined ? pickPrecipPreset(options.seed) : undefined;
         // Косметика (частицы, тряска) — на ОТДЕЛЬНОМ потоке random: CameraShake
         // берёт значения каждый кадр тряски, а число кадров зависит от FPS.
         // На общем потоке это недетерминированно сдвигало бы выборки бота
@@ -632,8 +641,13 @@ export class GamePlay {
             sand,
             this.arenaInsets,
             // Тонировка земли и подсветка кромки — из модели света боя (#545). Без
-            // сида (тесты/реплей) — пусто: рельеф как до светила.
-            this.sceneLight?.groundTint ?? [],
+            // сида (тесты/реплей) — пусто: рельеф как до светила. Плюс тонировка от
+            // осадков при reduced-motion (#546): там частиц нет, погоду несёт цвет
+            // рельефа (мокрый песок темнее, наледь светлее, пыль бури — теплее).
+            [
+                ...(this.sceneLight?.groundTint ?? []),
+                ...precipGroundTint(this.precipPreset, this.reducedMotion),
+            ],
             this.sceneLight?.edgeColor,
         );
         this.wind = generateWind(this.random);

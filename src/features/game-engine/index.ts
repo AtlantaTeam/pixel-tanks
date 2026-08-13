@@ -2,12 +2,15 @@ export { GameCanvas } from './ui/game-canvas';
 export type { TGameCanvasHandle } from './ui/game-canvas';
 export { ReplayCanvas } from './ui/replay-canvas';
 export { SkyBackground } from './ui/sky-background';
+export { PrecipitationLayer } from './ui/precipitation-layer';
 export { TankWheelDemo } from './ui/tank-wheel-demo';
 export type { TTankWheelDemoProps } from './ui/tank-wheel-demo';
 export { WeaponFxDemo } from './ui/weapon-fx-demo';
 export type { TWeaponFxDemoProps } from './ui/weapon-fx-demo';
 export { SKY_PRESETS } from './lib/sky-preset';
 export type { TSkyPreset, TSkyPresetId } from './lib/sky-preset';
+export { PRECIP_PRESETS } from './lib/precipitation';
+export type { TPrecipPreset, TPrecipPresetId } from './lib/precipitation';
 export {
     useGameStore,
     deriveOutcome,

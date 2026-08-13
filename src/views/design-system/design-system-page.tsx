@@ -16,6 +16,7 @@ import { IconSection } from './icon-section';
 import { PauseSection } from './pause-section';
 import { ScreensSection } from './screens-section';
 import { SkyBackgroundSection } from './sky-background-section';
+import { PrecipitationSection } from './precipitation-section';
 import { TankSkinsSection } from './tank-skins-section';
 import { WeaponsSection } from './weapons-section';
 
@@ -475,6 +476,16 @@ export function DesignSystemPage() {
                             Оружие боя
                         </SectionHeading>
                         <WeaponsSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading
+                            number="18"
+                            headline="Ясно · дождь · снег · буря — пресет от сида"
+                        >
+                            Погода боя
+                        </SectionHeading>
+                        <PrecipitationSection />
                     </section>
                 </div>
             </main>
