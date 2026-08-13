@@ -21,6 +21,30 @@ describe('TopHud', () => {
         expect(mobile.getByText(BOT_NAME)).toBeInTheDocument();
     });
 
+    it('вспышка HP-полосы (#549): lastHit.target=player красит только карточку игрока', () => {
+        useGameStore.setState({
+            hp: { player: 72, enemy: 38 },
+            lastHit: { target: 'player', nonce: 1 },
+        });
+        const { getByTestId } = render(<TopHud />);
+
+        const mobile = within(getByTestId('top-hud-mobile-hp-row'));
+        const bars = mobile.getAllByRole('progressbar');
+        // Первая карточка ряда — игрок, вторая — бот (см. разметку HpCard ниже).
+        expect(bars[0]).toHaveClass('animate-hp-hit-shake');
+        expect(bars[1]).not.toHaveClass('animate-hp-hit-shake');
+    });
+
+    it('вспышка HP-полосы (#549): без lastHit обе карточки спокойны', () => {
+        useGameStore.setState({ hp: { player: 72, enemy: 38 } });
+        const { getByTestId } = render(<TopHud />);
+
+        const mobile = within(getByTestId('top-hud-mobile-hp-row'));
+        for (const bar of mobile.getAllByRole('progressbar')) {
+            expect(bar).not.toHaveClass('animate-hp-hit-shake');
+        }
+    });
+
     it('пилюля хода показывает «ТВОЙ ХОД», когда ходит игрок', () => {
         useGameStore.setState({ turn: 'player', phase: 'aiming' });
         const { getByTestId } = render(<TopHud />);

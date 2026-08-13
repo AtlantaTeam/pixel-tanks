@@ -373,6 +373,41 @@ describe('game.store — смена ветра бурей (#547)', () => {
     });
 });
 
+describe('game.store — попадание для вспышки HP-полосы (#549)', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('нет попаданий на старте боя', () => {
+        expect(useGameStore.getState().lastHit).toBeNull();
+    });
+
+    it('recordHit запоминает задетую сторону и заводит счётчик с единицы', () => {
+        useGameStore.getState().recordHit('enemy');
+
+        expect(useGameStore.getState().lastHit).toEqual({ target: 'enemy', nonce: 1 });
+    });
+
+    it('повторные попадания по любой стороне увеличивают общий счётчик — HP-полоса заново будит анимацию', () => {
+        useGameStore.getState().recordHit('enemy');
+        useGameStore.getState().recordHit('enemy');
+        expect(useGameStore.getState().lastHit).toEqual({ target: 'enemy', nonce: 2 });
+
+        useGameStore.getState().recordHit('player');
+        expect(useGameStore.getState().lastHit).toEqual({ target: 'player', nonce: 3 });
+    });
+
+    it('startGame и resetGame обнуляют последнее попадание (новый бой — без вспышки)', () => {
+        useGameStore.getState().recordHit('enemy');
+        useGameStore.getState().startGame();
+        expect(useGameStore.getState().lastHit).toBeNull();
+
+        useGameStore.getState().recordHit('player');
+        useGameStore.getState().resetGame();
+        expect(useGameStore.getState().lastHit).toBeNull();
+    });
+});
+
 describe('game.store — запись типа оружия в реплей (issue #483)', () => {
     beforeEach(() => {
         useGameStore.getState().resetGame();

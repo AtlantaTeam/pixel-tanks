@@ -239,6 +239,19 @@ export function AtomicComponentsSection() {
                     <HPBar label="Rex Commander" value={72} faction="player" layout="inline" />
                     <HPBar label="Terminator" value={38} faction="enemy" layout="inline" />
                 </div>
+
+                <div className="h-0.5 bg-border" />
+
+                {/* Вспышка при попадании (issue #549, §7.2 разбора #534): `hitNonce`
+                    триггерит сдвиг трека на 2px + мгновенную белую засветку заливки —
+                    связка «взрыв → число → HP» должна читаться на одном кадре. */}
+                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                    HP-bar · вспышка попадания (#549)
+                </span>
+                <div className="flex flex-col gap-3.5">
+                    <HPBar label="Rex Commander — задет" value={72} faction="player" hitNonce={1} />
+                    <HPBar label="Terminator — задет" value={38} faction="enemy" hitNonce={1} />
+                </div>
             </div>
 
             <div className="flex flex-col gap-5 border-[length:var(--border-w)] border-border bg-panel p-6">

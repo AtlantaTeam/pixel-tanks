@@ -317,6 +317,58 @@
     animation: shimmer 1.2s infinite linear;
 }
 
+/* Число урона над задетым танком (issue #549, §7.2 разбора #534): поднимается
+   на 24px и гаснет за 400мс — связка «взрыв → число → HP» должна читаться на
+   одном кадре. `translate`, не `transform` (см. bubble-pop выше) — не
+   конфликтует со статичным позиционированием через translate-утилиты
+   Tailwind на родителе (`DamageNumber`: внешний div — статичный translate
+   центровки/якоря, эта анимация — только на внутреннем span). Гасится через
+   prefers-reduced-motion в месте использования — число живёт неподвижным
+   800мс вместо анимации (критерий issue: «нет transform-анимации»). */
+@keyframes damage-rise {
+    from {
+        opacity: 1;
+        translate: 0 0;
+    }
+    to {
+        opacity: 0;
+        translate: 0 -24px;
+    }
+}
+@utility animate-damage-rise {
+    animation: damage-rise 400ms ease-out forwards;
+}
+
+/* Вспышка HP-полосы задетой стороны при попадании (issue #549, §7.2): 2 кадра
+   (~33мс @60fps) сдвига трека на 2px + мгновенная белая засветка заливки,
+   гаснущая за 200мс — часть той же связки «взрыв → число → HP» на одном
+   кадре. Гасится через prefers-reduced-motion в месте использования
+   (`HpTrack`) — критерий issue «полоса не дёргается». */
+@keyframes hp-hit-shake {
+    0%,
+    100% {
+        translate: 0 0;
+    }
+    50% {
+        translate: 2px 0;
+    }
+}
+@utility animate-hp-hit-shake {
+    animation: hp-hit-shake 33ms linear;
+}
+
+@keyframes hp-hit-flash {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 0;
+    }
+}
+@utility animate-hp-hit-flash {
+    animation: hp-hit-flash 200ms ease-out forwards;
+}
+
 /* Отступы под чёлку/скруглённые углы/жест-бар (iOS notch, Android gesture nav).
    viewport-fit: cover в metadata — без него env() всегда резолвится в 0. */
 @utility safe-area-inset {

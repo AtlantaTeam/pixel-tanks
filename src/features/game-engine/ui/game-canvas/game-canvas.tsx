@@ -9,8 +9,9 @@ import { POWER_MAX } from '@/shared/config';
 import { WEAPON_KIND_ORDER, type TWeapon } from '@/shared/model';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { getStoredTankSkinId, selectTankSkinForSeed } from '@/entities/tank-skins';
-import { selectIsBotTurn, useGameStore } from '../../model/game.store';
+import { selectIsBotTurn, useGameStore, type TSide } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
+import { DamageNumber, type TDamageHit } from '../damage-number';
 import { dealWeapons } from '../../lib/weapons';
 import { createFxRandom } from '../../lib/fx-random';
 import { calculateDragAim } from '../../lib/drag-aim';
@@ -146,6 +147,10 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const [botBubble, setBotBubble] = useState<{ reply: TBotReply; x: number; y: number } | null>(
         null,
     );
+    // Число урона над задетым танком (issue #549) — местное состояние (как
+    // botBubble): само событие происходит здесь же, в GameCanvas, кросс-дерева
+    // (верхний HUD) сигналит только `lastHit` в сторе (см. `recordHit`).
+    const [damageNumber, setDamageNumber] = useState<TDamageHit | null>(null);
     // Визуал жеста (луч, кольцо, чип) — обновляется на pointermove, живёт в DOM-оверлее.
     const [gestureVisual, setGestureVisual] = useState<TGestureVisual | null>(null);
     // Визуал наведения мышью на десктопе (#544): чип у ствола при hover мышью.
@@ -168,6 +173,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const increaseAngle = useGameStore((s) => s.increaseAngle);
     const decrementMoves = useGameStore((s) => s.decrementMoves);
     const applyDamage = useGameStore((s) => s.applyDamage);
+    const recordHit = useGameStore((s) => s.recordHit);
     const recordPlayerHit = useGameStore((s) => s.recordPlayerHit);
     const isGameOver = useGameStore((s) => s.isGameOver);
     const setWeapons = useGameStore((s) => s.setWeapons);
@@ -213,8 +219,13 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             {
                 // Попадание снимает урон оружия с HP того танка, в который попали
                 // (HP-модель, GDD §2.5): левый танк — игрок, правый — бот.
-                onTankHit: ({ hittedIsLeft, leftActive, power }) => {
-                    applyDamage(hittedIsLeft ? 'player' : 'enemy', power);
+                onTankHit: ({ hittedIsLeft, leftActive, power, x, y }) => {
+                    const target: TSide = hittedIsLeft ? 'player' : 'enemy';
+                    applyDamage(target, power);
+                    // Число урона в месте события (#549) + сигнал верхнему HUD
+                    // (вспышка HP-полосы задетой стороны, `top-hud.tsx`).
+                    setDamageNumber({ target, amount: power, x, y });
+                    recordHit(target);
                     // Попадание игрока по противнику — для точности game-over.
                     // leftActive → стрелял игрок; !hittedIsLeft → задет бот (не самострел).
                     if (leftActive && !hittedIsLeft) recordPlayerHit();
@@ -300,6 +311,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             uninstallGameDebugHook();
             resetGame();
             setBotBubble(null);
+            setDamageNumber(null);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -735,6 +747,9 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     dimmed={gestureVisual !== null}
                     onExpire={() => setBotBubble(null)}
                 />
+            )}
+            {damageNumber && (
+                <DamageNumber hit={damageNumber} onExpire={() => setDamageNumber(null)} />
             )}
         </div>
     );

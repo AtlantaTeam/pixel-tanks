@@ -17,6 +17,8 @@ type THPBarProps = {
     max?: number;
     layout?: THPBarLayout;
     className?: string;
+    /** Счётчик попаданий по этой стороне (issue #549) — см. докблок `HpTrack`. */
+    hitNonce?: number;
 };
 
 const DEFAULT_HP_MAX = 100;
@@ -76,22 +78,32 @@ function HpTrack({
     max,
     percent,
     className,
+    hitNonce,
 }: {
     label: string;
     clamped: number;
     max: number;
     percent: number;
     className?: string;
+    /** Счётчик попаданий по этой стороне (issue #549, §7.2 разбора #534) —
+     *  растёт на каждый хит. `key={hitNonce}` пересоздаёт трек на каждое новое
+     *  значение — тот же приём, что `WindShiftBanner` у `windShiftNonce`:
+     *  свежий DOM-узел заново стартует CSS-анимацию сдвига/засветки, даже если
+     *  предыдущий хит по той же стороне ещё не отыграл. `undefined`/не
+     *  меняется → полоса спокойна. */
+    hitNonce?: number;
 }) {
     return (
         <div
+            key={hitNonce}
             role="progressbar"
             aria-label={`${label}: HP ${clamped} из ${max}`}
             aria-valuenow={clamped}
             aria-valuemin={0}
             aria-valuemax={max}
             className={clsx(
-                'h-3 border-[length:var(--border-w)] border-border bg-surface',
+                'relative h-3 border-[length:var(--border-w)] border-border bg-surface',
+                hitNonce != null && 'animate-hp-hit-shake motion-reduce:animate-none',
                 className,
             )}
         >
@@ -100,6 +112,13 @@ function HpTrack({
                 className={clsx('h-full', hpFillClass(percent))}
                 style={{ width: `${percent}%` }}
             />
+            {hitNonce != null && (
+                <div
+                    aria-hidden
+                    data-testid="hp-bar-hit-flash"
+                    className="pointer-events-none absolute inset-0 bg-white animate-hp-hit-flash motion-reduce:hidden"
+                />
+            )}
         </div>
     );
 }
@@ -115,6 +134,7 @@ export function HPBar({
     max = DEFAULT_HP_MAX,
     layout = 'stacked',
     className,
+    hitNonce,
 }: THPBarProps) {
     const clamped = Math.min(max, Math.max(0, value));
     const percent = max > 0 ? (clamped / max) * 100 : 0;
@@ -132,6 +152,7 @@ export function HPBar({
                     max={max}
                     percent={percent}
                     className="min-w-10 flex-1"
+                    hitNonce={hitNonce}
                 />
                 <HpCaption clamped={clamped} max={max} />
             </div>
@@ -144,7 +165,13 @@ export function HPBar({
                 <HpName label={label} faction={faction} />
                 <HpCaption clamped={clamped} max={max} />
             </div>
-            <HpTrack label={label} clamped={clamped} max={max} percent={percent} />
+            <HpTrack
+                label={label}
+                clamped={clamped}
+                max={max}
+                percent={percent}
+                hitNonce={hitNonce}
+            />
         </div>
     );
 }

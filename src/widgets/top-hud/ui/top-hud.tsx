@@ -67,6 +67,7 @@ function HpCard({
     value,
     active,
     layout = 'stacked',
+    hitNonce,
 }: {
     faction: TSide;
     label: string;
@@ -77,6 +78,10 @@ function HpCard({
      *  На 320px (#537) min-width 130px вместо 150px даёт место для обеих карточек
      *  и зазора между ними. */
     layout?: THPBarLayout;
+    /** Счётчик попаданий по ЭТОЙ стороне (issue #549, §7.2 разбора #534) —
+     *  прокидывается в `HPBar`, триггерит сдвиг трека + белую засветку
+     *  заливки (см. докблок `HpTrack`). */
+    hitNonce?: number;
 }) {
     return (
         <div
@@ -104,7 +109,14 @@ function HpCard({
                     : 'border-border',
             )}
         >
-            <HPBar label={label} value={value} faction={faction} max={MAX_HP} layout={layout} />
+            <HPBar
+                label={label}
+                value={value}
+                faction={faction}
+                max={MAX_HP}
+                layout={layout}
+                hitNonce={hitNonce}
+            />
         </div>
     );
 }
@@ -833,6 +845,7 @@ function FreezeAnnouncer({ frozen }: { frozen: boolean }) {
 export function TopHud({ onPauseClick }: TTopHudProps = {}) {
     const playerHp = useGameStore((s) => s.hp.player);
     const enemyHp = useGameStore((s) => s.hp.enemy);
+    const lastHit = useGameStore((s) => s.lastHit);
     const turn = useGameStore((s) => s.turn);
     const phase = useGameStore((s) => s.phase);
     const angle = useGameStore((s) => s.angle);
@@ -847,6 +860,10 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
 
     const displayedPlayerHp = Math.round(useAnimatedValue(playerHp));
     const displayedEnemyHp = Math.round(useAnimatedValue(enemyHp));
+    // Вспышка HP-полосы задетой стороны (#549) — только та карточка, что
+    // реально задета этим попаданием, получает свежий nonce.
+    const playerHitNonce = lastHit?.target === 'player' ? lastHit.nonce : undefined;
+    const enemyHitNonce = lastHit?.target === 'enemy' ? lastHit.nonce : undefined;
 
     // Публикуем фактическую высоту HUD в верхний инсет арены (контракт safe-зоны,
     // #453): высота разная по брейкпоинтам и от safe-area — движок читает её из
@@ -897,6 +914,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         value={displayedPlayerHp}
                         active={turn === 'player'}
                         layout="inline"
+                        hitNonce={playerHitNonce}
                     />
                     <HpCard
                         faction="enemy"
@@ -904,6 +922,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         value={displayedEnemyHp}
                         active={turn === 'enemy'}
                         layout="inline"
+                        hitNonce={enemyHitNonce}
                     />
                 </div>
                 {/* Плашка хода тянется до кнопок сама (#528): раньше между ними стояла
@@ -1076,6 +1095,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                             value={displayedPlayerHp}
                             active={turn === 'player'}
                             layout="inline"
+                            hitNonce={playerHitNonce}
                         />
                         <HpCard
                             faction="enemy"
@@ -1083,6 +1103,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                             value={displayedEnemyHp}
                             active={turn === 'enemy'}
                             layout="inline"
+                            hitNonce={enemyHitNonce}
                         />
                     </div>
                     <div className="hidden min-w-0 flex-1 gap-2 xl:flex">
@@ -1091,12 +1112,14 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                             label={PLAYER_NAME_PLACEHOLDER}
                             value={displayedPlayerHp}
                             active={turn === 'player'}
+                            hitNonce={playerHitNonce}
                         />
                         <HpCard
                             faction="enemy"
                             label={BOT_NAME}
                             value={displayedEnemyHp}
                             active={turn === 'enemy'}
+                            hitNonce={enemyHitNonce}
                         />
                     </div>
                     {/* Правая группа ряда 1 (#538): статус хода + mute/пауза — не

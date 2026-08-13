@@ -12,6 +12,13 @@ type TCapturedCallbacks = {
     onTurnChange?: (turn: 'player' | 'enemy') => void;
     onShotStart?: () => void;
     onShotEnd?: () => void;
+    onTankHit: (params: {
+        hittedIsLeft: boolean;
+        leftActive: boolean;
+        power: number;
+        x: number;
+        y: number;
+    }) => void;
 };
 
 // Захватываем колбэки, которые GameCanvas передаёт в GamePlay, чтобы дёрнуть
@@ -380,6 +387,98 @@ describe('GameCanvas', () => {
 
             // Чип должен остаться скрытым после выстрела (phase: flight)
             // Фактическая проверка будет через пост-выстрел фазу
+        });
+    });
+
+    // Число урона в месте события (#549): попадание должно читаться там же,
+    // где произошло, а не только по панели HP.
+    describe('damage number (#549)', () => {
+        it('показывает число урона над задетым танком в координатах взрыва', () => {
+            useGameStore.getState().resetGame();
+            const { getByText } = render(<GameCanvas seed={42} />);
+
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: false,
+                    leftActive: true,
+                    power: 24,
+                    x: 220,
+                    y: 120,
+                });
+            });
+
+            const number = getByText('-24');
+            expect(number.parentElement?.style.left).toBe('220px');
+            expect(number.parentElement?.style.top).toBe('120px');
+        });
+
+        it('красит число warning при попадании по боту, danger — при попадании по игроку', () => {
+            useGameStore.getState().resetGame();
+            const { getByText, rerender } = render(<GameCanvas seed={42} />);
+
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: false,
+                    leftActive: true,
+                    power: 24,
+                    x: 220,
+                    y: 120,
+                });
+            });
+            expect(getByText('-24').style.color).toBe('var(--color-warning)');
+
+            rerender(<GameCanvas seed={42} />);
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: true,
+                    leftActive: false,
+                    power: 10,
+                    x: 50,
+                    y: 100,
+                });
+            });
+            expect(getByText('-10').style.color).toBe('var(--color-danger)');
+        });
+
+        it('исчезает через 400мс после попадания', () => {
+            useGameStore.getState().resetGame();
+            const { queryByText } = render(<GameCanvas seed={42} />);
+
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: false,
+                    leftActive: true,
+                    power: 24,
+                    x: 220,
+                    y: 120,
+                });
+            });
+            expect(queryByText('-24')).toBeInTheDocument();
+
+            act(() => {
+                vi.advanceTimersByTime(400);
+            });
+
+            expect(queryByText('-24')).not.toBeInTheDocument();
+        });
+
+        it('снимает урон с HP задетой стороны и заводит счётчик lastHit в сторе', () => {
+            useGameStore.getState().resetGame();
+            render(<GameCanvas seed={42} />);
+
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: false,
+                    leftActive: true,
+                    power: 24,
+                    x: 220,
+                    y: 120,
+                });
+            });
+
+            const state = useGameStore.getState();
+            expect(state.hp.enemy).toBe(100 - 24);
+            expect(state.lastHit).toEqual({ target: 'enemy', nonce: 1 });
         });
     });
 });

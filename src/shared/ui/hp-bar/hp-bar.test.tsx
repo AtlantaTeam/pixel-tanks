@@ -152,4 +152,36 @@ describe('HPBar', () => {
         expect(bar).toHaveAttribute('aria-valuemin', '0');
         expect(bar).toHaveAttribute('aria-valuemax', '100');
     });
+
+    describe('вспышка при попадании (issue #549)', () => {
+        it('без hitNonce трек спокоен — нет ни сдвига, ни засветки', () => {
+            const { getByRole, queryByTestId } = render(
+                <HPBar label="Игрок" value={72} faction="player" />,
+            );
+
+            expect(getByRole('progressbar')).not.toHaveClass('animate-hp-hit-shake');
+            expect(queryByTestId('hp-bar-hit-flash')).not.toBeInTheDocument();
+        });
+
+        it('hitNonce включает сдвиг трека и белую засветку заливки, гасимые reduced motion', () => {
+            const { getByRole, getByTestId } = render(
+                <HPBar label="Игрок" value={72} faction="player" hitNonce={1} />,
+            );
+
+            const track = getByRole('progressbar');
+            expect(track).toHaveClass('animate-hp-hit-shake', 'motion-reduce:animate-none');
+
+            const flash = getByTestId('hp-bar-hit-flash');
+            expect(flash).toHaveClass('animate-hp-hit-flash', 'motion-reduce:hidden');
+        });
+
+        it('повторный hitNonce на том же значении не ломает раскладку inline', () => {
+            const { getByRole } = render(
+                <HPBar label="Игрок" value={72} faction="player" layout="inline" hitNonce={3} />,
+            );
+
+            const track = getByRole('progressbar');
+            expect(track).toHaveClass('flex-1', 'animate-hp-hit-shake');
+        });
+    });
 });

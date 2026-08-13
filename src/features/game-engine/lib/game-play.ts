@@ -82,8 +82,19 @@ export type TTanksWeapons = {
 export type TGameMode = 'idle' | 'fire' | 'angle' | 'move';
 
 export type TGamePlayCallbacks = {
-    /** Попадание снаряда в танк: снимает урон с HP задетой стороны (HP-модель, §2.5). */
-    onTankHit: (params: { hittedIsLeft: boolean; leftActive: boolean; power: number }) => void;
+    /**
+     * Попадание снаряда в танк: снимает урон с HP задетой стороны (HP-модель, §2.5).
+     * `x`/`y` — центр очага взрыва (`bullet.explosionCenterX/Y`, CSS-пиксели
+     * контейнера канваса) — по ним `GameCanvas` кладёт всплывающее число урона
+     * прямо над задетым танком (issue #549, §7.2 разбора #534).
+     */
+    onTankHit: (params: {
+        hittedIsLeft: boolean;
+        leftActive: boolean;
+        power: number;
+        x: number;
+        y: number;
+    }) => void;
     onGameOverCheck: (params: { leftWeapons: number; rightWeapons: number }) => void;
     onMovesChange: (delta: number) => void;
     onPowerChange: (delta: number) => void;
@@ -1138,6 +1149,8 @@ export class GamePlay {
                 hittedIsLeft: this.bullet.hittedTank === this.leftTank,
                 leftActive: !!this.leftTank?.isActive,
                 power: this.bullet.power,
+                x: this.bullet.explosionCenterX,
+                y: this.bullet.explosionCenterY,
             });
         } else {
             void this.audio.playSfx('miss');

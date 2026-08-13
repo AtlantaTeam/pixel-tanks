@@ -118,6 +118,17 @@ type TGameState = {
      * смене значения. Обнуляется в `startGame`/`resetGame` (новый бой — без плашки).
      */
     windShiftNonce: number;
+    /**
+     * Последнее попадание — сигнал для белой засветки/сдвига HP-полосы задетой
+     * стороны (issue #549, §7.2 разбора #534). Число урона и координаты для
+     * самого всплывающего числа (`DamageNumber`) в стор не идут — тот же
+     * колбэк (`onTankHit`) кладёт их в локальный state `GameCanvas`, где
+     * событие и происходит; сюда попадает только то, что нужно кросс-дерева —
+     * верхнему HUD (`TopHud`, другое поддерево React). `nonce` растёт на
+     * каждое попадание — повторный хит по той же стороне подряд заново будит
+     * анимацию (тот же приём, что `windShiftNonce`).
+     */
+    lastHit: { target: TSide; nonce: number } | null;
     /** Сколько выстрелов игрока попали по противнику — для точности game-over. */
     hits: number;
     isGameOver: boolean;
@@ -190,6 +201,12 @@ type TGameActions = {
     /** Отмечает смену ветра бурей (#547): плашка `WindShiftBanner` реагирует на инкремент. */
     announceWindShift: () => void;
     /**
+     * Отмечает попадание для вспышки HP-полосы задетой стороны (#549):
+     * `HpTrack` реагирует на инкремент `nonce`, как `WindShiftBanner` — на
+     * `windShiftNonce`.
+     */
+    recordHit: (target: TSide) => void;
+    /**
      * Выстрел в фазовой машине: только из фазы прицеливания (`aiming`), переводит
      * в полёт и раскрывает ветер. `GameCanvas` зовёт её на старте любого выстрела
      * (`onShotStart` — и игрока, и бота: у обоих это переход `aiming`→`flight`).
@@ -250,6 +267,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     windRevealed: false,
     shotsFired: 0,
     windShiftNonce: 0,
+    lastHit: null,
     hits: 0,
     isGameOver: false,
     finalHp: null,
@@ -287,6 +305,8 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     setTurn: (turn) => set({ turn }),
     setWind: (wind) => set({ wind }),
     announceWindShift: () => set((s) => ({ windShiftNonce: s.windShiftNonce + 1 })),
+    recordHit: (target) =>
+        set((s) => ({ lastHit: { target, nonce: (s.lastHit?.nonce ?? 0) + 1 } })),
     fire: () => set((s) => (s.phase !== 'aiming' ? {} : { phase: 'flight', windRevealed: true })),
     recordPlayerHit: () => set((s) => ({ hits: s.hits + 1 })),
     setWeapons: (weapons) => set({ weapons }),
@@ -328,6 +348,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             windRevealed: false,
             shotsFired: 0,
             windShiftNonce: 0,
+            lastHit: null,
             hits: 0,
             finalHp: null,
             finalStats: null,
@@ -352,6 +373,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             windRevealed: false,
             shotsFired: 0,
             windShiftNonce: 0,
+            lastHit: null,
             hits: 0,
             isGameOver: false,
             finalHp: null,
