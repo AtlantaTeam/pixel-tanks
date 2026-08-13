@@ -132,6 +132,10 @@
             {
                 "milestone": "Мобильная эргономика боя · Фаза 5: Прицеливание и контролы",
                 "branch": "feature/mobile-ergo-5-aim"
+            },
+            {
+                "milestone": "Визуал боя · Фаза 1: Небо и параллакс",
+                "branch": "feature/visuals-1-sky"
             }
         ]
     },
