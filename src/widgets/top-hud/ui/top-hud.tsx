@@ -94,6 +94,7 @@ function TurnPill({ turn, phase, hidden }: { turn: TSide; phase: TPhase; hidden?
 
     return (
         <div
+            data-testid="turn-pill"
             aria-hidden={hidden || undefined}
             className={clsx(
                 HUD_SURFACE,
