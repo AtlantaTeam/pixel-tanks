@@ -136,6 +136,10 @@
             {
                 "milestone": "Визуал боя · Фаза 1: Небо и параллакс",
                 "branch": "feature/visuals-1-sky"
+            },
+            {
+                "milestone": "Визуал боя · Фаза 2: Разновидности танков",
+                "branch": "feature/visuals-2-tank-skins"
             }
         ]
     },
