@@ -210,4 +210,79 @@ describe('SegmentedControl', () => {
         const segment = screen.getByRole('radio', { name: 'День' });
         expect(segment.className).toMatch(/focus-visible:outline-\[var\(--accent\)\]/);
     });
+
+    it('распределяет сегменты поровну по ширине контейнера', () => {
+        render(
+            <SegmentedControl
+                label="Сложность"
+                options={DIFFICULTY_OPTIONS}
+                value="rookie"
+                onChange={() => {}}
+            />,
+        );
+
+        const buttons = screen.getAllByRole('radio');
+        const widths = buttons.map((btn) => (btn as HTMLButtonElement).offsetWidth);
+
+        // Все кнопки должны иметь одинаковую ширину
+        const firstWidth = widths[0];
+        widths.forEach((width) => {
+            expect(width).toBe(firstWidth);
+        });
+    });
+
+    it('не меняет ширину сегментов при переключении активного', () => {
+        const { rerender } = render(
+            <SegmentedControl
+                label="Сложность"
+                options={DIFFICULTY_OPTIONS}
+                value="rookie"
+                onChange={() => {}}
+            />,
+        );
+
+        const getWidths = () =>
+            screen.getAllByRole('radio').map((btn) => (btn as HTMLButtonElement).offsetWidth);
+
+        const widthsBefore = getWidths();
+
+        rerender(
+            <SegmentedControl
+                label="Сложность"
+                options={DIFFICULTY_OPTIONS}
+                value="terminator"
+                onChange={() => {}}
+            />,
+        );
+
+        const widthsAfter = getWidths();
+
+        widthsBefore.forEach((width, index) => {
+            expect(widthsAfter[index]).toBe(width);
+        });
+    });
+
+    it('распределяет поровну даже при разных длинах подписей', () => {
+        render(
+            <SegmentedControl
+                label="Группа"
+                options={[
+                    { value: 'short', label: 'У' },
+                    { value: 'medium', label: 'Medium' },
+                    { value: 'very-long', label: 'Очень длинная подпись' },
+                ]}
+                value="short"
+                onChange={() => {}}
+            />,
+        );
+
+        const buttons = screen.getAllByRole('radio');
+        const widths = buttons.map((btn) => (btn as HTMLButtonElement).offsetWidth);
+
+        // Все кнопки должны иметь одинаковую ширину, несмотря на разные длины текста
+        const firstWidth = widths[0];
+        widths.forEach((width) => {
+            expect(width).toBe(firstWidth);
+        });
+    });
 });
