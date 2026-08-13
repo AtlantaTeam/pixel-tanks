@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { cloudSpriteWidth } from './cloud-field';
 import { SkyScene, type TSkyImages } from './sky-scene';
 
 /**
@@ -211,12 +212,16 @@ describe('SkyScene.resize / draw', () => {
                 (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
             ) as unknown as number[][];
             expect(cloudCalls.length).toBeGreaterThan(0);
+            const baseWidth = cloudSpriteWidth(1280);
             for (const call of cloudCalls) {
-                // 15% ширины: на 1280 это 192 CSS-px — размер из одобренного кадра.
-                expect(call[3]).toBe(192);
+                // Каждое облако домножает базовую (15% ширины) величину на свой scale
+                // (#515) — ширина уже не одна на всех, но остаётся в границах ярусов.
+                expect(Math.abs(call[3])).toBeGreaterThan(0);
+                expect(Math.abs(call[3])).toBeLessThanOrEqual(Math.round(baseWidth * 1.4));
             }
 
             // На телефоне облако НЕ остаётся 192 px (это было бы полэкрана): доля та же.
+            const narrowBaseWidth = cloudSpriteWidth(390);
             const narrow = new SkyScene({ seed: 1, reducedMotion: false, images });
             const narrowCtx = createFakeCtx();
             narrow.resize(390, 844);
@@ -224,13 +229,38 @@ describe('SkyScene.resize / draw', () => {
             const narrowCall = narrowCtx.drawImage.mock.calls.find(
                 (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
             ) as unknown as number[];
-            expect(narrowCall[3]).toBeLessThan(80);
+            expect(Math.abs(narrowCall[3])).toBeLessThan(80);
+            expect(Math.abs(narrowCall[3])).toBeLessThanOrEqual(Math.round(narrowBaseWidth * 1.4));
         } finally {
             Object.defineProperty(window, 'devicePixelRatio', {
                 value: original,
                 configurable: true,
             });
         }
+    });
+
+    it('облака поля заметно разного размера на 1280 — не единый масштаб на все (#515)', () => {
+        const images = allImages();
+        const scene = new SkyScene({ seed: 1, reducedMotion: false, images });
+        const ctx = createFakeCtx();
+        scene.resize(1280, 800);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        const field = scene.cloudField();
+        const cloudCalls = ctx.drawImage.mock.calls.filter(
+            (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
+        ) as unknown as number[][];
+        expect(cloudCalls.length).toBe(field.length);
+
+        const baseWidth = cloudSpriteWidth(1280);
+        field.forEach((cloud, i) => {
+            const expectedWidth = Math.round(baseWidth * cloud.scale);
+            expect(Math.abs(cloudCalls[i][3])).toBe(expectedWidth);
+            // Отрицательная ширина назначения — контракт зеркалирования по X.
+            expect(cloudCalls[i][3] < 0).toBe(cloud.mirror);
+        });
+
+        const widths = new Set(cloudCalls.map((c) => Math.abs(c[3])));
+        expect(widths.size).toBeGreaterThan(1);
     });
 
     it('позиции квантованы по пикселям устройства — арт не кипит на ходу (#514)', () => {

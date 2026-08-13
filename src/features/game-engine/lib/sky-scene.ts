@@ -234,14 +234,17 @@ export class SkyScene {
         const dpr = getDevicePixelRatio();
         const devicePixel = 1 / dpr;
         const snap = (value: number) => Math.round(value * dpr) / dpr;
+        // Базовый размер — доля ширины экрана (`cloudSpriteWidth`), а не фиксированные
+        // CSS-пиксели: 192 px совпадали с десктопным эталоном, но на 390 занимали
+        // половину ширины (#523). К dpr привязывать тоже нельзя — на экране без
+        // ретины облако выходило вдвое крупнее макета (#514). Одинаковый на всех
+        // облаках он и был причиной «неинтересного» неба (#515) — каждое облако
+        // домножает его на свой `scale`.
+        const baseWidth = cloudSpriteWidth(width);
         for (const cloud of this.field) {
             const image = this.images[cloud.sprite];
             if (!image || !image.width || !image.height) continue;
-            // Размер — доля ширины экрана (`cloudSpriteWidth`), а не фиксированные
-            // CSS-пиксели: 192 px совпадали с десктопным эталоном, но на 390 занимали
-            // половину ширины (#523). К dpr привязывать тоже нельзя — на экране без
-            // ретины облако выходило вдвое крупнее макета (#514).
-            const spriteWidth = cloudSpriteWidth(width);
+            const spriteWidth = Math.max(1, Math.round(baseWidth * cloud.scale));
             const spriteHeight = Math.max(
                 1,
                 Math.round((image.height * spriteWidth) / image.width),
@@ -257,7 +260,16 @@ export class SkyScene {
             const direction = this.wind < 0 ? -1 : 1;
             const travelled = snap(cloud.xFrac * span) + direction * steps * devicePixel;
             const x = wrapOffset(travelled, span) - spriteWidth;
-            ctx.drawImage(image, x, snap(height * cloud.yFrac), spriteWidth, spriteHeight);
+            const y = snap(height * cloud.yFrac);
+            // Зеркалим через отрицательную ширину назначения (валидно по спеке Canvas
+            // 2D): drawImage сам разворачивает спрайт, не трогая матрицу трансформации —
+            // ctx.scale(-1,1) сдвинул бы систему координат для всех кадров после этого
+            // облака и путал бы x/y остальных вызовов в той же ctx.save()-секции.
+            if (cloud.mirror) {
+                ctx.drawImage(image, x + spriteWidth, y, -spriteWidth, spriteHeight);
+            } else {
+                ctx.drawImage(image, x, y, spriteWidth, spriteHeight);
+            }
         }
         ctx.restore();
     }

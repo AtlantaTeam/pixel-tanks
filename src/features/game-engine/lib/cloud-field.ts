@@ -17,7 +17,7 @@ export type TCloudSpriteKey = 'cloud1' | 'cloud2' | 'cloud3';
 
 const SPRITE_KEYS: readonly TCloudSpriteKey[] = ['cloud1', 'cloud2', 'cloud3'];
 
-/** Облако поля: какой спрайт, где стоит и с какой скоростью плывёт. */
+/** Облако поля: какой спрайт, где стоит, с какой скоростью и в каком размере плывёт. */
 export type TCloudInstance = {
     sprite: TCloudSpriteKey;
     /** Стартовая позиция как доля ширины поля, [0, 1). */
@@ -26,6 +26,10 @@ export type TCloudInstance = {
     yFrac: number;
     /** Скорость параллакса, px/мс. */
     speed: number;
+    /** Множитель размера спрайта относительно базового (`cloudSpriteWidth`), [CLOUD_SCALE_MIN, CLOUD_SCALE_MAX]. */
+    scale: number;
+    /** Зеркалить спрайт по X при отрисовке — те же три спрайта дают шесть силуэтов. */
+    mirror: boolean;
 };
 
 /**
@@ -46,9 +50,30 @@ export const CLOUD_COUNT_MAX = 10;
  */
 export const CLOUD_SPEEDS = [0.004, 0.009, 0.016] as const;
 
-/** Вертикальный разброс: облака живут в верхней части неба, над рельефом. */
+/**
+ * Вертикальный разброс: облака живут в верхней части неба, над рельефом. Расширен с
+ * прежних 0.04–0.34 (#514) — в одобренном эталоне облака стоят и заметно ниже, вплотную
+ * к силуэту гор (горы начинаются на ~0.62 высоты, `sky-scene.ts`), а не только у самого
+ * верха кадра.
+ */
 const Y_MIN = 0.04;
-const Y_MAX = 0.34;
+const Y_MAX = 0.48;
+
+/**
+ * Ярусы глубины: масштаб облака связан со скоростью, а не берётся отдельным random.
+ * Мелкое — оно же дальнее — оно же медленное, тогда глаз читает планы (#515, гипотеза
+ * приёмки «нет разброса»). Диапазоны соседних ярусов пересекаются нарочно — иначе поле
+ * выглядело бы как три чётких пресета размера, а не живой разброс.
+ */
+const CLOUD_DEPTHS: ReadonlyArray<{ speed: number; scaleMin: number; scaleMax: number }> = [
+    { speed: CLOUD_SPEEDS[0], scaleMin: 0.55, scaleMax: 0.85 },
+    { speed: CLOUD_SPEEDS[1], scaleMin: 0.75, scaleMax: 1.1 },
+    { speed: CLOUD_SPEEDS[2], scaleMin: 1.0, scaleMax: 1.4 },
+];
+
+/** Границы масштаба облака по всем ярусам — для тестов и внешних проверок. */
+export const CLOUD_SCALE_MIN = Math.min(...CLOUD_DEPTHS.map((d) => d.scaleMin));
+export const CLOUD_SCALE_MAX = Math.max(...CLOUD_DEPTHS.map((d) => d.scaleMax));
 
 /**
  * Дрейф при штиле: при нулевом ветре облака не встают колом, а еле ползут. Ноль
@@ -121,11 +146,15 @@ export function buildCloudField(seed: number | string, width: number): TCloudIns
     const field: TCloudInstance[] = [];
     for (let i = 0; i < count; i++) {
         const jitter = 0.15 + random() * 0.7;
+        const depth =
+            CLOUD_DEPTHS[Math.floor(random() * CLOUD_DEPTHS.length) % CLOUD_DEPTHS.length];
         field.push({
             sprite: SPRITE_KEYS[Math.floor(random() * SPRITE_KEYS.length) % SPRITE_KEYS.length],
             xFrac: (i + jitter) / count,
             yFrac: Y_MIN + random() * (Y_MAX - Y_MIN),
-            speed: CLOUD_SPEEDS[Math.floor(random() * CLOUD_SPEEDS.length) % CLOUD_SPEEDS.length],
+            speed: depth.speed,
+            scale: depth.scaleMin + random() * (depth.scaleMax - depth.scaleMin),
+            mirror: random() < 0.5,
         });
     }
     return field;

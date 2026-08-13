@@ -4,6 +4,8 @@ import {
     cloudCount,
     CLOUD_COUNT_MAX,
     CLOUD_COUNT_MIN,
+    CLOUD_SCALE_MAX,
+    CLOUD_SCALE_MIN,
     CLOUD_SPEEDS,
     cloudSpriteWidth,
     windFactor,
@@ -110,10 +112,68 @@ describe('buildCloudField — детерминизм и разреженност
         field.forEach((c) => expect(CLOUD_SPEEDS).toContain(c.speed));
     });
 
-    it('облака живут в верхней части неба, над рельефом', () => {
+    it('облака живут в верхней части неба, над рельефом, но разброс по высоте шире прежнего (#515)', () => {
         for (const c of buildCloudField('seed-y', 1280)) {
             expect(c.yFrac).toBeGreaterThanOrEqual(0.04);
-            expect(c.yFrac).toBeLessThanOrEqual(0.34);
+            expect(c.yFrac).toBeLessThanOrEqual(0.48);
         }
+    });
+
+    it('разброс по вертикали действительно шире прежних 0.04–0.34 (#515)', () => {
+        // Прежняя верхняя граница была 0.34 — в эталоне облака стоят и ниже.
+        // Собираем большую выборку: на одном узком поле низких облаков может не выпасть.
+        let sawLower = false;
+        for (let seed = 0; seed < 40 && !sawLower; seed++) {
+            for (const c of buildCloudField(`low-cloud-${seed}`, 1600)) {
+                if (c.yFrac > 0.34) sawLower = true;
+            }
+        }
+        expect(sawLower).toBe(true);
+    });
+
+    it('облака заметно разного размера в пределах одного поля (#515)', () => {
+        // Ведущая гипотеза приёмки: единый масштаб на все облака и есть причина
+        // «неинтересного» неба — нужен разброс, видимый на одном экране.
+        const field = buildCloudField('seed-scale', 1280);
+        const scales = field.map((c) => c.scale);
+        expect(Math.max(...scales) - Math.min(...scales)).toBeGreaterThan(0.3);
+        for (const scale of scales) {
+            expect(scale).toBeGreaterThanOrEqual(CLOUD_SCALE_MIN);
+            expect(scale).toBeLessThanOrEqual(CLOUD_SCALE_MAX);
+        }
+    });
+
+    it('мелкое облако — оно же дальнее — оно же медленное: масштаб связан со скоростью (#515)', () => {
+        // Собираем большую выборку по многим сидам, а не полагаемся на один field —
+        // диапазоны ярусов пересекаются нарочно (внутри яруса тоже есть разброс).
+        const bySpeed = new Map<number, number[]>();
+        for (let seed = 0; seed < 40; seed++) {
+            for (const c of buildCloudField(`speed-scale-${seed}`, 1600)) {
+                const list = bySpeed.get(c.speed) ?? [];
+                list.push(c.scale);
+                bySpeed.set(c.speed, list);
+            }
+        }
+        const speeds = [...CLOUD_SPEEDS];
+        const avgScale = (speed: number) => {
+            const list = bySpeed.get(speed) ?? [];
+            return list.reduce((sum, v) => sum + v, 0) / list.length;
+        };
+        const avgBySpeed = speeds.map(avgScale);
+        for (let i = 1; i < avgBySpeed.length; i++) {
+            expect(avgBySpeed[i]).toBeGreaterThan(avgBySpeed[i - 1]);
+        }
+    });
+
+    it('часть облаков зеркалится по X — те же три спрайта дают разные силуэты (#515)', () => {
+        // На одном поле выборка маленькая (3–10 облаков) — набираем большую выборку по сидам.
+        const mirrored: boolean[] = [];
+        for (let seed = 0; seed < 20; seed++) {
+            for (const c of buildCloudField(`mirror-${seed}`, 1600)) {
+                mirrored.push(c.mirror);
+            }
+        }
+        expect(mirrored.some((v) => v)).toBe(true);
+        expect(mirrored.some((v) => !v)).toBe(true);
     });
 });
