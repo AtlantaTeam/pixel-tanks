@@ -5,7 +5,9 @@ import {
     CLOUD_COUNT_MAX,
     CLOUD_COUNT_MIN,
     CLOUD_SPEEDS,
+    windFactor,
 } from './cloud-field';
+import { MAX_WIND } from './wind';
 
 describe('cloudCount — плотность от ширины', () => {
     it('шире экран — больше облаков (шаг из замера одобренного кадра)', () => {
@@ -24,6 +26,31 @@ describe('cloudCount — плотность от ширины', () => {
     it('битая ширина не роняет поле в ноль облаков', () => {
         expect(cloudCount(Number.NaN)).toBe(CLOUD_COUNT_MIN);
         expect(cloudCount(-10)).toBe(CLOUD_COUNT_MIN);
+    });
+});
+
+describe('windFactor — облака плывут по ветру боя (#518)', () => {
+    it('знак ветра задаёт сторону: влево — значит влево', () => {
+        expect(windFactor(-MAX_WIND)).toBeLessThan(0);
+        expect(windFactor(MAX_WIND)).toBeGreaterThan(0);
+    });
+
+    it('сильнее ветер — быстрее облака', () => {
+        expect(Math.abs(windFactor(MAX_WIND))).toBeGreaterThan(Math.abs(windFactor(MAX_WIND / 2)));
+    });
+
+    it('при штиле облака не встают колом, а еле ползут', () => {
+        // Ноль читался бы как поломка («небо замерло»), а не как безветрие.
+        expect(windFactor(0)).toBeGreaterThan(0);
+        expect(windFactor(0)).toBeLessThan(Math.abs(windFactor(MAX_WIND)) / 2);
+    });
+
+    it('ветер сверх шкалы не разгоняет небо до гоночной трассы', () => {
+        expect(Math.abs(windFactor(MAX_WIND * 100))).toBe(Math.abs(windFactor(MAX_WIND)));
+    });
+
+    it('битое значение ветра не роняет движение', () => {
+        expect(windFactor(Number.NaN)).toBeGreaterThan(0);
     });
 });
 

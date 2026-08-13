@@ -329,6 +329,44 @@ describe('SkyScene.resize / draw', () => {
         }
     });
 
+    it('облака плывут в сторону ветра боя (#518)', () => {
+        const images = allImages();
+        const cloudSprites = [images.cloud1, images.cloud2, images.cloud3];
+        const firstXAfter = (wind: number, ms: number) => {
+            const scene = new SkyScene({ seed: 21, reducedMotion: false, wind, images });
+            scene.resize(1280, 800);
+            scene.update(ms);
+            const ctx = createFakeCtx();
+            scene.draw(ctx as unknown as CanvasRenderingContext2D);
+            const call = ctx.drawImage.mock.calls.find((c) =>
+                cloudSprites.includes(c[0] as HTMLImageElement),
+            ) as unknown as number[];
+            return call[1];
+        };
+
+        const start = firstXAfter(0.01, 0);
+        expect(firstXAfter(0.01, 3000)).toBeGreaterThan(start);
+        expect(firstXAfter(-0.01, 3000)).toBeLessThan(start);
+    });
+
+    it('при штиле облака всё равно дрейфуют — небо не замирает (#518)', () => {
+        const images = allImages();
+        const cloudSprites = [images.cloud1, images.cloud2, images.cloud3];
+        const scene = new SkyScene({ seed: 21, reducedMotion: false, wind: 0, images });
+        scene.resize(1280, 800);
+        const xNow = () => {
+            const ctx = createFakeCtx();
+            scene.draw(ctx as unknown as CanvasRenderingContext2D);
+            const call = ctx.drawImage.mock.calls.find((c) =>
+                cloudSprites.includes(c[0] as HTMLImageElement),
+            ) as unknown as number[];
+            return call[1];
+        };
+        const before = xNow();
+        scene.update(10000);
+        expect(xNow()).not.toBe(before);
+    });
+
     it('без offscreen не аллоцирует канвас на каждый кадр (запоминает недоступность)', () => {
         let created = 0;
         const noCtxCanvas = {

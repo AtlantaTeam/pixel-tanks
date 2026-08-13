@@ -55,6 +55,12 @@ const allSkyImagesLoaded = () => loadedCount >= Object.keys(SKY_ASSET_PATHS).len
 type TSkyBackgroundProps = {
     /** Сид боя: тот же сид — тот же пресет и то же положение облаков на старте. */
     seed: number | string | null | undefined;
+    /**
+     * Ветер боя (`game.store.wind`): облака плывут по нему, а не всегда вправо (#518).
+     * Постоянен весь бой, поэтому смена значения пересоздаёт сцену — это происходит
+     * один раз, при старте боя.
+     */
+    wind?: number;
     /** Явный пресет — для витрины `/design-system`. */
     preset?: TSkyPresetId;
     /**
@@ -71,7 +77,13 @@ type TSkyBackgroundProps = {
  * открывает это небо вместо чёрного). Свой rAF-цикл двигает лишь смещения слоёв;
  * статичный фон перестраивается только при ресайзе (`SkyScene`).
  */
-export const SkyBackground = ({ seed, preset, reducedMotion, className }: TSkyBackgroundProps) => {
+export const SkyBackground = ({
+    seed,
+    wind,
+    preset,
+    reducedMotion,
+    className,
+}: TSkyBackgroundProps) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     useEffect(() => {
@@ -87,6 +99,7 @@ export const SkyBackground = ({ seed, preset, reducedMotion, className }: TSkyBa
         const scene = new SkyScene({
             seed: resolvedSeed,
             reducedMotion: reduced,
+            wind,
             preset,
             images: skyImages,
         });
@@ -151,7 +164,7 @@ export const SkyBackground = ({ seed, preset, reducedMotion, className }: TSkyBa
             loadListeners.delete(redraw);
             observer?.disconnect();
         };
-    }, [seed, preset, reducedMotion]);
+    }, [seed, wind, preset, reducedMotion]);
 
     return (
         <canvas

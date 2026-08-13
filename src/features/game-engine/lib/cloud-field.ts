@@ -1,4 +1,5 @@
 import { createSeededRandom } from '@/shared/lib/random';
+import { MAX_WIND } from './wind';
 
 /**
  * Поле отдельных облаков — то, что показано в одобренном кадре
@@ -48,6 +49,34 @@ export const CLOUD_SPEEDS = [0.004, 0.009, 0.016] as const;
 /** Вертикальный разброс: облака живут в верхней части неба, над рельефом. */
 const Y_MIN = 0.04;
 const Y_MAX = 0.34;
+
+/**
+ * Дрейф при штиле: при нулевом ветре облака не встают колом, а еле ползут. Ноль
+ * выглядел бы поломкой («небо замерло»), а не безветрием.
+ */
+const CALM_DRIFT = 0.25;
+
+/** Прибавка к дрейфу при ветре в полную силу (`MAX_WIND`). */
+const WIND_GAIN = 1.75;
+
+/**
+ * Множитель скорости облаков от ветра боя. Знак — направление: ветер влево несёт
+ * облака влево, и небо перестаёт спорить с траекторией снаряда (#518).
+ *
+ * Нормируется на `MAX_WIND` — тот же потолок, по которому HUD рисует пипы силы.
+ * Своя шкала здесь означала бы, что «три пипа» в интерфейсе и «сильный ветер» на небе
+ * разъезжаются.
+ *
+ * Ветер в бою ПОСТОЯНЕН и выведен из сида, поэтому небо дует одинаково весь бой,
+ * а от боя к бою по-разному. Менять его в полёте нельзя: он входит в физику снаряда
+ * и в реплеи.
+ */
+export function windFactor(wind: number): number {
+    if (!Number.isFinite(wind)) return CALM_DRIFT;
+    const strength = Math.min(1, Math.abs(wind) / MAX_WIND);
+    const magnitude = CALM_DRIFT + strength * WIND_GAIN;
+    return wind < 0 ? -magnitude : magnitude;
+}
 
 export function cloudCount(width: number): number {
     if (!Number.isFinite(width) || width <= 0) return CLOUD_COUNT_MIN;
