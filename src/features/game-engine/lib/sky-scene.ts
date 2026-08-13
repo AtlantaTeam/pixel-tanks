@@ -218,15 +218,21 @@ export class SkyScene {
      * (`cloud-field.ts`). Раньше здесь повторялась бесшовная лента — небо выходило
      * плотным, а движение читалось рывком целого слоя (#514).
      *
-     * Позиции квантованы по пикселям устройства: при дробной позиции канвас каждый кадр
-     * пересэмплирует спрайт по-новому, и пиксельный арт «кипит» на ходу. Округление
-     * к device-пикселю оставляет движение ступенчатым — для пиксель-арта это норма,
-     * а не дефект.
+     * Движение идёт РОВНЫМ КАДАНСОМ: облако сдвигается ровно на один пиксель устройства
+     * через равный интервал времени (`elapsed / msPerDevicePixel`), а не «куда попало,
+     * потом округлим».
+     *
+     * Почему так, а не round(позиции): дробная позиция заставляет канвас каждый кадр
+     * пересэмплировать спрайт заново — пиксельная сетка кипит. Но и округление самой
+     * позиции не годится: dt между кадрами гуляет, границы пикселя пересекаются
+     * неравномерно, и шаги сбиваются в «шаг-шаг-пауза» — на глаз это тормоз-газ (#515).
+     * Деление времени на равные интервалы убирает и то, и другое.
      */
     private drawClouds(ctx: CanvasRenderingContext2D, width: number, height: number): void {
         ctx.save();
         ctx.globalAlpha = this.preset.cloudAlpha;
         const dpr = getDevicePixelRatio();
+        const devicePixel = 1 / dpr;
         const snap = (value: number) => Math.round(value * dpr) / dpr;
         for (const cloud of this.field) {
             const image = this.images[cloud.sprite];
@@ -240,9 +246,12 @@ export class SkyScene {
             // Поле шире экрана на спрайт: облако уезжает за край и въезжает с другого,
             // не исчезая на глазах.
             const span = width + spriteWidth;
-            const travelled = cloud.xFrac * span + cloud.speed * this.elapsed;
+            // Сколько миллисекунд на один пиксель устройства при этой скорости.
+            const msPerDevicePixel = devicePixel / cloud.speed;
+            const steps = Math.floor(this.elapsed / msPerDevicePixel);
+            const travelled = snap(cloud.xFrac * span) + steps * devicePixel;
             const x = wrapOffset(travelled, span) - spriteWidth;
-            ctx.drawImage(image, snap(x), snap(height * cloud.yFrac), spriteWidth, spriteHeight);
+            ctx.drawImage(image, x, snap(height * cloud.yFrac), spriteWidth, spriteHeight);
         }
         ctx.restore();
     }
