@@ -26,12 +26,18 @@ export function SoundPrompt() {
         return () => controller.abort();
     }, []);
 
-    if (dismissed) return null;
-
+    // Промпт НЕ размонтируется, а гаснет: раньше он возвращал null, строка исчезала
+    // из потока, колонка схлопывалась — и вся страница подпрыгивала ровно в момент
+    // клика, под курсором/пальцем (#522). Место за ним остаётся навсегда: цена —
+    // одна пустая строка, зато раскладка неподвижна.
     return (
         <p
             aria-hidden
-            className="animate-pulse font-ui text-[10px] text-primary/90 sm:text-xs motion-reduce:animate-none flex items-center gap-1"
+            className={`font-ui flex items-center gap-1 text-[10px] text-primary/90 transition-opacity duration-300 sm:text-xs motion-reduce:transition-none ${
+                dismissed
+                    ? 'pointer-events-none opacity-0'
+                    : 'animate-pulse motion-reduce:animate-none'
+            }`}
         >
             <Icon name="play" size={12} />
             нажми — играет музыка
