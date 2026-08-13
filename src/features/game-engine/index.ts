@@ -1,6 +1,9 @@
 export { GameCanvas } from './ui/game-canvas';
 export type { TGameCanvasHandle } from './ui/game-canvas';
 export { ReplayCanvas } from './ui/replay-canvas';
+export { SkyBackground } from './ui/sky-background';
+export { SKY_PRESETS } from './lib/sky-preset';
+export type { TSkyPreset, TSkyPresetId } from './lib/sky-preset';
 export {
     useGameStore,
     deriveOutcome,

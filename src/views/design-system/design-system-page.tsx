@@ -15,6 +15,7 @@ import { GameOverSection } from './game-over-section';
 import { IconSection } from './icon-section';
 import { PauseSection } from './pause-section';
 import { ScreensSection } from './screens-section';
+import { SkyBackgroundSection } from './sky-background-section';
 
 const FACTION_OPTIONS: TSegmentedControlOption<TFaction>[] = [
     { value: 'player', label: 'Игрок' },
@@ -445,6 +446,13 @@ export function DesignSystemPage() {
                             Дисплейный шрифт
                         </SectionHeading>
                         <DisplayFontSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading number="15" headline="День · закат · ночь — пресет от сида">
+                            Небо боя
+                        </SectionHeading>
+                        <SkyBackgroundSection />
                     </section>
                 </div>
             </main>
