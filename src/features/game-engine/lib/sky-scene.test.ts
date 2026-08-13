@@ -253,6 +253,82 @@ describe('SkyScene.resize / draw', () => {
         }
     });
 
+    it('шаги облака равномерны при дрожащем dt — не «тормоз-газ» (#515)', () => {
+        // Кадры прилетают неровно (rAF гуляет). Если округлять ПОЗИЦИЮ, границы пикселя
+        // пересекаются как попало: два шага подряд, потом пауза. Каданс должен зависеть
+        // только от накопленного времени, а не от того, как оно нарезано на кадры.
+        const original = window.devicePixelRatio;
+        Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+        try {
+            const images = allImages();
+            const jittery = new SkyScene({ seed: 7, reducedMotion: false, images });
+            const even = new SkyScene({ seed: 7, reducedMotion: false, images });
+            jittery.resize(1280, 800);
+            even.resize(1280, 800);
+
+            const xsOf = (scene: SkyScene) => {
+                const ctx = createFakeCtx();
+                scene.draw(ctx as unknown as CanvasRenderingContext2D);
+                return (
+                    ctx.drawImage.mock.calls.filter(
+                        (c) => c[0] !== undefined,
+                    ) as unknown as number[][]
+                ).map((c) => c[1]);
+            };
+
+            // Одно и то же суммарное время, нарезанное по-разному.
+            [3, 41, 7, 29, 60, 10].forEach((dt) => jittery.update(dt));
+            even.update(150);
+            expect(xsOf(jittery)).toEqual(xsOf(even));
+        } finally {
+            Object.defineProperty(window, 'devicePixelRatio', {
+                value: original,
+                configurable: true,
+            });
+        }
+    });
+
+    it('интервалы между шагами облака одинаковы (#515)', () => {
+        const original = window.devicePixelRatio;
+        Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+        try {
+            const images = allImages();
+            const scene = new SkyScene({ seed: 11, reducedMotion: false, images });
+            scene.resize(1280, 800);
+            // Именно облако, а не горы: горы неподвижны и первыми уходят в drawImage.
+            const cloudSprites = [images.cloud1, images.cloud2, images.cloud3];
+            const firstX = () => {
+                const ctx = createFakeCtx();
+                scene.draw(ctx as unknown as CanvasRenderingContext2D);
+                const call = ctx.drawImage.mock.calls.find((c) =>
+                    cloudSprites.includes(c[0] as HTMLImageElement),
+                ) as unknown as number[];
+                return call[1];
+            };
+
+            // Ловим моменты, когда самое быстрое облако сдвигается, и сверяем интервалы.
+            const stepTimes: number[] = [];
+            let previous = firstX();
+            for (let t = 1; t <= 2000; t++) {
+                scene.update(1);
+                const current = firstX();
+                if (current !== previous) {
+                    stepTimes.push(t);
+                    previous = current;
+                }
+            }
+            expect(stepTimes.length).toBeGreaterThan(3);
+            const gaps = stepTimes.slice(1).map((t, i) => t - stepTimes[i]);
+            // Разброс интервалов — не больше миллисекунды (округление до целого тика).
+            expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThanOrEqual(1);
+        } finally {
+            Object.defineProperty(window, 'devicePixelRatio', {
+                value: original,
+                configurable: true,
+            });
+        }
+    });
+
     it('без offscreen не аллоцирует канвас на каждый кадр (запоминает недоступность)', () => {
         let created = 0;
         const noCtxCanvas = {
