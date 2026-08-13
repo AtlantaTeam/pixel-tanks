@@ -48,8 +48,8 @@ describe('Icon', () => {
         expect(container.querySelector('svg')).toHaveClass('text-accent');
     });
 
-    it('renders every name from the design inventory icon set (28 names)', () => {
-        expect(ICON_NAMES).toHaveLength(28);
+    it('renders every name from the design inventory icon set (29 names)', () => {
+        expect(ICON_NAMES).toHaveLength(29);
 
         for (const name of ICON_NAMES) {
             const { container, unmount } = render(<Icon name={name} />);

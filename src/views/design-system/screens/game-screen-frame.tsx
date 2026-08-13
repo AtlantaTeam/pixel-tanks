@@ -299,6 +299,8 @@ function ResourcePips({
     );
 }
 
+const FROZEN_TEXT = 'Твои числа заморожены до конца хода соперника';
+
 function FrozenNote({ className }: { className?: string }) {
     return (
         <p
@@ -308,8 +310,34 @@ function FrozenNote({ className }: { className?: string }) {
                 className,
             )}
         >
-            Твои числа заморожены до конца хода соперника
+            {FROZEN_TEXT}
         </p>
+    );
+}
+
+/** Планшет/десктоп (#472) — 1:1 с боевым `FreezeBadgeOrNothing` (`widgets/top-hud`):
+ *  короткий бейдж рядом с пилюлей хода, слот зарезервирован всегда (`invisible`,
+ *  не размонтирование — #447), полная фраза — `sr-only`. */
+function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
+    return (
+        <div
+            role={visible ? 'status' : undefined}
+            aria-hidden={visible ? undefined : true}
+            className={clsx(
+                HUD_SURFACE,
+                'flex min-h-10 shrink-0 items-center gap-1.5 border-[length:var(--border-w)] border-border px-2.5 py-1.5',
+                !visible && 'invisible',
+            )}
+        >
+            <Icon name="lock" size={12} className="shrink-0 text-text-muted" />
+            <span
+                aria-hidden
+                className="font-ui text-[10px] tracking-[0.1em] whitespace-nowrap text-text-muted uppercase"
+            >
+                Заморожено
+            </span>
+            <span className="sr-only">{FROZEN_TEXT}</span>
+        </div>
     );
 }
 
@@ -634,6 +662,7 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                             />
                         </div>
                         <TurnPill label={scene.turnLabel} />
+                        <FreezeBadgeOrNothing visible={scene.isBotTurn} />
                         <HudIconButtons />
                     </div>
                     <div
@@ -657,7 +686,6 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                             color="var(--color-warning)"
                             ariaLabel="ходов манёвра"
                         />
-                        {scene.isBotTurn && <FrozenNote className="w-full" />}
                     </div>
                 </div>
             </div>
@@ -683,6 +711,7 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                         />
                     </div>
                     <TurnPill label={scene.turnLabel} />
+                    <FreezeBadgeOrNothing visible={scene.isBotTurn} />
                     <HudIconButtons />
                 </div>
                 <div

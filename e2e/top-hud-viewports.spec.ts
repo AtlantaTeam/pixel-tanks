@@ -39,35 +39,64 @@ for (const viewport of VIEWPORTS) {
     });
 }
 
-// Ход бота на десктопе: в ряд телеметрии полосы 78px (xl:flex-nowrap) вставляется
-// FrozenNote className="w-full" — полноширинный элемент в нерасщепляемом ряду
-// способен переполнить раскладку. Стартовый ход игрока это не покрывает (там
-// FrozenNote нет), поэтому отдельный сценарий с turn='enemy'.
-test.describe('Верхний HUD — ход бота (desktop-1280)', () => {
-    test.use({ viewport: { width: 1280, height: 800 } });
+// Пересекаются ли прямоугольники — используется, чтобы поймать перекрытие
+// бейджа заморозки и ряда телеметрии (#472), а не только горизонтальное
+// переполнение (это ловит getBoundingClientRect-проверка выше).
+function boxesOverlap(
+    a: { x: number; y: number; width: number; height: number },
+    b: { x: number; y: number; width: number; height: number },
+): boolean {
+    return (
+        a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
+    );
+}
 
-    test('ряд телеметрии с FrozenNote не переполняет полосу по ширине', async ({ page }) => {
-        test.setTimeout(60_000);
-        await page.goto('/game?seed=42');
-        await reachBotTurn(page);
+// Ход бота на десктопе/широком: бейдж заморозки — короткий чип рядом с пилюлей
+// хода (#472, было — FrozenNote className="w-full" absolute-оверлеем внутри
+// ряда телеметрии, лежал поверх числовых ячеек на xl, где полоса — 78px без
+// запаса под целую строку текста). Стартовый ход игрока это не покрывает (там
+// бейджа нет вовсе), поэтому отдельный сценарий с turn='enemy' на каждом из
+// двух вьюпортов, где баг был замерен.
+for (const width of [1280, 1920]) {
+    test.describe(`Верхний HUD — ход бота (desktop-${width})`, () => {
+        test.use({ viewport: { width, height: 800 } });
 
-        const hud = page.getByTestId('top-hud');
-        await expect(hud).toBeVisible();
+        test('бейдж заморозки не перекрывает телеметрию и не переполняет полосу', async ({
+            page,
+        }) => {
+            test.setTimeout(60_000);
+            await page.goto('/game?seed=42');
+            await reachBotTurn(page);
 
-        const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-        const clientWidth = await page.evaluate(() => document.documentElement.clientWidth);
-        expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+            const hud = page.getByTestId('top-hud');
+            await expect(hud).toBeVisible();
 
-        const hudBox = await hud.boundingBox();
-        expect(hudBox).not.toBeNull();
-        if (hudBox) {
-            expect(hudBox.x).toBeGreaterThanOrEqual(0);
-            expect(hudBox.x + hudBox.width).toBeLessThanOrEqual(1280);
-        }
+            const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+            const clientWidth = await page.evaluate(() => document.documentElement.clientWidth);
+            expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 
-        await page.screenshot({
-            path: 'screenshots/top-hud-bot-turn-desktop-1280.png',
-            fullPage: false,
+            const hudBox = await hud.boundingBox();
+            expect(hudBox).not.toBeNull();
+            if (hudBox) {
+                expect(hudBox.x).toBeGreaterThanOrEqual(0);
+                expect(hudBox.x + hudBox.width).toBeLessThanOrEqual(width);
+            }
+
+            const badge = page.getByTestId('freeze-badge');
+            await expect(badge).toBeVisible();
+            const telemetry = page.getByTestId('top-hud-telemetry-desktop');
+            const badgeBox = await badge.boundingBox();
+            const telemetryBox = await telemetry.boundingBox();
+            expect(badgeBox).not.toBeNull();
+            expect(telemetryBox).not.toBeNull();
+            if (badgeBox && telemetryBox) {
+                expect(boxesOverlap(badgeBox, telemetryBox)).toBe(false);
+            }
+
+            await page.screenshot({
+                path: `screenshots/top-hud-bot-turn-desktop-${width}.png`,
+                fullPage: false,
+            });
         });
     });
-});
+}

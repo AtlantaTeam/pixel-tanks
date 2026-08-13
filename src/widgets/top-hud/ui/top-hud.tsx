@@ -475,6 +475,8 @@ function ResourcePips({
     );
 }
 
+const FROZEN_TEXT = 'Твои числа заморожены до конца хода соперника';
+
 function FrozenNote({ className }: { className?: string }) {
     return (
         <p
@@ -484,8 +486,45 @@ function FrozenNote({ className }: { className?: string }) {
                 className,
             )}
         >
-            Твои числа заморожены до конца хода соперника
+            {FROZEN_TEXT}
         </p>
+    );
+}
+
+/**
+ * Планшет/десктоп (#472): короткий бейдж «Заморожено» рядом с пилюлей хода,
+ * а не внутри ряда телеметрии. Прежняя `FrozenNote` лежала внутри телеметрии
+ * `absolute`-оверлеем (#447) — годится на мобилке, где ряд ниже; на `xl`
+ * (78px, `flex-nowrap`) высоты под целую строку текста внутри того же ряда
+ * нет по построению, и бейдж лёг поверх числовых ячеек.
+ *
+ * Слот зарезервирован ВСЕГДА (тот же приём, что `TurnPillOrNothing` — #447):
+ * узел остаётся в потоке, видимость — через `invisible`, а не размонтирование.
+ * Появление/исчезновение бейджа не двигает ни пилюлю, ни иконки, ни телеметрию.
+ * Полная фраза — `sr-only` для скринридера; видимый текст сокращён и
+ * декоративен (`aria-hidden`), чтобы не звучать дважды.
+ */
+function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
+    return (
+        <div
+            data-testid="freeze-badge"
+            role={visible ? 'status' : undefined}
+            aria-hidden={visible ? undefined : true}
+            className={clsx(
+                HUD_SURFACE,
+                'flex min-h-10 shrink-0 items-center gap-1.5 border-[length:var(--border-w)] border-border px-2.5 py-1.5',
+                !visible && 'invisible',
+            )}
+        >
+            <Icon name="lock" size={12} className="shrink-0 text-text-muted" />
+            <span
+                aria-hidden
+                className="font-ui text-[10px] tracking-[0.1em] whitespace-nowrap text-text-muted uppercase"
+            >
+                Заморожено
+            </span>
+            <span className="sr-only">{FROZEN_TEXT}</span>
+        </div>
     );
 }
 
@@ -664,9 +703,11 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         />
                     </div>
                     <TurnPillOrNothing turn={turn} phase={phase} />
+                    <FreezeBadgeOrNothing visible={isBotTurn} />
                     <HudIconButtons onPauseClick={onPauseClick} />
                 </div>
                 <div
+                    data-testid="top-hud-telemetry-desktop"
                     className={clsx(
                         // xl:shrink-0 + xl:flex-nowrap: телеметрия — мои числа, ей
                         // нельзя тихо перенестись на вторую строку и вылезти из
@@ -674,10 +715,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         // соседнего HP-блока, тот же класс бага, что и с пилюлей
                         // хода выше) — она либо помещается в ряд целиком, либо
                         // e2e-проверка переполнения должна это поймать.
-                        // `relative`: заметка о заморозке — absolute-оверлей (#447),
-                        // не перенос строки, иначе её появление растит высоту панели
-                        // на планшете (768).
-                        'relative flex w-full flex-wrap items-center gap-4 xl:w-auto xl:shrink-0 xl:flex-nowrap',
+                        'flex w-full flex-wrap items-center gap-4 xl:w-auto xl:shrink-0 xl:flex-nowrap',
                         isBotTurn && 'opacity-60',
                     )}
                 >
@@ -700,9 +738,6 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         color="var(--color-warning)"
                         ariaLabel="ходов манёвра"
                     />
-                    {isBotTurn && (
-                        <FrozenNote className="pointer-events-none absolute inset-x-0 bottom-0" />
-                    )}
                 </div>
             </div>
         </div>

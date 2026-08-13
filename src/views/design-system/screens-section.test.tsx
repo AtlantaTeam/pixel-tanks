@@ -101,6 +101,20 @@ describe('ScreensSection', () => {
         expect(states.getByText('нет снарядов')).toBeInTheDocument();
     });
 
+    it('бейдж заморозки телеметрии показан на планшете и десктопе на ходе бота (#472)', () => {
+        const { getByTestId } = render(<ScreensSection />);
+        const freeze = within(getByTestId('game-screen-freeze-badge'));
+
+        expect(freeze.getByText('Планшет · 768 (ход бота)')).toBeInTheDocument();
+        expect(freeze.getByText('Desktop · 1280 (ход бота)')).toBeInTheDocument();
+        // Короткая видимая подпись — на обоих кадрах; полная фраза для
+        // скринридера — рядом, `sr-only`, отдельным узлом.
+        expect(freeze.getAllByText('Заморожено')).toHaveLength(2);
+        expect(freeze.getAllByText('Твои числа заморожены до конца хода соперника')).toHaveLength(
+            2,
+        );
+    });
+
     it('utility-кадр показывает загрузку, 404 и ошибку одновременно', () => {
         const { getAllByText } = render(<ScreensSection />);
 
@@ -113,9 +127,11 @@ describe('ScreensSection', () => {
         const { getAllByText } = render(<ScreensSection />);
 
         // Клавиатурная подсказка есть только в desktop-варианте игрового экрана —
-        // значит она видна ровно дважды: на 1280 и на 1920 (состояния боя ниже
-        // рендерятся на мобильном варианте и её не показывают).
-        expect(getAllByText('Space выстрел')).toHaveLength(2);
+        // значит она видна на 1280 и на 1920 кадрах брейкпоинтов, плюс на кадре
+        // «ход бота» ряда бейджа заморозки (#472, тоже desktop-вариант, 1280) —
+        // итого три (состояния боя ряда `GameScreenStatesRow` рендерятся на
+        // мобильном варианте и её не показывают).
+        expect(getAllByText('Space выстрел')).toHaveLength(3);
     });
 
     it('не подменяет иконки эмодзи-глифами', () => {
