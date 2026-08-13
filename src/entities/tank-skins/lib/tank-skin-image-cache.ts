@@ -4,16 +4,19 @@ import type { TTankSkinId } from '../t-tank-skin';
 export type TTankSkinImages = {
     hull: HTMLImageElement;
     barrel: HTMLImageElement;
+    /** Спрайт катка (issue #496) — один на геометрию, `Tank` рисует его на
+     *  каждую позицию из `geometry.wheels` и вращает независимо от корпуса. */
+    wheel: HTMLImageElement;
 };
 
 /**
- * Кэш отрисовки скинов (issue #481). Грабля из карточки: `librsvg` не понимает
- * `var()`, а внешний SVG в `<img>`/на канвасе не наследует стили страницы —
- * поэтому геометрии (`lib/geometry-*`) подставляют цвета в строку САМИ, и здесь
- * только кодируем готовую строку в `data:` URL. Без кэша каждый кадр боя
- * пересобирал бы `Image` заново — заметная просадка FPS (правило `canvas.md`:
- * «никаких аллокаций в кадре»). Ключ кэша — id скина: одна и та же пара
- * геометрия+палитра всегда даёт один и тот же `Image`.
+ * Кэш отрисовки скинов (issue #481, #496 — добавлен третий спрайт катка).
+ * Грабля из карточки: `librsvg` не понимает `var()`, а внешний SVG в `<img>`/на
+ * канвасе не наследует стили страницы — поэтому геометрии (`lib/geometry-*`)
+ * подставляют цвета в строку САМИ, и здесь только кодируем готовую строку в
+ * `data:` URL. Без кэша каждый кадр боя пересобирал бы `Image` заново — заметная
+ * просадка FPS (правило `canvas.md`: «никаких аллокаций в кадре»). Ключ кэша —
+ * id скина: одна и та же пара геометрия+палитра всегда даёт один и тот же `Image`.
  */
 const cache = new Map<TTankSkinId, Promise<TTankSkinImages>>();
 
@@ -43,7 +46,8 @@ export function loadTankSkinImages(skinId: TTankSkinId): Promise<TTankSkinImages
     const promise = Promise.all([
         loadImage(skin.geometry.buildHullSvg(skin.palette)),
         loadImage(skin.geometry.buildBarrelSvg(skin.palette)),
-    ]).then(([hull, barrel]) => ({ hull, barrel }));
+        loadImage(skin.geometry.buildWheelSvg(skin.palette)),
+    ]).then(([hull, barrel, wheel]) => ({ hull, barrel, wheel }));
 
     cache.set(skinId, promise);
     return promise;

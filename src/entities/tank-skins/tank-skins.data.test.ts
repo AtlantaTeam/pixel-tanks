@@ -28,14 +28,40 @@ describe('реестр скинов танков', () => {
         for (const skin of TANK_SKINS) {
             const hull = skin.geometry.buildHullSvg(skin.palette);
             const barrel = skin.geometry.buildBarrelSvg(skin.palette);
+            const wheel = skin.geometry.buildWheelSvg(skin.palette);
             expect(hull).toContain('<svg');
             expect(hull).toContain(skin.palette.body);
             expect(barrel).toContain('<svg');
             expect(barrel).toContain(skin.palette.body);
+            expect(wheel).toContain('<svg');
+            expect(wheel).toContain(skin.palette.wheel);
             // Регрессия на грабли из issue: var() не резолвится ни в data:URL, ни на
             // канвасе — цвета обязаны быть подставлены литералом, не CSS custom property.
             expect(hull).not.toContain('var(');
             expect(barrel).not.toContain('var(');
+            expect(wheel).not.toContain('var(');
+        }
+    });
+
+    it('каждая геометрия описывает хотя бы один каток — доли внутри (0, 1] (issue #496)', () => {
+        for (const geometry of TANK_GEOMETRIES) {
+            expect(geometry.wheels.length).toBeGreaterThan(0);
+            for (const wheel of geometry.wheels) {
+                expect(wheel.cx).toBeGreaterThan(0);
+                expect(wheel.cx).toBeLessThan(1);
+                expect(wheel.cy).toBeGreaterThan(0);
+                expect(wheel.cy).toBeLessThan(1);
+                expect(wheel.r).toBeGreaterThan(0);
+            }
+        }
+    });
+
+    it('spec катков геометрии не пересекается с содержимым корпуса — hull больше не рисует круги катков', () => {
+        // Регрессия на #496: если бы hull всё ещё рисовал катки сам, поверх них
+        // накладывался бы вращающийся дубль (Tank.draw рисует оба слоя).
+        for (const geometry of TANK_GEOMETRIES) {
+            const hull = geometry.buildHullSvg(TANK_PALETTES[0]);
+            expect(hull).not.toContain('circle');
         }
     });
 

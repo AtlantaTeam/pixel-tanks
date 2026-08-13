@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
 import type { TWeapon } from '@/shared/model';
 import { Ground } from './ground';
-import { Tank } from './tank';
+import { Tank, wheelRotationDelta, type TTankWheelSpec } from './tank';
 import { WORLD_UNITS } from './world-scale';
 
 const WIDTH = 800;
@@ -149,5 +149,89 @@ describe('Tank — масштаб мира (issue #455)', () => {
         expect(drawImageCalls.length).toBeGreaterThan(0);
         expect(hitArea.rectArgs).not.toBeNull();
         expect(hitArea.rectArgs).toEqual(drawImageCalls[0]);
+    });
+});
+
+describe('wheelRotationDelta — угол поворота катка от пройденного пути (issue #496)', () => {
+    it('качение без проскальзывания: угол = путь / радиус', () => {
+        expect(wheelRotationDelta(20, 10)).toBe(2);
+    });
+
+    it('обратное направление даёт отрицательный угол', () => {
+        expect(wheelRotationDelta(-20, 10)).toBe(-2);
+    });
+
+    it('нулевой/отрицательный радиус не делит на ноль — угол 0', () => {
+        expect(wheelRotationDelta(20, 0)).toBe(0);
+        expect(wheelRotationDelta(20, -5)).toBe(0);
+    });
+});
+
+describe('Tank — вращение катков (issue #496)', () => {
+    // Один каток в центре тела, радиус — 1/6 ширины корпуса: при tankWidth=60
+    // (scale=1) это 10px, удобное круглое число для проверки угла.
+    const WHEELS: TTankWheelSpec[] = [{ cx: 0.5, cy: 0.9, r: 1 / 6 }];
+
+    const makeMovingTank = (dx: number, wheelRotationEnabled = true) => {
+        const tank = new Tank(
+            200,
+            HEIGHT - 100,
+            WIDTH,
+            HEIGHT,
+            0,
+            [WEAPON],
+            undefined,
+            undefined,
+            1,
+            undefined,
+            WHEELS,
+            wheelRotationEnabled,
+        );
+        tank.dx = dx;
+        return tank;
+    };
+
+    it('на месте (dx=0) катки не крутятся', () => {
+        // move() напрямую здесь не зовём: боевой код вызывает его только когда
+        // `this.dx` истинно (см. `recalcPosition` — `if (this.dx && !this.dy)`),
+        // поэтому проверяем реальный путь простоя, а не голый move() с dx=0.
+        const tank = makeMovingTank(0);
+        const ground = flatGround();
+        const { ctx } = makeRecordingCtx();
+        tank.recalcPosition(ctx, ground);
+        tank.recalcPosition(ctx, ground);
+        expect(tank.wheelRotation).toBe(0);
+    });
+
+    it('скорость вращения пропорциональна пройденному пути, не числу кадров', () => {
+        const tank = makeMovingTank(50);
+        for (let i = 0; i < 5; i++) tank.move();
+        // Каждый вызов move() при dx=50 (шаг 2 < |dx|) продвигает танк на 2px —
+        // за 5 вызовов пройдено 10px. Радиус катка — 10px (60 * 1/6) → угол 1 рад.
+        expect(tank.wheelRotation).toBeCloseTo(1, 6);
+
+        const tankDoubleFrames = makeMovingTank(50);
+        for (let i = 0; i < 10; i++) tankDoubleFrames.move();
+        // В два раза больше вызовов move() при том же шаге — путь и угол тоже
+        // удваиваются: считает путь, а не количество кадров/вызовов.
+        expect(tankDoubleFrames.wheelRotation).toBeCloseTo(2, 6);
+    });
+
+    it('направление вращения совпадает с направлением движения', () => {
+        const right = makeMovingTank(50);
+        const left = makeMovingTank(-50);
+        for (let i = 0; i < 5; i++) {
+            right.move();
+            left.move();
+        }
+        expect(right.wheelRotation).toBeGreaterThan(0);
+        expect(left.wheelRotation).toBeLessThan(0);
+        expect(left.wheelRotation).toBeCloseTo(-right.wheelRotation, 6);
+    });
+
+    it('prefers-reduced-motion (wheelRotationEnabled=false) отключает вращение', () => {
+        const tank = makeMovingTank(50, false);
+        for (let i = 0; i < 5; i++) tank.move();
+        expect(tank.wheelRotation).toBe(0);
     });
 });

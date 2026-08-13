@@ -11,4 +11,7 @@ export const ENGINE_COLORS = {
     // как чип оверлея (`drawAimPreview`).
     accent: '#48ff00',
     danger: '#ff4242',
+    // Нейтральная линия земли демо-канваса витрины (issue #496, `TankWheelDemo`) —
+    // `--color-border-strong`, не «просто хардкод»: та же граница, что у остальной UI-хромы.
+    borderStrong: '#3f5a41',
 } as const;

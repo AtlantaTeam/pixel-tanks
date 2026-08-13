@@ -35,9 +35,9 @@ afterEach(() => {
 });
 
 describe('loadTankSkinImages — кэш отрисовки (issue #481)', () => {
-    it('на новый skinId создаёт ровно два Image (корпус + ствол)', async () => {
+    it('на новый skinId создаёт ровно три Image (корпус + ствол + каток)', async () => {
         await loadTankSkinImages('classic-verdant');
-        expect(createdCount).toBe(2);
+        expect(createdCount).toBe(3);
     });
 
     it('повторный вызов с тем же skinId не пересобирает Image', async () => {
@@ -49,6 +49,7 @@ describe('loadTankSkinImages — кэш отрисовки (issue #481)', () => 
         expect(createdCount).toBe(countAfterFirst);
         expect(second.hull).toBe(first.hull);
         expect(second.barrel).toBe(first.barrel);
+        expect(second.wheel).toBe(first.wheel);
     });
 
     it('параллельные вызовы одним тиком тоже не дублируют Image (одна запись кэша на ключ)', async () => {
@@ -57,15 +58,16 @@ describe('loadTankSkinImages — кэш отрисовки (issue #481)', () => 
             loadTankSkinImages('heavy-amber'),
         ]);
 
-        expect(createdCount).toBe(2);
+        expect(createdCount).toBe(3);
         expect(a.hull).toBe(b.hull);
+        expect(a.wheel).toBe(b.wheel);
     });
 
     it('разные skinId создают отдельные записи кэша', async () => {
         await loadTankSkinImages('classic-verdant');
         await loadTankSkinImages('heavy-crimson');
 
-        expect(createdCount).toBe(4);
+        expect(createdCount).toBe(6);
     });
 
     it('падает fail-closed на неизвестном skinId', () => {

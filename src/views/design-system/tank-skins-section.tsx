@@ -1,4 +1,5 @@
 import { TANK_GEOMETRIES, TANK_PALETTES, TANK_SKINS, TankSkinPreview } from '@/entities/tank-skins';
+import { TankWheelDemo } from '@/features/game-engine';
 
 /**
  * Витрина скинов танков (issue #481): весь реестр — декартово произведение
@@ -73,6 +74,48 @@ export function TankSkinsSection() {
                                 {skin.palette.name}
                             </figcaption>
                         </figure>
+                    ))}
+                </div>
+            </div>
+
+            <div>
+                <h3 className="mb-3 font-ui text-hud text-text-muted uppercase">
+                    Катки: движение · покой
+                </h3>
+                <p className="mb-3 max-w-prose text-caption text-text-muted">
+                    Вращение катков (issue #496) — от пройденного пути, не от времени: на паузе
+                    колёса не «доезжают» сами.{' '}
+                    <code className="text-text-dim">prefers-reduced-motion</code> останавливает и
+                    то, и другое.
+                </p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {TANK_GEOMETRIES.map((geometry) => (
+                        <div key={geometry.id} className="flex flex-col gap-3">
+                            <span className="font-ui text-caption text-text-muted uppercase">
+                                {geometry.name}
+                            </span>
+                            <div className="grid grid-cols-2 gap-3">
+                                <figure className="flex flex-col gap-2">
+                                    <div className="pixel-border bg-surface p-2">
+                                        <TankWheelDemo skinId={`${geometry.id}-verdant`} moving />
+                                    </div>
+                                    <figcaption className="text-center text-caption font-ui text-text-muted">
+                                        В движении
+                                    </figcaption>
+                                </figure>
+                                <figure className="flex flex-col gap-2">
+                                    <div className="pixel-border bg-surface p-2">
+                                        <TankWheelDemo
+                                            skinId={`${geometry.id}-verdant`}
+                                            moving={false}
+                                        />
+                                    </div>
+                                    <figcaption className="text-center text-caption font-ui text-text-muted">
+                                        На месте
+                                    </figcaption>
+                                </figure>
+                            </div>
+                        </div>
                     ))}
                 </div>
             </div>

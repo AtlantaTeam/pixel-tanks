@@ -6,6 +6,7 @@ import type { TCoords, TWeapon } from '@/shared/model';
 import { pickBotReply, resolveBotReplyCategory, type TBotReply } from '@/entities/bot-messages';
 import {
     DEFAULT_TANK_SKIN_ID,
+    getTankSkinById,
     loadTankSkinImages,
     type TTankSkinId,
     type TTankSkinImages,
@@ -605,6 +606,12 @@ export class GamePlay {
         const worldScale = computeWorldScale(this.innerWidth);
         const leftTankX = floor(this.innerWidth / 4);
         const leftTankY = this.innerHeight - this.ground.heights[leftTankX];
+        // Геометрия катков (позиции/радиус) — из реестра скинов по id, картинка
+        // катка — из уже загруженного `skinImages.wheel` (issue #496). Скин
+        // косметика: сама геометрия катков на боевые поля Tank не влияет
+        // (см. tank-skin-parity.test.ts).
+        const leftWheels = getTankSkinById(this.leftSkinId).geometry.wheels;
+        const rightWheels = getTankSkinById(this.rightSkinId).geometry.wheels;
         this.leftTank = new Tank(
             leftTankX,
             leftTankY,
@@ -615,6 +622,9 @@ export class GamePlay {
             this.leftSkinImages?.hull,
             this.leftSkinImages?.barrel,
             worldScale,
+            this.leftSkinImages?.wheel,
+            leftWheels,
+            !this.reducedMotion,
         );
         this.leftTank.isActive = true;
         // Игрок всегда ходит первым (см. §GDD) — HUD узнаёт об этом здесь же,
@@ -633,6 +643,9 @@ export class GamePlay {
             this.rightSkinImages?.hull,
             this.rightSkinImages?.barrel,
             worldScale,
+            this.rightSkinImages?.wheel,
+            rightWheels,
+            !this.reducedMotion,
         );
         if (this.ctx) {
             this.ground.draw(this.ctx);

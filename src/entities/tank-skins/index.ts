@@ -5,6 +5,7 @@ export type {
     TTankPaletteId,
     TTankSkin,
     TTankSkinId,
+    TTankWheelSpec,
 } from './t-tank-skin';
 export {
     DEFAULT_TANK_SKIN_ID,
