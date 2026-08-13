@@ -18,8 +18,14 @@ export const wrapOffset = (value: number, span: number): number => {
 export const advanceOffset = (offset: number, speed: number, dt: number, span: number): number =>
     wrapOffset(offset + speed * dt, span);
 
-/** Условная ширина периода для стартовых смещений (реальный span зависит от арта). */
-const INITIAL_OFFSET_RANGE = 100000;
+/**
+ * Единый период завёртки смещения облаков (и диапазон стартового разброса).
+ * Условная величина: реальная ширина тайла зависит от арта и размера канваса —
+ * период нужен лишь чтобы `offset` не рос бесконечно за долгий бой. Стартовый
+ * разброс и `advanceOffset` в `sky-scene` пользуются ОДНОЙ константой, чтобы
+ * инвариант «offset в [0, period)» не разъехался между стартом и движением.
+ */
+export const CLOUD_OFFSET_PERIOD = 100000;
 
 /**
  * Детерминированно раскладывает стартовые смещения слоёв по сиду боя. Один сид —
@@ -29,5 +35,5 @@ const INITIAL_OFFSET_RANGE = 100000;
  */
 export const createInitialOffsets = (seed: number | string, count: number): number[] => {
     const random = createSeededRandom(`${seed}::clouds`);
-    return Array.from({ length: count }, () => random() * INITIAL_OFFSET_RANGE);
+    return Array.from({ length: count }, () => random() * CLOUD_OFFSET_PERIOD);
 };

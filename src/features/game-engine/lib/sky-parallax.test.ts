@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createSeededRandom } from '@/shared/lib/random';
 import { advanceOffset, createInitialOffsets, wrapOffset } from './sky-parallax';
 
 describe('wrapOffset', () => {
@@ -59,9 +60,13 @@ describe('createInitialOffsets', () => {
         });
     });
 
-    it('не расходует основной поток RNG боя', () => {
-        // Namespaced seed: старт облаков не должен сдвигать рельеф/ветер того же боя.
-        const offsets = createInitialOffsets(7, 2);
-        expect(offsets).toEqual(createInitialOffsets(7, 2));
+    it('не расходует основной поток RNG боя (namespaced seed)', () => {
+        // Старт облаков не должен трогать последовательность createSeededRandom(seed),
+        // иначе рельеф/ветер/бот того же боя сдвинулись бы (детерминизм реплея).
+        // Проверяем ИЗОЛЯЦИЮ честно: значение основного потока до и после вызова.
+        const before = createSeededRandom(7)();
+        createInitialOffsets(7, 2);
+        const after = createSeededRandom(7)();
+        expect(after).toBe(before);
     });
 });

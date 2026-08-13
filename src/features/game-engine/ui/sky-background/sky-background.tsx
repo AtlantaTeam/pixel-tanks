@@ -30,10 +30,15 @@ const ensureSkyImagesLoaded = () => {
     const entries = Object.entries(SKY_ASSET_PATHS) as [keyof TSkyImages, string][];
     for (const [key, src] of entries) {
         const img = new Image();
-        img.onload = () => {
+        const settle = () => {
             loadedCount += 1;
             loadListeners.forEach((cb) => cb());
         };
+        img.onload = settle;
+        // 404/битый декод: тоже двигаем счётчик, иначе allSkyImagesLoaded() навсегда
+        // false и rAF-петля неба при reduced-motion крутилась бы вечно (sky-perf.md).
+        // Битый Image имеет width 0 → paintMountains/drawClouds его тихо пропустят.
+        img.onerror = settle;
         img.src = src;
         skyImages[key] = img;
     }
@@ -111,9 +116,13 @@ export const SkyBackground = ({ seed, preset, reducedMotion, className }: TSkyBa
             rafId = requestAnimationFrame(frame);
         };
 
-        // Догрузка спрайта после остановки (reduced-motion) — один добор кадра.
+        // Догрузка спрайта после первого кадра. Силуэт гор запекается в offscreen-кеш
+        // статичного слоя, а тот перестраивается только по resize — без явной
+        // инвалидации поздно долетевшие горы не попали бы в кеш и не появились бы до
+        // первого ресайза (облака читаются вживую каждый кадр, им инвалидация не нужна).
         const redraw = () => {
             if (disposed) return;
+            scene.markStaticDirty();
             scene.draw(ctx);
         };
         loadListeners.add(redraw);

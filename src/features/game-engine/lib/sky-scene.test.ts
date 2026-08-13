@@ -153,4 +153,60 @@ describe('SkyScene.resize / draw', () => {
         const ctx = createFakeCtx();
         expect(() => scene.draw(ctx as unknown as CanvasRenderingContext2D)).not.toThrow();
     });
+
+    it('markStaticDirty перестраивает статичный слой — поздно догруженные горы попадают в кеш', () => {
+        const offscreenCtx = createFakeCtx();
+        const offscreen = {
+            width: 0,
+            height: 0,
+            getContext: () => offscreenCtx,
+        } as unknown as HTMLCanvasElement;
+        // На первом кадре гор ещё нет (спрайт долетает асинхронно).
+        const images: TSkyImages = { far: fakeImage(1024, 200), near: fakeImage(1024, 240) };
+        const scene = new SkyScene({
+            seed: 1,
+            reducedMotion: false,
+            images,
+            createCanvas: () => offscreen,
+        });
+        const ctx = createFakeCtx();
+        scene.resize(800, 600);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        expect(offscreenCtx.createLinearGradient).toHaveBeenCalledTimes(1);
+
+        // Горы догрузились. Без инвалидации кеш возвращается как есть — слой не перестраивается.
+        images.mountains = fakeImage(1920, 300);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        expect(offscreenCtx.createLinearGradient).toHaveBeenCalledTimes(1);
+
+        // markStaticDirty форсирует перестройку — теперь горы попадают в кеш.
+        scene.markStaticDirty();
+        expect(scene.isStaticDirty()).toBe(true);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        expect(offscreenCtx.createLinearGradient).toHaveBeenCalledTimes(2);
+    });
+
+    it('без offscreen не аллоцирует канвас на каждый кадр (запоминает недоступность)', () => {
+        let created = 0;
+        const noCtxCanvas = {
+            width: 0,
+            height: 0,
+            getContext: () => null,
+        } as unknown as HTMLCanvasElement;
+        const scene = new SkyScene({
+            seed: 1,
+            reducedMotion: false,
+            createCanvas: () => {
+                created += 1;
+                return noCtxCanvas;
+            },
+        });
+        const ctx = createFakeCtx();
+        scene.resize(800, 600);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        // Канвас создан ровно один раз: недоступность offscreen запомнена, не пере-создаётся.
+        expect(created).toBe(1);
+    });
 });

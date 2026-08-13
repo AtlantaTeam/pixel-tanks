@@ -1,5 +1,10 @@
 import { getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
-import { advanceOffset, createInitialOffsets, wrapOffset } from './sky-parallax';
+import {
+    advanceOffset,
+    CLOUD_OFFSET_PERIOD,
+    createInitialOffsets,
+    wrapOffset,
+} from './sky-parallax';
 import { pickSkyPreset, pickSkyPresetById, type TSkyPreset, type TSkyPresetId } from './sky-preset';
 
 /** Ключи арта неба (файлы в `public/art/`). */
@@ -68,6 +73,8 @@ export class SkyScene {
     private width = 0;
     private height = 0;
     private staticDirty = true;
+    /** Offscreen недоступен (нет 2D-контекста, напр. happy-dom): запомнить и не пересоздавать канвас каждый кадр. */
+    private offscreenUnavailable = false;
 
     private staticCanvas: HTMLCanvasElement | null = null;
     private mountainCanvas: HTMLCanvasElement | null = null;
@@ -93,6 +100,16 @@ export class SkyScene {
     }
 
     /**
+     * Помечает статичный слой (градиент + силуэт гор) на перестройку. Нужен, когда
+     * спрайт гор догрузился ПОСЛЕ первого кадра: горы запекаются в offscreen-кеш
+     * внутри `ensureStatic`, а он иначе перестраивается только при `resize()` — без
+     * этой инвалидации силуэт гор не попал бы в кеш и не появился до первого ресайза.
+     */
+    markStaticDirty(): void {
+        this.staticDirty = true;
+    }
+
+    /**
      * Двигает облачные слои по времени. При `prefers-reduced-motion` — no-op:
      * облака замирают, градиент и горы остаются (критерий #479). НЕ трогает
      * статичный слой: между кадрами перерисовки фона нет.
@@ -100,9 +117,9 @@ export class SkyScene {
     update(dt: number): void {
         if (this.reducedMotion || dt <= 0) return;
         for (const layer of this.layers) {
-            // Период завёртки — условный (реальная ширина тайла зависит от арта и
-            // размера): нужен лишь для того, чтобы offset не рос бесконечно.
-            layer.offset = advanceOffset(layer.offset, layer.spec.speed, dt, 100000);
+            // Период завёртки — та же константа, что и у стартового разброса
+            // (`CLOUD_OFFSET_PERIOD`): условный, нужен лишь чтобы offset не рос бесконечно.
+            layer.offset = advanceOffset(layer.offset, layer.spec.speed, dt, CLOUD_OFFSET_PERIOD);
         }
     }
 
@@ -129,6 +146,8 @@ export class SkyScene {
 
     /** Строит (или переиспользует) offscreen со статичным фоном. null — если offscreen недоступен. */
     private ensureStatic(width: number, height: number): HTMLCanvasElement | null {
+        // Offscreen уже признан недоступным — не аллоцируем канвас в кадре (canvas.md).
+        if (this.offscreenUnavailable) return null;
         if (!this.staticDirty && this.staticCanvas) return this.staticCanvas;
 
         const dpr = getDevicePixelRatio();
@@ -138,8 +157,10 @@ export class SkyScene {
         const offscreenCtx = canvas.getContext('2d');
         if (!offscreenCtx) {
             // Нет 2D-контекста (happy-dom) — фон рисуется напрямую, без кеша.
+            // Запоминаем недоступность, чтобы не пересоздавать канвас каждый draw.
             this.staticCanvas = null;
             this.staticDirty = false;
+            this.offscreenUnavailable = true;
             return null;
         }
         offscreenCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -195,6 +216,13 @@ export class SkyScene {
         return canvas;
     }
 
+    /**
+     * Рисует облачные слои с бесшовным ГОРИЗОНТАЛЬНЫМ повтором. `wrapOffset` и
+     * зеркалирование соседних тайлов держат стык только по X — вертикального
+     * повтора/зеркалирования НЕТ: слой рассчитан на узкую верхнюю полосу неба
+     * (`topFrac`/`heightFrac`) и растягивается по вертикали в один тайл. Если в
+     * будущем `heightFrac` заметно вырастет — арт растянется, а не затайлится.
+     */
     private drawClouds(ctx: CanvasRenderingContext2D, width: number, height: number): void {
         ctx.save();
         ctx.globalAlpha = this.preset.cloudAlpha;
