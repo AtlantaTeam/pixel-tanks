@@ -38,4 +38,10 @@ describe('ENGINE_COLORS', () => {
         expect(cssBorderStrong).toBeDefined();
         expect(ENGINE_COLORS.borderStrong).toBe(cssBorderStrong);
     });
+
+    it('зеркалит --color-enemy из globals.css (призрачная трасса бота, issue #543)', () => {
+        const cssEnemy = readCssToken('--color-enemy');
+        expect(cssEnemy).toBeDefined();
+        expect(ENGINE_COLORS.enemy).toBe(cssEnemy);
+    });
 });
