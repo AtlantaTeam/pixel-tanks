@@ -57,6 +57,14 @@ function makeEnv(over: Partial<GateEnv> = {}): GateEnv {
         prHeadSha: () => {
             throw new Error('prHeadSha не подменён в тесте');
         },
+        // #55: примитивы форжа приходят инъекцией. Дефолт падает по той же причине, что
+        // и prHeadSha: тест, забывший подменить их, обязан краснеть, а не идти в боевой `gh`.
+        mergePr: () => {
+            throw new Error('mergePr не подменён в тесте');
+        },
+        phaseMerged: () => {
+            throw new Error('phaseMerged не подменён в тесте');
+        },
         safeBranch: () => true,
         findOpenPr: () => null,
         ensureClean: () => true,
@@ -397,26 +405,23 @@ describe('tryMergePhase — гейт мерджа: hold/blocked/red/merged', () 
         expect(res).toBe('not-merged');
     });
 
-    it('зелёный гейт → merged; merge зовётся с --match-head-commit, дерево обновлено', () => {
-        const runArgv = vi.fn(() => '');
+    it('зелёный гейт → merged; примитив мерджа зовётся с головой чеков, дерево обновлено', () => {
+        const mergePrFn = vi.fn();
         const updateTree = vi.fn();
         const g = createGateRunner(makeEnv({ updateRunnerTreeToOriginMain: updateTree }));
         const res = tryMergeWith(g, phase, {
-            runArgvFn: runArgv,
+            mergePrFn,
             findOpenPrFn: () => ({ number: 9, labels: [] }),
             checksGreenFn: () => true,
             getVerifiedHeadFn: () => SHA,
         });
         expect(res).toBe('merged');
-        expect(runArgv).toHaveBeenCalledWith('gh', [
-            'pr',
-            'merge',
-            '9',
-            '--squash',
-            '--delete-branch',
-            '--match-head-commit',
-            SHA,
-        ]);
+        // #55: гейт отвечает за то, ЧТО зовёт примитив мерджа и с какими аргументами
+        // (номер PR + голова, прогнанная чеками). КАК из этого собирается `gh pr merge
+        // --match-head-commit` — предмет тестов адаптера, а не гейта.
+        // Третьим аргументом гейт прокидывает свой DI-хук исполнения — примитив обязан
+        // ходить через ту же обёртку, что и остальной argv (#193).
+        expect(mergePrFn.mock.calls[0].slice(0, 2)).toEqual([9, SHA]);
         expect(updateTree).toHaveBeenCalledTimes(1);
     });
 
@@ -562,7 +567,9 @@ describe('tryMergePhase — гейт мерджа: hold/blocked/red/merged', () 
         const logs: string[] = [];
         const g = createGateRunner(makeEnv());
         const res = tryMergeWith(g, phase, {
-            runArgvFn: () => {
+            // #55: бросает примитив форжа — его реализация уехала в адаптер, и «мердж
+            // упал» моделируется отказом примитива, а не отказом argv-обёртки гейта.
+            mergePrFn: () => {
                 throw new Error('gh упал');
             },
             logFn: (m: string) => logs.push(m),
@@ -667,95 +674,9 @@ function tryMergeWith(
         // ответ именно такой. Сценарии, где мердж НЕ прошёл, задают false явно — там это
         // и есть предмет проверки.
         phaseMergedFn: () => true,
+        // #55: примитив мерджа — инъекция (его реализация уехала в адаптер). Дефолт
+        // безвреден: сценарии, которым важен ФАКТ вызова, кладут свой шпион через over.
+        mergePrFn: () => {},
         ...over,
     });
 }
-
-describe('removeBlockedLabel / addBlockedLabel — детерминированный переход метки (#217/#223)', () => {
-    it('removeBlockedLabel: снимает метку через argv gh pr edit', () => {
-        const g = createGateRunner(makeEnv());
-        const runArgv = vi.fn(() => '');
-        g.removeBlockedLabel('feature/x', { shFn: () => '42', runArgvFn: runArgv });
-        expect(runArgv).toHaveBeenCalledWith('gh', [
-            'pr',
-            'edit',
-            '42',
-            '--remove-label',
-            'blocked',
-        ]);
-    });
-
-    it('addBlockedLabel: возвращает метку через argv gh pr edit', () => {
-        const g = createGateRunner(makeEnv());
-        const runArgv = vi.fn(() => '');
-        g.addBlockedLabel('feature/x', { shFn: () => '42', runArgvFn: runArgv });
-        expect(runArgv).toHaveBeenCalledWith('gh', ['pr', 'edit', '42', '--add-label', 'blocked']);
-    });
-
-    it('нет открытого PR → метку не трогаем (fail-closed, но не бросает)', () => {
-        const g = createGateRunner(makeEnv());
-        const runArgv = vi.fn(() => '');
-        g.removeBlockedLabel('feature/x', { shFn: () => '', runArgvFn: runArgv });
-        expect(runArgv).not.toHaveBeenCalled();
-    });
-
-    it('номер PR не похож на целое → в argv не пускаем', () => {
-        const g = createGateRunner(makeEnv());
-        const runArgv = vi.fn(() => '');
-        g.removeBlockedLabel('feature/x', { shFn: () => '--evil', runArgvFn: runArgv });
-        expect(runArgv).not.toHaveBeenCalled();
-    });
-
-    it('имя ветки не прошло safeBranch → ничего не делаем', () => {
-        const g = createGateRunner(makeEnv({ safeBranch: () => false }));
-        const sh = vi.fn(() => '42');
-        g.removeBlockedLabel('bad branch', { shFn: sh, runArgvFn: () => '' });
-        expect(sh).not.toHaveBeenCalled();
-    });
-});
-
-// #366: fail-open переходы метки blocked — сценарии, которых нет в фабричных тестах выше.
-// Косметика метки не имеет права ронять цикл сдачи: не сняли — гейт подберёт blocked,
-// не вернули — блок останется снятым, но петля продолжит работать, а не упадёт.
-describe('removeBlockedLabel / addBlockedLabel — сбой gh не роняет петлю (#217/#223)', () => {
-    const { removeBlockedLabel, addBlockedLabel } = ralph;
-
-    it('сбой gh не роняет (fail-open): метка останется, гейт подберёт blocked', () => {
-        const shFn = () => {
-            throw new Error('gh boom');
-        };
-        const logs: string[] = [];
-        expect(() =>
-            removeBlockedLabel('feature/m1', { shFn, logFn: (m: string) => logs.push(m) }),
-        ).not.toThrow();
-        expect(logs.join('\n')).toMatch(/не снял метку/);
-    });
-
-    it('сбой argv-мутации не роняет (fail-open): метка останется, гейт подберёт blocked', () => {
-        const shFn = (cmd: string) => (cmd.includes('gh pr list') ? '42\n' : '');
-        const runArgvFn = () => {
-            throw new Error('gh edit boom');
-        };
-        const logs: string[] = [];
-        expect(() =>
-            removeBlockedLabel('feature/m1', {
-                shFn,
-                runArgvFn,
-                logFn: (m: string) => logs.push(m),
-            }),
-        ).not.toThrow();
-        expect(logs.join('\n')).toMatch(/не снял метку/);
-    });
-
-    it('addBlockedLabel: сбой argv-мутации не роняет — только лог', () => {
-        const shFn = (cmd: string) => (cmd.includes('gh pr list') ? '42\n' : '');
-        const runArgvFn = () => {
-            throw new Error('gh edit boom');
-        };
-        const logs: string[] = [];
-        expect(() =>
-            addBlockedLabel('feature/m1', { shFn, runArgvFn, logFn: (m: string) => logs.push(m) }),
-        ).not.toThrow();
-        expect(logs.join('\n')).toMatch(/не вернул метку/);
-    });
-});

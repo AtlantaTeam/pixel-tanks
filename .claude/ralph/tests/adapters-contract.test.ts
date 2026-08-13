@@ -45,6 +45,7 @@ import {
 import type { SourcecraftApi } from '../adapters/sourcecraft-task-source.ts';
 import { createSourcecraftTaskSource } from '../adapters/sourcecraft-task-source.ts';
 import type { GateEnv } from '../core/gate.ts';
+import { createGithubForgeCommands } from '../adapters/github-forge-commands.ts';
 import { createGateRunner } from '../core/gate.ts';
 import type { DeployCheckEnv } from '../core/deploy-check.ts';
 import { createDeployCheckModule } from '../core/deploy-check.ts';
@@ -82,6 +83,14 @@ function makeGateEnv(over: Partial<GateEnv> = {}): GateEnv {
         },
         ghJson: () => {
             throw new Error('ghJson не подменён в тесте');
+        },
+        // #55: примитивы форжа приходят инъекцией. Дефолт падает по той же причине, что
+        // и prHeadSha: тест, забывший подменить их, обязан краснеть, а не идти в боевой `gh`.
+        mergePr: () => {
+            throw new Error('mergePr не подменён в тесте');
+        },
+        phaseMerged: () => {
+            throw new Error('phaseMerged не подменён в тесте');
         },
         safeBranch: () => true,
         findOpenPr: () => null,
@@ -349,6 +358,17 @@ function buildRealTaskSource(): { adapter: TaskSourceAdapter; gateEnv: GateEnv }
         }) as GateEnv['sh'],
     });
     const g = createGateRunner(gateEnv);
+    // #55: примитивы форжа больше не живут в гейте — контракт собирается из их адаптера,
+    // а env берём тот же, что у гейта (одни и те же sh/ghJson/логи в этом сценарии).
+    const forge = createGithubForgeCommands({
+        sh: gateEnv.sh,
+        shArgv: gateEnv.shArgv,
+        shq: gateEnv.shq,
+        log: gateEnv.log,
+        ghJson: gateEnv.ghJson,
+        safeBranch: gateEnv.safeBranch,
+        prNumberRe: gateEnv.PR_NUMBER_RE,
+    });
 
     let allOpenThrows = false;
     let mutationFails = false;
@@ -405,11 +425,11 @@ function buildRealTaskSource(): { adapter: TaskSourceAdapter; gateEnv: GateEnv }
         // исполняет сам: на площадке без `gh` тот путь давал `not-merged` навсегда.
         prHeadSha: (prNumber: number): string =>
             ralph.prHeadSha(prNumber, { ghJsonFn: (cmd: string) => ghJsonImpl(cmd) }),
-        phaseMerged: g.phaseMerged,
-        mergedPhasePr: g.mergedPhasePr,
-        mergePr: (prNumber: number, headSha?: string | null) => g.mergePr(prNumber, headSha),
-        addBlockedLabel: (branch: string) => g.addBlockedLabel(branch),
-        removeBlockedLabel: (branch: string) => g.removeBlockedLabel(branch),
+        phaseMerged: forge.phaseMerged,
+        mergedPhasePr: forge.mergedPhasePr,
+        mergePr: (prNumber: number, headSha?: string | null) => forge.mergePr(prNumber, headSha),
+        addBlockedLabel: (branch: string) => forge.addBlockedLabel(branch),
+        removeBlockedLabel: (branch: string) => forge.removeBlockedLabel(branch),
         closeMilestoneByTitle: (title: string) =>
             ralph.closeMilestoneByTitle(title, {
                 ghJsonFn: (cmd: string) => ghJsonImpl(cmd),
@@ -1074,6 +1094,17 @@ function buildRealGate(passing: Set<string>): GateAdapter {
         },
     });
     const g = createGateRunner(gateEnv);
+    // #55: примитивы форжа больше не живут в гейте — контракт собирается из их адаптера,
+    // а env берём тот же, что у гейта (одни и те же sh/ghJson/логи в этом сценарии).
+    const forge = createGithubForgeCommands({
+        sh: gateEnv.sh,
+        shArgv: gateEnv.shArgv,
+        shq: gateEnv.shq,
+        log: gateEnv.log,
+        ghJson: gateEnv.ghJson,
+        safeBranch: gateEnv.safeBranch,
+        prNumberRe: gateEnv.PR_NUMBER_RE,
+    });
     function runChecks(branch: string, prNumber: number): GateCheckResult {
         const green = g.checksGreen(branch, prNumber, { checks: g.gateChecksFor() });
         if (green) return { green: true, verifiedHead: g.getVerifiedHead(), redCheck: null };

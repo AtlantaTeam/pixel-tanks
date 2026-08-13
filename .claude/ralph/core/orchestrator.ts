@@ -23,6 +23,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createGithubForgeCommands } from '../adapters/github-forge-commands.ts';
 import { spawnSync, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 
@@ -2530,19 +2531,30 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // конфиге; форму валидирует resolveGateChecks (fail-closed). Module-level state гейта
     // (lastRedCheck/lastVerifiedHead/lastGatePr) живёт в замыкании фабрики и читается наружу
     // геттерами (getLastRedCheck/getVerifiedHead/getLastGatePr).
+    // #55: примитивы форжа живут в адаптере, а не в гейте. Гейт получает их инъекцией
+    // (env.mergePr/env.phaseMerged), а шов taskSource — теми же функциями: одна реализация,
+    // два потребителя, никакой команды `gh` в ядре.
+    const { mergePr, phaseMerged, mergedPhasePr, addBlockedLabel, removeBlockedLabel } =
+        createGithubForgeCommands({
+            sh,
+            shArgv,
+            shq,
+            log,
+            ghJson,
+            safeBranch,
+            prNumberRe: PR_NUMBER_RE,
+        });
+
     const {
         gateChecksFor,
         checksGreen,
         tryMergePhase,
-        mergePr,
-        phaseMerged,
-        mergedPhasePr,
-        removeBlockedLabel,
-        addBlockedLabel,
         getLastRedCheck: gateGetLastRedCheck,
         getVerifiedHead: gateGetVerifiedHead,
         getLastGatePr: gateGetLastGatePr,
     } = createGateRunner({
+        mergePr,
+        phaseMerged,
         sh,
         shArgv,
         shq,
