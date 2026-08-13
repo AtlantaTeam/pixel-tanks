@@ -189,15 +189,18 @@ describe('Bullet: столкновения', () => {
 });
 
 describe('Bullet.setScale — перемасштабирование при ресайзе (масштаб мира, #455)', () => {
-    // drawExplosion рисует радиальный градиент — ctxStub попаданий его не умеет,
-    // поэтому здесь ctx с минимальным набором вызовов взрыва (без реального Canvas).
+    // drawExplosion рисует пиксельный силуэт целыми квадратами (#542) — ctxStub
+    // попаданий этого не умеет, поэтому здесь ctx с минимальным набором вызовов взрыва.
     const explosionCtx = {
         createRadialGradient: () => ({ addColorStop: () => undefined }),
         beginPath: () => undefined,
         arc: () => undefined,
         fill: () => undefined,
         closePath: () => undefined,
+        fillRect: () => undefined,
         fillStyle: '',
+        globalAlpha: 1,
+        imageSmoothingEnabled: true,
     } as unknown as CanvasRenderingContext2D;
 
     it('обновляет радиус снаряда и радиус взрыва новым коэффициентом', () => {
@@ -223,7 +226,8 @@ describe('Bullet.setScale — перемасштабирование при ре
 });
 
 describe('Bullet: типы оружия (issue #483)', () => {
-    // Взрыв рисует радиальный градиент и обод ударной волны — минимальный ctx.
+    // Взрыв рисует пиксельный силуэт целыми квадратами (#542) — минимальный ctx с
+    // fillRect и полями состояния, которые трогает `paintExplosionFocus`.
     const explosionCtx = {
         createRadialGradient: () => ({ addColorStop: () => undefined }),
         beginPath: () => undefined,
@@ -231,9 +235,12 @@ describe('Bullet: типы оружия (issue #483)', () => {
         fill: () => undefined,
         stroke: () => undefined,
         closePath: () => undefined,
+        fillRect: () => undefined,
         fillStyle: '',
         strokeStyle: '',
         lineWidth: 0,
+        globalAlpha: 1,
+        imageSmoothingEnabled: true,
     } as unknown as CanvasRenderingContext2D;
 
     const makeBulletWithSpec = (kind: EWeaponKind, seed = 7) => {
@@ -329,35 +336,49 @@ describe('Bullet: типы оружия (issue #483)', () => {
         expect(bullet.spec.kind).toBe(EWeaponKind.HighExplosive);
     });
 
-    // Критерий #483: ни один эффект не рисуется за пределами текущего explosionRadius
-    // (никаких колец и ореолов впереди фронта). Записываем радиус каждой дуги —
-    // заливки взрыва И обода ударной волны — и сверяем с радиусом фронта этого кадра.
+    // Критерий #542 меняет прежнее «ровно по фронту» (#483): силуэт теперь несёт
+    // детали чуть ЗА фронтом — лучи фугаса, обод ударной волны в 1px за радиусом,
+    // столб роющего. Но огромных ореолов далеко впереди по-прежнему быть не должно:
+    // вся заливка обязана лежать в ОГРАНИЧЕННОЙ рамке вокруг фронта кадра. Записываем
+    // каждый нарисованный квадрат и проверяем, что он в этой рамке (по каждой оси).
     it.each([
         EWeaponKind.HighExplosive,
         EWeaponKind.Heavy,
         EWeaponKind.Cluster,
         EWeaponKind.Digger,
-    ])('ничего не рисуется за фронтом взрыва (%s)', (kind) => {
-        const radii: number[] = [];
+    ])('заливка взрыва в ограниченной рамке вокруг фронта (%s)', (kind) => {
+        const rects: { x: number; y: number; w: number; h: number }[] = [];
         const recordingCtx = {
             createRadialGradient: () => ({ addColorStop: () => undefined }),
             beginPath: () => undefined,
-            arc: (_x: number, _y: number, r: number) => radii.push(r),
+            arc: () => undefined,
             fill: () => undefined,
             stroke: () => undefined,
             closePath: () => undefined,
+            fillRect: (x: number, y: number, w: number, h: number) => rects.push({ x, y, w, h }),
             fillStyle: '',
             strokeStyle: '',
             lineWidth: 0,
+            globalAlpha: 1,
+            imageSmoothingEnabled: true,
         } as unknown as CanvasRenderingContext2D;
 
         const { bullet } = makeBulletWithSpec(kind);
         let frames = 0;
         while (!bullet.isFinished && frames < 2000) {
-            radii.length = 0;
+            rects.length = 0;
             const front = bullet.explosionRadius;
+            const cx = bullet.explosionCenterX;
+            const cy = bullet.explosionCenterY;
             bullet.drawExplosion(recordingCtx);
-            for (const r of radii) expect(r).toBeLessThanOrEqual(front);
+            // Рамка: фронт с запасом на пиксельные детали силуэта (лучи/обод/конус).
+            const envelope = front * 1.5 + 8;
+            for (const r of rects) {
+                expect(Math.min(r.x, r.x + r.w)).toBeGreaterThanOrEqual(cx - envelope);
+                expect(Math.max(r.x, r.x + r.w)).toBeLessThanOrEqual(cx + envelope);
+                expect(Math.min(r.y, r.y + r.h)).toBeGreaterThanOrEqual(cy - envelope);
+                expect(Math.max(r.y, r.y + r.h)).toBeLessThanOrEqual(cy + envelope);
+            }
             frames += 1;
         }
     });

@@ -223,7 +223,7 @@ export class Bullet {
 
         // Единый примитив кадра взрыва (общий с витриной): градиент до фронта плюс
         // обод ударной волны РОВНО по фронту, ничего впереди него (ловушка #483).
-        paintExplosionFocus(ctx, cx, cy, this.explosionRadius, colors, this.spec.shockwave);
+        paintExplosionFocus(ctx, cx, cy, this.explosionRadius, colors, this.spec.silhouette);
 
         this.explosionRadius += growthPerFrame;
         if (this.explosionRadius >= this.focusMaxRadius) {
