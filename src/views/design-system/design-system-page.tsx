@@ -16,6 +16,7 @@ import { IconSection } from './icon-section';
 import { PauseSection } from './pause-section';
 import { ScreensSection } from './screens-section';
 import { SkyBackgroundSection } from './sky-background-section';
+import { TankSkinsSection } from './tank-skins-section';
 
 const FACTION_OPTIONS: TSegmentedControlOption<TFaction>[] = [
     { value: 'player', label: 'Игрок' },
@@ -453,6 +454,16 @@ export function DesignSystemPage() {
                             Небо боя
                         </SectionHeading>
                         <SkyBackgroundSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading
+                            number="16"
+                            headline="Геометрии × палитры — выбор косметики"
+                        >
+                            Скины танков
+                        </SectionHeading>
+                        <TankSkinsSection />
                     </section>
                 </div>
             </main>

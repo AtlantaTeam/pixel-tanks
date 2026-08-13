@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createSeededRandom } from '@/shared/lib/random';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import type { TReplay } from '@/entities/replays';
+import { getStoredTankSkinId, selectTankSkinForSeed } from '@/entities/tank-skins';
 import { useGameStore } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
 import { dealWeapons } from '../../lib/weapons';
@@ -76,7 +77,15 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
             createFxRandom(replay.seed),
             // Воспроизведение идёт на логическом размере записи, а не экрана:
             // физика в абсолютных пикселях, иначе рельеф/ветер/траектории разойдутся.
-            { fixedLogicalSize: { width: replay.width, height: replay.height } },
+            {
+                fixedLogicalSize: { width: replay.width, height: replay.height },
+                // Скины (issue #481) в запись не пишутся (чисто косметика, см.
+                // tank-skin-parity.test.ts) — свой берём из ТЕКУЩЕГО предпочтения
+                // (как звук/тема), бот — детерминированно от seed записи: тот же
+                // сид всегда даёт тот же вид соперника.
+                leftSkinId: getStoredTankSkinId(),
+                rightSkinId: selectTankSkinForSeed(replay.seed),
+            },
         );
         // Инсеты safe-зоны записи — ДО генерации рельефа (loadImages → initPaint):
         // рельеф генерится внутри свободной зоны (#454), поэтому воспроизведение

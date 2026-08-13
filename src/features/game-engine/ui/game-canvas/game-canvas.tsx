@@ -6,6 +6,7 @@ import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import type { TWeapon } from '@/shared/model';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
+import { getStoredTankSkinId, selectTankSkinForSeed } from '@/entities/tank-skins';
 import { selectIsBotTurn, useGameStore } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
 import { dealWeapons } from '../../lib/weapons';
@@ -120,6 +121,12 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     // (рельеф/ветер/бот), и фоновое небо (`SkyBackground`) — пресет и стартовое
     // положение облаков совпадают с боем. Без seed-пропа — случайный бой (Date.now).
     const [battleSeed] = useState<number | string>(() => seed ?? Date.now());
+    // Скины танков (issue #481): свой — из сохранённого предпочтения (читается
+    // один раз на старте боя, как и battleSeed — смена скина в настройках
+    // подхватится следующим боем), бот — детерминированно от сида боя, чтобы
+    // тот же сид давал тот же вид соперника и в реплее.
+    const [leftSkinId] = useState(() => getStoredTankSkinId());
+    const [rightSkinId] = useState(() => selectTankSkinForSeed(battleSeed));
 
     const [botBubble, setBotBubble] = useState<{ reply: TBotReply; x: number; y: number } | null>(
         null,
@@ -247,6 +254,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             // Отдельный поток для косметики (частицы, тряска): их FPS-зависимое
             // потребление random не должно сдвигать выборки бота (см. GamePlay).
             createFxRandom(battleSeed),
+            { leftSkinId, rightSkinId },
         );
         gameRef.current = game;
         game.loadImages();
