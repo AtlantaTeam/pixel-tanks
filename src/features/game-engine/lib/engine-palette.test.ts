@@ -26,4 +26,16 @@ describe('ENGINE_COLORS', () => {
         expect(cssAccent).toBeDefined();
         expect(ENGINE_COLORS.accent).toBe(cssAccent);
     });
+
+    it('зеркалит --color-warning из globals.css (сила в индикаторе у ствола)', () => {
+        const cssWarning = readCssToken('--color-warning');
+        expect(cssWarning).toBeDefined();
+        expect(ENGINE_COLORS.warning).toBe(cssWarning);
+    });
+
+    it('зеркалит --color-danger из globals.css (индикатор и дуга на максимуме силы)', () => {
+        const cssDanger = readCssToken('--color-danger');
+        expect(cssDanger).toBeDefined();
+        expect(ENGINE_COLORS.danger).toBe(cssDanger);
+    });
 });

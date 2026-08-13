@@ -1,6 +1,7 @@
 'use client';
 
 import { clsx } from 'clsx';
+import { POWER_MAX } from '@/shared/config';
 import { formatAngle } from '../../lib/format-angle';
 
 /**
@@ -39,6 +40,9 @@ export type TGestureVisual = {
 const START_DOT = 8;
 /** Кольцо пальца (handoff: «56×56, border:2px dashed»). */
 const RING_SIZE = 56;
+/** Толщина луча натяжения по силе (issue #475): от тонкого к жирному. */
+const TENSION_MIN_WIDTH = 2;
+const TENSION_MAX_WIDTH = 7;
 /**
  * Фиксированная ширина чипа (px). Совпадает с `CHIP_WIDTH` в `game-canvas`
  * (`clampChipCenterX`): чип центрируется над пальцем, поэтому клэмп должен знать
@@ -58,6 +62,10 @@ export function GestureOverlay({ visual }: TGestureOverlayProps) {
     // Луч и чип краснеют при превышении максимума (handoff): семантический токен,
     // не хардкод hex.
     const strokeColor = isMax ? 'var(--color-danger)' : 'var(--color-accent)';
+    // Толщина луча натяжения растёт с силой (issue #475): сильнее оттяжка — жирнее
+    // «резинка рогатки». Доля силы в [0,1] линейно отображается в диапазон толщины.
+    const tension = Math.min(1, Math.max(0, power / POWER_MAX));
+    const tensionWidth = TENSION_MIN_WIDTH + tension * (TENSION_MAX_WIDTH - TENSION_MIN_WIDTH);
 
     return (
         <div className="pointer-events-none absolute inset-0" aria-hidden>
@@ -72,7 +80,8 @@ export function GestureOverlay({ visual }: TGestureOverlayProps) {
                     x2={fingerX}
                     y2={fingerY}
                     stroke={strokeColor}
-                    strokeWidth={2}
+                    strokeWidth={tensionWidth}
+                    strokeLinecap="round"
                 />
                 <rect
                     x={originX - START_DOT / 2}
