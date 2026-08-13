@@ -13,8 +13,12 @@ describe('TankSkinPicker', () => {
         expect(buttons).toHaveLength(TANK_SKINS.length);
 
         const defaultSkin = TANK_SKINS.find((skin) => skin.id === DEFAULT_TANK_SKIN_ID);
+        // Матчим доступное имя по подстроке функцией, а не RegExp из имён скинов:
+        // имя может получить спецсимвол regex (`(`, `.`, `+`), и собранный паттерн
+        // молча сломался бы или дал ложное совпадение.
+        const defaultLabel = `${defaultSkin?.geometry.name} · ${defaultSkin?.palette.name}`;
         const defaultButton = screen.getByRole('button', {
-            name: new RegExp(`${defaultSkin?.geometry.name} · ${defaultSkin?.palette.name}`),
+            name: (accessibleName) => accessibleName.includes(defaultLabel),
         });
         expect(defaultButton).toHaveAttribute('aria-pressed', 'true');
     });
@@ -24,8 +28,9 @@ describe('TankSkinPicker', () => {
 
         const target = TANK_SKINS.find((skin) => skin.id !== DEFAULT_TANK_SKIN_ID);
         if (!target) throw new Error('в реестре должно быть больше одного скина');
+        const targetLabel = `${target.geometry.name} · ${target.palette.name}`;
         const targetButton = screen.getByRole('button', {
-            name: new RegExp(`${target.geometry.name} · ${target.palette.name}`),
+            name: (accessibleName) => accessibleName.includes(targetLabel),
         });
 
         fireEvent.click(targetButton);

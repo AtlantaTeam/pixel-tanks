@@ -23,6 +23,8 @@ export const classicGeometry: TTankGeometry = {
     id: 'classic',
     name: 'Классика',
     wheels,
+    // Прежние доли превью классики (ствол выходит из башни чуть выше центра).
+    barrelMount: { top: 0.2, left: 0.36, width: 0.58 },
     buildHullSvg: (
         palette,
     ) => `<svg width="200" height="93" viewBox="0 0 200 93" fill="none" xmlns="http://www.w3.org/2000/svg">

@@ -37,6 +37,17 @@ export type TTankPalette = {
 export type TTankWheelSpec = { cx: number; cy: number; r: number };
 
 /**
+ * Точка крепления и длина ствола в статичном превью (`TankSkinPreview`) — доли
+ * бокса превью (аспект 2:1), НЕ пиксели: `top`/`left` — левый-верхний угол
+ * спрайта ствола, `width` — его ширина. У геометрий разный viewBox корпуса и
+ * своя точка выхода ствола из башни (classic 200×40 vs heavy 90×18), поэтому
+ * раскладка живёт в геометрии, а не хардкодится в превью — иначе ствол «тяжёлого»
+ * сел бы мимо башни. В бою якорь ствола задаёт `Tank` (`gunpointDelta*`), это
+ * только для косметического превью.
+ */
+export type TTankBarrelMount = { top: number; left: number; width: number };
+
+/**
  * Геометрия — чистые функции, собирающие разметку SVG корпуса и ствола под
  * переданную палитру. Ствол — отдельный спрайт (issue #481): вращается вокруг
  * точки крепления независимо от корпуса, поэтому у него своя разметка и свой
@@ -50,6 +61,8 @@ export type TTankGeometry = {
     id: TTankGeometryId;
     name: string;
     wheels: readonly TTankWheelSpec[];
+    /** Раскладка ствола в статичном превью — доли бокса, см. `TTankBarrelMount`. */
+    barrelMount: TTankBarrelMount;
     buildHullSvg: (palette: TTankPalette) => string;
     buildBarrelSvg: (palette: TTankPalette) => string;
     buildWheelSvg: (palette: TTankPalette) => string;

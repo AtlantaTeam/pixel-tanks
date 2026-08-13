@@ -17,6 +17,9 @@ type TTankSkinPreviewProps = {
 export function TankSkinPreview({ skin, className }: TTankSkinPreviewProps) {
     const hullSvg = skin.geometry.buildHullSvg(skin.palette);
     const barrelSvg = skin.geometry.buildBarrelSvg(skin.palette);
+    // Точка крепления и длина ствола — из геометрии (доли бокса), не хардкод:
+    // у «тяжёлого» башня иного размера и положения, чем у классики (issue #481).
+    const { top, left, width } = skin.geometry.barrelMount;
 
     return (
         <div className={clsx('relative aspect-[2/1]', className)}>
@@ -25,7 +28,12 @@ export function TankSkinPreview({ skin, className }: TTankSkinPreviewProps) {
                 dangerouslySetInnerHTML={{ __html: hullSvg }}
             />
             <div
-                className="absolute top-[20%] left-[36%] w-[58%] [&>svg]:h-full [&>svg]:w-full"
+                className="absolute [&>svg]:h-full [&>svg]:w-full"
+                style={{
+                    top: `${top * 100}%`,
+                    left: `${left * 100}%`,
+                    width: `${width * 100}%`,
+                }}
                 dangerouslySetInnerHTML={{ __html: barrelSvg }}
             />
         </div>

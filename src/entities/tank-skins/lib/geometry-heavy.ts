@@ -26,6 +26,9 @@ export const heavyGeometry: TTankGeometry = {
     id: 'heavy',
     name: 'Тяжёлый',
     wheels,
+    // Башня «тяжёлого» ниже и уже (viewBox 200×104, башня x≈74..126, y≈28..48):
+    // ствол выходит из её фронта, поэтому доли иные, чем у классики.
+    barrelMount: { top: 0.28, left: 0.42, width: 0.42 },
     buildHullSvg: (
         palette,
     ) => `<svg width="200" height="104" viewBox="0 0 200 104" xmlns="http://www.w3.org/2000/svg">

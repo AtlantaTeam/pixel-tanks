@@ -210,6 +210,11 @@ export class Tank {
 
     private updateWheelRotation(distance: number) {
         if (!this.wheelRotationEnabled || distance === 0 || this.wheels.length === 0) return;
+        // ДОПУЩЕНИЕ: у всех катков геометрии один радиус (сейчас так у classic и
+        // heavy), поэтому берём радиус `wheels[0]` и крутим все катки одним углом
+        // `wheelRotation`. Появится геометрия с РАЗНЫМИ радиусами — угловую
+        // скорость придётся считать по-катково (у меньшего катка она больше), а
+        // `drawTankWheels` — принимать угол на каток, не общий.
         const wheelRadiusPx = this.wheels[0].r * this.tankWidth;
         this.wheelRotation += wheelRotationDelta(distance, wheelRadiusPx);
     }

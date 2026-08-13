@@ -1,9 +1,20 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import type { TTankWheelSpec as TSkinWheelSpec } from '@/entities/tank-skins';
 import { createSeededRandom } from '@/shared/lib/random';
 import type { TWeapon } from '@/shared/model';
 import { Ground } from './ground';
-import { Tank, wheelRotationDelta, type TTankWheelSpec } from './tank';
+import { drawTankWheels, Tank, wheelRotationDelta, type TTankWheelSpec } from './tank';
 import { WORLD_UNITS } from './world-scale';
+
+// Пин структурного совпадения `TTankWheelSpec` движка (`tank.ts`) и реестра
+// скинов (`entities/tank-skins`). `Tank` намеренно НЕ импортирует тип из
+// entities (развязка «движок не знает про скины», docblock в `tank.ts`), но
+// формы обязаны совпадать — `GamePlay` кормит движок `geometry.wheels`. Разъедутся
+// (кто-то добавит поле в одну из копий) — тип-ассерт не скомпилируется в
+// `npm run typecheck`, а не всплывёт молчаливым структурным дрейфом.
+type MutuallyAssignable<A, B> = A extends B ? (B extends A ? true : never) : never;
+const _wheelSpecMatch: MutuallyAssignable<TTankWheelSpec, TSkinWheelSpec> = true;
+void _wheelSpecMatch;
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -164,6 +175,56 @@ describe('wheelRotationDelta — угол поворота катка от пр�
     it('нулевой/отрицательный радиус не делит на ноль — угол 0', () => {
         expect(wheelRotationDelta(20, 0)).toBe(0);
         expect(wheelRotationDelta(20, -5)).toBe(0);
+    });
+});
+
+describe('drawTankWheels — раскладка катков (issue #496)', () => {
+    // ctx-заглушка, записывающая translate (центр катка) и drawImage (радиус).
+    const makeWheelCtx = () => {
+        const translates: number[][] = [];
+        const draws: number[][] = [];
+        const ctx = {
+            save: () => undefined,
+            restore: () => undefined,
+            translate: (x: number, y: number) => translates.push([x, y]),
+            rotate: () => undefined,
+            drawImage: (_img: unknown, x: number, y: number, w: number, h: number) =>
+                draws.push([x, y, w, h]),
+        } as unknown as CanvasRenderingContext2D;
+        return { ctx, translates, draws };
+    };
+
+    const wheelImg = {} as HTMLImageElement;
+    const body = { x: 100, y: 40, width: 60, height: 30 };
+    const wheels: TTankWheelSpec[] = [
+        { cx: 0.25, cy: 0.9, r: 0.1 },
+        { cx: 0.5, cy: 0.9, r: 0.1 },
+        { cx: 0.75, cy: 0.9, r: 0.1 },
+    ];
+
+    it('рисует ровно по одному катку на каждую позицию геометрии', () => {
+        const { ctx, draws } = makeWheelCtx();
+        drawTankWheels(ctx, wheelImg, wheels, body, 0);
+        expect(draws).toHaveLength(wheels.length);
+    });
+
+    it('центр = body + доля (translate), радиус = r*width, спрайт от -r до +r', () => {
+        const { ctx, translates, draws } = makeWheelCtx();
+        drawTankWheels(ctx, wheelImg, wheels, body, 0);
+        wheels.forEach((wheel, i) => {
+            const cx = body.x + wheel.cx * body.width;
+            const cy = body.y + wheel.cy * body.height;
+            const r = wheel.r * body.width;
+            expect(translates[i]).toEqual([cx, cy]);
+            // drawImage рисуется от центра (после translate), поэтому [-r,-r,2r,2r].
+            expect(draws[i]).toEqual([-r, -r, r * 2, r * 2]);
+        });
+    });
+
+    it('без картинки катка ничего не рисует (гард на неподгруженный спрайт)', () => {
+        const { ctx, draws } = makeWheelCtx();
+        drawTankWheels(ctx, undefined, wheels, body, 0);
+        expect(draws).toHaveLength(0);
     });
 });
 
