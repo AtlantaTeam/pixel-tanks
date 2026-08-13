@@ -50,17 +50,52 @@ item-add` — способ, а не намерение, и живёт он в а
   (cwd кодер-сессии = корень worktree), скилл закоммичен в репо — глобальный
   `~/.claude/skills/` не использовать: он не переживает restore VDS. Наша тема: retro
   pixel game (пиксель-арт, тёмный фон).
-- ПОСЛЕ реализации проверь визуально через Playwright MCP: `npm run dev` (порт 3050) →
-  навигация → скриншот в `screenshots/` → `browser_console_messages` (ошибок быть не
-  должно). Вьюпорты — **все четыре канонных**: 390 (моб) / 768 (планшет) / 1280 (десктоп) /
-  1920 (широкий). Планшет — целевое устройство, а не промежуточный размер: пропускать его
-  нельзя (CLAUDE.md, «Адаптив»). Для экранов, играемых в landscape, добавь 667×375.
+- ПОСЛЕ реализации проверь визуально. **Playwright MCP на сервере не работает** (#458:
+  ищет `/opt/google/chrome/chrome`, которого нет), поэтому проверка делается скриптом
+  через локальный `playwright` из `node_modules` — он есть всегда, потому что им гоняется
+  e2e:
+
+    ```js
+    // screenshots/check.mjs — запускать `node screenshots/check.mjs`
+    import { chromium } from 'playwright';
+    const browser = await chromium.launch();
+    for (const w of [390, 768, 1280, 1920]) {
+        const ctx = await browser.newContext({ viewport: { width: w, height: 844 } });
+        const page = await ctx.newPage();
+        await page.goto('http://127.0.0.1:3050/game', { waitUntil: 'networkidle' });
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: `screenshots/check-${w}.png` });
+        // переполнение: scrollWidth и элементы за правым краем
+        console.log(
+            w,
+            await page.evaluate(() => ({
+                scrollWidth: document.documentElement.scrollWidth,
+                overflowing: [...document.querySelectorAll('body *')]
+                    .filter((e) => e.getBoundingClientRect().right > innerWidth + 1)
+                    .map((e) => e.className?.toString().slice(0, 40))
+                    .slice(0, 5),
+                errors: [],
+            })),
+        );
+        await ctx.close();
+    }
+    await browser.close();
+    ```
+
+    Скриншоты — в `screenshots/` (папка в `.gitignore`). Вьюпорты — **все четыре канонных**:
+    390 (моб) / 768 (планшет) / 1280 (десктоп) / 1920 (широкий). Планшет — целевое устройство, а не промежуточный размер: пропускать его
+    нельзя (CLAUDE.md, «Адаптив»). Для экранов, играемых в landscape, добавь 667×375.
+
 - Мало «не разваливается»: на каждом вьюпорте проверь, что **нет горизонтального
   переполнения** — `document.documentElement.scrollWidth` равен ширине вьюпорта, и ни один
   элемент не уходит за правый край. Замер ловит то, чего не видно на скриншоте: в макете
   игрового экрана телеметрия уезжала на 158px за край 768 при `scrollWidth: 768`, то есть
   контент был недоступен и не скроллился.
 - Не закрывай Issue без визуальной проверки — «код написан» ≠ «выглядит правильно».
+- **В комментарии закрытия задачи напиши, что показал замер**: список вьюпортов и
+  `scrollWidth` по каждому. Без этого проверить, была ли проверка, невозможно — раннер
+  транскрипты сессий не хранит (#346). Пустой список `overflowing` на всех четырёх
+  вьюпортах — обязательное условие закрытия UI-задачи.
 
 ## Экран боя: спека дизайна — источник правды
 
