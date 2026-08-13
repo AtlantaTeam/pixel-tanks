@@ -2,7 +2,7 @@
     "defaultProfile": "playground",
     "common": {
         "active": true,
-        "maxIterations": 10,
+        "maxIterations": 25,
         "maxTurns": 200,
         "claudeTimeoutMs": 7200000,
         "authorAllowlist": ["Pelmenya"],
@@ -98,52 +98,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Экран боя ralph · Фаза 1: HP-модель боя",
-                "branch": "feature/game-screen-1-hp-model"
-            },
-            {
-                "milestone": "Экран боя ralph · Фаза 2: Оверлейный HUD",
-                "branch": "feature/game-screen-2-hud"
-            },
-            {
-                "milestone": "Экран боя ralph · Фаза 3: Визуал жеста и состояния",
-                "branch": "feature/game-screen-3-gesture"
-            },
-            {
-                "milestone": "Экран боя ralph · Фаза 4: Витрина и визрегрессия",
-                "branch": "feature/game-screen-4-showcase"
-            },
-            {
-                "milestone": "Мобильная эргономика боя · Фаза 1: HUD не скачет",
-                "branch": "feature/mobile-ergo-1-stable-hud"
-            },
-            {
-                "milestone": "Мобильная эргономика боя · Фаза 2: Компактные оверлеи",
-                "branch": "feature/mobile-ergo-2-compact"
-            },
-            {
-                "milestone": "Мобильная эргономика боя · Фаза 3: Safe-зона арены и масштаб мира",
-                "branch": "feature/mobile-ergo-3-arena"
-            },
-            {
-                "milestone": "Мобильная эргономика боя · Фаза 4: Десктопная панель",
-                "branch": "feature/mobile-ergo-4-desktop-hud"
-            },
-            {
-                "milestone": "Мобильная эргономика боя · Фаза 5: Прицеливание и контролы",
-                "branch": "feature/mobile-ergo-5-aim"
-            },
-            {
-                "milestone": "Визуал боя · Фаза 1: Небо и параллакс",
-                "branch": "feature/visuals-1-sky"
-            },
-            {
-                "milestone": "Визуал боя · Фаза 2: Разновидности танков",
-                "branch": "feature/visuals-2-tank-skins"
-            },
-            {
-                "milestone": "Визуал боя · Фаза 3: Виды оружия",
-                "branch": "feature/visuals-3-weapons"
+                "milestone": "Экран боя · Рефактор и фиксы по ревью",
+                "branch": "feature/battle-review-fixes"
             }
         ]
     },
