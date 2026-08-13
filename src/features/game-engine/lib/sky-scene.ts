@@ -27,8 +27,8 @@ type TCloudLayerSpec = {
  * слоя в верхней половине неба, над рельефом.
  */
 export const CLOUD_LAYER_SPECS: readonly TCloudLayerSpec[] = [
-    { image: 'far', speed: 0.006, heightFrac: 0.22, topFrac: 0.08 },
-    { image: 'near', speed: 0.017, heightFrac: 0.28, topFrac: 0.24 },
+    { image: 'far', speed: 0.006, heightFrac: 0.11, topFrac: 0.07 },
+    { image: 'near', speed: 0.017, heightFrac: 0.15, topFrac: 0.18 },
 ];
 
 type TCloudLayer = {
@@ -166,9 +166,11 @@ export class SkyScene {
         if (!image || !image.width || !image.height) return;
         const tinted = this.ensureTintedMountain(image);
         const source = tinted ?? image;
-        // Силуэт гор во всю ширину, низом у горизонта (~66% высоты неба).
-        const bandHeight = Math.round(height * 0.3);
-        const bottom = Math.round(height * 0.66);
+        // Силуэт дальних гор во всю ширину, низом у горизонта (~62% высоты неба).
+        // Высота — доля высоты неба (арт 1024×130 ≈ 8:1, растяжение по вертикали
+        // читается как атмосферная дымка, гор в бою всё равно касаются взглядом мельком).
+        const bandHeight = Math.round(height * 0.16);
+        const bottom = Math.round(height * 0.62);
         ctx.drawImage(source, 0, bottom - bandHeight, width, bandHeight);
     }
 
