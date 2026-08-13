@@ -49,8 +49,16 @@ function turnPillLabel(turn: TSide, phase: TPhase): string {
  *  (#447): узел остаётся в потоке и держит высоту ряда, поэтому геометрия HUD
  *  не «скачет» между финалом и остальными фазами. `aria-hidden` убирает пустую
  *  пилюлю из дерева скринридера — на «game over» хода нет. */
-function TurnPillOrNothing({ turn, phase }: { turn: TSide; phase: TPhase }) {
-    return <TurnPill turn={turn} phase={phase} hidden={phase === 'over'} />;
+function TurnPillOrNothing({
+    turn,
+    phase,
+    stretch,
+}: {
+    turn: TSide;
+    phase: TPhase;
+    stretch?: boolean;
+}) {
+    return <TurnPill turn={turn} phase={phase} hidden={phase === 'over'} stretch={stretch} />;
 }
 
 function HpCard({
@@ -89,7 +97,18 @@ function HpCard({
 /** Самая широкая из трёх подписей пилюли — резервирует её ширину (#449), см. ниже. */
 const TURN_PILL_SIZER = 'ХОД СОПЕРНИКА';
 
-function TurnPill({ turn, phase, hidden }: { turn: TSide; phase: TPhase; hidden?: boolean }) {
+function TurnPill({
+    turn,
+    phase,
+    hidden,
+    stretch,
+}: {
+    turn: TSide;
+    phase: TPhase;
+    hidden?: boolean;
+    /** Тянуть плашку до соседа (мобильный ряд, #528) — вместо распорки `flex-1`. */
+    stretch?: boolean;
+}) {
     const label = turnPillLabel(turn, phase);
 
     return (
@@ -101,7 +120,12 @@ function TurnPill({ turn, phase, hidden }: { turn: TSide; phase: TPhase; hidden?
                 // shrink-0: сосед по флекс-ряду — HP-блок с flex-1 — иначе забирает
                 // всё свободное место и пилюля сжимается ниже контента (текст
                 // разбивается на «ТВОЙ» / «ХОД» вместо одной строки на десктопе).
-                'flex min-h-10 shrink-0 items-center gap-2 border-[length:var(--border-w)] border-[color:var(--accent)] px-3 py-2 shadow-[var(--glow)]',
+                'flex min-h-10 items-center gap-2 border-[length:var(--border-w)] border-[color:var(--accent)] px-3 py-2 shadow-[var(--glow)]',
+                // На десктопе сосед по ряду — HP-блок с flex-1: без shrink-0 он забирает
+                // всё свободное место, и пилюля сжимается ниже контента («ТВОЙ» / «ХОД»
+                // в две строки). В мобильном ряду соседи — только кнопки фиксированной
+                // ширины, там плашка, наоборот, тянется сама (#528).
+                stretch ? 'flex-1' : 'shrink-0',
                 // Финал: `invisible` (visibility:hidden) прячет пилюлю, но сохраняет
                 // её бокс — ряд не теряет высоту (#447).
                 hidden && 'invisible',
@@ -683,9 +707,11 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         layout="inline"
                     />
                 </div>
+                {/* Плашка хода тянется до кнопок сама (#528): раньше между ними стояла
+                    распорка `flex-1`, и на 390 получалась дыра в 38 px при общем ритме
+                    панели в 8 — единственный такой провал в раскладке. */}
                 <div className="flex items-center gap-2">
-                    <TurnPillOrNothing turn={turn} phase={phase} />
-                    <div className="flex-1" />
+                    <TurnPillOrNothing turn={turn} phase={phase} stretch />
                     <HudIconButtons onPauseClick={onPauseClick} />
                 </div>
                 {/* Вся телеметрия — один ряд (#450): угол / сила / ветер / пипы.
@@ -729,8 +755,11 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     />
                     <WindCell wind={wind} windRevealed={windRevealed} compact />
                     {/* Снаряды и ходы — компактной колонкой (пипы 8px): два ряда
-                        держат подписи, но по ширине встают рядом с ячейками. */}
-                    <div className="flex shrink-0 flex-col justify-center gap-1">
+                        держат подписи, но по ширине встают рядом с ячейками.
+                        `flex-1` + выравнивание вправо (#528): колонка добирает остаток
+                        строки, и правый край ряда телеметрии совпадает с рядами выше —
+                        раньше он не доходил до них 9 px и край панели выглядел рваным. */}
+                    <div className="flex flex-1 flex-col items-end justify-center gap-1">
                         <ResourcePips
                             label="Снаряды"
                             pips={ammoPips}
@@ -765,8 +794,11 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
             >
                 {/* xl:gap-1 (#489, было gap-4 без override): тот же бюджет ширины —
                     первый ряд (HP-блок + пилюля + бейдж заморозки + mute/пауза)
-                    ужимается плотнее на узком xl, освобождая место телеметрии. */}
-                <div className="flex flex-1 flex-wrap items-center gap-4 xl:flex-nowrap xl:gap-1">
+                    ужимается плотнее на узком xl, освобождая место телеметрии.
+                    С 1440 ужатие снимается (#528): бюджет ширины там уже не жмёт, а
+                    4 px в левой группе против 8 в телеметрии читались как случайный
+                    сбой ритма — на широком экране панель идёт одним шагом. */}
+                <div className="flex flex-1 flex-wrap items-center gap-4 xl:flex-nowrap xl:gap-1 min-[1440px]:gap-2">
                     {/* min-width 420 держит HP-бары на планшете (2 ряда, есть запас
                         по высоте); на 1280/1920 та же полоса — один ряд высотой 78px
                         фиксированно, и 420 там не помещается рядом с пилюлей, кнопками
