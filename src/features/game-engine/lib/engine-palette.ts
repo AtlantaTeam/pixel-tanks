@@ -10,6 +10,9 @@ export const ENGINE_COLORS = {
     // состояние — accent, а на максимуме оттяжки индикатор и дуга краснеют в danger,
     // как чип оверлея (`drawAimPreview`).
     accent: '#48ff00',
+    // Трасса прошлого выстрела бота (issue #543) и другая «вражеская» разметка
+    // в canvas — зеркалит `--color-enemy` из globals.css.
+    enemy: '#c900ff',
     danger: '#ff4242',
     // Нейтральная линия земли демо-канваса витрины (issue #496, `TankWheelDemo`) —
     // `--color-border-strong`, не «просто хардкод»: та же граница, что у остальной UI-хромы.

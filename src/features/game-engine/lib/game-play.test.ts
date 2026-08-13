@@ -345,3 +345,79 @@ describe('GamePlay — инсеты арены (контракт safe-зоны, 
         expect(gamePlay.arenaZone).toEqual({ top: 100, height: 200 });
     });
 });
+
+describe('GamePlay — призрачная трасса прошлого выстрела (issue #543)', () => {
+    /**
+     * Стреляет `activeTank` → `targetTank` и прогоняет полёт до конца — попадание
+     * форсировано на первом же кадре (как в тестах разрешения детонации выше), важен
+     * не исход, а факт «выстрел долетел» (HighExplosive взрывается 50 кадров, см.
+     * «moveBullet сообщает конец выстрела ровно один раз»).
+     */
+    function fireAndResolve(
+        gamePlay: ReturnType<typeof makeGamePlay>['gamePlay'],
+        activeTank: Tank,
+        targetTank: Tank,
+        ground: Ground,
+    ) {
+        gamePlay.fire(activeTank, targetTank, ground, WEAPON);
+        const bullet = gamePlay.bullet;
+        if (!bullet) throw new Error('fire() не создал снаряд');
+        bullet.isTankHit = false;
+        bullet.isHit = () => true;
+        for (let frame = 0; frame < 60 && gamePlay.bullet; frame += 1) {
+            gamePlay.moveBullet(ctxStub);
+        }
+        if (gamePlay.bullet) throw new Error('выстрел не долетел в бюджет кадров теста');
+    }
+
+    it('свой выстрел публикует свою трассу и не трогает трассу бота', () => {
+        const { gamePlay, leftTank, rightTank, ground } = makeGamePlay();
+        vi.spyOn(getAudioEngine(), 'playSfx').mockImplementation(() => Promise.resolve());
+
+        expect(gamePlay.ownGhostTrail.isActive).toBe(false);
+        expect(gamePlay.enemyGhostTrail.isActive).toBe(false);
+
+        fireAndResolve(gamePlay, leftTank, rightTank, ground);
+
+        expect(gamePlay.ownGhostTrail.isActive).toBe(true);
+        expect(gamePlay.enemyGhostTrail.isActive).toBe(false);
+    });
+
+    it('следующий свой выстрел заменяет свою трассу — на арене не больше одной своей', () => {
+        const { gamePlay, leftTank, rightTank, ground } = makeGamePlay();
+        vi.spyOn(getAudioEngine(), 'playSfx').mockImplementation(() => Promise.resolve());
+
+        fireAndResolve(gamePlay, leftTank, rightTank, ground);
+        const firstShotTrail = gamePlay.ownGhostTrail.committedView;
+
+        // Второй свой выстрел стартует из другого угла — записанный путь физически другой.
+        leftTank.gunpointAngle -= 0.2;
+        fireAndResolve(gamePlay, leftTank, rightTank, ground);
+
+        expect(gamePlay.ownGhostTrail.isActive).toBe(true);
+        expect(gamePlay.ownGhostTrail.committedView).not.toEqual(firstShotTrail);
+    });
+
+    it('выстрел бота публикует трассу бота и не трогает ещё не наступивший свой ход', () => {
+        const { gamePlay, leftTank, rightTank, ground } = makeGamePlay();
+        vi.spyOn(getAudioEngine(), 'playSfx').mockImplementation(() => Promise.resolve());
+
+        fireAndResolve(gamePlay, rightTank, leftTank, ground);
+
+        expect(gamePlay.enemyGhostTrail.isActive).toBe(true);
+        expect(gamePlay.ownGhostTrail.isActive).toBe(false);
+    });
+
+    it('трасса бота гаснет ровно в конце вашего хода — когда долетел свой выстрел', () => {
+        const { gamePlay, leftTank, rightTank, ground } = makeGamePlay();
+        vi.spyOn(getAudioEngine(), 'playSfx').mockImplementation(() => Promise.resolve());
+
+        fireAndResolve(gamePlay, rightTank, leftTank, ground);
+        expect(gamePlay.enemyGhostTrail.isActive).toBe(true);
+
+        fireAndResolve(gamePlay, leftTank, rightTank, ground);
+
+        expect(gamePlay.enemyGhostTrail.isActive).toBe(false);
+        expect(gamePlay.ownGhostTrail.isActive).toBe(true);
+    });
+});

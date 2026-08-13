@@ -28,6 +28,7 @@ import { weaponSpecFor } from './weapon-specs';
 import { CameraShake } from './camera-shake';
 import { SlowMotion } from './slow-motion';
 import { BulletTrail } from './bullet-trail';
+import { GhostTrail, ghostDashUnit } from './ghost-trail';
 import { ENGINE_COLORS } from './engine-palette';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
 
@@ -228,6 +229,16 @@ export class GamePlay {
     // догорал в цвете своего типа даже после того, как снаряд убран (`bullet` уже
     // undefined, а `trail.draw` ещё чистит/гасит точки несколько кадров).
     private trailColor: string = ENGINE_COLORS.primary;
+    /**
+     * Призрачная трасса прошлого выстрела (issue #543): своя — до конца
+     * СЛЕДУЮЩЕГО своего выстрела (заменяется в `moveBullet` при каждом
+     * его завершении), трасса бота — до конца ВАШЕГО хода (гасится тем же
+     * местом, ровно когда свой выстрел долетел и ход уходит к боту).
+     * Публичные (не private), как `bullet`/`ground` — тесты и отладка читают
+     * состояние трасс напрямую.
+     */
+    readonly ownGhostTrail = new GhostTrail();
+    readonly enemyGhostTrail = new GhostTrail();
     // Отметка последнего кадра rAF: реальный dt для затухания shake/slow-mo,
     // считается КАЖДЫЙ кадр (в т.ч. пропущенные throttle'ом).
     private lastFrameTs = 0;
@@ -821,17 +832,21 @@ export class GamePlay {
     private explosionAreaRedraw(bullet: Bullet) {
         const padding = 5;
         if (this.ctx && this.ground) {
-            this.ctx.clearRect(
-                bullet.x - bullet.explosionRadius - padding,
-                0,
-                bullet.explosionRadius * 2 + padding * 2,
-                this.innerHeight,
-            );
+            const clearX = bullet.x - bullet.explosionRadius - padding;
+            const clearWidth = bullet.explosionRadius * 2 + padding * 2;
+            this.ctx.clearRect(clearX, 0, clearWidth, this.innerHeight);
             this.ground.draw(
                 this.ctx,
                 bullet.x - bullet.explosionRadius - padding,
                 bullet.x + bullet.explosionRadius * 2 + padding,
             );
+            // Точечная перерисовка чистит лишь узкую вертикальную полосу — призрачная
+            // трасса (issue #543), если проходит через неё, обязана быть перерисована
+            // здесь же (клип по этой полосе), иначе останется дыра до следующего
+            // fullRedraw. Клип же не даёт «пересветить» альфу нетронутых сегментов
+            // трассы вне этой полосы (compositing без клипа удваивал бы альфу на
+            // каждый кадр роста взрыва).
+            this.clippedGhostTrailRedraw(this.ctx, clearX, 0, clearWidth, this.innerHeight);
         }
     }
 
@@ -848,22 +863,56 @@ export class GamePlay {
         const padY = SHAKE_CLEAR_PAD + Math.abs(oy);
         this.ctx.clearRect(-padX, -padY, this.innerWidth + padX * 2, this.innerHeight + padY * 2);
         this.ground.draw(this.ctx);
+        this.drawGhostTrails(this.ctx);
         this.leftTank.draw(this.ctx, this.mousePos, this.ground);
         this.rightTank.draw(this.ctx, this.mousePos, this.ground);
         if (this.showAimPreview) this.drawAimPreview(this.ctx);
+    }
+
+    /**
+     * Рисует обе призрачные трассы (issue #543) — над рельефом, под танками:
+     * декорация арены, не должна перекрывать корпуса. `draw` внутри сам
+     * не рисует ничего, если трасса не активна (`!isActive` — ранний выход).
+     */
+    private drawGhostTrails(ctx: CanvasRenderingContext2D) {
+        const scale = this.leftTank?.scale ?? 1;
+        const dashUnit = ghostDashUnit(scale);
+        this.ownGhostTrail.draw(ctx, ENGINE_COLORS.accent, dashUnit);
+        this.enemyGhostTrail.draw(ctx, ENGINE_COLORS.enemy, dashUnit);
+    }
+
+    /**
+     * Патч-ап призрачных трасс поверх точечной перерисовки (issue #543): клип по
+     * ровно тому прямоугольнику, что был очищен вызывающим, — трасса
+     * перерисовывается там, где реально стёрта, и не задевает остальной канвас
+     * (без клипа повторный `stroke` по тому же контуру каждый кадр удваивал бы
+     * альфу — трасса темнела бы, а не оставалась ~35%).
+     */
+    private clippedGhostTrailRedraw(
+        ctx: CanvasRenderingContext2D,
+        x: number,
+        y: number,
+        width: number,
+        height: number,
+    ) {
+        if (!this.ownGhostTrail.isActive && !this.enemyGhostTrail.isActive) return;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, width, height);
+        ctx.clip();
+        this.drawGhostTrails(ctx);
+        ctx.restore();
     }
 
     private redrawGroundUnderTanks(tanks: Tank[]) {
         tanks.forEach((tank) => {
             const padding = 50;
             if (this.ctx && this.ground) {
-                this.ctx.clearRect(
-                    tank.x - padding,
-                    0,
-                    tank.tankWidth + padding * 2,
-                    this.innerHeight,
-                );
-                this.ground.draw(this.ctx, tank.x - padding, tank.x + tank.tankWidth + padding);
+                const x = tank.x - padding;
+                const width = tank.tankWidth + padding * 2;
+                this.ctx.clearRect(x, 0, width, this.innerHeight);
+                this.ground.draw(this.ctx, x, x + width);
+                this.clippedGhostTrailRedraw(this.ctx, x, 0, width, this.innerHeight);
             }
         });
     }
@@ -900,6 +949,13 @@ export class GamePlay {
                 this.bullet.spec.trail.life,
                 this.bullet.spec.trail.size,
             );
+            // Призрачная трасса (issue #543): те же живые точки полёта, что и у
+            // затухающего следа выше — реально пройденный путь, не пересчитанная
+            // дуга (детерминизм реплея не тронут).
+            (this.lastShooterIsLeft ? this.ownGhostTrail : this.enemyGhostTrail).record(
+                this.bullet.x,
+                this.bullet.y,
+            );
         }
         if (this.bullet.isHit(ctx)) {
             // Разовая раздача попадания (урон, звук, подскок, slow-mo) — по явному
@@ -921,6 +977,16 @@ export class GamePlay {
         if (!this.bullet.isFinished) {
             this.bullet?.draw(ctx);
             return;
+        }
+        // Владение призрачной трассой (issue #543): своя трасса заменяется здесь на
+        // только что долетевший выстрел (значит, живёт до конца следующего своего
+        // выстрела — а не до этого места); трасса бота гаснет ровно в конце вашего
+        // хода — то есть здесь же, когда СВОЙ выстрел долетел и ход уходит к боту.
+        if (this.lastShooterIsLeft) {
+            this.ownGhostTrail.commit();
+            this.enemyGhostTrail.clear();
+        } else {
+            this.enemyGhostTrail.commit();
         }
         this.bullet = undefined;
         this.callbacks.onShotEnd?.();
@@ -1080,6 +1146,9 @@ export class GamePlay {
 
     fire = (activeTank: Tank, targetTank: Tank, ground: Ground, weaponType: TWeapon) => {
         this.lastShooterIsLeft = activeTank === this.leftTank;
+        // Новая запись пути (issue #543) — видимую (закоммиченную) трассу не трогает,
+        // та остаётся на арене, пока этот выстрел не долетит (см. moveBullet).
+        (this.lastShooterIsLeft ? this.ownGhostTrail : this.enemyGhostTrail).beginRecording();
         this.callbacks.onShotStart?.();
         this.activateMode('fire');
         // Тип оружия задаёт спеку взрыва (issue #483) — Bullet читает из неё числа
