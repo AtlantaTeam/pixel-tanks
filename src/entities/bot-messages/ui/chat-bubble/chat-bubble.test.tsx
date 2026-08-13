@@ -170,3 +170,24 @@ describe('ChatBubble', () => {
         expect(bubble.style.borderColor).toBe(expectedColor);
     });
 });
+
+describe('ChatBubble — не мешает прицеливанию (#527)', () => {
+    const reply: TBotReply = { text: 'Мимо, железяка', category: EBotReplyCategory.Happy };
+
+    it('гаснет, пока игрок тянет рогатку', () => {
+        const { container } = render(<ChatBubble reply={reply} x={100} y={100} dimmed />);
+        expect(container.firstElementChild).toHaveClass('opacity-0');
+    });
+
+    it('видна, когда жеста нет', () => {
+        const { container } = render(<ChatBubble reply={reply} x={100} y={100} />);
+        expect(container.firstElementChild).not.toHaveClass('opacity-0');
+    });
+
+    it('на узком экране бабл вдвое компактнее — не накрывает арену', () => {
+        const { container } = render(<ChatBubble reply={reply} x={100} y={100} />);
+        // База — узкий экран, sm: возвращает прежние 260 px на десктопе.
+        expect(container.firstElementChild).toHaveClass('max-w-[168px]');
+        expect(container.firstElementChild).toHaveClass('sm:max-w-[260px]');
+    });
+});
