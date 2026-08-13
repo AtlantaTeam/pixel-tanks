@@ -224,6 +224,21 @@
         'Segoe UI Symbol', 'Noto Color Emoji';
 }
 
+/* Курсор-палец на кликабельном. Tailwind 4 убрал из preflight правило
+   `button { cursor: pointer }` — браузер даёт кнопкам `cursor: default`, и на десктопе
+   интерфейс перестаёт откликаться под мышью: непонятно, что вообще нажимается (#529).
+   Возвращаем базовым слоем, а не утилитой в каждом компоненте, — иначе каждая новая
+   кнопка заводит этот дефект заново. Отключённые исключены: у них свой
+   `disabled:cursor-not-allowed`. */
+@layer base {
+    button:not(:disabled),
+    [role='button']:not([aria-disabled='true']),
+    label[for],
+    summary {
+        cursor: pointer;
+    }
+}
+
 /* Появление chat-bubble бота: короткий pop через opacity/scale — НЕ transform,
    чтобы не конфликтовать с позиционированием через translate-утилиты Tailwind
    (в v4 translate/scale — самостоятельные CSS-свойства, а не transform).
