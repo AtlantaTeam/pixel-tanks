@@ -9,7 +9,7 @@ import {
 } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
 import { themeAttrs } from '@/shared/lib/theme';
-import { AmmoEmptyToast, GameControls } from '@/widgets/game-controls';
+import { AmmoEmptyToast, GameControls, WindShiftBanner } from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
 import { PauseOverlay } from '@/widgets/pause-overlay';
 import { TopHud } from '@/widgets/top-hud';
@@ -46,6 +46,9 @@ export function GamePage({ seed }: TGamePageProps = {}) {
             <GameCanvas ref={gameApiRef} seed={seed} />
             <TopHud onPauseClick={() => setIsPaused(true)} />
             <AmmoEmptyToast />
+            {/* Плашка смены ветра бурей (#547): свой слой поверх арены, как
+                `AmmoEmptyToast` — показывается в момент смены и сама гаснет. */}
+            <WindShiftBanner />
             <GameControls gameApiRef={gameApiRef} />
             <GameOverDialog seed={seed} />
             <PauseOverlay

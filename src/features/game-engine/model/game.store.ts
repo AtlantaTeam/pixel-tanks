@@ -111,6 +111,13 @@ type TGameState = {
     windRevealed: boolean;
     /** Сколько раз игрок выстрелил — для статистики экрана конца боя. */
     shotsFired: number;
+    /**
+     * Счётчик смен ветра бурей (#547): движок дёргает `announceWindShift` в момент
+     * смены, плашка `WindShiftBanner` показывается на каждый инкремент. Число, а не
+     * `boolean` — чтобы повторная смена (теоретически) снова разбудила плашку по
+     * смене значения. Обнуляется в `startGame`/`resetGame` (новый бой — без плашки).
+     */
+    windShiftNonce: number;
     /** Сколько выстрелов игрока попали по противнику — для точности game-over. */
     hits: number;
     isGameOver: boolean;
@@ -174,8 +181,14 @@ type TGameActions = {
     setPhase: (phase: TPhase) => void;
     /** Меняет сторону хода (движок зовёт при старте боя и на каждой передаче хода). */
     setTurn: (turn: TSide) => void;
-    /** Запоминает ветер боя (движок зовёт один раз при старте боя). */
+    /**
+     * Запоминает ветер боя. Движок зовёт при старте боя (`onWindInit`) и на смене
+     * ветра бурей в середине боя (`onWindChange`, #547) — во втором случае вместе с
+     * `announceWindShift`, чтобы HUD и обновил значение, и показал плашку.
+     */
     setWind: (wind: number) => void;
+    /** Отмечает смену ветра бурей (#547): плашка `WindShiftBanner` реагирует на инкремент. */
+    announceWindShift: () => void;
     /**
      * Выстрел в фазовой машине: только из фазы прицеливания (`aiming`), переводит
      * в полёт и раскрывает ветер. `GameCanvas` зовёт её на старте любого выстрела
@@ -236,6 +249,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     phase: 'idle',
     windRevealed: false,
     shotsFired: 0,
+    windShiftNonce: 0,
     hits: 0,
     isGameOver: false,
     finalHp: null,
@@ -272,6 +286,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     setPhase: (phase) => set({ phase }),
     setTurn: (turn) => set({ turn }),
     setWind: (wind) => set({ wind }),
+    announceWindShift: () => set((s) => ({ windShiftNonce: s.windShiftNonce + 1 })),
     fire: () => set((s) => (s.phase !== 'aiming' ? {} : { phase: 'flight', windRevealed: true })),
     recordPlayerHit: () => set((s) => ({ hits: s.hits + 1 })),
     setWeapons: (weapons) => set({ weapons }),
@@ -312,6 +327,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             phase: 'aiming',
             windRevealed: false,
             shotsFired: 0,
+            windShiftNonce: 0,
             hits: 0,
             finalHp: null,
             finalStats: null,
@@ -335,6 +351,7 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
             phase: 'idle',
             windRevealed: false,
             shotsFired: 0,
+            windShiftNonce: 0,
             hits: 0,
             isGameOver: false,
             finalHp: null,

@@ -182,6 +182,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const recordFire = useGameStore((s) => s.recordFire);
     const setTurn = useGameStore((s) => s.setTurn);
     const setWind = useGameStore((s) => s.setWind);
+    const announceWindShift = useGameStore((s) => s.announceWindShift);
     const setPhase = useGameStore((s) => s.setPhase);
     const fireStore = useGameStore((s) => s.fire);
     const turn = useGameStore((s) => s.turn);
@@ -264,6 +265,13 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 // Верхний HUD (handoff «Состояние»): ветер — один раз при старте
                 // боя, ход и лок ввода — на каждой передаче/выстреле.
                 onWindInit: (wind) => setWind(wind),
+                // Буря сменила ветер в середине боя (#547): обновляем значение в HUD
+                // и поднимаем плашку «ветер изменился» — смена обязана быть видимой,
+                // иначе читается как баг (§7.8).
+                onWindChange: (wind) => {
+                    setWind(wind);
+                    announceWindShift();
+                },
                 onTurnChange: (turn) => setTurn(turn),
                 // fireStore сама решает, раскрывать ли ветер (только из aiming,
                 // см. game.store.fire) — тот же вызов годится и для игрока, и для
