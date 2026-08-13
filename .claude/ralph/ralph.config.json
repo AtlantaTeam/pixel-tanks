@@ -140,6 +140,10 @@
             {
                 "milestone": "Визуал боя · Фаза 2: Разновидности танков",
                 "branch": "feature/visuals-2-tank-skins"
+            },
+            {
+                "milestone": "Визуал боя · Фаза 3: Виды оружия",
+                "branch": "feature/visuals-3-weapons"
             }
         ]
     },
