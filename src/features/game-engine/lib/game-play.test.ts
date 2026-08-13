@@ -6,6 +6,7 @@ import { GamePlay, type TGamePlayCallbacks } from './game-play';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
+import { WEAPON_SPECS } from './weapon-specs';
 
 /**
  * Issue #263: разрешение попадания (звук, очки, подскок танка) стояло вне
@@ -132,6 +133,73 @@ describe('GamePlay.moveBullet — разрешение попадания на �
         expect(playSfx).toHaveBeenCalledTimes(1);
         expect(playSfx).toHaveBeenCalledWith('miss');
         expect(callbacks.onTankHit).not.toHaveBeenCalled();
+    });
+});
+
+describe('GamePlay.moveBullet — многоочаговый кластер (ловушка #483)', () => {
+    // Кластер отыгрывает три очага подряд, каждый сбрасывает explosionRadius в ноль.
+    // Разовая раздача (урон, звук, подскок) обязана сработать ОДИН раз на все три
+    // очага — иначе перегруженный сентинел `explosionRadius === 0` раздал бы её трижды.
+    it('раздаёт урон, звук и подскок ровно один раз на три очага', () => {
+        const { gamePlay, callbacks, ground, leftTank, rightTank } = makeGamePlay();
+        const bullet = new Bullet(
+            WIDTH,
+            HEIGHT,
+            ground,
+            leftTank,
+            rightTank,
+            0,
+            WEAPON_SPECS[EWeaponKind.Cluster],
+        );
+        bullet.isTankHit = true;
+        bullet.hittedTank = rightTank;
+        gamePlay.bullet = bullet;
+
+        const playSfx = vi
+            .spyOn(getAudioEngine(), 'playSfx')
+            .mockImplementation(() => Promise.resolve());
+        const jumpOnHit = vi.spyOn(rightTank, 'jumpOnHit');
+
+        // Достаточно кадров, чтобы все три очага доигрались до конца.
+        for (let frame = 0; frame < 300 && gamePlay.bullet; frame += 1) {
+            gamePlay.moveBullet(ctxStub);
+        }
+
+        // Три очага отыграны (снаряд убран), но раздача — ровно один раз.
+        expect(gamePlay.bullet).toBeUndefined();
+        expect(playSfx).toHaveBeenCalledWith('hit');
+        expect(playSfx.mock.calls.filter((c) => c[0] === 'hit')).toHaveLength(1);
+        expect(jumpOnHit).toHaveBeenCalledTimes(1);
+        expect(callbacks.onTankHit).toHaveBeenCalledTimes(1);
+    });
+
+    it('промах кластера проигрывает "miss" один раз, но осыпает три кратера', () => {
+        const { gamePlay, ground, leftTank, rightTank } = makeGamePlay();
+        const bullet = new Bullet(
+            WIDTH,
+            HEIGHT,
+            ground,
+            leftTank,
+            rightTank,
+            0,
+            WEAPON_SPECS[EWeaponKind.Cluster],
+        );
+        bullet.isTankHit = false;
+        bullet.isHit = () => true;
+        gamePlay.bullet = bullet;
+
+        const playSfx = vi
+            .spyOn(getAudioEngine(), 'playSfx')
+            .mockImplementation(() => Promise.resolve());
+        const fall = vi.spyOn(ground, 'fall');
+
+        for (let frame = 0; frame < 300 && gamePlay.bullet; frame += 1) {
+            gamePlay.moveBullet(ctxStub);
+        }
+
+        expect(playSfx.mock.calls.filter((c) => c[0] === 'miss')).toHaveLength(1);
+        // Три очага — три кратера.
+        expect(fall).toHaveBeenCalledTimes(3);
     });
 });
 
