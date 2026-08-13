@@ -1,82 +1,26 @@
 import { getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
-import {
-    advanceOffset,
-    CLOUD_OFFSET_PERIOD,
-    createInitialOffsets,
-    wrapOffset,
-} from './sky-parallax';
+import { buildCloudField, type TCloudInstance } from './cloud-field';
+import { wrapOffset } from './sky-parallax';
 import { pickSkyPreset, pickSkyPresetById, type TSkyPreset, type TSkyPresetId } from './sky-preset';
 
-/** Ключи арта неба (файлы в `public/art/`). */
+/**
+ * Ключи арта неба (файлы в `public/art/`). Облака — ОТДЕЛЬНЫЕ спрайты (`cloud-1..3`),
+ * а не бесшовные ленты: так снят одобренный кадр `live-desktop.png` (#514).
+ */
 export type TSkyImages = {
     mountains?: HTMLImageElement;
-    far?: HTMLImageElement;
-    near?: HTMLImageElement;
-};
-
-type TCloudImageKey = 'far' | 'near';
-
-type TCloudLayerSpec = {
-    image: TCloudImageKey;
-    /** Скорость параллакса, px/мс. Дальний слой медленнее ближнего — так рождается глубина. */
-    speed: number;
-    /** Верх слоя как доля высоты канваса (0 — верх экрана). */
-    topFrac: number;
+    cloud1?: HTMLImageElement;
+    cloud2?: HTMLImageElement;
+    cloud3?: HTMLImageElement;
 };
 
 /**
- * Конфиг облачных слоёв: дальний (медленный) и ближний (быстрый). Разные скорости —
- * это и есть параллакс (PRD «2–3 слоя, разная скорость»). `topFrac` держит оба слоя
- * в верхней половине неба, над рельефом; РАЗМЕР слоя здесь не задаётся — см.
- * `cloudTileSize` (#510).
+ * Масштаб облачного спрайта: CSS-пикселей на пиксель арта. Половина — потому что
+ * одобренный кадр снят на ретине (dpr 2) с натуральным размером арта, и облако в
+ * 384 арт-px заняло 192 CSS-px. На ретине это по-прежнему ровно один пиксель арта на
+ * пиксель устройства, то есть пиксельная сетка не мылится.
  */
-export const CLOUD_LAYER_SPECS: readonly TCloudLayerSpec[] = [
-    { image: 'far', speed: 0.006, topFrac: 0.07 },
-    { image: 'near', speed: 0.017, topFrac: 0.18 },
-];
-
-/**
- * Доля ширины канваса, шире которой облачный тайл не растягивается. 1.15 — чуть шире
- * экрана: в кадр попадает почти вся полоса арта, то есть несколько облаков, а не одно
- * в увеличении. Нужен только там, где натуральный размер арта крупнее экрана: узкое
- * окно без ретины (dpr 1, ширина < ~890 px).
- */
-const CLOUD_TILE_MAX_WIDTH_FRAC = 1.15;
-
-/**
- * Размер облачного тайла в CSS-пикселях: **натуральный размер арта**, то есть один
- * пиксель арта на один пиксель устройства.
- *
- * Так был снят одобренный макет (`docs/game-visuals/iteration-2/mockup-day.png`): замер
- * дал 0.95 device-px на пиксель арта. Прежняя формула считала высоту слоя долей ВЫСОТЫ
- * канваса, а ширину выводила из неё, — на 390×844 полоса растягивалась до 2.3 ширин
- * экрана, и вместо десятка облачков было видно два в двойном увеличении (#510). Побочно
- * та формула давала дробный масштаб, от которого пиксельная сетка арта мылилась.
- *
- * Высота канваса в расчёт не входит намеренно: поворот телефона не должен менять размер
- * облаков при той же ширине.
- */
-export function cloudTileSize(
-    image: { width: number; height: number },
-    canvasWidth: number,
-    dpr: number,
-): { tileWidth: number; tileHeight: number } {
-    const natural = image.width / Math.max(dpr, 0.01);
-    const tileWidth = Math.max(
-        1,
-        Math.round(Math.min(natural, canvasWidth * CLOUD_TILE_MAX_WIDTH_FRAC)),
-    );
-    // Высота — от итоговой ширины по пропорции арта: облака не сплющиваются, когда
-    // сработал потолок.
-    const tileHeight = Math.max(1, Math.round((image.height * tileWidth) / image.width));
-    return { tileWidth, tileHeight };
-}
-
-type TCloudLayer = {
-    spec: TCloudLayerSpec;
-    /** Текущее накопленное смещение слоя, px. */
-    offset: number;
-};
+const CLOUD_ART_SCALE = 0.5;
 
 type TSkySceneOptions = {
     seed: number | string;
@@ -104,7 +48,10 @@ export class SkyScene {
     private readonly reducedMotion: boolean;
     private readonly images: TSkyImages;
     private readonly createCanvas: () => HTMLCanvasElement;
-    private readonly layers: TCloudLayer[];
+    private readonly seed: number | string;
+    private field: TCloudInstance[];
+    /** Накопленное время сцены, мс. Позиция облака = старт + скорость × elapsed. */
+    private elapsed = 0;
 
     private width = 0;
     private height = 0;
@@ -122,13 +69,20 @@ export class SkyScene {
         this.reducedMotion = options.reducedMotion;
         this.images = options.images ?? {};
         this.createCanvas = options.createCanvas ?? defaultCreateCanvas;
-        const initial = createInitialOffsets(options.seed, CLOUD_LAYER_SPECS.length);
-        this.layers = CLOUD_LAYER_SPECS.map((spec, i) => ({ spec, offset: initial[i] }));
+        this.seed = options.seed;
+        // Ширина ещё неизвестна (resize придёт следом) — поле строится под дефолт и
+        // пересобирается в resize, когда ширина изменилась.
+        this.field = buildCloudField(this.seed, 0);
     }
 
-    /** Текущие смещения облачных слоёв — для тестов детерминизма/движения. */
-    cloudOffsets(): number[] {
-        return this.layers.map((layer) => layer.offset);
+    /** Поле облаков — для тестов детерминизма и плотности. */
+    cloudField(): readonly TCloudInstance[] {
+        return this.field;
+    }
+
+    /** Накопленное время сцены, мс — для тестов движения. */
+    elapsedMs(): number {
+        return this.elapsed;
     }
 
     isStaticDirty(): boolean {
@@ -146,21 +100,28 @@ export class SkyScene {
     }
 
     /**
-     * Двигает облачные слои по времени. При `prefers-reduced-motion` — no-op:
-     * облака замирают, градиент и горы остаются (критерий #479). НЕ трогает
-     * статичный слой: между кадрами перерисовки фона нет.
+     * Двигает время сцены. При `prefers-reduced-motion` — no-op: облака замирают,
+     * градиент и горы остаются (критерий #479). НЕ трогает статичный слой: между
+     * кадрами перерисовки фона нет.
+     *
+     * Копится ОДНО время, а не смещение каждого облака: позиция считается в draw как
+     * `старт + скорость × elapsed`, поэтому дрейфа между облаками не накапливается,
+     * а каждое по-прежнему едет со своей скоростью.
      */
     update(dt: number): void {
         if (this.reducedMotion || dt <= 0) return;
-        for (const layer of this.layers) {
-            // Период завёртки — та же константа, что и у стартового разброса
-            // (`CLOUD_OFFSET_PERIOD`): условный, нужен лишь чтобы offset не рос бесконечно.
-            layer.offset = advanceOffset(layer.offset, layer.spec.speed, dt, CLOUD_OFFSET_PERIOD);
-        }
+        this.elapsed += dt;
     }
 
     resize(width: number, height: number): void {
-        this.width = Math.max(0, Math.floor(width));
+        const nextWidth = Math.max(0, Math.floor(width));
+        // Плотность облаков зависит от ширины (`cloudCount`), поэтому поле
+        // пересобирается при её изменении. Смена только высоты поле не трогает:
+        // поворот телефона не должен переставлять облака.
+        if (nextWidth !== this.width) {
+            this.field = buildCloudField(this.seed, nextWidth);
+        }
+        this.width = nextWidth;
         this.height = Math.max(0, Math.floor(height));
         this.staticDirty = true;
     }
@@ -253,40 +214,35 @@ export class SkyScene {
     }
 
     /**
-     * Рисует облачные слои с бесшовным ГОРИЗОНТАЛЬНЫМ повтором. `wrapOffset` и
-     * зеркалирование соседних тайлов держат стык только по X — вертикального
-     * повтора/зеркалирования НЕТ: слой рассчитан на узкую верхнюю полосу неба
-     * и кладётся в один тайл по высоте.
+     * Рисует поле ОТДЕЛЬНЫХ облаков: каждое со своим спрайтом, высотой и скоростью
+     * (`cloud-field.ts`). Раньше здесь повторялась бесшовная лента — небо выходило
+     * плотным, а движение читалось рывком целого слоя (#514).
      *
-     * Размер тайла — натуральный размер арта (`cloudTileSize`), от высоты канваса он
-     * не зависит (#510).
+     * Позиции квантованы по пикселям устройства: при дробной позиции канвас каждый кадр
+     * пересэмплирует спрайт по-новому, и пиксельный арт «кипит» на ходу. Округление
+     * к device-пикселю оставляет движение ступенчатым — для пиксель-арта это норма,
+     * а не дефект.
      */
     private drawClouds(ctx: CanvasRenderingContext2D, width: number, height: number): void {
         ctx.save();
         ctx.globalAlpha = this.preset.cloudAlpha;
         const dpr = getDevicePixelRatio();
-        for (const layer of this.layers) {
-            const image = this.images[layer.spec.image];
+        const snap = (value: number) => Math.round(value * dpr) / dpr;
+        for (const cloud of this.field) {
+            const image = this.images[cloud.sprite];
             if (!image || !image.width || !image.height) continue;
-            const { tileWidth, tileHeight: layerHeight } = cloudTileSize(image, width, dpr);
-            const top = Math.round(height * layer.spec.topFrac);
-            // Смещение завёрнуто по ширине тайла, чтобы слой бесшовно повторялся.
-            const shift = wrapOffset(layer.offset, tileWidth);
-            // Зеркалим соседние тайлы: арт не идеально бесшовен по краям (см.
-            // iteration-1 README), зеркальный повтор прячет стык — как в Ground.
-            for (let x = -shift; x < width; x += tileWidth) {
-                const tileIndex = Math.round((x + shift) / tileWidth);
-                const mirrored = Math.abs(tileIndex) % 2 === 1;
-                if (mirrored) {
-                    ctx.save();
-                    ctx.translate(x + tileWidth, top);
-                    ctx.scale(-1, 1);
-                    ctx.drawImage(image, 0, 0, tileWidth, layerHeight);
-                    ctx.restore();
-                } else {
-                    ctx.drawImage(image, x, top, tileWidth, layerHeight);
-                }
-            }
+            // Видимый размер фиксирован в CSS-пикселях: половина арта. Одобренный кадр
+            // `live-desktop.png` снят при dpr 2 с натуральным размером арта — облако
+            // 384 арт-px заняло там 192 CSS-px. Привязывать размер к dpr нельзя: на
+            // экране без ретины то же облако стало бы вдвое крупнее макета (#514).
+            const spriteWidth = Math.max(1, Math.round(image.width * CLOUD_ART_SCALE));
+            const spriteHeight = Math.max(1, Math.round(image.height * CLOUD_ART_SCALE));
+            // Поле шире экрана на спрайт: облако уезжает за край и въезжает с другого,
+            // не исчезая на глазах.
+            const span = width + spriteWidth;
+            const travelled = cloud.xFrac * span + cloud.speed * this.elapsed;
+            const x = wrapOffset(travelled, span) - spriteWidth;
+            ctx.drawImage(image, snap(x), snap(height * cloud.yFrac), spriteWidth, spriteHeight);
         }
         ctx.restore();
     }

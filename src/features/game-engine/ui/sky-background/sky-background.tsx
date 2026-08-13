@@ -6,11 +6,17 @@ import { prefersReducedMotion } from '../../lib/prefers-reduced-motion';
 import { SkyScene, type TSkyImages } from '../../lib/sky-scene';
 import type { TSkyPresetId } from '../../lib/sky-preset';
 
-/** Пути арта неба (файлы в `public/art/`, коммитятся человеком — #478). */
+/**
+ * Пути арта неба (файлы в `public/art/`, коммитятся человеком — #478). Облака —
+ * отдельные спрайты, а не бесшовные ленты `clouds-far/near.png`: так снят одобренный
+ * кадр `docs/game-visuals/iteration-2/live-desktop.png` (#514). Ленты остаются в
+ * `public/art/` как исходный материал, но в бою не участвуют.
+ */
 const SKY_ASSET_PATHS: Record<keyof TSkyImages, string> = {
     mountains: '/art/mountains.png',
-    far: '/art/clouds-far.png',
-    near: '/art/clouds-near.png',
+    cloud1: '/art/cloud-1.png',
+    cloud2: '/art/cloud-2.png',
+    cloud3: '/art/cloud-3.png',
 };
 
 /**
