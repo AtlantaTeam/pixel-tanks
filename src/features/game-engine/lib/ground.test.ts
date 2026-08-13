@@ -303,6 +303,50 @@ describe('Ground: offscreen-кэш террейна (.claude/rules/canvas.md)', 
         expect(layerCtxMock.fillRect).not.toHaveBeenCalled();
     });
 
+    it('дождь (#547) затемняет столбцы воронок через source-atop, по одному fillRect на столбец', () => {
+        const ground = new Ground(
+            100,
+            100,
+            createSeededRandom(1),
+            undefined,
+            undefined,
+            [],
+            undefined,
+            { darkenAlpha: 0.28, edgeSoftenPx: 1 },
+        );
+        // Воронка радиусом 5 в центре: столбцы 45..55 (11 штук) помечаются кратерными.
+        ground.fall(50, 10, 5);
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+
+        expect(layerCtxMock.fillRect).toHaveBeenCalledTimes(11);
+        expect(layerCtxMock.globalCompositeOperation).toBe('source-atop');
+    });
+
+    it('без осадков-дождя (нет craterStyle) воронки не затемняются', () => {
+        const ground = new Ground(100, 100, createSeededRandom(1));
+        ground.fall(50, 10, 5);
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        expect(layerCtxMock.fillRect).not.toHaveBeenCalled();
+    });
+
+    it('до попадания (нет воронок) дождь ничего не затемняет', () => {
+        const ground = new Ground(
+            100,
+            100,
+            createSeededRandom(1),
+            undefined,
+            undefined,
+            [],
+            undefined,
+            {
+                darkenAlpha: 0.28,
+                edgeSoftenPx: 1,
+            },
+        );
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        expect(layerCtxMock.fillRect).not.toHaveBeenCalled();
+    });
+
     it('подсветка кромки (#545) рисует линию по верху рельефа тоном каймы', () => {
         const ground = new Ground(
             100,

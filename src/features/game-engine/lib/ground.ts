@@ -9,6 +9,20 @@ type TExplosion = {
     delta: number;
 };
 
+/**
+ * Осадки-дождь (#547, §7.8): столбцы воронок затемняются — размокший песок темнее
+ * сухого. `darkenAlpha` — сила затемнения, `edgeSoftenPx` — на сколько пикселей по
+ * краям воронки альфа спадает («оплывший» край, не резкий обрыв). Пусто (нет дождя)
+ * — воронки как обычно.
+ */
+export type TCraterStyle = {
+    darkenAlpha: number;
+    edgeSoftenPx: number;
+};
+
+/** Тёмный тон размокшей воронки (#547): почти чёрный, силу задаёт `darkenAlpha`. */
+const CRATER_DARKEN_COLOR = '#0a0806';
+
 type THeightBand = { min: number; max: number };
 
 /**
@@ -54,6 +68,16 @@ export class Ground {
      * свет. `undefined` (день/до светила) → кромку не подсвечиваем.
      */
     private edgeColor: string | undefined;
+    /**
+     * Стиль затемнения воронок дождём (#547). `undefined` (нет дождя) — воронки не
+     * темнеют. Запекается в offscreen-слой вместе с рельефом — не проход за кадр.
+     */
+    private craterStyle: TCraterStyle | undefined;
+    /**
+     * Столбцы, задетые воронкой (#547): `fall` помечает их, `darkenCraters` темнит.
+     * Постоянна на весь бой — воронка остаётся тёмной после осыпания. Индекс = X.
+     */
+    private cratered: boolean[];
     isFalling = false;
     // Статичный террейн — offscreen-слой (.claude/rules/canvas.md: «статичные
     // слои — отдельный offscreen canvas, перерисовывать только при изменении»).
@@ -72,10 +96,12 @@ export class Ground {
         insets: TArenaInsets = EMPTY_ARENA_INSETS,
         tint: readonly TGroundTintLayer[] = [],
         edgeColor?: string,
+        craterStyle?: TCraterStyle,
     ) {
         this.random = random;
         this.tint = tint;
         this.edgeColor = edgeColor;
+        this.craterStyle = craterStyle;
         this.stepMax = 3;
         this.stepChange = 0.3;
         this.innerWidth = innerWidth;
@@ -92,6 +118,7 @@ export class Ground {
         this.sandImagePattern = null;
         this.heights = [];
         this.explosionHeights = [];
+        this.cratered = [];
         this.generate();
     }
 
@@ -120,6 +147,7 @@ export class Ground {
             }
             this.heights[x] = floor(height);
             this.explosionHeights[x] = 0;
+            this.cratered[x] = false;
         }
     };
 
@@ -143,6 +171,11 @@ export class Ground {
         this.heightMin = next.min;
         this.heights = new Array<number>(innerWidth);
         this.explosionHeights = new Array<number>(innerWidth).fill(0);
+        // Метки воронок (#547) переносим в новую ширину ближайшим столбцом — чтобы
+        // затемнение осталось на кратерах после ресайза. Ресайза в реплее нет
+        // (размер зафиксирован записью), так что на детерминизм это не влияет.
+        const oldCratered = this.cratered;
+        this.cratered = new Array<boolean>(innerWidth).fill(false);
         const step = innerWidth > 1 ? (oldWidth - 1) / (innerWidth - 1) : 0;
         for (let x = 0; x < innerWidth; x++) {
             const t = x * step;
@@ -151,6 +184,7 @@ export class Ground {
             const frac = t - x0;
             const interp = oldHeights[x0] * (1 - frac) + oldHeights[x1] * frac;
             this.heights[x] = floor(remapToBand(interp, prev, next));
+            this.cratered[x] = oldCratered[Math.round(t)] ?? false;
         }
         this.layerDirty = true;
     };
@@ -163,6 +197,10 @@ export class Ground {
             const katetOpposite = floor(Math.sqrt(radius * radius - katetNear * katetNear));
             this.explosionHeights[x - radius + i] = { bulletY: y, delta: katetOpposite * 2 };
             this.explosionHeights[x + radius - i] = { bulletY: y, delta: katetOpposite * 2 };
+        }
+        // Помечаем задетые воронкой столбцы (#547) — дождь затемнит их в offscreen-слое.
+        for (let cx = x - radius; cx <= x + radius; cx++) {
+            if (cx >= 0 && cx < this.innerWidth) this.cratered[cx] = true;
         }
         this.layerDirty = true;
     };
@@ -242,8 +280,50 @@ export class Ground {
         ctx.translate(0, -this.innerHeight);
         this.decorateWithSand(ctx, 0, this.innerWidth);
         this.applyTint(ctx);
+        this.darkenCraters(ctx);
         this.highlightCrest(ctx);
         this.layerDirty = false;
+    }
+
+    /**
+     * Затемняет столбцы воронок (#547, дождь): тёмный тон поверх силуэта рельефа
+     * через `source-atop` (краска только на песок), по столбцу на воронку. Край
+     * воронки «оплывает» — на `edgeSoftenPx` пикселей по краям альфа спадает
+     * (`craterEdgeFactor`), а не обрывается резко. Нет дождя (`craterStyle` пуст)
+     * или воронок ещё не было — no-op. Запекается в offscreen-слой, не проход за кадр.
+     */
+    private darkenCraters(ctx: CanvasRenderingContext2D) {
+        const style = this.craterStyle;
+        if (!style || style.darkenAlpha <= 0) return;
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-atop';
+        ctx.fillStyle = CRATER_DARKEN_COLOR;
+        const bandTop = this.innerHeight - this.heightMax;
+        for (let x = 0; x < this.innerWidth; x++) {
+            if (!this.cratered[x]) continue;
+            ctx.globalAlpha = style.darkenAlpha * this.craterEdgeFactor(x, style.edgeSoftenPx);
+            ctx.fillRect(x, bandTop, 1, this.heightMax);
+        }
+        ctx.restore();
+    }
+
+    /**
+     * Коэффициент затемнения столбца воронки по близости к её краю (#547): 1 внутри,
+     * меньше — у края. `edgeSoftenPx=1` даёт крайнему столбцу воронки 0.5 — край на
+     * 1 px мягче. `0` — жёсткий край (коэффициент всегда 1).
+     */
+    private craterEdgeFactor(x: number, softenPx: number): number {
+        if (softenPx <= 0) return 1;
+        let dist = softenPx + 1;
+        for (let d = 1; d <= softenPx; d++) {
+            const leftClear = x - d < 0 || !this.cratered[x - d];
+            const rightClear = x + d >= this.innerWidth || !this.cratered[x + d];
+            if (leftClear || rightClear) {
+                dist = d;
+                break;
+            }
+        }
+        return Math.min(1, dist / (softenPx + 1));
     }
 
     /**

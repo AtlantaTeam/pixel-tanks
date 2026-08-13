@@ -32,6 +32,13 @@ import { GhostTrail, ghostDashUnit } from './ghost-trail';
 import { ENGINE_COLORS } from './engine-palette';
 import { computeSceneLight, type TSceneLight } from './scene-light';
 import { pickPrecipPreset, precipGroundTint, type TPrecipPreset } from './precipitation';
+import {
+    applyWindModifier,
+    STORM_WIND_SHIFT_AFTER_SHOTS,
+    stormShiftedWind,
+    weatherModifierFor,
+    type TWeatherModifier,
+} from './weather-modifiers';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
 
 /**
@@ -96,6 +103,13 @@ export type TGamePlayCallbacks = {
      * в сторе, а не читает движок напрямую.
      */
     onWindInit?: (wind: number) => void;
+    /**
+     * Ветер боя изменился в середине партии (буря, #547): движок зовёт один раз,
+     * когда пресет-буря меняет ветер после `STORM_WIND_SHIFT_AFTER_SHOTS` выстрелов.
+     * HUD обновляет значение ветра и показывает плашку «ветер изменился» — смена
+     * обязана быть видимым событием, иначе читается как баг (§7.8).
+     */
+    onWindChange?: (wind: number) => void;
     /**
      * Сообщает сторону, чей сейчас ход: один раз при старте боя (игрок всегда
      * первый) и на каждой передаче хода (`changeActiveTank`). Пилюля хода и
@@ -227,6 +241,25 @@ export class GamePlay {
      * слой `PrecipitationLayer` над канвасом). `undefined` — сид не передан.
      */
     private readonly precipPreset: TPrecipPreset | undefined;
+    /**
+     * Числовые следствия погоды (#547): множитель ветра (снег), затемнение воронок
+     * (дождь), смена ветра в середине боя (буря). Выводится из пресета боя — тот же
+     * сид, поэтому реплей воспроизводит те же следствия. Нейтральный (без сида) →
+     * бой как до #547.
+     */
+    private readonly weatherModifier: TWeatherModifier;
+    /** Сид боя (#547) — из него выводится новый ветер бури (`stormShiftedWind`). */
+    private readonly seed: number | string | undefined;
+    /**
+     * Новый ветер бури (#547), выведенный из сида: применяется один раз после
+     * `STORM_WIND_SHIFT_AFTER_SHOTS` выстрелов. `undefined` — пресет не буря или сид
+     * не передан (смены ветра нет). Считается в `initPaint`, когда известен базовый ветер.
+     */
+    private stormWind: number | undefined;
+    /** Завершённых выстрелов боя (обе стороны) — таймер смены ветра бури (#547). */
+    private completedShots = 0;
+    /** Ветер бури уже сменён — смена одноразовая (#547). */
+    private stormWindShifted = false;
     private leftSkinImages: TTankSkinImages | undefined;
     private rightSkinImages: TTankSkinImages | undefined;
     // Кто стрелял последним: isActive у обоих танков уже false к моменту разрешения
@@ -299,6 +332,8 @@ export class GamePlay {
         this.sceneLight = options?.seed !== undefined ? computeSceneLight(options.seed) : undefined;
         this.precipPreset =
             options?.seed !== undefined ? pickPrecipPreset(options.seed) : undefined;
+        this.weatherModifier = weatherModifierFor(this.precipPreset?.id);
+        this.seed = options?.seed;
         // Косметика (частицы, тряска) — на ОТДЕЛЬНОМ потоке random: CameraShake
         // берёт значения каждый кадр тряски, а число кадров зависит от FPS.
         // На общем потоке это недетерминированно сдвигало бы выборки бота
@@ -649,9 +684,26 @@ export class GamePlay {
                 ...precipGroundTint(this.precipPreset, this.reducedMotion),
             ],
             this.sceneLight?.edgeColor,
+            // Дождь темнит воронки и смягчает их край (#547). Стиль передаём, только
+            // если у пресета есть затемнение — иначе Ground рисует воронки как обычно.
+            this.weatherModifier.craterDarkenAlpha > 0
+                ? {
+                      darkenAlpha: this.weatherModifier.craterDarkenAlpha,
+                      edgeSoftenPx: this.weatherModifier.craterEdgeSoftenPx,
+                  }
+                : undefined,
         );
-        this.wind = generateWind(this.random);
+        // Базовый ветер боя с поправкой пресета (снег +1/3, #547). Домножение поверх
+        // одного `generateWind` — RNG-поток боя не сдвигается, реплей воспроизводится
+        // побитово.
+        this.wind = applyWindModifier(generateWind(this.random), this.weatherModifier);
         this.callbacks.onWindInit?.(this.wind);
+        // Новый ветер бури (#547) — из сида, чтобы смена в реплее была той же. Считаем
+        // здесь, когда известен базовый ветер (направление смены — противоположно ему).
+        this.stormWind =
+            this.weatherModifier.windShiftsMidBattle && this.seed !== undefined
+                ? stormShiftedWind(this.seed, this.wind)
+                : undefined;
         // Масштаб мира от ширины арены (issue #455): танки/ствол/снаряд/взрыв
         // считаются в мировых единицах и рисуются через этот коэффициент. В режиме
         // реплея innerWidth зафиксирован записью → scale тот же, что при записи.
@@ -1031,8 +1083,28 @@ export class GamePlay {
         }
         this.bullet = undefined;
         this.callbacks.onShotEnd?.();
+        // Выстрел завершён — считаем его для таймера смены ветра бури (#547) и, если
+        // подошёл момент, меняем ветер. До передачи хода: следующий стрелок целится
+        // уже с новым ветром, а HUD показывает смену на своём ходе.
+        this.completedShots += 1;
+        this.maybeShiftStormWind();
         this.changeActiveTank();
     };
+
+    /**
+     * Смена ветра бурей в середине боя (#547, §7.8): один раз, после
+     * `STORM_WIND_SHIFT_AFTER_SHOTS` завершённых выстрелов, ставит выведенный из сида
+     * `stormWind` и сообщает HUD (`onWindChange`) — смена обязана быть видимым
+     * событием. Момент фиксирован номером выстрела, поэтому в реплее он ровно тот же.
+     * Нет бури / уже сменили / рано — no-op.
+     */
+    private maybeShiftStormWind() {
+        if (this.stormWind === undefined || this.stormWindShifted) return;
+        if (this.completedShots < STORM_WIND_SHIFT_AFTER_SHOTS) return;
+        this.stormWindShifted = true;
+        this.wind = this.stormWind;
+        this.callbacks.onWindChange?.(this.wind);
+    }
 
     /**
      * Разовая раздача детонации (issue #483): попадание в танк — вспышка урона,
