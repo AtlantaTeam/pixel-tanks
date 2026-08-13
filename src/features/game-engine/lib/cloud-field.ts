@@ -78,6 +78,28 @@ export function windFactor(wind: number): number {
     return wind < 0 ? -magnitude : magnitude;
 }
 
+/**
+ * Ширина облака как доля ширины экрана. 15% — замер ОБОИХ одобренных кадров:
+ * десктопный `live-desktop.png` даёт 192 CSS-px на 1280 (15%), мобильный
+ * `mockup-day.png` — 54 CSS-px на 390 (14%).
+ *
+ * Фиксированный размер в CSS (как было до #523) на десктопе совпадал с эталоном,
+ * а на телефоне занимал **половину ширины**: 192 px из 390, суммарное покрытие неба
+ * 148% — облака наезжали друг на друга.
+ */
+const CLOUD_WIDTH_FRAC = 0.15;
+
+/** Границы: на узком экране облако не вырождается в точку, на широком не раздувается. */
+const CLOUD_WIDTH_MIN = 48;
+const CLOUD_WIDTH_MAX = 192;
+
+/** Ширина облачного спрайта в CSS-пикселях под текущую ширину канваса. */
+export function cloudSpriteWidth(canvasWidth: number): number {
+    if (!Number.isFinite(canvasWidth) || canvasWidth <= 0) return CLOUD_WIDTH_MIN;
+    const raw = Math.round(canvasWidth * CLOUD_WIDTH_FRAC);
+    return Math.min(CLOUD_WIDTH_MAX, Math.max(CLOUD_WIDTH_MIN, raw));
+}
+
 export function cloudCount(width: number): number {
     if (!Number.isFinite(width) || width <= 0) return CLOUD_COUNT_MIN;
     const raw = Math.round(width / CLOUD_DENSITY_STEP_PX);
