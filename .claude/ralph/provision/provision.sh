@@ -101,7 +101,25 @@ log "7/9 Клон репо + зависимости"
 cd "$REPO_DIR"
 npm ci
 npm rebuild esbuild sharp unrs-resolver   # npm 11 блокирует postinstall — досбор native
+# chromium — для e2e (playwright.config), chrome — для Playwright MCP: он просит именно
+# брендированный канал и падает с «Chromium distribution 'chrome' is not found» (#458).
+# Ставим оба: правила визуального контроля опираются на браузер, и его молчаливое
+# отсутствие означает, что UI-задачи закрываются без проверки вьюпортов вообще.
 npx playwright install --with-deps chromium
+npx playwright install --with-deps chrome || echo "ВНИМАНИЕ: chrome не поставился — Playwright MCP работать не будет (#458)"
+
+# Проба инструментов на месте: без неё отсутствие браузера всплывает через сутки —
+# красным гейтом или незамеченным дефектом вёрстки, а не здесь.
+node -e '
+const { chromium } = require("playwright");
+chromium.launch().then((b) => b.close()).then(
+    () => console.log("OK: playwright chromium запускается"),
+    (e) => { console.error("ПРОВАЛ: chromium не запускается — " + e.message); process.exit(1); },
+);
+'
+[ -x /opt/google/chrome/chrome ] \
+    && echo "OK: chrome на месте (Playwright MCP)" \
+    || echo "ВНИМАНИЕ: /opt/google/chrome/chrome нет — MCP-скриншоты недоступны (#458)"
 
 log "8/9 gh auth + trust папки для claude"
 if [ -n "${GH_TOKEN:-}" ]; then
