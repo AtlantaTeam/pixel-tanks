@@ -544,3 +544,29 @@ describe('SkyScene — светило и звёзды (#519)', () => {
         }
     });
 });
+
+describe('SkyScene — контур гор от светила (#545)', () => {
+    it('при доступном offscreen блитит силуэт гор с контуром каймы для всех пресетов', () => {
+        for (const preset of ['day', 'sunset', 'night'] as const) {
+            const offscreenCtx = createFakeCtx();
+            const offscreen = {
+                width: 0,
+                height: 0,
+                getContext: () => offscreenCtx,
+            } as unknown as HTMLCanvasElement;
+            const scene = new SkyScene({
+                seed: 3,
+                reducedMotion: false,
+                preset,
+                images: allImages(),
+                createCanvas: () => offscreen,
+            });
+            const ctx = createFakeCtx();
+            scene.resize(800, 600);
+            // Контурная ветка (ensureEdgeMountain + сдвинутый силуэт) отрабатывает без падения.
+            expect(() => scene.draw(ctx as unknown as CanvasRenderingContext2D)).not.toThrow();
+            // Силуэт гор блитится на статичный слой (основной + контур каймы).
+            expect(offscreenCtx.drawImage).toHaveBeenCalled();
+        }
+    });
+});

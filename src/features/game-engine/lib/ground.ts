@@ -1,6 +1,8 @@
 import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
 import type { TSeededRandom } from '@/shared/lib/random';
 import { computeTerrainHeights, EMPTY_ARENA_INSETS, type TArenaInsets } from './arena-insets';
+import { withAlpha } from './sky-celestial';
+import type { TGroundTintLayer } from './scene-light';
 
 type TExplosion = {
     bulletY: number;
@@ -40,6 +42,18 @@ export class Ground {
      */
     private insets: TArenaInsets;
     private random: TSeededRandom;
+    /**
+     * Тонировка земли по времени суток (#545, §6): плоские слои цвета поверх силуэта
+     * рельефа (`source-atop`), «включатель» пресета. Пусто (день) → рельеф без тона,
+     * как было до светила. Запекается в offscreen-слой вместе с песком — не проход за
+     * кадр.
+     */
+    private tint: readonly TGroundTintLayer[];
+    /**
+     * Тон каймы светила (#545, §6): 1 px подсветка верхней кромки песка — ридж ловит
+     * свет. `undefined` (день/до светила) → кромку не подсвечиваем.
+     */
+    private edgeColor: string | undefined;
     isFalling = false;
     // Статичный террейн — offscreen-слой (.claude/rules/canvas.md: «статичные
     // слои — отдельный offscreen canvas, перерисовывать только при изменении»).
@@ -56,8 +70,12 @@ export class Ground {
         random: TSeededRandom,
         sandImage?: HTMLImageElement,
         insets: TArenaInsets = EMPTY_ARENA_INSETS,
+        tint: readonly TGroundTintLayer[] = [],
+        edgeColor?: string,
     ) {
         this.random = random;
+        this.tint = tint;
+        this.edgeColor = edgeColor;
         this.stepMax = 3;
         this.stepChange = 0.3;
         this.innerWidth = innerWidth;
@@ -223,7 +241,49 @@ export class Ground {
         ctx.stroke();
         ctx.translate(0, -this.innerHeight);
         this.decorateWithSand(ctx, 0, this.innerWidth);
+        this.applyTint(ctx);
+        this.highlightCrest(ctx);
         this.layerDirty = false;
+    }
+
+    /**
+     * Тонировка земли по пресету (#545, §6): каждый слой заливается поверх силуэта
+     * рельефа через `source-atop` — краска ложится только на песок, не на небо между
+     * склонами. Пустой список (день) — no-op, поведение до светила. Полоса берётся
+     * по `heightMax` над горизонтом, как у `decorateWithSand`, чтобы тон покрыл всю
+     * возможную высоту рельефа.
+     */
+    private applyTint(ctx: CanvasRenderingContext2D) {
+        if (this.tint.length === 0) return;
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-atop';
+        for (const layer of this.tint) {
+            ctx.globalAlpha = layer.alpha;
+            ctx.fillStyle = layer.color;
+            ctx.fillRect(0, this.innerHeight - this.heightMax, this.innerWidth, this.heightMax);
+        }
+        ctx.restore();
+    }
+
+    /**
+     * Подсветка кромки песка (#545, §6): 1 px линия по верху рельефа тоном каймы
+     * светила — ридж ловит свет. Полупрозрачная, поверх тонировки (`source-over`),
+     * чтобы читалась как блик, а не перекрашивала кромку целиком. День/до светила
+     * (`edgeColor` не задан) — не рисуем.
+     */
+    private highlightCrest(ctx: CanvasRenderingContext2D) {
+        if (!this.edgeColor) return;
+        ctx.save();
+        ctx.beginPath();
+        // +0.5 — в центр пиксельной сетки, иначе 1 px линия размывается на два.
+        ctx.moveTo(0, this.innerHeight - this.heights[0] + 0.5);
+        for (let x = 1; x < this.innerWidth; x++) {
+            ctx.lineTo(x, this.innerHeight - this.heights[x] + 0.5);
+        }
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = withAlpha(this.edgeColor, 0.55);
+        ctx.stroke();
+        ctx.restore();
     }
 
     // Копирует срез закешированного слоя [xStart, xEnd] на целевой ctx. Источник —

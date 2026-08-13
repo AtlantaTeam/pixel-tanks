@@ -18,7 +18,7 @@ import {
     type TArenaZone,
 } from './arena-insets';
 import { Ground } from './ground';
-import { Tank } from './tank';
+import { Tank, TANK_SHADOW_COLOR } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
 import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
@@ -30,6 +30,7 @@ import { SlowMotion } from './slow-motion';
 import { BulletTrail } from './bullet-trail';
 import { GhostTrail, ghostDashUnit } from './ghost-trail';
 import { ENGINE_COLORS } from './engine-palette';
+import { computeSceneLight, type TSceneLight } from './scene-light';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
 
 /**
@@ -136,6 +137,14 @@ export type TGamePlayOptions = {
      */
     leftSkinId?: TTankSkinId;
     rightSkinId?: TTankSkinId;
+    /**
+     * Сид боя (#545) — для модели света сцены: пресет, положение светила, направление
+     * тени, тонировка земли (`computeSceneLight`). Тот же сид получает и небо
+     * (`SkyBackground`), поэтому свет в рельефном канвасе согласован с диском в канвасе
+     * неба. Не задан → сцена без света (день, без теней/тона) — совместимость с
+     * тестами/реплеем, которые сид не передают.
+     */
+    seed?: number | string;
 };
 
 const GAME_ASSET_PATHS = {
@@ -205,6 +214,12 @@ export class GamePlay {
     // потому что скин выбирается за бой, а не глобально для всего приложения.
     private readonly leftSkinId: TTankSkinId;
     private readonly rightSkinId: TTankSkinId;
+    /**
+     * Модель света сцены (#545): направление тени, тонировка земли, цвет подсветки
+     * кромок — из сида боя, тем же, что и небо. `undefined` — сид не передан (сцена
+     * без света, совместимость с тестами/реплеем).
+     */
+    private readonly sceneLight: TSceneLight | undefined;
     private leftSkinImages: TTankSkinImages | undefined;
     private rightSkinImages: TTankSkinImages | undefined;
     // Кто стрелял последним: isActive у обоих танков уже false к моменту разрешения
@@ -274,6 +289,7 @@ export class GamePlay {
         this.fixedLogicalSize = options?.fixedLogicalSize;
         this.leftSkinId = options?.leftSkinId ?? DEFAULT_TANK_SKIN_ID;
         this.rightSkinId = options?.rightSkinId ?? DEFAULT_TANK_SKIN_ID;
+        this.sceneLight = options?.seed !== undefined ? computeSceneLight(options.seed) : undefined;
         // Косметика (частицы, тряска) — на ОТДЕЛЬНОМ потоке random: CameraShake
         // берёт значения каждый кадр тряски, а число кадров зависит от FPS.
         // На общем потоке это недетерминированно сдвигало бы выборки бота
@@ -615,6 +631,10 @@ export class GamePlay {
             this.random,
             sand,
             this.arenaInsets,
+            // Тонировка земли и подсветка кромки — из модели света боя (#545). Без
+            // сида (тесты/реплей) — пусто: рельеф как до светила.
+            this.sceneLight?.groundTint ?? [],
+            this.sceneLight?.edgeColor,
         );
         this.wind = generateWind(this.random);
         this.callbacks.onWindInit?.(this.wind);
@@ -671,6 +691,13 @@ export class GamePlay {
             rightWheels,
             !this.reducedMotion,
         );
+        // Тень от светила (#545): оба танка получают направление света из модели боя.
+        // Без сида (тесты/реплей) sceneLight пуст — тени нет, поведение прежнее.
+        if (this.sceneLight) {
+            const shadow = { direction: this.sceneLight.direction, color: TANK_SHADOW_COLOR };
+            this.leftTank.shadow = shadow;
+            this.rightTank.shadow = shadow;
+        }
         if (this.ctx) {
             this.ground.draw(this.ctx);
         }

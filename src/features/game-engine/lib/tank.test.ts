@@ -296,3 +296,68 @@ describe('Tank — вращение катков (issue #496)', () => {
         expect(tank.wheelRotation).toBe(0);
     });
 });
+
+/**
+ * ctx-заглушка, записывающая вызовы `ellipse` (центр тени) поверх методов
+ * `makeRecordingCtx` — draw() после тени идёт обычным путём корпуса.
+ */
+const makeShadowCtx = () => {
+    const ellipseCalls: number[][] = [];
+    const base = makeRecordingCtx().ctx as unknown as Record<string, unknown>;
+    const ctx = {
+        ...base,
+        beginPath: () => undefined,
+        fill: () => undefined,
+        ellipse: (
+            x: number,
+            y: number,
+            rx: number,
+            ry: number,
+            rot: number,
+            s: number,
+            e: number,
+        ) => {
+            ellipseCalls.push([x, y, rx, ry, rot, s, e]);
+        },
+    } as unknown as CanvasRenderingContext2D;
+    return { ctx, ellipseCalls };
+};
+
+describe('Tank.draw — тень от светила (#545)', () => {
+    const centerX = (tank: Tank) => tank.x + tank.tankWidth / 2;
+
+    it('без shadow (дефолт) эллипс тени не рисуется', () => {
+        const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON], bodyImg);
+        const { ctx, ellipseCalls } = makeShadowCtx();
+        tank.draw(ctx, null, flatGround());
+        expect(ellipseCalls).toHaveLength(0);
+    });
+
+    it('светило справа (dx<0) → тень смещена влево от центра корпуса', () => {
+        const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON], bodyImg);
+        tank.shadow = { direction: { dx: -0.6, dy: 0.8 }, color: 'rgba(0,0,0,0.3)' };
+        const { ctx, ellipseCalls } = makeShadowCtx();
+        tank.draw(ctx, null, flatGround());
+        expect(ellipseCalls).toHaveLength(1);
+        // Центр эллипса левее середины корпуса — знак совпадает со знаком dx (влево).
+        expect(ellipseCalls[0][0]).toBeLessThan(centerX(tank));
+    });
+
+    it('светило слева (dx>0) → тень смещена вправо от центра корпуса', () => {
+        const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON], bodyImg);
+        tank.shadow = { direction: { dx: 0.6, dy: 0.8 }, color: 'rgba(0,0,0,0.3)' };
+        const { ctx, ellipseCalls } = makeShadowCtx();
+        tank.draw(ctx, null, flatGround());
+        expect(ellipseCalls).toHaveLength(1);
+        expect(ellipseCalls[0][0]).toBeGreaterThan(centerX(tank));
+    });
+
+    it('тень лежит на поверхности рельефа под корпусом (пиксель контакта)', () => {
+        const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON], bodyImg);
+        tank.shadow = { direction: { dx: -0.6, dy: 0.8 }, color: 'rgba(0,0,0,0.3)' };
+        const { ctx, ellipseCalls } = makeShadowCtx();
+        // Плоский рельеф высотой 100 → поверхность на HEIGHT-100.
+        tank.draw(ctx, null, flatGround());
+        expect(ellipseCalls[0][1]).toBe(HEIGHT - 100);
+    });
+});

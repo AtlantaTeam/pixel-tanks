@@ -7,6 +7,7 @@ import {
     type TStarInstance,
 } from './sky-celestial';
 import { buildCloudField, cloudSpriteWidth, windFactor, type TCloudInstance } from './cloud-field';
+import { computeLightDirection, edgeHighlightColor } from './scene-light';
 import { wrapOffset } from './sky-parallax';
 import {
     pickSkyPreset,
@@ -77,6 +78,8 @@ export class SkyScene {
 
     private staticCanvas: HTMLCanvasElement | null = null;
     private mountainCanvas: HTMLCanvasElement | null = null;
+    /** Силуэт гор, перекрашенный в тон каймы светила — для контура склона (#545). */
+    private mountainEdgeCanvas: HTMLCanvasElement | null = null;
 
     constructor(options: TSkySceneOptions) {
         this.preset = options.preset
@@ -392,7 +395,41 @@ export class SkyScene {
         // читается как атмосферная дымка, гор в бою всё равно касаются взглядом мельком).
         const bandHeight = Math.round(height * 0.16);
         const bottom = Math.round(height * 0.62);
-        ctx.drawImage(source, 0, bottom - bandHeight, width, bandHeight);
+        const top = bottom - bandHeight;
+        // Контур 1 px по обращённому к светилу склону (#545, §6): силуэт в тоне каймы
+        // рисуется со сдвигом на сторону светила и на 1 px вверх, затем перекрывается
+        // основным силуэтом — наружу торчит ровно кромка ридж-линии, обращённая к свету.
+        const edge = this.ensureEdgeMountain(image);
+        if (edge) {
+            // Сторона, обращённая к светилу = обратная направлению света (dx). Свет
+            // идёт ОТ светила, поэтому склон, обращённый к нему, — со стороны −sign(dx).
+            const rimDx = -Math.sign(computeLightDirection(this.celestial).dx) || 1;
+            ctx.save();
+            ctx.globalAlpha = 0.5;
+            ctx.drawImage(edge, rimDx, top - 1, width, bandHeight);
+            ctx.restore();
+        }
+        ctx.drawImage(source, 0, top, width, bandHeight);
+    }
+
+    /**
+     * Силуэт гор, перекрашенный в тон каймы светила (#545) через `source-in` — как
+     * `ensureTintedMountain`, но цветом кромки, а не тоном пресета. Кешируется: тон
+     * зависит только от пресета. null — offscreen недоступен (контур не рисуем).
+     */
+    private ensureEdgeMountain(image: HTMLImageElement): HTMLCanvasElement | null {
+        if (this.mountainEdgeCanvas) return this.mountainEdgeCanvas;
+        const canvas = this.createCanvas();
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const edgeCtx = canvas.getContext('2d');
+        if (!edgeCtx) return null;
+        edgeCtx.drawImage(image, 0, 0);
+        edgeCtx.globalCompositeOperation = 'source-in';
+        edgeCtx.fillStyle = edgeHighlightColor(this.preset);
+        edgeCtx.fillRect(0, 0, image.width, image.height);
+        this.mountainEdgeCanvas = canvas;
+        return canvas;
     }
 
     /**

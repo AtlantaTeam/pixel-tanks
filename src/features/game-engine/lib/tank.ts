@@ -2,7 +2,18 @@ import { floor, rotateFigure, rotateFigureByAngle, transformPoint } from '@/shar
 import type { TCoords, TWeapon } from '@/shared/model';
 import { Ground } from './ground';
 import { POWER_MAX, POWER_MIN } from './power';
+import type { TLightDirection } from './scene-light';
 import { WORLD_UNITS } from './world-scale';
+
+/**
+ * Тень танка от светила (#545): эллипс под корпусом на поверхности рельефа, смещённый
+ * в сторону, противоположную светилу (`direction.dx` — горизонталь направления света).
+ * `null` (день без модели света/до светила) — тень не рисуется.
+ */
+export type TTankShadow = { direction: TLightDirection; color: string } | null;
+
+/** Полутень корпуса: тёмный полупрозрачный тон, читается на песке любого пресета. */
+export const TANK_SHADOW_COLOR = 'rgba(12, 10, 8, 0.32)';
 
 type TGroundUnderTankData = {
     leftSideX: number;
@@ -103,6 +114,12 @@ export class Tank {
     isReadyToFire = true;
     closestToHit: { minDiff: number; angle: number; power: number; count: number } | null;
     weapons: TWeapon[];
+    /**
+     * Тень от светила (#545): ставит `GamePlay` из модели света боя (`computeSceneLight`)
+     * после конструирования, как и скины — `Tank` сам про сид/пресет не знает. `null` —
+     * тени нет (тесты/реплей без сида, день до светила).
+     */
+    shadow: TTankShadow = null;
 
     constructor(
         x: number,
@@ -359,7 +376,36 @@ export class Tank {
         }
     }
 
+    /**
+     * Тень корпуса на рельефе (#545): плоский эллипс на поверхности земли под танком,
+     * смещённый по горизонтали в сторону, обратную светилу (`shadow.direction.dx`).
+     * Рисуется ДО корпуса (в неповёрнутом ctx, до наклонного трансформа `slopeTank`),
+     * поэтому лежит на склоне в мировых координатах, а не «висит» с корпусом. Эллипс
+     * центрируется по поверхности под серединой танка — даёт гарантированные пиксели
+     * контакта корпуса с рельефом (критерий #545), которых у «висящего» танка не было.
+     */
+    private drawShadow(ctx: CanvasRenderingContext2D, ground: Ground) {
+        if (!this.shadow) return;
+        const lastX = ground.heights.length - 1;
+        if (lastX < 0) return;
+        const centerX = Math.min(lastX, Math.max(0, floor(this.x + this.tankWidth / 2)));
+        const surfaceY = this.innerHeight - ground.heights[centerX];
+        const radiusX = this.tankWidth * 0.5;
+        // Тонкий эллипс (~2 px в каноне, масштабируется миром) — тень, не «клякса».
+        const radiusY = Math.max(2, 2 * this.scale);
+        // Смещение по свету: в сторону, обратную светилу. Модуль — доля ширины танка,
+        // тень «выползает» из-под корпуса, не отрываясь от него.
+        const offsetX = this.shadow.direction.dx * this.tankWidth * 0.28;
+        ctx.save();
+        ctx.beginPath();
+        ctx.fillStyle = this.shadow.color;
+        ctx.ellipse(centerX + offsetX, surfaceY, radiusX, radiusY, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
     draw(ctx: CanvasRenderingContext2D, mousePos: TCoords | null, ground: Ground) {
+        this.drawShadow(ctx, ground);
         this.recalcPosition(ctx, ground);
         const body = this.bodyRect();
         if (this.tankBodyImg) {

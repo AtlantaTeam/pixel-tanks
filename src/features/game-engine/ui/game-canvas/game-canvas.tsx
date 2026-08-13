@@ -274,7 +274,9 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             // Отдельный поток для косметики (частицы, тряска): их FPS-зависимое
             // потребление random не должно сдвигать выборки бота (см. GamePlay).
             createFxRandom(battleSeed),
-            { leftSkinId, rightSkinId },
+            // Сид боя — модели света сцены (#545): тот же сид, что у неба
+            // (`SkyBackground`), поэтому тень/тонировка согласованы с диском светила.
+            { leftSkinId, rightSkinId, seed: battleSeed },
         );
         gameRef.current = game;
         game.loadImages();

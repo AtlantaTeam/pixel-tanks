@@ -90,6 +90,9 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
                 // же сид + тот же скин игрока всегда дают тот же вид соперника.
                 leftSkinId: playerSkinId,
                 rightSkinId: selectTankSkinForSeed(replay.seed, playerSkinId),
+                // Сид записи — модели света сцены (#545): реплей показывает то же
+                // время суток (тень, тонировка), что и живой бой того же сида.
+                seed: replay.seed,
             },
         );
         // Инсеты safe-зоны записи — ДО генерации рельефа (loadImages → initPaint):
