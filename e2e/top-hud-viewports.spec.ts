@@ -39,6 +39,43 @@ for (const viewport of VIEWPORTS) {
     });
 }
 
+// Узкий xl (1280…~1500, #489): телеметрия (`top-hud-telemetry-desktop`) —
+// нешринкающийся (`xl:shrink-0`) ряд, сосед по флекс-ряду с HP-блоком
+// (`flex-1`) — тот подстраивается под доступную ширину, а телеметрия нет.
+// Прежний гвард (`top-hud`, `scrollWidth`) баг не ловил: `top-hud` — абсолютный
+// оверлей на всю ширину вьюпорта (её `right` всегда равен viewport.width), а
+// клип держит `scrollWidth` равным вьюпорту — контент не скроллится, просто
+// вылезает за край. Единственный надёжный замер — собственный правый край
+// самой телеметрии.
+for (const width of [1280, 1300, 1350, 1413, 1500]) {
+    test.describe(`Верхний HUD — телеметрия не клипается на узком xl (${width})`, () => {
+        test.use({ viewport: { width, height: 800 } });
+
+        test('правый край телеметрии не уезжает за вьюпорт, ряд не переносится', async ({
+            page,
+        }) => {
+            await page.goto('/game?seed=42');
+
+            const telemetry = page.getByTestId('top-hud-telemetry-desktop');
+            await expect(telemetry).toBeVisible();
+            const telemetryBox = await telemetry.boundingBox();
+            expect(telemetryBox).not.toBeNull();
+            if (telemetryBox) {
+                expect(telemetryBox.x + telemetryBox.width).toBeLessThanOrEqual(width);
+            }
+
+            // Полоса HUD остаётся высотой 78px (xl:h-[78px]) — перенос ряда
+            // телеметрии на вторую строку раздул бы её.
+            const desktopHud = page.getByTestId('top-hud-desktop');
+            const desktopBox = await desktopHud.boundingBox();
+            expect(desktopBox).not.toBeNull();
+            if (desktopBox) {
+                expect(Math.round(desktopBox.height)).toBe(78);
+            }
+        });
+    });
+}
+
 // Пересекаются ли прямоугольники — используется, чтобы поймать перекрытие
 // бейджа заморозки и ряда телеметрии (#472), а не только горизонтальное
 // переполнение (это ловит getBoundingClientRect-проверка выше).
