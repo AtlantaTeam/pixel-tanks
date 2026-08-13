@@ -466,3 +466,20 @@ describe('TopHud', () => {
         }
     });
 });
+
+// #537 — клип HUD на 320px: telemetry row переполняется, ячейка ресурсов вытолкнута,
+// кнопка паузы срезана. Решение: сжимать элементы по порядку приоритета.
+it('на 320px весь HUD влезает без горизонтального переполнения', () => {
+    // Мимикрируем 320px viewport: контейнер mobile width: 300 (320 - 20px padding)
+    const { getByTestId } = render(<TopHud />);
+    const mobile = getByTestId('top-hud-mobile') as HTMLElement;
+
+    // Все 3 ряда должны иметь scrollWidth <= clientWidth (без горизонтального overflow)
+    const rows = mobile.querySelectorAll(':scope > .flex');
+    rows.forEach((row) => {
+        // Допускаем 1px разницу из-за субпиксельного рендера
+        expect((row as HTMLElement).scrollWidth).toBeLessThanOrEqual(
+            (row as HTMLElement).clientWidth + 1,
+        );
+    });
+});

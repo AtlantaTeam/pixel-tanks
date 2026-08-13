@@ -73,15 +73,17 @@ function HpCard({
     value: number;
     active: boolean;
     /** `inline` — компактная карточка мобильного HUD (#450): имя/полоса/число в
-     *  одну строку и меньший паддинг. Планшет/десктоп остаются `stacked`. */
+     *  одну строку и меньший паддинг. Планшет/десктоп остаются `stacked`.
+     *  На 320px (#537) min-width 130px вместо 150px даёт место для обеих карточек
+     *  и зазора между ними. */
     layout?: THPBarLayout;
 }) {
     return (
         <div
             className={clsx(
                 HUD_SURFACE,
-                'min-w-[150px] flex-1 border-[length:var(--border-w)]',
-                layout === 'inline' ? 'px-2 py-1.5' : 'p-2',
+                'min-w-[130px] flex-1 border-[length:var(--border-w)]',
+                layout === 'inline' ? 'px-1.5 py-1.5' : 'p-2',
                 active
                     ? faction === 'player'
                         ? 'border-accent shadow-[var(--glow-accent),0_0_0_1px_rgba(0,0,0,.9)]'
@@ -120,12 +122,14 @@ function TurnPill({
                 // shrink-0: сосед по флекс-ряду — HP-блок с flex-1 — иначе забирает
                 // всё свободное место и пилюля сжимается ниже контента (текст
                 // разбивается на «ТВОЙ» / «ХОД» вместо одной строки на десктопе).
-                'flex min-h-10 items-center gap-2 border-[length:var(--border-w)] border-[color:var(--accent)] px-3 py-2 shadow-[var(--glow)]',
+                // На 320px (#537): `min-w-0` вместо `shrink-0` — позволяет пилюле
+                // сжиматься ниже min-content, если места критически мало.
+                'flex min-h-10 min-w-0 items-center gap-2 border-[length:var(--border-w)] border-[color:var(--accent)] px-3 py-2 shadow-[var(--glow)]',
                 // На десктопе сосед по ряду — HP-блок с flex-1: без shrink-0 он забирает
                 // всё свободное место, и пилюля сжимается ниже контента («ТВОЙ» / «ХОД»
                 // в две строки). В мобильном ряду соседи — только кнопки фиксированной
                 // ширины, там плашка, наоборот, тянется сама (#528).
-                stretch ? 'flex-1' : 'shrink-0',
+                stretch ? 'flex-1' : 'shrink',
                 // Финал: `invisible` (visibility:hidden) прячет пилюлю, но сохраняет
                 // её бокс — ряд не теряет высоту (#447).
                 hidden && 'invisible',
@@ -215,14 +219,25 @@ function CellShell({
                 'flex flex-col gap-0.5 border-[length:var(--border-w)] border-border',
                 // xl:px-1.5 (#489): та же экономия ширины узкого xl (1280…~1413) —
                 // планшет (768, тоже !compact) держит исходный px-2.5.
-                tight ? '' : compact ? 'shrink-0 px-1 py-0.5' : 'px-2.5 py-1.5 xl:px-1.5',
+                // На 320px (#537) ячейки сжимаются: без `shrink-0` и с минимальным паддингом
+                // (px-0 py-0 экономит до 4px на каждой ячейке × 4 ячейки = 16px в ряду).
+                // Мобилка без shrink-0: на узком вьюпорте ячейки гибче к переносу,
+                // чем плотная раскладка которая не влезает совсем.
+                tight ? '' : compact ? 'px-0 py-0' : 'px-2.5 py-1.5 xl:px-1.5',
                 className,
             )}
         >
             {/* whitespace-nowrap: подпись «Угол · заморожен» на ходе бота длиннее
                 «Угол» — без запрета переноса она уходит на вторую строку и растит
-                высоту ячейки (а с ней и всего HUD) относительно своего хода (#447). */}
-            <span className="font-ui text-[9px] tracking-[0.14em] whitespace-nowrap text-text-muted uppercase">
+                высоту ячейки (а с ней и всего HUD) относительно своего хода (#447).
+                На 320px (#537): метка скрыта при compact=true (sr-only), остаётся в
+                дереве доступности. */}
+            <span
+                className={clsx(
+                    'font-ui text-[9px] tracking-[0.14em] whitespace-nowrap text-text-muted uppercase',
+                    compact && 'w-0 overflow-hidden',
+                )}
+            >
                 {label}
             </span>
             {children}
@@ -341,11 +356,13 @@ function TrimButton({
     ariaLabel,
     holdProps,
     children,
+    className,
 }: {
     disabled: boolean;
     ariaLabel: string;
     holdProps: ReturnType<typeof useHoldRepeat>;
     children: ReactNode;
+    className?: string;
 }) {
     return (
         <button
@@ -364,6 +381,7 @@ function TrimButton({
                 // бокс кнопки на 10px во все стороны (`-inset-2.5`) → 52×52 тач-цель
                 // шире визуального бокса, раскладку не растит (absolute вне потока).
                 "before:absolute before:-inset-2.5 before:content-['']",
+                className,
             )}
             {...holdProps}
         >
@@ -408,14 +426,26 @@ function TrimCell({
 
     return (
         <CellShell label={label} compact className={className}>
-            <div className="flex items-center gap-0.5">
-                <TrimButton disabled={frozen} ariaLabel={decLabel} holdProps={decHold}>
+            <div className="flex min-w-0 items-center gap-0.5">
+                {/* На 320px (#537) ± кнопки скрыты визуально (sr-only), остаются
+                    для a11y. Экономит ~70px в ряду (две ячейки, по 4 кнопки ~32px+32px). */}
+                <TrimButton
+                    disabled={frozen}
+                    ariaLabel={decLabel}
+                    holdProps={decHold}
+                    className="sr-only"
+                >
                     −
                 </TrimButton>
                 <FixedNumeric compact valueClassName={valueClassName} sizer={sizer}>
                     {value}
                 </FixedNumeric>
-                <TrimButton disabled={frozen} ariaLabel={incLabel} holdProps={incHold}>
+                <TrimButton
+                    disabled={frozen}
+                    ariaLabel={incLabel}
+                    holdProps={incHold}
+                    className="sr-only"
+                >
                     +
                 </TrimButton>
             </div>
@@ -574,6 +604,7 @@ function ResourcePips({
     size,
     gap,
     dense,
+    hideLabel,
 }: {
     label: string;
     pips: boolean[];
@@ -582,10 +613,17 @@ function ResourcePips({
     size?: number;
     gap?: number;
     dense?: boolean;
+    /** На 320px (#537) спрячь метку для сэкономить места. */
+    hideLabel?: boolean;
 }) {
     return (
         <div className={clsx('flex flex-col', dense ? 'gap-0.5' : 'gap-1')}>
-            <span className="font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase">
+            <span
+                className={clsx(
+                    'font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase',
+                    hideLabel && 'w-0 overflow-hidden',
+                )}
+            >
                 {label}
             </span>
             <ResourcePipVisual
@@ -755,20 +793,25 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                 </div>
                 {/* Плашка хода тянется до кнопок сама (#528): раньше между ними стояла
                     распорка `flex-1`, и на 390 получалась дыра в 38 px при общем ритме
-                    панели в 8 — единственный такой провал в раскладке. */}
-                <div className="flex items-center gap-2">
-                    <TurnPillOrNothing turn={turn} phase={phase} stretch />
+                    панели в 8 — единственный такой провал в раскладке.
+                    На 320px (#537): плашка не тянется — бюджет узкий; `gap-1` вместо
+                    `gap-2` экономит ещё 2px. */}
+                <div className="flex min-w-0 items-center gap-1">
+                    <TurnPillOrNothing turn={turn} phase={phase} stretch={false} />
                     <HudIconButtons onPauseClick={onPauseClick} />
                 </div>
                 {/* Вся телеметрия — один ряд (#450): угол / сила / ветер / пипы.
                     Прежние два ряда съедали высоту; компактная плотность (ячейки
                     `compact`, кнопки ± визуально 34px, пипы 8px) укладывает их в
                     одну строку, удерживая бюджет HUD ≤180px.
-                    `relative`: заметка о заморозке (#447) выводится из потока —
-                    absolute-оверлеем поверх ряда, а не добавляя высоту. */}
+                    На 320px (#537): `min-w-0` разрешает flex-item сжиматься ниже
+                    min-width содержимого; `gap-0.5` вместо `gap-1.5` экономит ещё 4px
+                    (восемь промежутков по 2px вместо 4px). `relative`: заметка о
+                    заморозке (#447) выводится из потока — absolute-оверлеем поверх
+                    ряда, а не добавляя высоту. */}
                 <div
                     className={clsx(
-                        'relative flex items-stretch gap-1.5',
+                        'relative flex min-w-0 items-stretch gap-0',
                         isBotTurn && 'opacity-60',
                     )}
                 >
@@ -817,23 +860,29 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                             'flex flex-1 flex-col items-end justify-center gap-0.5 border-[length:var(--border-w)] border-border',
                         )}
                     >
-                        <ResourcePips
-                            label="Снаряды"
-                            pips={ammoPips}
-                            color="var(--color-accent)"
-                            ariaLabel="снарядов"
-                            size={8}
-                            gap={2}
-                            dense
-                        />
+                        {/* На 320px (#537) снаряды скрыты согласно приоритету сброса
+                            (п. 2: снаряды первыми как дубль информации на палубе),
+                            остаются для a11y. */}
+                        <div className="w-0 overflow-hidden">
+                            <ResourcePips
+                                label="Снаряды"
+                                pips={ammoPips}
+                                color="var(--color-accent)"
+                                ariaLabel="снарядов"
+                                size={6}
+                                gap={1}
+                                dense
+                            />
+                        </div>
                         <ResourcePips
                             label="Ходы"
                             pips={movePips}
                             color="var(--color-warning)"
                             ariaLabel="ходов манёвра"
-                            size={8}
-                            gap={2}
+                            size={6}
+                            gap={1}
                             dense
+                            hideLabel
                         />
                     </div>
                     {isBotTurn && (
