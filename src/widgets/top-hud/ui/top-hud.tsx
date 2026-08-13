@@ -87,7 +87,12 @@ function HpCard({
                 // ряда 1 (44px, вместе с пилюлей/бейджем/иконками) не оставляет места
                 // под исходный p-2. С xl (1280, полоса 78px фиксирована, есть запас)
                 // паддинг возвращается к каноничному p-2.
-                layout === 'inline' ? 'px-1.5 py-1.5' : 'p-1.5 xl:p-2',
+                // py-1 (не py-1.5=6px, вне легального шага #541): карточка HP —
+                // прямой ребёнок ряда 1 (мобилка h-8=32, планшет md:h-11=44) и
+                // получает высоту ряда через stretch, а не через собственный
+                // паддинг — паддинг только держит контент от клипа на самом
+                // тесном (32px) бюджете.
+                layout === 'inline' ? 'px-1.5 py-1' : 'p-1.5 xl:p-2',
                 active
                     ? faction === 'player'
                         ? 'border-accent shadow-[var(--glow-accent),0_0_0_1px_rgba(0,0,0,.9)]'
@@ -180,7 +185,12 @@ function HudIconButtons({ onPauseClick }: { onPauseClick?: () => void }) {
     const { isMuted, toggle } = useMuteState();
 
     return (
-        <div className="flex shrink-0 gap-2">
+        // items-center (#541): обёртка — прямой ребёнок кластера статуса,
+        // который на планшете/десктопе растянут (stretch) до высоты ряда
+        // (44/56px), а сами кнопки — фиксированные 44×44 (`size-11`,
+        // `Button` size="icon") и не тянутся вместе с обёрткой; центрируем
+        // их внутри, а не прижимаем к верхнему краю.
+        <div className="flex shrink-0 items-center gap-2">
             <Button
                 variant="ghost"
                 size="icon"
@@ -246,23 +256,28 @@ function CellShell({
         <div
             className={clsx(
                 HUD_SURFACE,
-                'flex flex-col border-[length:var(--border-w)] border-border',
-                // gap-0 xl:gap-0.5 (#538, только !compact): тот же бюджет ряда 2
-                // планшета — 2px между подписью и значением лишние, с xl (полоса
-                // 78px, есть запас) зазор возвращается к каноничному gap-0.5.
-                // Мобилка (compact) не тронута — держит исходный gap-0.5 (#450).
-                compact ? 'gap-0.5' : 'gap-0 xl:gap-0.5',
-                // xl:px-1.5 (#489): та же экономия ширины узкого xl (1280…~1413) —
-                // планшет (768, тоже !compact) держит исходный px-2.5.
+                // justify-center (#541): высота ячейки теперь задаётся РЯДОМ
+                // (`items-stretch` на родителе, легальная высота 32/44/56), не
+                // суммой паддинга+контента — ячейка растягивается до высоты
+                // ряда, а метка+значение центрируются внутри неё, а не
+                // прилипают к верхнему краю.
+                'flex flex-col justify-center border-[length:var(--border-w)] border-border',
+                // gap-1 (4px, легальный «внутри ячейки» #541) на компактных
+                // мобильных ячейках; 0 — на планшете/десктопе (label+value уже
+                // укладываются в 44/56 без зазора, добавлять нечего). Прежние
+                // 0.5 (2px) и xl:0.5 (2px) — вне легального набора {4,8,16}.
+                compact ? 'gap-1' : 'gap-0',
+                // px-2 py-1 xl:px-1 xl:py-0 (#541, легальный набор {4,8,16} —
+                // прежние px-2.5=10px/xl:px-1.5=6px/py-0.5=2px вне набора).
+                // Вертикальный паддинг больше не держит высоту ячейки (её
+                // держит `items-stretch` ряда) — только не даёт контенту
+                // клипаться на самом тесном легальном бюджете (56px на xl при
+                // значении 40px + подписи 9px + рамке 4px).
                 // На 320px (#537) ячейки сжимаются: без `shrink-0` и с минимальным паддингом
                 // (px-0 py-0 экономит до 4px на каждой ячейке × 4 ячейки = 16px в ряду).
                 // Мобилка без shrink-0: на узком вьюпорте ячейки гибче к переносу,
                 // чем плотная раскладка которая не влезает совсем.
-                // py-0.5 (#538, было py-1.5 универсально): на 768–1279 бюджет ряда 2
-                // (56px) не оставляет места под исходный вертикальный паддинг вместе
-                // с 22px значением ниже — с xl (полоса 78px, есть запас) паддинг
-                // возвращается к каноничному py-1.5.
-                tight ? '' : compact ? 'px-0 py-0' : 'px-2.5 py-0.5 xl:px-1.5 xl:py-1.5',
+                tight ? '' : compact ? 'px-0 py-0' : 'px-2 py-1 xl:px-1 xl:py-0',
                 className,
             )}
         >
@@ -840,9 +855,15 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                 иконки, единый ряд телеметрии. Компактная плотность (#450). */}
             <div
                 data-testid="top-hud-mobile"
-                className="pointer-events-auto flex flex-col gap-1.5 md:hidden"
+                // gap-2 (8px, легальный «между группами» #541) — было gap-1.5
+                // (6px), вне легального набора {4,8,16}.
+                className="pointer-events-auto flex flex-col gap-2 md:hidden"
             >
-                <div className="flex gap-2">
+                {/* h-8 (32px, легальная «служебная строка без тач-цели» #541):
+                    HP-карточки не несут собственных тач-целей — угол/сила
+                    рядом ниже уже используют 44px. items-stretch — дефолт
+                    flex без явного align-items, оставлен явно для читаемости. */}
+                <div className="flex h-8 items-stretch gap-2" data-testid="top-hud-mobile-hp-row">
                     <HpCard
                         faction="player"
                         label={PLAYER_NAME_PLACEHOLDER}
@@ -863,7 +884,13 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     панели в 8 — единственный такой провал в раскладке.
                     На 320px (#537): плашка не тянется — бюджет узкий; `gap-1` вместо
                     `gap-2` экономит ещё 2px. */}
-                <div className="flex min-w-0 items-center gap-1">
+                {/* h-11 (44px, легальная «минимальная тач-цель» #541) — обе
+                    кнопки-иконки уже 44×44, пилюля хода растягивается
+                    (items-stretch) до той же высоты вместо собственных 40px. */}
+                <div
+                    className="flex h-11 min-w-0 items-stretch gap-1"
+                    data-testid="top-hud-mobile-status-row"
+                >
                     <TurnPillOrNothing turn={turn} phase={phase} stretch={false} />
                     <HudIconButtons onPauseClick={onPauseClick} />
                 </div>
@@ -877,8 +904,12 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     заморозке (#447) выводится из потока — absolute-оверлеем поверх
                     ряда, а не добавляя высоту. */}
                 <div
+                    data-testid="top-hud-mobile-telemetry-row"
                     className={clsx(
-                        'relative flex min-w-0 items-stretch gap-0',
+                        // h-14 (56px, легальная «ячейка с числом HUD-кегля»
+                        // #541) — было 49.5px натурального контента, вне
+                        // легального набора.
+                        'relative flex h-14 min-w-0 items-stretch gap-0',
                         isBotTurn && 'opacity-60',
                     )}
                 >
@@ -974,7 +1005,11 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                 // xl:gap-2 (#489, было xl:gap-5): узкий xl (1280…~1413) — телеметрия
                 // (shrink-0) и первый ряд (HP+пилюля+бейдж+иконки) вместе не влезали
                 // в полосу 78px, зазор между ними ужат в общий бюджет экономии.
-                className="pointer-events-auto hidden md:flex md:w-full md:flex-col md:gap-1.5 md:border-b-[length:var(--border-w)] md:border-border md:bg-panel md:px-4 md:py-1.5 xl:mx-auto xl:h-[78px] xl:max-w-[1280px] xl:flex-row xl:items-center xl:gap-2 xl:py-0"
+                // md:gap-1 md:py-1 (#541, легальный набор {4,8,16} — были gap-1.5/
+                // py-1.5 = 6px, вне набора): 44 (ряд 1) + 4 (зазор) + 44 (ряд 2) +
+                // 4+4 (паддинг) + 2 (рамка) = 102 против объявленного зоне жеста
+                // инсета 128 (плюс внешний паддинг оверлея 20px = 122 итого).
+                className="pointer-events-auto hidden md:flex md:w-full md:flex-col md:gap-1 md:border-b-[length:var(--border-w)] md:border-border md:bg-panel md:px-4 md:py-1 xl:mx-auto xl:h-[78px] xl:max-w-[1280px] xl:flex-row xl:items-center xl:gap-2 xl:py-0"
             >
                 {/* xl:gap-1 (#489, было gap-4 без override): тот же бюджет ширины —
                     первый ряд (HP-блок + пилюля + бейдж заморозки + mute/пауза)
@@ -985,7 +1020,14 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     Без `flex-wrap` (#538): HP-блок держит `flex-1` — сам растягивается
                     и толкает правую группу к краю ряда, перенос строки больше не
                     нужен для этого эффекта. */}
-                <div className="flex flex-1 items-center gap-4 xl:flex-nowrap xl:gap-1 min-[1440px]:gap-2">
+                <div
+                    data-testid="top-hud-status-row"
+                    // md:h-11 xl:h-14 + items-stretch (#541): HP-блок и кластер
+                    // статуса — прямые дети этого ряда, растягиваются до общей
+                    // легальной высоты (44 на планшете, 56 на xl) вместо
+                    // центрирования разных по высоте боксов (55/44 на xl).
+                    className="flex flex-1 items-stretch gap-4 md:h-11 xl:h-14 xl:flex-nowrap xl:gap-1 min-[1440px]:gap-2"
+                >
                     {/* На 768–1279 (#538) HP-бары держат минимум только собственных
                         карточек (150px каждая, `HpCard`) — фикс `min-w-[420px]`
                         конкурировал за ширину ряда с новой правой группой
@@ -1031,7 +1073,13 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     {/* Правая группа ряда 1 (#538): статус хода + mute/пауза — не
                         сжимается и не переносится, HP-блок слева толкает её к краю
                         своим `flex-1`. */}
-                    <div className="flex shrink-0 items-center gap-2">
+                    {/* items-stretch (#541): пилюля/бейдж/иконки — прямые дети,
+                        растягиваются до высоты кластера (которая сама
+                        растянута до высоты статус-ряда родителем выше). */}
+                    <div
+                        data-testid="top-hud-status-cluster"
+                        className="flex shrink-0 items-stretch gap-2"
+                    >
                         <TurnPillOrNothing turn={turn} phase={phase} />
                         <FreezeBadgeOrNothing visible={showFreezeBadge} />
                         <HudIconButtons onPauseClick={onPauseClick} />
@@ -1054,11 +1102,17 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         // На 768–1279 (#538) `justify-between` вместо `flex-wrap`:
                         // телеметрия слева, ресурсы (снаряды/ходы) справа — один ряд,
                         // а не перенос на вторую строку.
-                        'flex w-full items-center justify-between gap-4 xl:w-auto xl:shrink-0 xl:flex-nowrap xl:gap-2',
+                        // md:h-11 xl:h-14 + items-stretch (#541): группа чисел и
+                        // группа ресурсов — прямые дети, растягиваются до общей
+                        // легальной высоты (44/56) вместо разных 39/27 (768) и 67/25 (xl).
+                        'flex w-full items-stretch justify-between gap-4 md:h-11 xl:h-14 xl:w-auto xl:shrink-0 xl:flex-nowrap xl:gap-2',
                         isBotTurn && 'opacity-60',
                     )}
                 >
-                    <div className="flex min-w-0 items-center gap-4 xl:gap-2">
+                    <div
+                        data-testid="top-hud-telemetry-numbers"
+                        className="flex min-w-0 items-stretch gap-4 xl:gap-2"
+                    >
                         {/* Подпись — всегда «Угол» без суффикса «заморожен» (#473):
                             на планшете/десктопе заморозку несёт бейдж рядом с пилюлей
                             (`FreezeBadgeOrNothing`, #472), а более длинный лейбл растил бы
@@ -1079,7 +1133,10 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         />
                         <WindCell wind={wind} windRevealed={windRevealed} />
                     </div>
-                    <div className="flex shrink-0 items-center gap-4 xl:gap-2">
+                    <div
+                        data-testid="top-hud-telemetry-resources"
+                        className="flex shrink-0 items-stretch gap-4 xl:gap-2"
+                    >
                         {/* Планшет/десктоп (#528): та же `CellShell`-карточка (рамка +
                             подложка), что у Угла/Силы/Ветра — раньше снаряды и ходы были
                             единственной парой ячеек без неё. `tight` (без паддинга): на
