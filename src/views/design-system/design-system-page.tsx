@@ -17,6 +17,7 @@ import { PauseSection } from './pause-section';
 import { ScreensSection } from './screens-section';
 import { SkyBackgroundSection } from './sky-background-section';
 import { TankSkinsSection } from './tank-skins-section';
+import { WeaponsSection } from './weapons-section';
 
 const FACTION_OPTIONS: TSegmentedControlOption<TFaction>[] = [
     { value: 'player', label: 'Игрок' },
@@ -464,6 +465,16 @@ export function DesignSystemPage() {
                             Скины танков
                         </SectionHeading>
                         <TankSkinsSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading
+                            number="17"
+                            headline="Снаряды и взрывы четырёх типов — числа WEAPON_SPECS"
+                        >
+                            Оружие боя
+                        </SectionHeading>
+                        <WeaponsSection />
                     </section>
                 </div>
             </main>

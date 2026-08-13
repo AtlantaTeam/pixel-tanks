@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { EWeaponKind } from '@/shared/model';
 import { EMPTY_ARENA_INSETS } from '../lib/arena-insets';
 import { POWER_MAX, POWER_MIN } from '../lib/power';
 import {
@@ -210,7 +211,7 @@ describe('game.store — тост «патроны кончились» (selectS
             selectShowAmmoEmptyToast({
                 turn: 'player',
                 phase: 'aiming',
-                weapons: [{ id: 0, name: 'Снаряд' }],
+                weapons: [{ id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive }],
             }),
         ).toBe(false);
     });
@@ -338,6 +339,99 @@ describe('game.store — статистика боя (выстрелы и поп
         useGameStore.getState().resetGame();
         expect(useGameStore.getState().shotsFired).toBe(0);
         expect(useGameStore.getState().hits).toBe(0);
+    });
+});
+
+describe('game.store — запись типа оружия в реплей (issue #483)', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('recordFire пишет weaponId, когда тип не фугас (weaponId > 0)', () => {
+        useGameStore.getState().recordFire(0.1, 5, 2);
+
+        const [move] = useGameStore.getState().replayMoves;
+        expect(move).toEqual({ kind: 'fire', angle: 0.1, power: 5, weaponId: 2 });
+    });
+
+    it('recordFire не пишет weaponId для фугаса (0) — запись остаётся совместимой', () => {
+        useGameStore.getState().recordFire(0.1, 5, 0);
+
+        const [move] = useGameStore.getState().replayMoves;
+        expect(move).toEqual({ kind: 'fire', angle: 0.1, power: 5 });
+    });
+
+    it('recordFire не пишет weaponId при его отсутствии (старый путь)', () => {
+        useGameStore.getState().recordFire(0.1, 5);
+
+        const [move] = useGameStore.getState().replayMoves;
+        expect(move).toEqual({ kind: 'fire', angle: 0.1, power: 5 });
+    });
+
+    it('recordFire отсекает отрицательный ординал (-1), не пропуская его в кодек', () => {
+        // kind вне WEAPON_KIND_ORDER даёт indexOf === -1; такой weaponId не должен
+        // просочиться в реплей и уронить encodeReplay (assertInRange 0..3) в конце боя.
+        useGameStore.getState().recordFire(0.1, 5, -1);
+
+        const [move] = useGameStore.getState().replayMoves;
+        expect(move).toEqual({ kind: 'fire', angle: 0.1, power: 5 });
+    });
+});
+
+describe('game.store — расход оружия и выбор (issue #483)', () => {
+    const weapon = (id: number, kind: EWeaponKind) => ({
+        id,
+        name: kind,
+        kind,
+    });
+
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    it('выстрел выбранным оружием сохраняет выбор того же типа, если он ещё есть', () => {
+        const cluster0 = weapon(0, EWeaponKind.Cluster);
+        const heavy = weapon(2, EWeaponKind.Heavy);
+        const cluster4 = weapon(4, EWeaponKind.Cluster);
+        useGameStore.getState().setWeapons([cluster0, heavy, cluster4]);
+        useGameStore.getState().selectWeapon(cluster0);
+
+        useGameStore.getState().removeWeaponById(cluster0.id);
+
+        // Выбор остаётся на Кластере (cluster4), а не откатывается к weapons[0] (heavy).
+        expect(useGameStore.getState().selectedWeapon).toEqual(cluster4);
+    });
+
+    it('выстрел последним оружием своего типа откидывает выбор на первый оставшийся', () => {
+        const cluster = weapon(0, EWeaponKind.Cluster);
+        const heavy = weapon(2, EWeaponKind.Heavy);
+        useGameStore.getState().setWeapons([cluster, heavy]);
+        useGameStore.getState().selectWeapon(cluster);
+
+        useGameStore.getState().removeWeaponById(cluster.id);
+
+        expect(useGameStore.getState().selectedWeapon).toEqual(heavy);
+    });
+
+    it('выстрел невыбранным оружием не трогает текущий выбор', () => {
+        const cluster = weapon(0, EWeaponKind.Cluster);
+        const heavy = weapon(2, EWeaponKind.Heavy);
+        useGameStore.getState().setWeapons([cluster, heavy]);
+        useGameStore.getState().selectWeapon(heavy);
+
+        useGameStore.getState().removeWeaponById(cluster.id);
+
+        expect(useGameStore.getState().selectedWeapon).toEqual(heavy);
+    });
+
+    it('расход единственного оружия обнуляет выбор', () => {
+        const cluster = weapon(0, EWeaponKind.Cluster);
+        useGameStore.getState().setWeapons([cluster]);
+        useGameStore.getState().selectWeapon(cluster);
+
+        useGameStore.getState().removeWeaponById(cluster.id);
+
+        expect(useGameStore.getState().selectedWeapon).toBeNull();
     });
 });
 

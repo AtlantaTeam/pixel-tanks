@@ -200,8 +200,11 @@ type TGameActions = {
      * Записывает выстрел игрока в реплей и считает его для статистики конца боя:
      * `shotsFired` по построению равен числу ходов `kind: 'fire'`, поэтому счётчик
      * инкрементится здесь же — один источник истины, рассинхрон невозможен.
+     *
+     * `weaponId` — ординал типа оружия (`WEAPON_KIND_ORDER`, issue #483). Фугас (0)
+     * или отсутствие в реплей не пишется — запись остаётся совместимой со старыми.
      */
-    recordFire: (angle: number, power: number) => void;
+    recordFire: (angle: number, power: number, weaponId?: number) => void;
     /**
      * Публикует фактическую высоту одного оверлея (верхнего HUD или нижней
      * палубы) в инсеты арены. Обновляет ровно одну грань, не трогая соседнюю —
@@ -276,8 +279,16 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     removeWeaponById: (id) =>
         set((s) => {
             const weapons = s.weapons.filter((w) => w.id !== id);
+            const removed = s.selectedWeapon;
+            // Выстрелянное оружие было выбранным — по возможности сохраняем выбор
+            // ТОГО ЖE типа, если он ещё есть в арсенале (неоднородный арсенал #483):
+            // выстрелив осознанно выбранным Кластером, игрок не должен на следующий
+            // ход обнаружить откат выбора к Фугасу. Своего типа не осталось — берём
+            // первый оставшийся, как и раньше.
             const selectedWeapon =
-                s.selectedWeapon?.id === id ? (weapons[0] ?? null) : s.selectedWeapon;
+                removed?.id === id
+                    ? (weapons.find((w) => w.kind === removed.kind) ?? weapons[0] ?? null)
+                    : s.selectedWeapon;
             return { weapons, selectedWeapon };
         }),
     setGameOver: () =>
@@ -338,9 +349,20 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
         set({ battleField: { width, height }, battleInsets: insets }),
     recordMove: (delta) =>
         set((s) => ({ replayMoves: [...s.replayMoves, { kind: 'move', delta }] })),
-    recordFire: (angle, power) =>
+    recordFire: (angle, power, weaponId) =>
         set((s) => ({
-            replayMoves: [...s.replayMoves, { kind: 'fire', angle, power }],
+            replayMoves: [
+                ...s.replayMoves,
+                // Пишем `weaponId` ровно по той же семантике, что и `encodeReplay`
+                // (гейт `weaponId > 0`): фугас (0) и отсутствие типа не пишем —
+                // запись остаётся совместимой со старыми. Явное `> 0` вместо
+                // truthiness ещё и отсекает случайный `-1` (kind вне
+                // `WEAPON_KIND_ORDER`), который иначе как `weaponId:-1` дошёл бы до
+                // кодека и уронил бы `encodeReplay` в конце боя — далеко от причины.
+                weaponId !== undefined && weaponId > 0
+                    ? { kind: 'fire', angle, power, weaponId }
+                    : { kind: 'fire', angle, power },
+            ],
             shotsFired: s.shotsFired + 1,
         })),
     setArenaInset: (edge, height) =>

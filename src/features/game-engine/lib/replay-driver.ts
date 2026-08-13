@@ -1,5 +1,5 @@
 import type { TReplayMove } from '@/entities/replays';
-import type { TWeapon } from '@/shared/model';
+import { WEAPON_KIND_ORDER, type TWeapon } from '@/shared/model';
 
 /**
  * Пауза между ходами игрока при воспроизведении, мс: реплей смотрится
@@ -11,7 +11,8 @@ export const REPLAY_MOVE_DELAY_MS = 700;
 export type TReplayEngine = {
     isReadyForNextMove: () => boolean;
     applyMove: (delta: number) => void;
-    applyFire: (angle: number, power: number) => void;
+    /** `weaponId` — ординал типа оружия (`WEAPON_KIND_ORDER`); undefined → фугас. */
+    applyFire: (angle: number, power: number, weaponId?: number) => void;
 };
 
 /**
@@ -56,14 +57,21 @@ export const createReplayEngineAdapter = (game: TReplayGameSurface): TReplayEngi
         !game.rightTank.dx &&
         !game.rightTank.dy,
     applyMove: (delta) => game.changeTankPosition(delta),
-    applyFire: (angle, power) => {
+    applyFire: (angle, power, weaponId) => {
         const tank = game.leftTank;
         if (!tank) return;
         // Записан только исход прицеливания (angle/power на момент выстрела),
         // поэтому промежуточные движения мыши не нужны — ставим значения напрямую.
         tank.gunpointAngle = angle;
         tank.power = power;
-        const weapon = tank.weapons[0];
+        // Тип оружия по ординалу (issue #483): стреляем первым доступным оружием
+        // ЭТОГО типа. Только тип влияет на физику (кратер/рельеф), конкретный id —
+        // нет, поэтому «первый нужного типа» воспроизводит бой один в один. Нет
+        // такого типа в арсенале (или weaponId отсутствует) → первое оружие (фугас
+        // для старых записей).
+        const kind = weaponId !== undefined ? WEAPON_KIND_ORDER[weaponId] : undefined;
+        const weapon =
+            (kind !== undefined && tank.weapons.find((w) => w.kind === kind)) || tank.weapons[0];
         if (!weapon) return;
         game.onFire(weapon);
     },
@@ -107,7 +115,7 @@ export class ReplayDriver {
         if (move.kind === 'move') {
             this.engine.applyMove(move.delta);
         } else {
-            this.engine.applyFire(move.angle, move.power);
+            this.engine.applyFire(move.angle, move.power, move.weaponId);
         }
         return true;
     }

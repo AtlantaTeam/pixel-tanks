@@ -3,6 +3,7 @@ import { render } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { TGameCanvasHandle } from '@/features/game-engine';
 import { useGameStore } from '@/features/game-engine';
+import { EWeaponKind } from '@/shared/model';
 import { GameControls } from './game-controls';
 
 function renderDeck() {
@@ -17,7 +18,11 @@ function renderDeck() {
 }
 
 function setWeapons(count: number) {
-    const weapons = Array.from({ length: count }, (_, id) => ({ id, name: 'Снаряд' }));
+    const weapons = Array.from({ length: count }, (_, id) => ({
+        id,
+        name: 'Фугас',
+        kind: EWeaponKind.HighExplosive,
+    }));
     useGameStore.setState({
         weapons,
         selectedWeapon: weapons[0] ?? null,

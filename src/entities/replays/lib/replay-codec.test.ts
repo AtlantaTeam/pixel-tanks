@@ -258,4 +258,39 @@ describe('encodeReplay / decodeReplay', () => {
             RangeError,
         );
     });
+
+    // Тип оружия в выстреле (issue #483): round-trip weaponId, совместимость v2/v3.
+    it('восстанавливает тип оружия каждого выстрела (round-trip, v4)', () => {
+        const replay = battle('mixed', [
+            { kind: 'fire', angle: 0.1, power: 10, weaponId: 1 },
+            move(150),
+            { kind: 'fire', angle: -0.2, power: 8, weaponId: 3 },
+            { kind: 'fire', angle: 0.3, power: 12 },
+        ]);
+
+        const decoded = decodeReplay(encodeReplay(replay));
+
+        expect(decoded).toEqual(replay);
+    });
+
+    it('чисто фугасная запись (weaponId 0/отсутствует) остаётся без типа в ходах', () => {
+        const withZero = battle('he', [{ kind: 'fire', angle: 0.5, power: 10, weaponId: 0 }]);
+        const decoded = decodeReplay(encodeReplay(withZero));
+        // weaponId 0 не пишется — декод даёт ход без поля (эквивалент фугаса).
+        expect(decoded?.moves[0]).toEqual({ kind: 'fire', angle: 0.5, power: 10 });
+    });
+
+    it('запись без weaponId (до issue #483) читается как фугас, а не роняет декод', () => {
+        // Старая v2-запись фугасами: у fire-ходов нет weaponId — так и остаётся.
+        const decoded = decodeReplay(encodeReplay(battle('old', [fire(1.1, 10), fire(-0.4, 5)])));
+        expect(decoded?.moves.every((m) => m.kind === 'fire' && m.weaponId === undefined)).toBe(
+            true,
+        );
+    });
+
+    it('бросает RangeError при weaponId вне диапазона типов', () => {
+        expect(() =>
+            encodeReplay(battle('s', [{ kind: 'fire', angle: 1, power: 10, weaponId: 99 }])),
+        ).toThrow(RangeError);
+    });
 });

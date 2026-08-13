@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import type { TReplayMove } from '@/entities/replays';
+import { EWeaponKind } from '@/shared/model';
 import {
     createReplayEngineAdapter,
     ReplayDriver,
@@ -72,7 +73,22 @@ describe('ReplayDriver', () => {
         expect(engine.applyMove).toHaveBeenCalledTimes(1);
         expect(engine.applyMove).toHaveBeenCalledWith(-150);
         expect(engine.applyFire).toHaveBeenCalledTimes(1);
-        expect(engine.applyFire).toHaveBeenCalledWith(-0.75, 12);
+        // Выстрел без weaponId (фугас) — третий аргумент undefined.
+        expect(engine.applyFire).toHaveBeenCalledWith(-0.75, 12, undefined);
+    });
+
+    it('пробрасывает тип оружия выстрела в applyFire (issue #483)', () => {
+        const engine = createEngineMock();
+        const driver = new ReplayDriver(
+            [{ kind: 'fire', angle: 0.5, power: 8, weaponId: 2 }],
+            engine,
+            0,
+        );
+
+        driver.tick(0);
+        driver.tick(1);
+
+        expect(engine.applyFire).toHaveBeenCalledWith(0.5, 8, 2);
     });
 
     it('становится завершённым после последнего хода и перестаёт дёргать движок', () => {
@@ -106,7 +122,11 @@ describe('createReplayEngineAdapter', () => {
             isActive: true,
             dx: 0,
             dy: 0,
-            weapons: [{ id: 0, name: 'Bullet' }],
+            weapons: [
+                { id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive },
+                { id: 2, name: 'Мощный заряд', kind: EWeaponKind.Heavy },
+                { id: 4, name: 'Кластер', kind: EWeaponKind.Cluster },
+            ],
             gunpointAngle: 0,
             power: 10,
         },
@@ -156,6 +176,25 @@ describe('createReplayEngineAdapter', () => {
 
         expect(game.leftTank?.gunpointAngle).toBe(-0.75);
         expect(game.leftTank?.power).toBe(12);
+        expect(game.onFire).toHaveBeenCalledWith(game.leftTank?.weapons[0]);
+    });
+
+    it('стреляет оружием записанного типа (issue #483)', () => {
+        const game = createGameMock();
+        // weaponId 1 = Мощный заряд (WEAPON_KIND_ORDER[1]) — стреляем оружием id 2.
+        createReplayEngineAdapter(game).applyFire(0, 10, 1);
+
+        expect(game.onFire).toHaveBeenCalledWith(
+            game.leftTank?.weapons.find((w) => w.kind === EWeaponKind.Heavy),
+        );
+    });
+
+    it('нет оружия записанного типа — стреляет первым доступным (совместимость)', () => {
+        const game = createGameMock();
+        game.leftTank!.weapons = [{ id: 0, name: 'Фугас', kind: EWeaponKind.HighExplosive }];
+        // weaponId 3 = Роющий, которого в арсенале нет → первое оружие.
+        createReplayEngineAdapter(game).applyFire(0, 10, 3);
+
         expect(game.onFire).toHaveBeenCalledWith(game.leftTank?.weapons[0]);
     });
 

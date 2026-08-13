@@ -1,9 +1,14 @@
 import { render } from '@testing-library/react';
 import { useGameStore } from '@/features/game-engine';
+import { EWeaponKind } from '@/shared/model';
 import { AmmoEmptyToast } from './ammo-empty-toast';
 
 function setWeapons(count: number) {
-    const weapons = Array.from({ length: count }, (_, id) => ({ id, name: 'Снаряд' }));
+    const weapons = Array.from({ length: count }, (_, id) => ({
+        id,
+        name: 'Фугас',
+        kind: EWeaponKind.HighExplosive,
+    }));
     useGameStore.setState({
         weapons,
         selectedWeapon: weapons[0] ?? null,

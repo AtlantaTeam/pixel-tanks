@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
-import { ParticlePool, damageFlashBurst, groundBurst, type TBurstConfig } from './particle-pool';
+import {
+    ParticlePool,
+    damageFlashBurst,
+    groundBurst,
+    groundColumnBurst,
+    type TBurstConfig,
+} from './particle-pool';
+import { WEAPON_SPECS } from './weapon-specs';
+import { PARTICLE_CAPACITY } from './game-play';
+import { WEAPON_KIND_ORDER } from '@/shared/model';
 
 const makeConfig = (over: Partial<TBurstConfig> = {}): TBurstConfig => ({
     x: 100,
@@ -202,5 +211,27 @@ describe('Пресеты залпов', () => {
         const emitted = pool.emitBurst(groundBurst(150, 250, 6));
 
         expect(emitted).toBe(6);
+    });
+});
+
+describe('Бюджет частиц: максимальный залп любого типа + damageFlash ≤ 96 (issue #483)', () => {
+    // `emitBurst` молча обрезает по ёмкости пула (PARTICLE_CAPACITY = 96, а не
+    // DEFAULT_PARTICLE_CAPACITY = 128). Проверяем, что даже патологическое
+    // совмещение — залп земли самого «щедрого» типа И вспышка урона в один
+    // кадр — целиком помещается в реальную ёмкость движка, без обрезки.
+    it('залп земли каждого типа плюс damageFlash не обрезается пулом', () => {
+        for (const kind of WEAPON_KIND_ORDER) {
+            const spec = WEAPON_SPECS[kind];
+            const pool = new ParticlePool(PARTICLE_CAPACITY, createSeededRandom(1));
+            const ground = spec.groundColumn
+                ? groundColumnBurst(100, 100, spec.groundBurstCount)
+                : groundBurst(100, 100, spec.groundBurstCount);
+            const emittedGround = pool.emitBurst(ground);
+            const emittedFlash = pool.emitBurst(damageFlashBurst(100, 100));
+
+            expect(emittedGround).toBe(spec.groundBurstCount);
+            expect(emittedFlash).toBe(damageFlashBurst(100, 100).count);
+            expect(pool.aliveCount()).toBeLessThanOrEqual(PARTICLE_CAPACITY);
+        }
     });
 });

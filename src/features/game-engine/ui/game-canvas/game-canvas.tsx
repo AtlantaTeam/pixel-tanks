@@ -4,7 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { SkyBackground } from '../sky-background';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
-import type { TWeapon } from '@/shared/model';
+import { WEAPON_KIND_ORDER, type TWeapon } from '@/shared/model';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { getStoredTankSkinId, selectTankSkinForSeed } from '@/entities/tank-skins';
 import { selectIsBotTurn, useGameStore } from '../../model/game.store';
@@ -96,11 +96,17 @@ export type TGameCanvasHandle = {
 function commitPlayerShot(
     game: GamePlay,
     weapon: TWeapon,
-    recordFire: (angle: number, power: number) => void,
+    recordFire: (angle: number, power: number, weaponId?: number) => void,
     removeWeaponById: (id: number) => void,
 ) {
     if (!game.leftTank) return;
-    recordFire(game.leftTank.gunpointAngle, game.leftTank.power);
+    // Тип оружия в реплей — ординал по `WEAPON_KIND_ORDER` (issue #483): кратер по
+    // типу меняет рельеф, без записи типа воспроизведение разошлось бы с боем.
+    // Клампим ординал в источнике: `indexOf` вернёт -1 для kind вне порядка (не
+    // должен возникать, но `EWeaponKind` не тотален по построению), а -1 просочился
+    // бы в реплей и уронил бы кодек в конце боя. Неизвестный тип → фугас (0).
+    const weaponOrdinal = Math.max(0, WEAPON_KIND_ORDER.indexOf(weapon.kind));
+    recordFire(game.leftTank.gunpointAngle, game.leftTank.power, weaponOrdinal);
     game.onFire(weapon);
     removeWeaponById(weapon.id);
 }
