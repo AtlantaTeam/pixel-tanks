@@ -18,9 +18,6 @@ type ShFn = (cmd: string, opts?: ExecOpts) => string;
 type ShArgvFn = (file: string, args: string[], opts?: ExecOpts) => string;
 type LogFn = (msg: string) => void;
 
-/** Голова PR приходит из шва; сюда — только для `--match-head-commit`. */
-const SHA40_RE = /^[0-9a-f]{40}$/i;
-
 export type GithubForgeCommandsEnv = {
     sh: ShFn;
     shArgv: ShArgvFn;
@@ -31,6 +28,9 @@ export type GithubForgeCommandsEnv = {
     safeBranch: (branch: string, opts: { logFn: LogFn; where: string }) => boolean;
     /** Фильтр номера PR перед argv: `--flag`-образное значение gh распарсил бы как флаг. */
     prNumberRe: RegExp;
+    /** Проверка sha перед `--match-head-commit`. Инжектится, а не дублируется константой:
+     *  своя копия разошлась бы с ядром по флагам (#55-ревью нашёл расхождение по `i`). */
+    sha40Re: RegExp;
 };
 
 type BlockedLabelOpts = { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn };
@@ -42,7 +42,7 @@ type BlockedLabelOpts = { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn };
  * зелёные без правок ассертов).
  */
 export function createGithubForgeCommands(env: GithubForgeCommandsEnv) {
-    const { sh, shArgv, shq, log, ghJson, safeBranch, prNumberRe } = env;
+    const { sh, shArgv, shq, log, ghJson, safeBranch, prNumberRe, sha40Re } = env;
 
     // Снятие и возврат метки — ЗЕРКАЛЬНЫЕ операции: тот же поиск PR, тот же фильтр номера,
     // тот же anti-injection путь и то же fail-open поведение — различаются лишь gh-флагом и
@@ -65,17 +65,21 @@ export function createGithubForgeCommands(env: GithubForgeCommandsEnv) {
             where: 'addBlockedLabel',
             ghFlag: '--add-label',
             noPr: (branch: string) =>
-                `⚠ addBlockedLabel: открытый PR ветки ${branch} не найден — метку не ставлю.`,
+                `⚠ addBlockedLabel: открытый PR ветки ${branch} не найден — метку не вернул.`,
             badNum: (branch: string, num: string) =>
-                `⚠ addBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не ставлю.`,
+                `⚠ addBlockedLabel: номер PR ветки ${branch} не похож на целое ('${num}') — метку не вернул.`,
             done: (num: string) =>
                 `🏷 Раннер вернул label blocked на PR #${num} — повторное ревью не дало вердикта (#223).`,
             fail: (msg: string) => `⚠ addBlockedLabel не вернул метку: ${msg}`,
         },
     } as const;
 
-    // Идемпотентно и fail-open по метке: не нашли PR / не смогли поставить — метка остаётся
-    // как есть, гейт увидит blocked и уведёт круг разбора дальше (в пределе — к человеку).
+    // Режим отказа РАЗНЫЙ у двух операций, и это часть контракта, а не мелочь формулировки:
+    //  • не смогли СНЯТЬ — метка остаётся, гейт увидит blocked и уведёт круг разбора дальше
+    //    (fail-closed: петля не мерджит непроверенное);
+    //  • не смогли ВЕРНУТЬ — метки нет, и гейт её не увидит (fail-open: косметика не имеет
+    //    права ронять цикл сдачи; страхует сверка раннера, см. `.claude/ralph/CLAUDE.md`).
+    // Обе идемпотентны и не бросают наружу.
     // Имя ветки — только через safeBranch и shq (anti-injection, инв. C3/7). #252: сама
     // мутация (`gh pr edit`) — через argv, не строкой через шелл; чтение (`gh pr list`)
     // остаётся на shFn (не мутация, класс риска закрыт shq — #194); DI — предохранитель #138.
@@ -149,7 +153,7 @@ export function createGithubForgeCommands(env: GithubForgeCommandsEnv) {
         { runArgvFn = shArgv }: { runArgvFn?: ShArgvFn } = {},
     ): void {
         const mergeArgs = ['pr', 'merge', String(prNumber), '--squash', '--delete-branch'];
-        if (SHA40_RE.test(String(headSha))) {
+        if (sha40Re.test(String(headSha))) {
             mergeArgs.push('--match-head-commit', headSha as string);
         }
         runArgvFn('gh', mergeArgs);

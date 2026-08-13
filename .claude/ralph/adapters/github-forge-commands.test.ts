@@ -19,6 +19,7 @@ const makeForge = (over: Partial<Parameters<typeof createGithubForgeCommands>[0]
         ghJson: () => [] as never,
         safeBranch: () => true,
         prNumberRe: PR_NUMBER_RE,
+        sha40Re: /^[0-9a-f]{40}$/i,
         ...over,
     });
 

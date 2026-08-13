@@ -3,11 +3,12 @@
 // extraction'а — модуль самодостаточен и переносим (цель фазы 3), а не «работает только
 // пока его зовёт ralph.js». Проход «через ре-экспорт ralph.js» с боевым контекстом раннера —
 // в orchestrator.test.ts / blocked-scenarios.test.ts / hold-scenarios.test.ts и в блоке в
-// конце этого файла, перенесённом из ralph.test.js при её разнесении по модулям (#366).
+// #55: блок про метку blocked, живший в конце этого файла, уехал в набор адаптера вместе
+// с самими функциями — здесь остался чистый гейт.
 import { describe, it, expect, vi } from 'vitest';
-// @ts-expect-error — JS-entry раннера без деклараций типов; блок в конце файла перенесён
-// из ralph.test.js как есть и ходит через его ре-экспорт (#366).
-import ralph from '../ralph.js';
+// #55: тесты примитивов форжа теперь в `adapters/github-forge-commands.test.ts` и ходят
+// через фабрику адаптера, а не через ре-экспорт ralph.js — потому здесь нет ни импорта
+// entry, ни @ts-expect-error к нему.
 import type { GateEnv } from './gate.ts';
 import { createGateRunner } from './gate.ts';
 
@@ -422,6 +423,11 @@ describe('tryMergePhase — гейт мерджа: hold/blocked/red/merged', () 
         // Третьим аргументом гейт прокидывает свой DI-хук исполнения — примитив обязан
         // ходить через ту же обёртку, что и остальной argv (#193).
         expect(mergePrFn.mock.calls[0].slice(0, 2)).toEqual([9, SHA]);
+        // ...и сам DI-хук исполнения: без этой проверки можно было убрать прокидывание
+        // `{ runArgvFn }` из gate.ts, и тест остался бы зелёным (#55-ревью).
+        expect(mergePrFn.mock.calls[0][2]).toEqual(
+            expect.objectContaining({ runArgvFn: expect.any(Function) }),
+        );
         expect(updateTree).toHaveBeenCalledTimes(1);
     });
 
