@@ -1,9 +1,20 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import type { TTankWheelSpec as TSkinWheelSpec } from '@/entities/tank-skins';
 import { createSeededRandom } from '@/shared/lib/random';
 import type { TWeapon } from '@/shared/model';
 import { Ground } from './ground';
-import { Tank } from './tank';
+import { drawTankWheels, Tank, wheelRotationDelta, type TTankWheelSpec } from './tank';
 import { WORLD_UNITS } from './world-scale';
+
+// Пин структурного совпадения `TTankWheelSpec` движка (`tank.ts`) и реестра
+// скинов (`entities/tank-skins`). `Tank` намеренно НЕ импортирует тип из
+// entities (развязка «движок не знает про скины», docblock в `tank.ts`), но
+// формы обязаны совпадать — `GamePlay` кормит движок `geometry.wheels`. Разъедутся
+// (кто-то добавит поле в одну из копий) — тип-ассерт не скомпилируется в
+// `npm run typecheck`, а не всплывёт молчаливым структурным дрейфом.
+type MutuallyAssignable<A, B> = A extends B ? (B extends A ? true : never) : never;
+const _wheelSpecMatch: MutuallyAssignable<TTankWheelSpec, TSkinWheelSpec> = true;
+void _wheelSpecMatch;
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -149,5 +160,139 @@ describe('Tank — масштаб мира (issue #455)', () => {
         expect(drawImageCalls.length).toBeGreaterThan(0);
         expect(hitArea.rectArgs).not.toBeNull();
         expect(hitArea.rectArgs).toEqual(drawImageCalls[0]);
+    });
+});
+
+describe('wheelRotationDelta — угол поворота катка от пройденного пути (issue #496)', () => {
+    it('качение без проскальзывания: угол = путь / радиус', () => {
+        expect(wheelRotationDelta(20, 10)).toBe(2);
+    });
+
+    it('обратное направление даёт отрицательный угол', () => {
+        expect(wheelRotationDelta(-20, 10)).toBe(-2);
+    });
+
+    it('нулевой/отрицательный радиус не делит на ноль — угол 0', () => {
+        expect(wheelRotationDelta(20, 0)).toBe(0);
+        expect(wheelRotationDelta(20, -5)).toBe(0);
+    });
+});
+
+describe('drawTankWheels — раскладка катков (issue #496)', () => {
+    // ctx-заглушка, записывающая translate (центр катка) и drawImage (радиус).
+    const makeWheelCtx = () => {
+        const translates: number[][] = [];
+        const draws: number[][] = [];
+        const ctx = {
+            save: () => undefined,
+            restore: () => undefined,
+            translate: (x: number, y: number) => translates.push([x, y]),
+            rotate: () => undefined,
+            drawImage: (_img: unknown, x: number, y: number, w: number, h: number) =>
+                draws.push([x, y, w, h]),
+        } as unknown as CanvasRenderingContext2D;
+        return { ctx, translates, draws };
+    };
+
+    const wheelImg = {} as HTMLImageElement;
+    const body = { x: 100, y: 40, width: 60, height: 30 };
+    const wheels: TTankWheelSpec[] = [
+        { cx: 0.25, cy: 0.9, r: 0.1 },
+        { cx: 0.5, cy: 0.9, r: 0.1 },
+        { cx: 0.75, cy: 0.9, r: 0.1 },
+    ];
+
+    it('рисует ровно по одному катку на каждую позицию геометрии', () => {
+        const { ctx, draws } = makeWheelCtx();
+        drawTankWheels(ctx, wheelImg, wheels, body, 0);
+        expect(draws).toHaveLength(wheels.length);
+    });
+
+    it('центр = body + доля (translate), радиус = r*width, спрайт от -r до +r', () => {
+        const { ctx, translates, draws } = makeWheelCtx();
+        drawTankWheels(ctx, wheelImg, wheels, body, 0);
+        wheels.forEach((wheel, i) => {
+            const cx = body.x + wheel.cx * body.width;
+            const cy = body.y + wheel.cy * body.height;
+            const r = wheel.r * body.width;
+            expect(translates[i]).toEqual([cx, cy]);
+            // drawImage рисуется от центра (после translate), поэтому [-r,-r,2r,2r].
+            expect(draws[i]).toEqual([-r, -r, r * 2, r * 2]);
+        });
+    });
+
+    it('без картинки катка ничего не рисует (гард на неподгруженный спрайт)', () => {
+        const { ctx, draws } = makeWheelCtx();
+        drawTankWheels(ctx, undefined, wheels, body, 0);
+        expect(draws).toHaveLength(0);
+    });
+});
+
+describe('Tank — вращение катков (issue #496)', () => {
+    // Один каток в центре тела, радиус — 1/6 ширины корпуса: при tankWidth=60
+    // (scale=1) это 10px, удобное круглое число для проверки угла.
+    const WHEELS: TTankWheelSpec[] = [{ cx: 0.5, cy: 0.9, r: 1 / 6 }];
+
+    const makeMovingTank = (dx: number, wheelRotationEnabled = true) => {
+        const tank = new Tank(
+            200,
+            HEIGHT - 100,
+            WIDTH,
+            HEIGHT,
+            0,
+            [WEAPON],
+            undefined,
+            undefined,
+            1,
+            undefined,
+            WHEELS,
+            wheelRotationEnabled,
+        );
+        tank.dx = dx;
+        return tank;
+    };
+
+    it('на месте (dx=0) катки не крутятся', () => {
+        // move() напрямую здесь не зовём: боевой код вызывает его только когда
+        // `this.dx` истинно (см. `recalcPosition` — `if (this.dx && !this.dy)`),
+        // поэтому проверяем реальный путь простоя, а не голый move() с dx=0.
+        const tank = makeMovingTank(0);
+        const ground = flatGround();
+        const { ctx } = makeRecordingCtx();
+        tank.recalcPosition(ctx, ground);
+        tank.recalcPosition(ctx, ground);
+        expect(tank.wheelRotation).toBe(0);
+    });
+
+    it('скорость вращения пропорциональна пройденному пути, не числу кадров', () => {
+        const tank = makeMovingTank(50);
+        for (let i = 0; i < 5; i++) tank.move();
+        // Каждый вызов move() при dx=50 (шаг 2 < |dx|) продвигает танк на 2px —
+        // за 5 вызовов пройдено 10px. Радиус катка — 10px (60 * 1/6) → угол 1 рад.
+        expect(tank.wheelRotation).toBeCloseTo(1, 6);
+
+        const tankDoubleFrames = makeMovingTank(50);
+        for (let i = 0; i < 10; i++) tankDoubleFrames.move();
+        // В два раза больше вызовов move() при том же шаге — путь и угол тоже
+        // удваиваются: считает путь, а не количество кадров/вызовов.
+        expect(tankDoubleFrames.wheelRotation).toBeCloseTo(2, 6);
+    });
+
+    it('направление вращения совпадает с направлением движения', () => {
+        const right = makeMovingTank(50);
+        const left = makeMovingTank(-50);
+        for (let i = 0; i < 5; i++) {
+            right.move();
+            left.move();
+        }
+        expect(right.wheelRotation).toBeGreaterThan(0);
+        expect(left.wheelRotation).toBeLessThan(0);
+        expect(left.wheelRotation).toBeCloseTo(-right.wheelRotation, 6);
+    });
+
+    it('prefers-reduced-motion (wheelRotationEnabled=false) отключает вращение', () => {
+        const tank = makeMovingTank(50, false);
+        for (let i = 0; i < 5; i++) tank.move();
+        expect(tank.wheelRotation).toBe(0);
     });
 });

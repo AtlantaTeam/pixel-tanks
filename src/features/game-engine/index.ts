@@ -2,6 +2,8 @@ export { GameCanvas } from './ui/game-canvas';
 export type { TGameCanvasHandle } from './ui/game-canvas';
 export { ReplayCanvas } from './ui/replay-canvas';
 export { SkyBackground } from './ui/sky-background';
+export { TankWheelDemo } from './ui/tank-wheel-demo';
+export type { TTankWheelDemoProps } from './ui/tank-wheel-demo';
 export { SKY_PRESETS } from './lib/sky-preset';
 export type { TSkyPreset, TSkyPresetId } from './lib/sky-preset';
 export {

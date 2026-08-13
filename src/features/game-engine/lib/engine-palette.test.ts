@@ -32,4 +32,10 @@ describe('ENGINE_COLORS', () => {
         expect(cssDanger).toBeDefined();
         expect(ENGINE_COLORS.danger).toBe(cssDanger);
     });
+
+    it('зеркалит --color-border-strong из globals.css (линия земли демо витрины, issue #496)', () => {
+        const cssBorderStrong = readCssToken('--color-border-strong');
+        expect(cssBorderStrong).toBeDefined();
+        expect(ENGINE_COLORS.borderStrong).toBe(cssBorderStrong);
+    });
 });

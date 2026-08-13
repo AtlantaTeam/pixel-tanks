@@ -11,6 +11,53 @@ type TGroundUnderTankData = {
     ground: Ground;
 };
 
+/**
+ * Каток — центр и радиус как доля ширины/высоты корпуса (0..1), НЕ пиксели
+ * исходного SVG (issue #496): корпус растягивается в `bodyRect()` под текущий
+ * `scale`, а доля от него не зависит. По форме совпадает с
+ * `TTankGeometry['wheels']` из `entities/tank-skins` — `Tank` намеренно ничего
+ * не знает про скины, геометрию катков ему передаёт вызывающий код (`GamePlay`).
+ */
+export type TTankWheelSpec = { cx: number; cy: number; r: number };
+
+/**
+ * Угол поворота катка (радианы) от пройденного пути при качении без
+ * проскальзывания (длина дуги = путь): `distance / radius`. Чистая функция —
+ * даёт одинаковый счёт и `Tank.move` (бой), и витрине `/design-system`
+ * (issue #496, критерий «скорость вращения пропорциональна пройденному пути»),
+ * чтобы формула не разошлась в двух местах.
+ */
+export function wheelRotationDelta(distance: number, wheelRadiusPx: number): number {
+    return wheelRadiusPx > 0 ? distance / wheelRadiusPx : 0;
+}
+
+/**
+ * Рисует катки поверх корпуса: каждый — вокруг СВОЕГО центра на угол `rotation`
+ * (issue #496), позиция и радиус — доли `body` из `wheel.cx/cy/r`. Чистая
+ * функция (без аллокаций — `save/restore` вокруг `drawImage`, как остальной
+ * рендер движка, правило `canvas.md`), вынесена из `Tank.draw`, чтобы витрина
+ * `/design-system` могла показать вращение тем же кодом, не дублируя трансформ.
+ */
+export function drawTankWheels(
+    ctx: CanvasRenderingContext2D,
+    wheelImg: HTMLImageElement | undefined,
+    wheels: readonly TTankWheelSpec[],
+    body: { x: number; y: number; width: number; height: number },
+    rotation: number,
+): void {
+    if (!wheelImg) return;
+    for (const wheel of wheels) {
+        const cx = body.x + wheel.cx * body.width;
+        const cy = body.y + wheel.cy * body.height;
+        const r = wheel.r * body.width;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(rotation);
+        ctx.drawImage(wheelImg, -r, -r, r * 2, r * 2);
+        ctx.restore();
+    }
+}
+
 export class Tank {
     /**
      * Коэффициент масштаба мира, которым посчитаны все размеры танка (issue #455).
@@ -30,6 +77,12 @@ export class Tank {
     gunpointAngleMax = 2 * Math.PI;
     private tankBodyImg: HTMLImageElement | undefined;
     private gunpointImg: HTMLImageElement | undefined;
+    private wheelImg: HTMLImageElement | undefined;
+    private wheels: readonly TTankWheelSpec[];
+    /** `false` — снимок `prefers-reduced-motion: reduce` на бой (issue #496): катки не крутятся. */
+    private wheelRotationEnabled: boolean;
+    /** Накопленный угол поворота катков (радианы) — растёт с пройденным путём в `move()`. */
+    wheelRotation = 0;
     x: number;
     y: number;
     gunpointX: number;
@@ -61,6 +114,9 @@ export class Tank {
         tankBodyImg?: HTMLImageElement,
         gunpointImg?: HTMLImageElement,
         scale = 1,
+        wheelImg?: HTMLImageElement,
+        wheels: readonly TTankWheelSpec[] = [],
+        wheelRotationEnabled = true,
     ) {
         this.scale = scale;
         this.gunpointDeltaX = WORLD_UNITS.gunpointDeltaX * scale;
@@ -74,6 +130,9 @@ export class Tank {
         this.weapons = weapons;
         this.tankBodyImg = tankBodyImg;
         this.gunpointImg = gunpointImg;
+        this.wheelImg = wheelImg;
+        this.wheels = wheels;
+        this.wheelRotationEnabled = wheelRotationEnabled;
         this.innerWidth = innerWidth;
         this.innerHeight = innerHeight;
         this.x = x;
@@ -135,11 +194,12 @@ export class Tank {
         const step = 2;
         const direction = this.dx > 0 ? 1 : -1;
         if (this.x + this.tankWidth + step < this.innerWidth && this.x - step > 0) {
-            if (Math.abs(this.dx) > step) {
-                this.x += direction * step;
-            } else {
-                this.x += direction * this.dx;
-            }
+            const delta = Math.abs(this.dx) > step ? direction * step : direction * this.dx;
+            this.x += delta;
+            // Катки крутятся по манёвру, не по прыжку/отдаче (issue #496: «при
+            // манёвре») — скорость от фактически пройденного пути этого шага,
+            // не от времени, иначе на паузе (rAF не идёт) они бы «доезжали» сами.
+            this.updateWheelRotation(delta);
             this.dx -= direction * step;
         } else {
             this.dx = 0;
@@ -147,6 +207,17 @@ export class Tank {
         this.gunpointX = this.x + this.gunpointDeltaX;
         this.gunpointY = this.y - this.gunpointDeltaY;
     };
+
+    private updateWheelRotation(distance: number) {
+        if (!this.wheelRotationEnabled || distance === 0 || this.wheels.length === 0) return;
+        // ДОПУЩЕНИЕ: у всех катков геометрии один радиус (сейчас так у classic и
+        // heavy), поэтому берём радиус `wheels[0]` и крутим все катки одним углом
+        // `wheelRotation`. Появится геометрия с РАЗНЫМИ радиусами — угловую
+        // скорость придётся считать по-катково (у меньшего катка она больше), а
+        // `drawTankWheels` — принимать угол на каток, не общий.
+        const wheelRadiusPx = this.wheels[0].r * this.tankWidth;
+        this.wheelRotation += wheelRotationDelta(distance, wheelRadiusPx);
+    }
 
     jump(highestYUnderTank: number) {
         if (this.x + this.tankWidth > this.innerWidth || this.x < 0) {
@@ -294,6 +365,9 @@ export class Tank {
         if (this.tankBodyImg) {
             ctx.drawImage(this.tankBodyImg, body.x, body.y, body.width, body.height);
         }
+        // Под тем же наклонным трансформом корпуса (rotateFigure выше в
+        // recalcPosition), чтобы катки тоже «сидели» на склоне, не только тело.
+        drawTankWheels(ctx, this.wheelImg, this.wheels, body, this.wheelRotation);
         this.tankHitArea = new Path2D();
         this.tankHitArea.rect(body.x, body.y, body.width, body.height);
         this.tankHitAreaCtx = ctx;

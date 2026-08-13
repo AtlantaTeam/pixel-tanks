@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { DailyChallengeLink } from '@/features/daily-challenge';
+import { TankSkinPicker } from '@/features/tank-skin-select';
 import { APP_NAME } from '@/shared/config';
 import { SceneMusic, SoundPrompt } from '@/shared/lib/audio';
 import { buttonClasses } from '@/shared/ui';
@@ -45,6 +46,8 @@ export function MainPage() {
                 выстрел. Стрелки — точная настройка угла/мощности, Ctrl+стрелки — смена оружия /
                 перемещение танка, Enter или Space — выстрел.
             </p>
+
+            <TankSkinPicker />
 
             <div className="flex flex-wrap items-center justify-center gap-2">
                 <Link href="/game" className={buttonClasses('primary', 'md')}>

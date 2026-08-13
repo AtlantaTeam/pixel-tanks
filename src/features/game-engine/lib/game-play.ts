@@ -5,6 +5,13 @@ import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
 import { pickBotReply, resolveBotReplyCategory, type TBotReply } from '@/entities/bot-messages';
 import {
+    DEFAULT_TANK_SKIN_ID,
+    getTankSkinById,
+    loadTankSkinImages,
+    type TTankSkinId,
+    type TTankSkinImages,
+} from '@/entities/tank-skins';
+import {
     computeArenaZone,
     EMPTY_ARENA_INSETS,
     type TArenaInsets,
@@ -116,13 +123,20 @@ export type TGamePlayOptions = {
      * воспроизводится один в один на любом устройстве.
      */
     fixedLogicalSize?: { width: number; height: number };
+    /**
+     * Скины танков (issue #481) — чисто отрисовочный выбор, на боевые параметры
+     * не влияет (см. `tank-skin-parity.test.ts`). Левый — игрок (его выбор из
+     * настроек), правый — бот (детерминированно от сида боя и палитры игрока,
+     * `selectTankSkinForSeed`: палитра соперника всегда отлична от палитры игрока
+     * ради цветового контраста «свой/чужой»).
+     * Не заданы → `DEFAULT_TANK_SKIN_ID` для обоих (совместимость с прежним
+     * поведением/тестами, которые GamePlay без скинов не создавали).
+     */
+    leftSkinId?: TTankSkinId;
+    rightSkinId?: TTankSkinId;
 };
 
 const GAME_ASSET_PATHS = {
-    leftTank: '/game/left-tank.svg',
-    rightTank: '/game/right-tank.svg',
-    leftGunpoint: '/game/gunpoint.svg',
-    rightGunpoint: '/game/gunpoint.svg',
     sand: '/game/sand.jpg',
 };
 
@@ -183,6 +197,14 @@ export class GamePlay {
     private random: TSeededRandom;
     /** Режим воспроизведения: физика идёт в этом фиксированном размере. */
     private readonly fixedLogicalSize?: { width: number; height: number };
+    // Скины танков (issue #481) — только отрисовка, `Tank` не знает о них вовсе
+    // (принимает готовые `HTMLImageElement`). Картинки грузятся/кэшируются
+    // отдельно от `GamePlay.images` (там только общий для всех боёв `sand`),
+    // потому что скин выбирается за бой, а не глобально для всего приложения.
+    private readonly leftSkinId: TTankSkinId;
+    private readonly rightSkinId: TTankSkinId;
+    private leftSkinImages: TTankSkinImages | undefined;
+    private rightSkinImages: TTankSkinImages | undefined;
     // Кто стрелял последним: isActive у обоих танков уже false к моменту разрешения
     // выстрела бота (см. animate — rightTank.isActive гасится до botFire), поэтому
     // для определения самострела/адресата реплики шутер фиксируется явно в fire().
@@ -234,6 +256,8 @@ export class GamePlay {
     ) {
         this.random = random;
         this.fixedLogicalSize = options?.fixedLogicalSize;
+        this.leftSkinId = options?.leftSkinId ?? DEFAULT_TANK_SKIN_ID;
+        this.rightSkinId = options?.rightSkinId ?? DEFAULT_TANK_SKIN_ID;
         // Косметика (частицы, тряска) — на ОТДЕЛЬНОМ потоке random: CameraShake
         // берёт значения каждый кадр тряски, а число кадров зависит от FPS.
         // На общем потоке это недетерминированно сдвигало бы выборки бота
@@ -414,19 +438,26 @@ export class GamePlay {
             this.animate();
             return;
         }
-        const entries = Object.entries(GAME_ASSET_PATHS);
-        let loaded = 0;
-        entries.forEach(([name, src]) => {
-            const img = new Image();
-            img.onload = () => {
-                loaded += 1;
-                if (loaded === entries.length) {
-                    this.isImagesLoaded = true;
-                    this.initPaint();
-                }
-            };
-            img.src = src;
-            GamePlay.images[name] = img;
+        const sandImg = new Image();
+        const sandLoaded = new Promise<void>((resolve) => {
+            sandImg.onload = () => resolve();
+            sandImg.onerror = () => resolve();
+        });
+        sandImg.src = GAME_ASSET_PATHS.sand;
+        GamePlay.images.sand = sandImg;
+
+        // Скины (issue #481) грузятся/кэшируются отдельно от `GamePlay.images`
+        // (см. `tank-skin-image-cache.ts`) — кэш общий на всё приложение по
+        // skinId, повторный бой с тем же скином не пересобирает Image.
+        void Promise.all([
+            sandLoaded,
+            loadTankSkinImages(this.leftSkinId),
+            loadTankSkinImages(this.rightSkinId),
+        ]).then(([, leftSkinImages, rightSkinImages]) => {
+            this.leftSkinImages = leftSkinImages;
+            this.rightSkinImages = rightSkinImages;
+            this.isImagesLoaded = true;
+            this.initPaint();
         });
     };
 
@@ -560,7 +591,7 @@ export class GamePlay {
             height: this.innerHeight,
             insets: this.arenaInsets,
         });
-        const { leftTank, leftGunpoint, sand, rightTank, rightGunpoint } = GamePlay.images;
+        const { sand } = GamePlay.images;
         const { leftTankWeapons, rightTankWeapons } = this.allWeapons;
         this.ground = new Ground(
             this.innerWidth,
@@ -577,6 +608,12 @@ export class GamePlay {
         const worldScale = computeWorldScale(this.innerWidth);
         const leftTankX = floor(this.innerWidth / 4);
         const leftTankY = this.innerHeight - this.ground.heights[leftTankX];
+        // Геометрия катков (позиции/радиус) — из реестра скинов по id, картинка
+        // катка — из уже загруженного `skinImages.wheel` (issue #496). Скин
+        // косметика: сама геометрия катков на боевые поля Tank не влияет
+        // (см. tank-skin-parity.test.ts).
+        const leftWheels = getTankSkinById(this.leftSkinId).geometry.wheels;
+        const rightWheels = getTankSkinById(this.rightSkinId).geometry.wheels;
         this.leftTank = new Tank(
             leftTankX,
             leftTankY,
@@ -584,9 +621,12 @@ export class GamePlay {
             this.innerHeight,
             0,
             leftTankWeapons,
-            leftTank,
-            leftGunpoint,
+            this.leftSkinImages?.hull,
+            this.leftSkinImages?.barrel,
             worldScale,
+            this.leftSkinImages?.wheel,
+            leftWheels,
+            !this.reducedMotion,
         );
         this.leftTank.isActive = true;
         // Игрок всегда ходит первым (см. §GDD) — HUD узнаёт об этом здесь же,
@@ -595,6 +635,12 @@ export class GamePlay {
 
         const rightTankX = floor((this.innerWidth * 3) / 4);
         const rightTankY = this.innerHeight - this.ground.heights[rightTankX];
+        // Правый танк рисуется тем же НЕ-зеркальным корпусом, что и левый:
+        // прежний `right-tank.svg` разворачивался `scale(-1,1)` навстречу игроку,
+        // но текущие геометрии (classic/heavy) симметричны, так что «повёрнутость
+        // навстречу» не читалась. Зеркалирование убрано СОЗНАТЕЛЬНО (issue #481).
+        // Появится асимметричный силуэт — правый корпус/ствол придётся снова
+        // отражать здесь по вертикальной оси, иначе он молча поедет «не туда».
         this.rightTank = new Tank(
             rightTankX,
             rightTankY,
@@ -602,9 +648,12 @@ export class GamePlay {
             this.innerHeight,
             Math.PI,
             rightTankWeapons,
-            rightTank,
-            rightGunpoint,
+            this.rightSkinImages?.hull,
+            this.rightSkinImages?.barrel,
             worldScale,
+            this.rightSkinImages?.wheel,
+            rightWheels,
+            !this.reducedMotion,
         );
         if (this.ctx) {
             this.ground.draw(this.ctx);
