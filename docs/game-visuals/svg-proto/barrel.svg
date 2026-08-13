@@ -1,0 +1,8 @@
+<svg width="90" height="18" viewBox="0 0 90 18" xmlns="http://www.w3.org/2000/svg">
+  <!-- Точка вращения — левый край (0,9): ствол крутится вокруг основания. -->
+  <g fill="var(--tank-body, #2fae3f)" stroke="var(--tank-edge, #14361a)" stroke-width="3" stroke-linejoin="round">
+    <rect x="2" y="4" width="14" height="10" rx="2"/>
+    <rect x="16" y="6" width="58" height="6"/>
+    <rect x="74" y="3" width="12" height="12" rx="2"/>
+  </g>
+</svg>

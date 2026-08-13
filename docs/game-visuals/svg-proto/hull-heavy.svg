@@ -1,0 +1,33 @@
+<svg width="200" height="104" viewBox="0 0 200 104" xmlns="http://www.w3.org/2000/svg">
+  <!-- Цвета — переменные: одна и та же геометрия красится под фракцию или скин. -->
+  <g class="tank" fill="var(--tank-body, #2fae3f)" stroke="var(--tank-edge, #14361a)" stroke-width="3" stroke-linejoin="round">
+    <!-- корпус: ступенчатый, чтобы не спорить с пиксельной заставкой -->
+    <path d="M12 56 h20 v-10 h30 v-8 h56 v8 h30 v10 h20 v18 h-8 v6 H20 v-6 h-8 z"/>
+    <!-- башня -->
+    <path d="M74 38 h12 v-10 h28 v10 h12 v10 H74 z"/>
+    <!-- надгусеничные полки -->
+    <rect x="16" y="70" width="168" height="8"/>
+  </g>
+  <!-- гусеница -->
+  <g fill="var(--tank-track, #1c2b1f)" stroke="var(--tank-edge, #14361a)" stroke-width="3">
+    <rect x="14" y="78" width="172" height="16" rx="8"/>
+  </g>
+  <!-- катки: отдельные элементы — их можно вращать при движении -->
+  <g class="wheels" fill="var(--tank-wheel, #4a6b4f)" stroke="var(--tank-edge, #14361a)" stroke-width="2">
+    <circle class="wheel" cx="34" cy="86" r="7"/>
+    <circle class="wheel" cx="60" cy="86" r="7"/>
+    <circle class="wheel" cx="86" cy="86" r="7"/>
+    <circle class="wheel" cx="112" cy="86" r="7"/>
+    <circle class="wheel" cx="138" cy="86" r="7"/>
+    <circle class="wheel" cx="164" cy="86" r="7"/>
+  </g>
+  <!-- спицы: видно вращение катков -->
+  <g class="spokes" stroke="var(--tank-edge, #14361a)" stroke-width="2">
+    <path d="M34 80 v12 M28 86 h12"/>
+    <path d="M60 80 v12 M54 86 h12"/>
+    <path d="M86 80 v12 M80 86 h12"/>
+    <path d="M112 80 v12 M106 86 h12"/>
+    <path d="M138 80 v12 M132 86 h12"/>
+    <path d="M164 80 v12 M158 86 h12"/>
+  </g>
+</svg>
