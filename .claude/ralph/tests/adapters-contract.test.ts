@@ -368,6 +368,7 @@ function buildRealTaskSource(): { adapter: TaskSourceAdapter; gateEnv: GateEnv }
         ghJson: gateEnv.ghJson,
         safeBranch: gateEnv.safeBranch,
         prNumberRe: gateEnv.PR_NUMBER_RE,
+        sha40Re: gateEnv.SHA40_RE,
     });
 
     let allOpenThrows = false;
@@ -1094,17 +1095,6 @@ function buildRealGate(passing: Set<string>): GateAdapter {
         },
     });
     const g = createGateRunner(gateEnv);
-    // #55: примитивы форжа больше не живут в гейте — контракт собирается из их адаптера,
-    // а env берём тот же, что у гейта (одни и те же sh/ghJson/логи в этом сценарии).
-    const forge = createGithubForgeCommands({
-        sh: gateEnv.sh,
-        shArgv: gateEnv.shArgv,
-        shq: gateEnv.shq,
-        log: gateEnv.log,
-        ghJson: gateEnv.ghJson,
-        safeBranch: gateEnv.safeBranch,
-        prNumberRe: gateEnv.PR_NUMBER_RE,
-    });
     function runChecks(branch: string, prNumber: number): GateCheckResult {
         const green = g.checksGreen(branch, prNumber, { checks: g.gateChecksFor() });
         if (green) return { green: true, verifiedHead: g.getVerifiedHead(), redCheck: null };

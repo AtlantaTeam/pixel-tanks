@@ -2520,9 +2520,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
     const SHA40_RE = /^[0-9a-f]{40}$/;
 
     // #362 (фаза 3): исполнение гейта мерджа фазы — последовательность шагов (checksGreen +
-    // состав чеков через gateChecksFor), логика перехода в blocked/hold (tryMergePhase) и
-    // детерминированные помощники метки blocked (removeBlockedLabel/addBlockedLabel разбора
-    // #217/#223), а также проверка «фаза уже смерджена» (phaseMerged/mergedPhasePr) — gate.ts.
+    // состав чеков через gateChecksFor) и логика перехода в blocked/hold (tryMergePhase) —
+    // живёт в core/gate.ts. Примитивы форжа (метка blocked разбора #217/#223, мердж PR,
+    // проверка «фаза уже смерджена») с #55 живут в adapters/github-forge-commands.ts и
+    // приходят гейту инъекцией.
     // Фабрика захватывает контекст оркестратора (sh/shArgv/shq/log/ghJson, хореографию
     // findOpenPr/ensureClean/park/обновление дерева, санацию env чеков, sleep, DRY, regex'ы)
     // один раз; возвращённые функции сохраняют показательную DI. Состав шагов приезжает из
@@ -2543,6 +2544,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
             ghJson,
             safeBranch,
             prNumberRe: PR_NUMBER_RE,
+            sha40Re: SHA40_RE,
         });
 
     const {
