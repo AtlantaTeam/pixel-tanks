@@ -490,11 +490,32 @@ export function createGateRunner(env: GateEnv) {
             localHead = shFn(`git rev-parse --verify --quiet ${shq('refs/heads/' + branch)}`);
         } catch {}
         if (localHead && localHead !== remoteHead) {
-            logFn(
-                `⛔ Локальная ветка ${branch} (${localHead.slice(0, 8)}) != голова PR #${prNumber} (${remoteHead.slice(0, 8)}) — в main уехал бы не тот код, что лежит локально. Синхронизируй ветку (push/pull) и перезапусти.`,
-            );
-            parkFn();
-            return false;
+            // #466: расхождение бывает двух разных смыслов, а раньше они были схлопнуты
+            // в одно сообщение. Отставший ref (localHead — предок головы PR) — не
+            // конфликт: так выглядит ветка после того, как человек допушил в неё
+            // (например, влил main ради внешнего красного чека). Терять тут нечего,
+            // ff-подтяжка безопасна по построению.
+            let refIsBehind = false;
+            try {
+                runArgvFn('git', ['merge-base', '--is-ancestor', localHead, remoteHead]);
+                refIsBehind = true;
+            } catch {}
+            if (refIsBehind) {
+                runArgvFn('git', ['update-ref', `refs/heads/${branch}`, remoteHead]);
+                logFn(
+                    `↪ Локальный ref ${branch} отстал от головы PR #${prNumber} (${localHead.slice(0, 8)} → ${remoteHead.slice(0, 8)}) — подтянут fast-forward, работа не теряется.`,
+                );
+            } else {
+                // Настоящее ветвление: локально есть коммиты, которых нет в PR. Здесь
+                // нужен человек — но подсказка обязана быть выполнимой. Дерево раннера
+                // detached, а ref общий для всех worktree, поэтому ни push, ни pull не
+                // помогают: лечится только принудительным переводом ref.
+                logFn(
+                    `⛔ Локальный ref ${branch} (${localHead.slice(0, 8)}) разошёлся с головой PR #${prNumber} (${remoteHead.slice(0, 8)}): локально есть коммиты, которых нет в PR — в main уехал бы не тот код. Разбери руками, затем: git branch -f ${branch} origin/${branch}`,
+                );
+                parkFn();
+                return false;
+            }
         }
         try {
             runArgvFn('git', ['checkout', '--detach', remoteHead]);
