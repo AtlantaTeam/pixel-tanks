@@ -622,6 +622,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 высотами HUD/деки). */}
             <div
                 ref={zoneRef}
+                data-testid="gesture-zone"
                 aria-hidden
                 className={`pointer-events-none absolute ${GESTURE_ZONE_INSET}`}
             />
