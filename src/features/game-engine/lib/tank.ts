@@ -1,8 +1,10 @@
 import { floor, rotateFigure, rotateFigureByAngle, transformPoint } from '@/shared/lib/canvas';
 import type { TCoords, TWeapon } from '@/shared/model';
+import { ENGINE_COLORS } from './engine-palette';
 import { Ground } from './ground';
 import { POWER_MAX, POWER_MIN } from './power';
 import type { TLightDirection } from './scene-light';
+import { WIND_FLAG_HEIGHT, WIND_FLAG_POLE_HEIGHT, WIND_FLAG_WIDTH } from './wind-flag';
 import { WORLD_UNITS } from './world-scale';
 
 /**
@@ -120,6 +122,13 @@ export class Tank {
      * тени нет (тесты/реплей без сида, день до светила).
      */
     shadow: TTankShadow = null;
+    /**
+     * Угол поворота флажка ветра на мачте (радианы, `windFlagRotationRad`) — «дешёвый
+     * носитель» ветра рядом с ареной (#550). Ставит `GamePlay` только на свой танк
+     * (`leftTank`), пересчитывая при каждой смене `this.wind`. `null` (дефолт, чужой
+     * танк) — флажок не рисуется.
+     */
+    windFlagRotationRad: number | null = null;
 
     constructor(
         x: number,
@@ -404,6 +413,44 @@ export class Tank {
         ctx.restore();
     }
 
+    /**
+     * Якорь мачты (верх, у заднего края корпуса — не мешает стволу) в МИРОВЫХ
+     * координатах: тот же приём, что `recalcPosition` уже применяет к
+     * `gunpointX/Y` — локальная точка корпуса переносится наклонным трансформом
+     * склона (`this.currentTransformer`, `transformPoint`) без ctx.getTransform()
+     * (комментарий `rotate-figure.ts`: он вернул бы dpr-загрязнённую матрицу).
+     * Без трансформера (танк в воздухе/тесты без сида) — точка как есть.
+     */
+    private windFlagAnchor(): TCoords {
+        const local = {
+            x: this.x + this.tankWidth * 0.35,
+            y: this.y - this.tankHeight - WIND_FLAG_POLE_HEIGHT * this.scale,
+        };
+        return this.currentTransformer ? transformPoint(local, this.currentTransformer) : local;
+    }
+
+    /**
+     * Флажок ветра на мачте (#550): рисуется в мировых координатах (как ствол —
+     * `gunpointX/Y`), не под наклонным трансформом склона — иначе тилт танка на
+     * дюне складывался бы с наклоном от ветра и направление читалось бы неверно.
+     * Наклон вокруг вершины мачты — чисто `windFlagRotationRad`.
+     */
+    private drawWindFlag(ctx: CanvasRenderingContext2D) {
+        if (this.windFlagRotationRad === null) return;
+        const { x: poleTopX, y: poleTopY } = this.windFlagAnchor();
+        const poleHeight = WIND_FLAG_POLE_HEIGHT * this.scale;
+        const flagLength = WIND_FLAG_HEIGHT * this.scale;
+        const flagThickness = WIND_FLAG_WIDTH * this.scale;
+        ctx.save();
+        ctx.fillStyle = ENGINE_COLORS.borderStrong;
+        ctx.fillRect(poleTopX, poleTopY, Math.max(1, this.scale), poleHeight);
+        ctx.translate(poleTopX, poleTopY);
+        ctx.rotate(this.windFlagRotationRad);
+        ctx.fillStyle = ENGINE_COLORS.accent;
+        ctx.fillRect(0, -flagThickness / 2, flagLength, flagThickness);
+        ctx.restore();
+    }
+
     draw(ctx: CanvasRenderingContext2D, mousePos: TCoords | null, ground: Ground) {
         this.drawShadow(ctx, ground);
         this.recalcPosition(ctx, ground);
@@ -418,6 +465,8 @@ export class Tank {
         this.tankHitArea.rect(body.x, body.y, body.width, body.height);
         this.tankHitAreaCtx = ctx;
         ctx.restore();
+        // Мировые координаты (наклон склона уже снят restore()) — как ствол ниже.
+        this.drawWindFlag(ctx);
 
         if (mousePos && this.isActive) {
             const { x, y } = mousePos;

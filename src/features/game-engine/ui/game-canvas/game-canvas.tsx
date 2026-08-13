@@ -3,6 +3,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { SkyBackground } from '../sky-background';
 import { PrecipitationLayer } from '../precipitation-layer';
+import { WindDustLayer } from '../wind-dust-layer';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import { POWER_MAX } from '@/shared/config';
@@ -705,6 +706,9 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     fireSelectedWeapon();
                 }}
             />
+            {/* Ветровые пылинки приземного слоя (#550): «дешёвый носитель» ветра рядом с
+                ареной, не только цифра в HUD. Под осадками — дождь/снег ложится поверх. */}
+            <WindDustLayer seed={battleSeed} wind={wind} className="absolute inset-0" />
             {/* Осадки как погодный пресет (#546): слой над ареной, но под UI-оверлеями
                 (жест, чип, бабл). Гаснут при активной оттяжке — тем же сигналом
                 `gestureVisual !== null`, что и чат-бабл (#527). При reduced-motion слой

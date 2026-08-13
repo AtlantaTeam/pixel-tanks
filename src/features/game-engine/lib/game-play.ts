@@ -21,6 +21,7 @@ import { Ground } from './ground';
 import { Tank, TANK_SHADOW_COLOR } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
+import { windFlagRotationRad } from './wind-flag';
 import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
 import { formatAngle } from './format-angle';
 import { ParticlePool, damageFlashBurst, groundBurst, groundColumnBurst } from './particle-pool';
@@ -742,6 +743,9 @@ export class GamePlay {
             !this.reducedMotion,
         );
         this.leftTank.isActive = true;
+        // Флажок ветра (#550) — только на своём танке (leftTank), сразу с боевым
+        // ветром: он уже посчитан выше (applyWindModifier(generateWind(...))).
+        this.leftTank.windFlagRotationRad = windFlagRotationRad(this.wind);
         // Игрок всегда ходит первым (см. §GDD) — HUD узнаёт об этом здесь же,
         // не дожидаясь первой передачи хода через changeActiveTank.
         this.callbacks.onTurnChange?.('player');
@@ -1115,6 +1119,11 @@ export class GamePlay {
         this.stormWindShifted = true;
         this.wind = this.stormWind;
         this.callbacks.onWindChange?.(this.wind);
+        // Флажок ветра (#550) следует за сменой — иначе после бури он бы показывал
+        // старое направление, разойдясь с ячейкой «Ветер» и HUD-плашкой смены.
+        if (this.leftTank) {
+            this.leftTank.windFlagRotationRad = windFlagRotationRad(this.wind);
+        }
     }
 
     /**
