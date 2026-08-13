@@ -232,6 +232,64 @@ describe('TopHud', () => {
         expect(desktop.queryByRole('button', { name: 'Сила больше' })).not.toBeInTheDocument();
     });
 
+    // #473 — геометрия десктопного состава панели не зависит от значений: ячейки
+    // и HP-карточки не «ездят» при смене угла/силы/HP/ветра (планшет/десктоп).
+
+    it('десктоп: ширина ячейки угла зарезервирована под 360° при любом значении (#473)', () => {
+        const cases = [0, -(40 * Math.PI) / 180, -(179 * Math.PI) / 180];
+        for (const angle of cases) {
+            useGameStore.setState({ angle, turn: 'player' });
+            const { getByTestId, unmount } = render(<TopHud />);
+            const desktop = within(getByTestId('top-hud-desktop'));
+
+            // Невидимый размерник «360°» держит ширину бокса значения неизменной —
+            // как `FixedNumeric` на мобилке. `aria-hidden`-селектор отсекает реальное
+            // значение (при угле 0° оно тоже «360°», formatAngle(0) === 360).
+            const sizer = desktop.getByText('360°', { selector: '[aria-hidden="true"]' });
+            expect(sizer).toBeInTheDocument();
+            unmount();
+        }
+    });
+
+    it('десктоп: ширина ячейки силы зарезервирована под потолок POWER_MAX при любом значении (#473)', () => {
+        for (const power of [1, 9, POWER_MAX]) {
+            useGameStore.setState({ power, turn: 'player' });
+            const { getByTestId, unmount } = render(<TopHud />);
+            const desktop = within(getByTestId('top-hud-desktop'));
+
+            const sizer = desktop.getByText(String(POWER_MAX), {
+                selector: '[aria-hidden="true"]',
+            });
+            expect(sizer).toBeInTheDocument();
+            unmount();
+        }
+    });
+
+    it('десктоп: бокс ветра фиксирован под ряд пипов в обоих состояниях (пипы ↔ раскрытое число) (#473)', () => {
+        // Пипы шире одиночной цифры — без резерва ячейка сужается при раскрытии.
+        // Невидимый ряд пипов (aria-hidden) держит ширину в обоих состояниях.
+        for (const windRevealed of [false, true]) {
+            useGameStore.setState({ wind: MAX_WIND, windRevealed });
+            const { getByTestId, unmount } = render(<TopHud />);
+            const desktop = getByTestId('top-hud-desktop');
+
+            const sizerPip = desktop.querySelector('[aria-hidden="true"] [data-testid="pip"]');
+            expect(sizerPip).not.toBeNull();
+            unmount();
+        }
+    });
+
+    it('десктоп: подпись угла — «Угол» без «заморожен» на ходе бота (заморозку несёт бейдж) (#473)', () => {
+        useGameStore.setState({ turn: 'enemy' });
+        const { getByTestId } = render(<TopHud />);
+        const desktop = within(getByTestId('top-hud-desktop'));
+
+        expect(desktop.getByText('Угол')).toBeInTheDocument();
+        expect(desktop.queryByText('Угол · заморожен')).not.toBeInTheDocument();
+        // Заморозку на десктопе показывает бейдж рядом с пилюлей (#472).
+        expect(desktop.getByTestId('freeze-badge')).toHaveAttribute('role', 'status');
+    });
+
     // #447 — геометрия HUD не зависит ни от фазы боя, ни от значений.
 
     it('заметку о заморозке выводит из потока — absolute-оверлеем, не рядом (высота не растёт)', () => {

@@ -1,5 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
-import { expectGameOverDialog, fireOne, reachFlightPhase, weaponCount } from './helpers';
+import {
+    expectGameOverDialog,
+    fireOne,
+    reachBotTurn,
+    reachFlightPhase,
+    weaponCount,
+} from './helpers';
 
 /**
  * #447/#449 — геометрия верхнего HUD не зависит ни от фазы боя, ни от значений.
@@ -304,3 +310,118 @@ test.describe('Ширина ячеек и координаты кнопок ± �
         }
     });
 });
+
+// #473 — тот же вердикт «геометрия не ездит от значений», но для ДЕСКТОПНОГО
+// состава панели (≥768 — иной состав, один ряд 78px на xl). #447/#449 явно вывели
+// 1280/1920 из скоупа («другой состав панели, вне скоупа»); здесь достраиваем
+// барьер: ширина и X каждой ячейки телеметрии и HP-карточек неизменны при любом
+// угле/силе/HP/ветре — 0 px. Мерим и координаты, потому что источник бага —
+// каскад через `flex-1` HP-блока: смена ширины телеметрии справа двигала HP
+// влево, не меняя его собственной ширины на первых семплах.
+
+type TCellBox = { x: number; width: number };
+type TDesktopGeometry = { telemetry: TCellBox[]; hp: TCellBox[] };
+
+/** Снимок геометрии десктопной панели: {x, ширина} каждой ячейки телеметрии
+ *  (прямые дети ряда `top-hud-telemetry-desktop`) и каждого HP-бара (прокси
+ *  положения/ширины HP-карточки — трек `w-full`, двигается и тянется вместе с
+ *  ней). `getByRole('progressbar')` внутри десктопного блока отдаёт ровно два
+ *  видимых бара: мобильный дубль скрыт `md:hidden` (display:none — вне a11y-дерева). */
+async function desktopGeometry(page: Page): Promise<TDesktopGeometry> {
+    const cells = page.getByTestId('top-hud-telemetry-desktop').locator(':scope > div');
+    const cellCount = await cells.count();
+    const telemetry: TCellBox[] = [];
+    for (let i = 0; i < cellCount; i++) {
+        const box = await cells.nth(i).boundingBox();
+        if (!box) throw new Error(`ячейка телеметрии #${i} не найдена`);
+        telemetry.push({ x: box.x, width: box.width });
+    }
+
+    const bars = page.getByTestId('top-hud-desktop').getByRole('progressbar');
+    const barCount = await bars.count();
+    const hp: TCellBox[] = [];
+    for (let i = 0; i < barCount; i++) {
+        const box = await bars.nth(i).boundingBox();
+        if (!box) throw new Error(`HP-бар #${i} не найден`);
+        hp.push({ x: box.x, width: box.width });
+    }
+
+    return { telemetry, hp };
+}
+
+// 1280 и 1920 — оба в критериях #473 (те же цифры). Высота полосы xl — 78px.
+const DESKTOP_VIEWPORTS = [
+    { name: 'desktop-1280', width: 1280, height: 800 },
+    { name: 'wide-1920', width: 1920, height: 1080 },
+];
+
+for (const viewport of DESKTOP_VIEWPORTS) {
+    test.describe(`Геометрия десктопной панели неизменна от значений — ${viewport.name} (#473)`, () => {
+        test.use({ viewport: { width: viewport.width, height: viewport.height } });
+
+        test('ширина и X ячеек телеметрии и HP-карточек не зависят от угла/силы/HP/ветра (0 px)', async ({
+            page,
+        }) => {
+            test.setTimeout(120_000);
+            await page.goto('/game?seed=42');
+            await expect(page.getByTestId('game-hud')).toBeVisible();
+            await expect.poll(() => weaponCount(page)).toBeGreaterThan(0);
+
+            const samples: Array<{ label: string; geo: TDesktopGeometry }> = [];
+            samples.push({ label: 'старт (угол 360°, сила 10)', geo: await desktopGeometry(page) });
+
+            // Угол через смену числа знаков (1°…3 знака) — ArrowLeft крутит ствол.
+            for (let i = 0; i < 120; i++) await page.keyboard.press('ArrowLeft');
+            samples.push({ label: 'после смены угла', geo: await desktopGeometry(page) });
+
+            // Сила вниз к одному знаку, затем на потолок POWER_MAX (два знака).
+            for (let i = 0; i < 9; i++) await page.keyboard.press('ArrowDown');
+            samples.push({ label: 'сила один знак', geo: await desktopGeometry(page) });
+            for (let i = 0; i < 25; i++) await page.keyboard.press('ArrowUp');
+            samples.push({ label: 'сила на потолке POWER_MAX', geo: await desktopGeometry(page) });
+
+            // Раскрываем ветер и уводим ход боту: телеметрия гаснет (opacity-60),
+            // появляется бейдж «Заморожено», собственный выстрел мог задеть HP
+            // соперника — геометрия обязана остаться прежней до пикселя.
+            await reachBotTurn(page);
+            samples.push({
+                label: 'ход соперника (ветер раскрыт, бейдж заморозки)',
+                geo: await desktopGeometry(page),
+            });
+
+            const baseline = samples[0].geo;
+            for (const { label, geo } of samples) {
+                expect(geo.telemetry.length, `${label}: число ячеек телеметрии`).toBe(
+                    baseline.telemetry.length,
+                );
+                geo.telemetry.forEach((cell, i) => {
+                    expect(Math.round(cell.x), `${label}: ячейка телеметрии #${i} X`).toBe(
+                        Math.round(baseline.telemetry[i].x),
+                    );
+                    expect(Math.round(cell.width), `${label}: ячейка телеметрии #${i} ширина`).toBe(
+                        Math.round(baseline.telemetry[i].width),
+                    );
+                });
+                geo.hp.forEach((card, i) => {
+                    expect(Math.round(card.x), `${label}: HP-карточка #${i} X`).toBe(
+                        Math.round(baseline.hp[i].x),
+                    );
+                    expect(Math.round(card.width), `${label}: HP-карточка #${i} ширина`).toBe(
+                        Math.round(baseline.hp[i].width),
+                    );
+                });
+            }
+        });
+
+        test('полоса панели остаётся высотой 78px на xl (перенос элементов не возникает)', async ({
+            page,
+        }) => {
+            await page.goto('/game?seed=42');
+            await expect(page.getByTestId('top-hud-desktop')).toBeVisible();
+
+            const box = await page.getByTestId('top-hud-desktop').boundingBox();
+            if (!box) throw new Error('top-hud-desktop не найден');
+            expect(Math.round(box.height)).toBe(78);
+        });
+    });
+}

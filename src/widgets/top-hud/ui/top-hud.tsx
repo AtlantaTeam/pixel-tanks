@@ -267,14 +267,26 @@ function NumberCell({
     label,
     value,
     valueClassName,
+    sizer,
 }: {
     label: string;
     value: ReactNode;
     valueClassName: string;
+    /** Максимум диапазона значения (#473) — резервирует ширину бокса тем же
+     *  приёмом `FixedNumeric`, что и мобильная `TrimCell`: планшет/десктоп больше
+     *  не «ездят» при смене числа знаков (угол `1°`…`345°`, сила `1`…`20`). Без
+     *  `sizer` ячейка тянется по содержимому (обратная совместимость). */
+    sizer?: ReactNode;
 }) {
     return (
         <CellShell label={label}>
-            <CellValue valueClassName={valueClassName}>{value}</CellValue>
+            {sizer !== undefined ? (
+                <FixedNumeric valueClassName={valueClassName} sizer={sizer}>
+                    {value}
+                </FixedNumeric>
+            ) : (
+                <CellValue valueClassName={valueClassName}>{value}</CellValue>
+            )}
         </CellShell>
     );
 }
@@ -440,7 +452,19 @@ function WindCell({
                         <span className="col-start-1 row-start-1 flex items-center">{content}</span>
                     </span>
                 ) : (
-                    content
+                    // Планшет/десктоп (#473): та же болезнь, что чинил #447 на мобилке —
+                    // ячейка «Ветер» уже пипов при раскрытом числе (пипы шире одиночной
+                    // цифры), поэтому при переходе «ряд пипов → раскрытое число» она
+                    // сужается и тянет за собой координаты соседей. Ширину держит
+                    // невидимый ряд пипов той же размерности (длина фиксирована
+                    // `WIND_DISPLAY_SCALE`, от magnitude не зависит) — бокс всегда под
+                    // самое широкое состояние, реальный контент рисуется поверх.
+                    <span className="grid justify-items-center">
+                        <span aria-hidden className="invisible col-start-1 row-start-1">
+                            <PipRow pips={pips} color="var(--color-warning)" size={10} gap={5} />
+                        </span>
+                        <span className="col-start-1 row-start-1 flex items-center">{content}</span>
+                    </span>
                 )}
             </div>
         </CellShell>
@@ -719,12 +743,24 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         isBotTurn && 'opacity-60',
                     )}
                 >
+                    {/* Подпись — всегда «Угол» без суффикса «заморожен» (#473):
+                        на планшете/десктопе заморозку несёт бейдж рядом с пилюлей
+                        (`FreezeBadgeOrNothing`, #472), а более длинный лейбл растил бы
+                        ячейку на ходе бота. Мобильный `TrimCell` оставляет `angleLabel`
+                        со своей заметкой `FrozenNote` (состав не тронут). `sizer` под
+                        `360°`/`POWER_MAX` держит ширину бокса значения неизменной. */}
                     <NumberCell
-                        label={angleLabel}
+                        label="Угол"
                         value={angleValue}
                         valueClassName="text-accent"
+                        sizer="360°"
                     />
-                    <NumberCell label="Сила" value={power} valueClassName="text-warning" />
+                    <NumberCell
+                        label="Сила"
+                        value={power}
+                        valueClassName="text-warning"
+                        sizer={POWER_MAX}
+                    />
                     <WindCell wind={wind} windRevealed={windRevealed} />
                     <ResourcePips
                         label="Снаряды"
