@@ -1,4 +1,5 @@
 import { floor } from '@/shared/lib/canvas';
+import { advanceProjectile, BULLET_GRAVITY } from './bullet-physics';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
@@ -14,7 +15,10 @@ export class Bullet {
     lastY = 0;
     power: number;
     dx: number;
-    private dy: number;
+    // Публичное (не private): предпросмотр траектории (`fillTrajectoryPreview`) и
+    // тест «одно место правды» шагают копию вектора {x,y,dx,dy} тем же
+    // `advanceProjectile`, что и полёт — структурному типу нужен доступ к dy.
+    dy: number;
     gravity: number;
     elasticity: number;
     private wind: number;
@@ -53,7 +57,7 @@ export class Bullet {
         this.power = activeTank.power;
         this.dx = floor(Math.cos(activeTank.gunpointAngle) * this.power);
         this.dy = floor(Math.sin(activeTank.gunpointAngle) * this.power);
-        this.gravity = 0.1;
+        this.gravity = BULLET_GRAVITY;
         this.elasticity = 1;
         this.wind = wind;
         this.explosionRadius = 0;
@@ -80,12 +84,10 @@ export class Bullet {
     }
 
     move() {
-        if (this.y + this.radius < this.innerHeight) {
-            this.dy += this.gravity;
-        }
-        this.dx += this.wind;
-        this.x = floor(this.x + this.dx);
-        this.y = floor(this.y + this.dy);
+        // Единый шаг физики с предпросмотром прицела (`advanceProjectile`, #475).
+        // Гейт гравитации у нижней стены сохранён прежним: снаряд не притягивается,
+        // когда его низ уже за полом поля.
+        advanceProjectile(this, this.wind, this.y + this.radius < this.innerHeight, this.gravity);
     }
 
     isHit = (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => {
