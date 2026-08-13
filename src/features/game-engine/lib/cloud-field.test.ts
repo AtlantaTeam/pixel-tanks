@@ -5,6 +5,7 @@ import {
     CLOUD_COUNT_MAX,
     CLOUD_COUNT_MIN,
     CLOUD_SPEEDS,
+    cloudSpriteWidth,
     windFactor,
 } from './cloud-field';
 import { MAX_WIND } from './wind';
@@ -26,6 +27,35 @@ describe('cloudCount — плотность от ширины', () => {
     it('битая ширина не роняет поле в ноль облаков', () => {
         expect(cloudCount(Number.NaN)).toBe(CLOUD_COUNT_MIN);
         expect(cloudCount(-10)).toBe(CLOUD_COUNT_MIN);
+    });
+});
+
+describe('cloudSpriteWidth — размер от ширины экрана (#523)', () => {
+    it('на 1280 облако 192 CSS-px — размер из одобренного кадра', () => {
+        expect(cloudSpriteWidth(1280)).toBe(192);
+    });
+
+    it('на телефоне облако не занимает полэкрана', () => {
+        // Фикс в 192 px давал на 390 ровно половину ширины — облака наезжали друг на друга.
+        expect(cloudSpriteWidth(390) / 390).toBeLessThan(0.2);
+    });
+
+    it('доля ширины держится одинаковой на всех разрешениях', () => {
+        for (const width of [414, 768, 1024, 1280]) {
+            const frac = cloudSpriteWidth(width) / width;
+            expect(frac).toBeGreaterThan(0.1);
+            expect(frac).toBeLessThan(0.2);
+        }
+    });
+
+    it('на очень узком не вырождается в точку, на очень широком не раздувается', () => {
+        expect(cloudSpriteWidth(200)).toBeGreaterThanOrEqual(48);
+        expect(cloudSpriteWidth(4000)).toBe(192);
+    });
+
+    it('битая ширина не роняет размер в ноль', () => {
+        expect(cloudSpriteWidth(Number.NaN)).toBeGreaterThan(0);
+        expect(cloudSpriteWidth(-5)).toBeGreaterThan(0);
     });
 });
 
