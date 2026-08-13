@@ -314,9 +314,11 @@ describe('TopHud', () => {
         rerender(<TopHud />);
 
         const live = getByTestId('freeze-live');
-        // role="status" (aria-live) смонтирован всегда и пуст на своём ходу —
-        // именно поэтому смена его содержимого потом озвучивается.
-        expect(live).toHaveAttribute('role', 'status');
+        // Live-region (aria-live, без роли `status` — чтобы не конфликтовать с
+        // тостом) смонтирован всегда и пуст на своём ходу — именно поэтому смена
+        // его содержимого потом озвучивается.
+        expect(live).toHaveAttribute('aria-live', 'polite');
+        expect(live).not.toHaveAttribute('role');
         expect(live).toBeEmptyDOMElement();
 
         // Тот же узел (не пересоздан) наполняется текстом на ходе бота.

@@ -572,13 +572,19 @@ function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
  * составов (мобильная `FrozenNote` и десктопный `FreezeBadgeOrNothing`
  * визуальны/`aria-hidden`). Узел смонтирован ВСЕГДА и пуст на своём ходу; на ходе
  * бота в него ВПИСЫВАЕТСЯ текст. Именно смена содержимого уже существующего
- * `role="status"` (aria-live=polite) озвучивается — в отличие от появления узла
- * или переключения `role`/`visibility` на готовом заполненном узле. `sr-only` —
- * только для скринридера, `absolute` (вне потока), геометрию HUD не трогает.
+ * live-region (`aria-live=polite`) озвучивается — в отличие от появления узла
+ * или переключения `role`/`visibility` на готовом заполненном узле.
+ *
+ * Живой регион через `aria-live` + `aria-atomic`, а НЕ через `role="status"`:
+ * `status` — это ARIA-роль, и она бы конфликтовала с `getByRole('status')`
+ * тоста «патроны кончились» (у него та же роль) — в бою на экране оказалось бы
+ * два `status`. `aria-live` даёт то же озвучивание смены содержимого без роли.
+ * `sr-only` — только для скринридера, `absolute` (вне потока), геометрию HUD не
+ * трогает.
  */
 function FreezeAnnouncer({ frozen }: { frozen: boolean }) {
     return (
-        <span data-testid="freeze-live" role="status" aria-live="polite" className="sr-only">
+        <span data-testid="freeze-live" aria-live="polite" aria-atomic="true" className="sr-only">
             {frozen ? FROZEN_TEXT : ''}
         </span>
     );
