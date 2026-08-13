@@ -145,4 +145,34 @@ describe('computeTerrainHeights', () => {
         const { min, max } = computeTerrainHeights(200, { top: 90, bottom: 90 });
         expect(max).toBeGreaterThanOrEqual(min);
     });
+
+    it('клиренс масштабируется вместе с телом танка на широкой арене (#455)', () => {
+        // Короткая по высоте зона, где клиренс реально связывает пик. На широком
+        // экране (scale 1.5) корпус и ствол крупнее, поэтому резерв под HUD обязан
+        // быть больше фиксированных 72 px — иначе ствол уехал бы под верхний оверлей.
+        // Зона высотой 140: клиренс реально связывает пик и на scale 1, и на 1.5,
+        // не упираясь в нижнюю границу амплитуды (низину).
+        const insets: TArenaInsets = { top: 90, bottom: 90 };
+        const canvasHeight = 320;
+        const zoneTopY = insets.top;
+
+        // Опорная ширина (scale === 1) — резерв ровно базовый клиренс.
+        const base = computeTerrainHeights(canvasHeight, insets, 1000);
+        expect(canvasHeight - base.max - zoneTopY).toBeGreaterThanOrEqual(TANK_TOP_CLEARANCE - 1);
+
+        // Широкая арена (scale === 1.5) — резерв масштабируется вместе с танком.
+        const wide = computeTerrainHeights(canvasHeight, insets, 2000);
+        expect(canvasHeight - wide.max - zoneTopY).toBeGreaterThanOrEqual(
+            TANK_TOP_CLEARANCE * 1.5 - 1,
+        );
+        // Больший клиренс опускает пик рельефа ниже, чем на опорной ширине.
+        expect(wide.max).toBeLessThan(base.max);
+    });
+
+    it('без явной ширины клиренс равен базовому (scale === 1) — обратная совместимость', () => {
+        const insets: TArenaInsets = { top: 90, bottom: 90 };
+        expect(computeTerrainHeights(320, insets)).toEqual(
+            computeTerrainHeights(320, insets, 1000),
+        );
+    });
 });

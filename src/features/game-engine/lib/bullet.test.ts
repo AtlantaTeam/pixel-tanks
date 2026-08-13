@@ -5,6 +5,7 @@ import type { TWeapon } from '@/shared/model';
 import { Bullet } from './bullet';
 import { Ground } from './ground';
 import { Tank } from './tank';
+import { WORLD_UNITS } from './world-scale';
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -183,5 +184,39 @@ describe('Bullet: столкновения', () => {
         expect(bullet.isTankHit).toBe(false);
         const groundHeightAtImpact = ground.heights[floor(bullet.x)];
         expect(HEIGHT - bullet.y - bullet.radius).toBeLessThanOrEqual(groundHeightAtImpact);
+    });
+});
+
+describe('Bullet.setScale — перемасштабирование при ресайзе (масштаб мира, #455)', () => {
+    // drawExplosion рисует радиальный градиент — ctxStub попаданий его не умеет,
+    // поэтому здесь ctx с минимальным набором вызовов взрыва (без реального Canvas).
+    const explosionCtx = {
+        createRadialGradient: () => ({ addColorStop: () => undefined }),
+        beginPath: () => undefined,
+        arc: () => undefined,
+        fill: () => undefined,
+        closePath: () => undefined,
+        fillStyle: '',
+    } as unknown as CanvasRenderingContext2D;
+
+    it('обновляет радиус снаряда и радиус взрыва новым коэффициентом', () => {
+        // Снаряд создан на scale === 1 (танк без явного scale) — радиусы канонны.
+        const { bullet } = makeBullet(-Math.PI / 4, 10, 0);
+        expect(bullet.radius).toBe(WORLD_UNITS.bulletRadius);
+
+        // Ресайз на широкую арену увеличил масштаб мира — снаряд и взрыв растут вместе
+        // с телом танка, а не остаются прежнего размера (критерий #455).
+        bullet.setScale(1.5);
+        expect(bullet.radius).toBe(WORLD_UNITS.bulletRadius * 1.5);
+
+        // Взрыв дорастает до нового максимума: на 1.5 он превышает канонный r=50.
+        // explosionRadius растёт на 1 за кадр, поэтому число кадров до финала ≈ максимум.
+        let frames = 0;
+        while (!bullet.isFinished && frames < 500) {
+            bullet.drawExplosion(explosionCtx);
+            frames += 1;
+        }
+        expect(bullet.isFinished).toBe(true);
+        expect(frames).toBeGreaterThan(WORLD_UNITS.explosionMaxRadius);
     });
 });

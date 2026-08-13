@@ -65,7 +65,8 @@ export class Ground {
         this.insets = insets;
         // Границы рельефа — из свободной зоны, а не из полной высоты канваса
         // (safe-зона, #454). Пустые инсеты дают ровно прежние floor(H/2), floor(H/2)/4.
-        const { min, max } = computeTerrainHeights(innerHeight, insets);
+        // Ширина нужна для клиренса ствола: он масштабируется вместе с телом (#455).
+        const { min, max } = computeTerrainHeights(innerHeight, insets, innerWidth);
         this.heightMax = max;
         this.heightMin = min;
         this.color = 'orange';
@@ -119,7 +120,7 @@ export class Ground {
         const prev = { min: this.heightMin, max: this.heightMax };
         this.innerWidth = innerWidth;
         this.innerHeight = innerHeight;
-        const next = computeTerrainHeights(innerHeight, this.insets);
+        const next = computeTerrainHeights(innerHeight, this.insets, innerWidth);
         this.heightMax = next.max;
         this.heightMin = next.min;
         this.heights = new Array<number>(innerWidth);

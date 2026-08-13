@@ -96,6 +96,37 @@ describe('encodeReplay / decodeReplay', () => {
         expect(decoded?.insets).toBeUndefined();
     });
 
+    it('битые инсеты (отрицательные/NaN/Infinity) нормализуются в 0, не роняя кодек', () => {
+        // Кодек трактует мусор как движок (`computeTerrainHeights` зажимает через
+        // `normalizeInset`): отрицательный/битый инсет → 0, а не throw на assertInRange.
+        const withGarbage = encodeReplay({
+            seed: 's',
+            width: 800,
+            height: 600,
+            insets: { top: -5, bottom: Number.NaN },
+            moves: [fire(1, 5)],
+        });
+        const without = encodeReplay({ seed: 's', width: 800, height: 600, moves: [fire(1, 5)] });
+
+        // Оба инсета обнулились → запись неотличима от записи без инсетов (v2).
+        expect(withGarbage).toBe(without);
+        expect(decodeReplay(withGarbage)?.insets).toBeUndefined();
+    });
+
+    it('битый инсет обнуляется, но валидный сосед сохраняется (v3)', () => {
+        const decoded = decodeReplay(
+            encodeReplay({
+                seed: 's',
+                width: 800,
+                height: 600,
+                insets: { top: -10, bottom: 200 },
+                moves: [],
+            }),
+        );
+
+        expect(decoded?.insets).toEqual({ top: 0, bottom: 200 });
+    });
+
     it('только один непустой инсет тоже пишется (v3)', () => {
         const decoded = decodeReplay(
             encodeReplay({

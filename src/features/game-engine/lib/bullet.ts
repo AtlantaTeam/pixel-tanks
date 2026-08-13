@@ -1,7 +1,7 @@
 import { floor } from '@/shared/lib/canvas';
 import { Ground } from './ground';
 import { Tank } from './tank';
-import { WORLD_UNITS } from './world-scale';
+import { computeWorldScale, WORLD_UNITS } from './world-scale';
 
 export class Bullet {
     static readonly label = 'Снаряд';
@@ -62,6 +62,21 @@ export class Bullet {
         this.innerWidth = innerWidth;
         this.innerHeight = innerHeight;
         this.ground = ground;
+    }
+
+    /**
+     * Пересчитывает радиус снаряда и взрыва под новый масштаб мира (issue #455).
+     * Зовётся ресайзом/поворотом (`GamePlay.rescaleBullet`), когда ширина арены (а с
+     * ней `scale`) изменилась во время полёта: без этого корпус танка получал бы новый
+     * размер, а снаряд и радиус кратера оставались бы прежними — визуальный разрыв.
+     * На реплей не влияет: там размер зафиксирован записью (`fixedLogicalSize`), ресайза
+     * нет. Радиус взрыва во время самого взрыва не трогаем (`drawExplosion` ведёт свой
+     * `explosionRadius` от нуля к максимуму) — меняем только целевой максимум.
+     */
+    setScale(scale: number) {
+        this.radius = WORLD_UNITS.bulletRadius * scale;
+        this.mass = this.radius;
+        this.explosionMaxRadius = WORLD_UNITS.explosionMaxRadius * scale;
     }
 
     move() {

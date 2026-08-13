@@ -132,8 +132,15 @@ export class GamePlay {
      * Свободная (не закрытая оверлеями) зона арены — производная от `innerHeight`
      * и `arenaInsets` (см. `computeArenaZone`). Хранится как поле и пересчитывается
      * на изменение любого входа: смену инсетов (`setArenaInsets` — брейкпоинт,
-     * safe-area) и ресайз/поворот (`fit` меняет `innerHeight`). Пока отрисовка её
-     * не использует — рельеф и танки перейдут в зону следующими карточками фазы.
+     * safe-area) и ресайз/поворот (`fit` меняет `innerHeight`) — это движковый
+     * контракт safe-зоны (#453).
+     *
+     * **Отрисовка это поле пока не читает.** Фактические потребители зоны выводят её
+     * себе сами, не через `arenaZone`: рельеф — из инсетов чистой `computeTerrainHeights`
+     * (`Ground`, #454), а клэмпы жеста/пузыря — из DOM-узла `zoneRef` в `GameCanvas`
+     * (там доступны реальные высоты сверстанных оверлеев). Поле держим как единый
+     * движковый источник зоны на случай, когда рисование само начнёт из него исходить;
+     * тесты (`game-play.test.ts`) фиксируют его пересчёт.
      */
     arenaZone: TArenaZone = { top: 0, height: 0 };
     mousePos: TCoords | null;
@@ -400,8 +407,9 @@ export class GamePlay {
         const prevHeight = this.innerHeight;
         if (!this.fit()) return;
         if (prevWidth !== this.innerWidth || prevHeight !== this.innerHeight) {
-            this.rescaleTerrainAndTanks();
-            this.rescaleBullet(prevWidth, prevHeight);
+            const worldScale = computeWorldScale(this.innerWidth);
+            this.rescaleTerrainAndTanks(worldScale);
+            this.rescaleBullet(prevWidth, prevHeight, worldScale);
         }
         // Даже при смене только dpr бэкинг-стор пересоздан (canvas очищен) —
         // перерисовка нужна безусловно.
@@ -409,14 +417,12 @@ export class GamePlay {
     };
 
     // Пересчитывает террейн под новый размер (Ground.resize — без RNG, форма и
-    // детерминизм сохраняются) и переставляет танки пропорционально.
-    private rescaleTerrainAndTanks = () => {
+    // детерминизм сохраняются) и переставляет танки пропорционально. Масштаб мира
+    // (issue #455) считается один раз в applyResize и передаётся сюда, чтобы танки и
+    // снаряд в полёте (rescaleBullet) масштабировались одним и тем же коэффициентом.
+    private rescaleTerrainAndTanks = (worldScale: number) => {
         if (!this.leftTank || !this.rightTank || !this.ground) return;
         this.ground.resize(this.innerWidth, this.innerHeight);
-        // Ширина арены изменилась → пересчитываем масштаб мира (issue #455) и
-        // применяем к обоим танкам перед постановкой на новый рельеф. Снаряд в
-        // полёте берёт scale стрелявшего танка и обновится тем же коэффициентом.
-        const worldScale = computeWorldScale(this.innerWidth);
         const leftTankX = floor(this.innerWidth / 4);
         const rightTankX = floor((this.innerWidth * 3) / 4);
         for (const [tank, x] of [
@@ -434,8 +440,12 @@ export class GamePlay {
     };
 
     // Снаряд в полёте переносится в новые координаты пропорционально: сброс терял бы
-    // уже израсходованное оружие и подвешивал ход на игроке (ревью PR #41).
-    private rescaleBullet = (prevWidth: number, prevHeight: number) => {
+    // уже израсходованное оружие и подвешивал ход на игроке (ревью PR #41). Радиус
+    // снаряда и взрыва тоже масштабируются новым коэффициентом (issue #455) — тем же,
+    // что получают танки, — иначе после ресайза корпус стал бы больше, а снаряд и
+    // кратер остались бы прежнего размера. Эффект косметический (на реплей не влияет:
+    // там размер зафиксирован записью, ресайза нет).
+    private rescaleBullet = (prevWidth: number, prevHeight: number, worldScale: number) => {
         if (!this.bullet) return;
         this.bullet.x = floor((this.bullet.x * this.innerWidth) / prevWidth);
         this.bullet.y = floor((this.bullet.y * this.innerHeight) / prevHeight);
@@ -443,6 +453,7 @@ export class GamePlay {
         this.bullet.lastY = this.bullet.y;
         this.bullet.innerWidth = this.innerWidth;
         this.bullet.innerHeight = this.innerHeight;
+        this.bullet.setScale(worldScale);
     };
 
     initPaint = () => {

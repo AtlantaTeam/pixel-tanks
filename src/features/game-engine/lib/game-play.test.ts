@@ -225,7 +225,8 @@ describe('GamePlay — инсеты арены (контракт safe-зоны, 
 
         expect(ground.heights).toEqual(heightsBefore);
         expect(leftTank.y).toBe(tankYBefore);
-        // Зона при этом пересчитана (её читают клэмпы жеста/пузыря).
+        // Зона при этом всё равно пересчитана — движковый контракт safe-зоны (#453)
+        // держит `arenaZone` актуальной, даже когда рельеф под неё не перекладывают.
         expect(gamePlay.arenaZone).toEqual({ top: 120, height: HEIGHT - 210 });
     });
 

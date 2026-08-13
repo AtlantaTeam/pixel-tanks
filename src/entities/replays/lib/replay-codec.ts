@@ -133,8 +133,17 @@ export const encodeReplay = (replay: TReplay): string => {
 
     // Инсеты хранятся целыми (u16): рельеф всё равно целочислен. Нулевые/отсутствующие
     // инсеты → версия 2 (компактнее и совместимо со старыми ссылками), иначе v3.
-    const insetTop = replay.insets ? Math.round(replay.insets.top) : 0;
-    const insetBottom = replay.insets ? Math.round(replay.insets.bottom) : 0;
+    //
+    // Нормализуем ровно как движок (`normalizeInset` + округление в
+    // `computeTerrainHeights`): битые и отрицательные значения → 0. FSD запрещает
+    // импорт из `features` в `entities`, поэтому нормализация здесь продублирована —
+    // важно, чтобы один и тот же мусор (например, отрицательный инсет из
+    // `getBoundingClientRect`) кодек и рельеф трактовали ОДИНАКОВО: раньше рельеф молча
+    // зажимал такой инсет в 0, а кодек падал на `assertInRange(..., 0, ...)`.
+    const normInset = (value: number) =>
+        Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+    const insetTop = replay.insets ? normInset(replay.insets.top) : 0;
+    const insetBottom = replay.insets ? normInset(replay.insets.bottom) : 0;
     const hasInsets = insetTop !== 0 || insetBottom !== 0;
     if (hasInsets) {
         assertInRange(insetTop, 0, UINT16_MAX, 'верхний инсет');
