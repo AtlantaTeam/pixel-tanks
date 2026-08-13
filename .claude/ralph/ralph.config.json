@@ -124,6 +124,14 @@
             {
                 "milestone": "Мобильная эргономика боя · Фаза 3: Safe-зона арены и масштаб мира",
                 "branch": "feature/mobile-ergo-3-arena"
+            },
+            {
+                "milestone": "Мобильная эргономика боя · Фаза 4: Десктопная панель",
+                "branch": "feature/mobile-ergo-4-desktop-hud"
+            },
+            {
+                "milestone": "Мобильная эргономика боя · Фаза 5: Прицеливание и контролы",
+                "branch": "feature/mobile-ergo-5-aim"
             }
         ]
     },
