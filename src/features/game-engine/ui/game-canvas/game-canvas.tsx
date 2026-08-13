@@ -634,6 +634,10 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     reply={botBubble.reply}
                     x={botBubble.x}
                     y={botBubble.y}
+                    // Пока игрок тянет рогатку, реплика гаснет: на телефоне она
+                    // накрывала половину арены ровно в момент прицеливания (#527).
+                    // Именно гаснет, а не размонтируется — таймер жизни продолжает идти.
+                    dimmed={gestureVisual !== null}
                     onExpire={() => setBotBubble(null)}
                 />
             )}

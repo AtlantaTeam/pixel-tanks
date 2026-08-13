@@ -31,6 +31,12 @@ type TChatBubbleProps = {
     y: number;
     durationMs?: number;
     onExpire?: () => void;
+    /**
+     * Погасить, не размонтируя: реплика не должна закрывать арену, пока игрок тянет
+     * рогатку (#527). Таймер жизни при этом идёт своим чередом — вернувшийся после
+     * жеста бабл доживает остаток, а не начинает срок заново.
+     */
+    dimmed?: boolean;
     className?: string;
 };
 
@@ -82,6 +88,7 @@ export function ChatBubble({
     y,
     durationMs = DEFAULT_DURATION_MS,
     onExpire,
+    dimmed = false,
     className,
 }: TChatBubbleProps) {
     const typedText = useTypedText(reply.text, durationMs);
@@ -110,8 +117,13 @@ export function ChatBubble({
             className={clsx(
                 'pointer-events-none absolute -translate-x-1/2 -translate-y-full',
                 'animate-bubble-pop motion-reduce:animate-none',
-                'border-[length:var(--border-w)] max-w-[260px] bg-surface px-3.5 py-3 text-center',
+                // Ширина и отступы — от экрана: 260 px на 390 занимали две трети ширины
+                // и накрывали арену (#527). На узком бабл вдвое компактнее.
+                'border-[length:var(--border-w)] max-w-[168px] bg-surface px-2 py-1.5 text-center',
+                'sm:max-w-[260px] sm:px-3.5 sm:py-3',
                 'shadow-[var(--glow-enemy),0_0_0_1px_rgba(0,0,0,.9)]',
+                'transition-opacity duration-150 motion-reduce:transition-none',
+                dimmed && 'opacity-0',
                 className,
             )}
             style={
@@ -128,7 +140,9 @@ export function ChatBubble({
                     {BOT_NAME}
                 </span>
             </div>
-            <p className="font-ui text-[12px] leading-[1.45] text-text">{typedText}</p>
+            <p className="font-ui text-[10px] leading-[1.35] text-text sm:text-[12px] sm:leading-[1.45]">
+                {typedText}
+            </p>
             {/* Хвост — треугольник, центрирован по низу бабла: указывает на танк,
                 над которым бабл заякорен (см. докблок компонента). */}
             <span
