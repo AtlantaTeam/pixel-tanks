@@ -41,6 +41,10 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
         const canvas = canvasRef.current;
         if (!canvas) return;
 
+        // Скин игрока читаем один раз: он и рисует левый танк, и исключает свою
+        // палитру из выбора соперника (контраст «свой/чужой»).
+        const playerSkinId = getStoredTankSkinId();
+
         const game = new GamePlay(
             canvasRef,
             // Та же детерминированная раздача оружия, что и в живом бою, —
@@ -81,10 +85,11 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
                 fixedLogicalSize: { width: replay.width, height: replay.height },
                 // Скины (issue #481) в запись не пишутся (чисто косметика, см.
                 // tank-skin-parity.test.ts) — свой берём из ТЕКУЩЕГО предпочтения
-                // (как звук/тема), бот — детерминированно от seed записи: тот же
-                // сид всегда даёт тот же вид соперника.
-                leftSkinId: getStoredTankSkinId(),
-                rightSkinId: selectTankSkinForSeed(replay.seed),
+                // (как звук/тема), бот — детерминированно от seed записи из палитр,
+                // отличных от палитры игрока (цветовой контраст «свой/чужой»): тот
+                // же сид + тот же скин игрока всегда дают тот же вид соперника.
+                leftSkinId: playerSkinId,
+                rightSkinId: selectTankSkinForSeed(replay.seed, playerSkinId),
             },
         );
         // Инсеты safe-зоны записи — ДО генерации рельефа (loadImages → initPaint):

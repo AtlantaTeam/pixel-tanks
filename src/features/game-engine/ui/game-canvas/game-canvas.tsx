@@ -126,7 +126,9 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     // подхватится следующим боем), бот — детерминированно от сида боя, чтобы
     // тот же сид давал тот же вид соперника и в реплее.
     const [leftSkinId] = useState(() => getStoredTankSkinId());
-    const [rightSkinId] = useState(() => selectTankSkinForSeed(battleSeed));
+    // Бот — из палитр, отличных от палитры игрока, чтобы цвета «свой/чужой» не
+    // сливались (см. `selectTankSkinForSeed`); детерминированно от сида боя.
+    const [rightSkinId] = useState(() => selectTankSkinForSeed(battleSeed, leftSkinId));
 
     const [botBubble, setBotBubble] = useState<{ reply: TBotReply; x: number; y: number } | null>(
         null,

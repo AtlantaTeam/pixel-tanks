@@ -5,7 +5,7 @@ import type { TTankGeometry, TTankPalette, TTankSkin, TTankSkinId } from './t-ta
 /**
  * Палитры скинов (issue #481, образец — `docs/game-visuals/iteration-2/compare-svg.png`):
  * зелёный/красный/золотой — три цвета, читающиеся на боевом рельефе на 390px.
- * Косметика: ни одна роль здесь не влияет на HP/скорость/разброс (см. `tank-skins.balance.test.ts`).
+ * Косметика: ни одна роль здесь не влияет на HP/скорость/разброс (см. `tank-skin-parity.test.ts`).
  */
 export const TANK_PALETTES: readonly TTankPalette[] = [
     {
