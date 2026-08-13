@@ -181,7 +181,9 @@ function CellShell({
             className={clsx(
                 HUD_SURFACE,
                 'flex flex-col gap-0.5 border-[length:var(--border-w)] border-border',
-                compact ? 'shrink-0 px-1 py-0.5' : 'px-2.5 py-1.5',
+                // xl:px-1.5 (#489): та же экономия ширины узкого xl (1280…~1413) —
+                // планшет (768, тоже !compact) держит исходный px-2.5.
+                compact ? 'shrink-0 px-1 py-0.5' : 'px-2.5 py-1.5 xl:px-1.5',
                 className,
             )}
         >
@@ -509,7 +511,20 @@ function ResourcePips({
             <span className="font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase">
                 {label}
             </span>
-            <PipRow pips={pips} color={color} label={ariaLabel} size={size} gap={gap} />
+            {/* xl-плотность (#489): на узком xl (1280…~1413) телеметрия в один
+                нешринкающийся ряд (`shrink-0`) уезжает за край — компактнее пипы
+                снарядов/ходов освобождают ей место. `size`/`gap` тут не передаются
+                (Снаряды/Ходы = default 14px/5px, планшет не трогаем), поэтому цель —
+                через arbitrary-variant по `data-testid`, а не проп: класс работает
+                только под `xl:`-медиа, планшет (768, тот же `ResourcePips`) их не видит. */}
+            <PipRow
+                pips={pips}
+                color={color}
+                label={ariaLabel}
+                size={size}
+                gap={gap}
+                className="xl:gap-[3px] xl:[&>[data-testid=pip]]:size-2.5"
+            />
         </div>
     );
 }
@@ -743,9 +758,15 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                 1280/1920 — 1 ряд (xl:flex-row), центр по max-width на 1920. */}
             <div
                 data-testid="top-hud-desktop"
-                className="pointer-events-auto hidden md:flex md:w-full md:flex-col md:gap-3 md:border-b-[length:var(--border-w)] md:border-border md:bg-panel md:px-4 md:py-3 xl:mx-auto xl:h-[78px] xl:max-w-[1280px] xl:flex-row xl:items-center xl:gap-5 xl:py-0"
+                // xl:gap-2 (#489, было xl:gap-5): узкий xl (1280…~1413) — телеметрия
+                // (shrink-0) и первый ряд (HP+пилюля+бейдж+иконки) вместе не влезали
+                // в полосу 78px, зазор между ними ужат в общий бюджет экономии.
+                className="pointer-events-auto hidden md:flex md:w-full md:flex-col md:gap-3 md:border-b-[length:var(--border-w)] md:border-border md:bg-panel md:px-4 md:py-3 xl:mx-auto xl:h-[78px] xl:max-w-[1280px] xl:flex-row xl:items-center xl:gap-2 xl:py-0"
             >
-                <div className="flex flex-1 flex-wrap items-center gap-4 xl:flex-nowrap">
+                {/* xl:gap-1 (#489, было gap-4 без override): тот же бюджет ширины —
+                    первый ряд (HP-блок + пилюля + бейдж заморозки + mute/пауза)
+                    ужимается плотнее на узком xl, освобождая место телеметрии. */}
+                <div className="flex flex-1 flex-wrap items-center gap-4 xl:flex-nowrap xl:gap-1">
                     {/* min-width 420 держит HP-бары на планшете (2 ряда, есть запас
                         по высоте); на 1280/1920 та же полоса — один ряд высотой 78px
                         фиксированно, и 420 там не помещается рядом с пилюлей, кнопками
@@ -779,7 +800,12 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         // соседнего HP-блока, тот же класс бага, что и с пилюлей
                         // хода выше) — она либо помещается в ряд целиком, либо
                         // e2e-проверка переполнения должна это поймать.
-                        'flex w-full flex-wrap items-center gap-4 xl:w-auto xl:shrink-0 xl:flex-nowrap',
+                        // xl:gap-2 (#489): на узком xl (1280…~1413) телеметрия
+                        // (shrink-0, не сжимается) вместе с первым рядом не влезала
+                        // в полосу 78px и уезжала за правый край — ужатый зазор
+                        // (16px → 8px, ×4 промежутка) освобождает часть недостающей
+                        // ширины. Планшет держит исходный `gap-4` (класс без префикса).
+                        'flex w-full flex-wrap items-center gap-4 xl:w-auto xl:shrink-0 xl:flex-nowrap xl:gap-2',
                         isBotTurn && 'opacity-60',
                     )}
                 >

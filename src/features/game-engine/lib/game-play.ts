@@ -14,13 +14,14 @@ import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
-import { directionSegmentEnd, directionSegmentLength } from './gesture-aim';
+import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
+import { formatAngle } from './format-angle';
 import { ParticlePool, damageFlashBurst, groundBurst } from './particle-pool';
 import { CameraShake } from './camera-shake';
 import { SlowMotion } from './slow-motion';
 import { BulletTrail } from './bullet-trail';
 import { ENGINE_COLORS } from './engine-palette';
-import { computeWorldScale } from './world-scale';
+import { computeWorldScale, WORLD_UNITS } from './world-scale';
 
 /** Ёмкости пула хватает на одновременный залп земли и вспышку урона. */
 const PARTICLE_CAPACITY = 96;
@@ -41,8 +42,19 @@ const BASE_FRAME_INTERVAL_MS = 15;
  */
 const SEGMENT_DASH: readonly number[] = [6, 8];
 const NO_DASH: readonly number[] = [];
-/** Прозрачность сегмента направления (handoff: `opacity:.85`). */
+/** Прозрачность у ствола (handoff: `opacity:.85`) — дуга затухает к концу от неё. */
 const SEGMENT_OPACITY = 0.85;
+/**
+ * Дуга предпросмотра гаснет к концу: последний сегмент получает эту долю базовой
+ * прозрачности (issue #475 «затухающая к концу»). Не в ноль — иначе хвост дуги
+ * исчезает рывком.
+ */
+const ARC_TAIL_OPACITY_FACTOR = 0.12;
+/** Скорость бегущего пунктира дуги (px/мс). Гасится при prefers-reduced-motion. */
+const ARC_DASH_SPEED = 0.04;
+/** Толщина индикатора «угол·сила» у ствола и его отступ вверх от точки крепления. */
+const BARREL_LABEL_FONT = '700 13px "JetBrains Mono", ui-monospace, monospace';
+const BARREL_LABEL_OFFSET = 16;
 
 export type TTanksWeapons = {
     leftTankWeapons: TWeapon[];
@@ -195,10 +207,22 @@ export class GamePlay {
     // Тряска была в прошлом кадре — чтобы один раз «доосадить» сцену в базовое
     // положение, когда дрожание закончилось (иначе остаётся суб-пиксельный сдвиг).
     private wasShaking = false;
-    // Буферы сегмента направления: переиспользуются каждый кадр драга вместо
-    // аллокации новых точек (правило .claude/rules/canvas.md).
-    private readonly aimSegmentFrom: TCoords = { x: 0, y: 0 };
-    private readonly aimSegmentTo: TCoords = { x: 0, y: 0 };
+    // Начало дуги предпросмотра (ствол) и её узлы: переиспользуются каждый кадр
+    // драга вместо аллокации новых точек (правило .claude/rules/canvas.md).
+    private readonly aimArcFrom: TCoords = { x: 0, y: 0 };
+    private readonly aimArcPoints: TCoords[] = Array.from(
+        { length: TRAJECTORY_PREVIEW_POINTS },
+        () => ({ x: 0, y: 0 }),
+    );
+    /**
+     * Снимок `prefers-reduced-motion` на бой (как `CameraShake`): при `reduce`
+     * пунктир дуги предпросмотра статичен — без бегущей анимации (критерий #475).
+     * Смену системной настройки в середине боя осознанно не слушаем (нет teardown).
+     */
+    private readonly reducedMotion: boolean =
+        typeof window !== 'undefined'
+            ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+            : false;
 
     constructor(
         canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -277,35 +301,100 @@ export class GamePlay {
     };
 
     /**
-     * Короткий сегмент направления от ствола (handoff «Прицеливание `aim`»): ~12%
-     * пути, пунктир `6 8`, `var(--accent)`, `opacity:.85`. Точку падения НЕ рисуем —
-     * полная дуга отменяет пристрелку из GDD (вердикт handoff по п.3). Луч оттяжки,
-     * кольцо пальца и чип живут в DOM-оверлее (`ui/gesture-overlay`), где доступны
-     * токены и текст; здесь — только заякоренный на стволе сегмент в canvas-координатах.
+     * Предпросмотр траектории при жесте-рогатке (issue #475): пунктирная **дуга** от
+     * ствола, посчитанная тем же кодом, что и полёт снаряда (`fillTrajectoryPreview`
+     * → `advanceProjectile`), с учётом ветра боя. Показываем НЕ полёт до попадания, а
+     * первые ~30–40% пути и затухаем к концу — довести прицел игрок обязан сам
+     * (дуга, а не точка падения; вердикт handoff по п.3 из GDD сохранён). Рядом со
+     * стволом — компактный индикатор «угол·сила», чтобы значения были у взгляда, а
+     * не только в верхнем HUD. При `prefers-reduced-motion` пунктир статичен.
+     *
+     * Луч оттяжки, кольцо пальца и чип живут в DOM-оверлее (`ui/gesture-overlay`),
+     * где доступны токены и текст; здесь — заякоренная на стволе дуга в canvas-координатах.
+     *
+     * Начало дуги — точка крепления ствола (`gunpointX/gunpointY`), а не дульный срез
+     * (`Tank.calcBulletStartPos` = gunpoint + длина ствола): дуга параллельно смещена
+     * от истинной траектории на длину ствола (~35·scale px), направление и кривизна при
+     * этом совпадают с полётом (тот же `advanceProjectile`, ветер и гравитация).
      */
     private drawAimPreview(ctx: CanvasRenderingContext2D) {
         if (!this.leftTank || !this.rightTank) return;
         const [activeTank] = this.getActiveAndTargetTanks(this.leftTank, this.rightTank);
-        this.aimSegmentFrom.x = activeTank.gunpointX;
-        this.aimSegmentFrom.y = activeTank.gunpointY;
-        const length = directionSegmentLength(activeTank.power);
-        directionSegmentEnd(
-            this.aimSegmentFrom,
-            activeTank.gunpointAngle,
-            length,
-            this.aimSegmentTo,
+        this.aimArcFrom.x = activeTank.gunpointX;
+        this.aimArcFrom.y = activeTank.gunpointY;
+        const count = fillTrajectoryPreview(
+            {
+                x: activeTank.gunpointX,
+                y: activeTank.gunpointY,
+                angle: activeTank.gunpointAngle,
+                power: activeTank.power,
+                wind: this.wind,
+                // Та же гравитация, что и у реального снаряда (`Bullet.gravity`),
+                // проброшена явно — дуга и полёт считают ускорение одним числом (#475).
+                gravity: BULLET_GRAVITY,
+                innerHeight: this.innerHeight,
+                radius: WORLD_UNITS.bulletRadius * activeTank.scale,
+            },
+            this.aimArcPoints,
         );
+        const isMax = activeTank.power >= activeTank.powerMax;
+        const color = isMax ? ENGINE_COLORS.danger : ENGINE_COLORS.accent;
+
         ctx.save();
-        ctx.globalAlpha = SEGMENT_OPACITY;
-        ctx.strokeStyle = ENGINE_COLORS.accent;
+        ctx.strokeStyle = color;
         ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
         // setLineDash копирует массив внутрь — модульная константа, без аллокации.
         ctx.setLineDash(SEGMENT_DASH as number[]);
-        ctx.beginPath();
-        ctx.moveTo(this.aimSegmentFrom.x, this.aimSegmentFrom.y);
-        ctx.lineTo(this.aimSegmentTo.x, this.aimSegmentTo.y);
-        ctx.stroke();
+        // Бегущий пунктир: смещение по времени кадра. При reduced-motion — 0 (статика).
+        ctx.lineDashOffset = this.reducedMotion ? 0 : -(this.lastFrameTs * ARC_DASH_SPEED);
+        // Дуга рисуется посегментно: каждый сегмент со своей прозрачностью — так дуга
+        // затухает к концу (issue «затухающая к концу»), чего одним stroke не сделать.
+        let prevX = this.aimArcFrom.x;
+        let prevY = this.aimArcFrom.y;
+        for (let i = 0; i < count; i++) {
+            const t = count > 1 ? i / (count - 1) : 0;
+            ctx.globalAlpha = SEGMENT_OPACITY * (1 - t * (1 - ARC_TAIL_OPACITY_FACTOR));
+            ctx.beginPath();
+            ctx.moveTo(prevX, prevY);
+            ctx.lineTo(this.aimArcPoints[i].x, this.aimArcPoints[i].y);
+            ctx.stroke();
+            prevX = this.aimArcPoints[i].x;
+            prevY = this.aimArcPoints[i].y;
+        }
         ctx.setLineDash(NO_DASH as number[]);
+        ctx.lineDashOffset = 0;
+        ctx.restore();
+
+        this.drawBarrelReadout(ctx, activeTank, isMax, color);
+    }
+
+    /**
+     * Компактный индикатор «угол·сила» у ствола (issue #475): значения рядом со
+     * взглядом игрока, а не только в верхней панели. Тёмная обводка под текстом —
+     * читаемость на песке и небе. На максимуме силы — «МАКС» и цвет danger, как у
+     * чипа оверлея. Текст на канвасе (не в DOM), потому что он заякорен точно на
+     * стволе в canvas-координатах и живёт лишь во время жеста.
+     */
+    private drawBarrelReadout(
+        ctx: CanvasRenderingContext2D,
+        activeTank: Tank,
+        isMax: boolean,
+        color: string,
+    ) {
+        const label = `${formatAngle(activeTank.gunpointAngle)}° · ${isMax ? 'МАКС' : activeTank.power}`;
+        const x = activeTank.gunpointX;
+        const y = activeTank.gunpointY - BARREL_LABEL_OFFSET;
+        ctx.save();
+        ctx.font = BARREL_LABEL_FONT;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+        ctx.strokeText(label, x, y);
+        ctx.fillStyle = color;
+        ctx.fillText(label, x, y);
         ctx.restore();
     }
 
@@ -573,8 +662,14 @@ export class GamePlay {
             !this.leftTank ||
             !this.rightTank ||
             !this.ground ||
-            // Пока частицы летят, сцена дрожит или дотлевает след снаряда — крутим цикл даже в idle
-            (this.isIdleMode() && !particlesAlive && !shakeActive && !trailActive)
+            // Пока частицы летят, сцена дрожит, дотлевает след снаряда ИЛИ бежит
+            // пунктир дуги предпросмотра (жест-рогатка, не reduced-motion) — крутим
+            // цикл даже в idle, чтобы кадр перерисовывал анимированную дугу.
+            (this.isIdleMode() &&
+                !particlesAlive &&
+                !shakeActive &&
+                !trailActive &&
+                !(this.showAimPreview && !this.reducedMotion))
         ) {
             // Тряска только что закончилась в тихом кадре — вернём сцену на место.
             if (this.wasShaking && !shakeActive && this.ctx) {

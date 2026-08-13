@@ -5,10 +5,6 @@ import {
     clampBubbleAnchorY,
     clampChipCenterX,
     clampChipTop,
-    DIRECTION_SEGMENT_MAX,
-    DIRECTION_SEGMENT_MIN,
-    directionSegmentEnd,
-    directionSegmentLength,
     isPointInGestureZone,
     isValidGestureZone,
     type TGestureZone,
@@ -49,35 +45,6 @@ describe('calculateGestureAim', () => {
         const a = calculateGestureAim({ x: 10, y: 20 }, { x: 90, y: 130 });
         const b = calculateGestureAim({ x: 10, y: 20 }, { x: 90, y: 130 });
         expect(a).toEqual(b);
-    });
-});
-
-describe('directionSegmentLength', () => {
-    it('не короче минимума даже при нулевой силе', () => {
-        expect(directionSegmentLength(0)).toBe(DIRECTION_SEGMENT_MIN);
-    });
-
-    it('растёт с силой', () => {
-        expect(directionSegmentLength(5)).toBeGreaterThan(directionSegmentLength(1));
-    });
-
-    it('не длиннее максимума (сегмент направления, не траектория)', () => {
-        expect(directionSegmentLength(1000)).toBe(DIRECTION_SEGMENT_MAX);
-    });
-});
-
-describe('directionSegmentEnd', () => {
-    it('конец сегмента лежит на луче угла на заданной длине', () => {
-        const end = directionSegmentEnd({ x: 100, y: 100 }, 0, 50);
-        expect(end.x).toBeCloseTo(150);
-        expect(end.y).toBeCloseTo(100);
-    });
-
-    it('переиспользует переданный буфер (без аллокации в кадре)', () => {
-        const buffer = { x: 0, y: 0 };
-        const result = directionSegmentEnd({ x: 0, y: 0 }, Math.PI / 2, 10, buffer);
-        expect(result).toBe(buffer);
-        expect(result.y).toBeCloseTo(10);
     });
 });
 

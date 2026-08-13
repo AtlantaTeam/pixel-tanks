@@ -65,7 +65,7 @@ export function SegmentedControl<TValue extends string>({
             aria-label={labelledBy ? undefined : label}
             aria-labelledby={labelledBy}
             className={clsx(
-                'inline-flex flex-wrap gap-0.5 border-[length:var(--border-w)] border-border bg-surface p-[3px]',
+                'flex gap-0.5 border-[length:var(--border-w)] border-border bg-surface p-[3px]',
                 className,
             )}
         >
@@ -80,12 +80,17 @@ export function SegmentedControl<TValue extends string>({
                         type="button"
                         role="radio"
                         aria-checked={active}
+                        // Длинная подпись усекается (overflow-hidden + text-ellipsis под
+                        // flex-1) — тултип отдаёт полный текст зрячему, как скринридеру
+                        // его отдаёт имя radio.
+                        title={option.label}
                         tabIndex={active || (!hasActiveOption && index === 0) ? 0 : -1}
                         onClick={() => onChange(option.value)}
                         onKeyDown={(event) => handleKeyDown(event, index)}
                         className={clsx(
-                            'min-h-11 cursor-pointer px-4 py-2 font-ui text-caption font-bold tracking-[0.06em] uppercase transition-colors',
+                            'flex-1 min-h-11 cursor-pointer px-2 py-2 font-ui text-caption font-bold tracking-[0.06em] uppercase transition-colors',
                             'outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]',
+                            'overflow-hidden text-ellipsis whitespace-nowrap',
                             active
                                 ? 'bg-[var(--accent)] text-[var(--accent-ink)] shadow-[var(--glow)]'
                                 : 'bg-transparent text-text-muted',

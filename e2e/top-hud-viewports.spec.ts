@@ -39,6 +39,50 @@ for (const viewport of VIEWPORTS) {
     });
 }
 
+// Узкий xl (#489): телеметрия (`top-hud-telemetry-desktop`) — нешринкающийся
+// (`xl:shrink-0`) ряд, сосед по флекс-ряду с HP-блоком (`flex-1`) — тот
+// подстраивается под доступную ширину, а телеметрия нет. Прежний гвард
+// (`top-hud`, `scrollWidth`) баг не ловил: `top-hud` — абсолютный оверлей на всю
+// ширину вьюпорта (её `right` всегда равен viewport.width), а клип держит
+// `scrollWidth` равным вьюпорту — контент не скроллится, просто вылезает за край.
+//
+// Всего два вьюпорта, не пять: HUD-полоса — `xl:max-w-[1280px] xl:mx-auto`, то есть
+// при любой ширине ≥1280 контейнер ровно 1280 и центрован, а внутренняя раскладка
+// одна и та же. Правый край телеметрии против вьюпорта фальсифицируем ТОЛЬКО на 1280
+// (край контейнера = край вьюпорта); на 1300…1500 у контейнера появляются поля, и
+// `x+width ≤ width` тривиально истинно — проверка нефальсифицируема. Реальный клип
+// (перенос ряда телеметрии на вторую строку) ловит ассерт высоты полосы `toBe(78)`,
+// одинаковый на всех ширинах. Поэтому 1280 (значимый правый край + высота) + один
+// широкий (1500 — что центровка/max-width держатся и высота остаётся 78).
+for (const width of [1280, 1500]) {
+    test.describe(`Верхний HUD — телеметрия не клипается на узком xl (${width})`, () => {
+        test.use({ viewport: { width, height: 800 } });
+
+        test('правый край телеметрии не уезжает за вьюпорт, ряд не переносится', async ({
+            page,
+        }) => {
+            await page.goto('/game?seed=42');
+
+            const telemetry = page.getByTestId('top-hud-telemetry-desktop');
+            await expect(telemetry).toBeVisible();
+            const telemetryBox = await telemetry.boundingBox();
+            expect(telemetryBox).not.toBeNull();
+            if (telemetryBox) {
+                expect(telemetryBox.x + telemetryBox.width).toBeLessThanOrEqual(width);
+            }
+
+            // Полоса HUD остаётся высотой 78px (xl:h-[78px]) — перенос ряда
+            // телеметрии на вторую строку раздул бы её.
+            const desktopHud = page.getByTestId('top-hud-desktop');
+            const desktopBox = await desktopHud.boundingBox();
+            expect(desktopBox).not.toBeNull();
+            if (desktopBox) {
+                expect(Math.round(desktopBox.height)).toBe(78);
+            }
+        });
+    });
+}
+
 // Пересекаются ли прямоугольники — используется, чтобы поймать перекрытие
 // бейджа заморозки и ряда телеметрии (#472), а не только горизонтальное
 // переполнение (это ловит getBoundingClientRect-проверка выше).

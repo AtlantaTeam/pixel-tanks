@@ -6,5 +6,9 @@
  */
 export const ENGINE_COLORS = {
     primary: '#ffc21f',
+    // Индикатор «угол·сила» у ствола и дуга предпросмотра (issue #475): обычное
+    // состояние — accent, а на максимуме оттяжки индикатор и дуга краснеют в danger,
+    // как чип оверлея (`drawAimPreview`).
     accent: '#48ff00',
+    danger: '#ff4242',
 } as const;

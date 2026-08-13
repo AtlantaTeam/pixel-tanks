@@ -34,34 +34,9 @@ export function calculateGestureAim(
     return { angle: aim.angle, power: aim.power, isMax: aim.power >= powerMax };
 }
 
-/**
- * Короткий сегмент направления от ствола (~12% пути): длина растёт с силой, но
- * ограничена сверху — сегмент показывает только направление, НЕ точку падения
- * (полная дуга отменяет пристрелку из GDD, вердикт handoff по п.3).
- */
-export const DIRECTION_SEGMENT_MIN = 24;
-export const DIRECTION_SEGMENT_PER_POWER = 4;
-export const DIRECTION_SEGMENT_MAX = 120;
-
-export function directionSegmentLength(power: number): number {
-    const raw = DIRECTION_SEGMENT_MIN + power * DIRECTION_SEGMENT_PER_POWER;
-    return Math.min(DIRECTION_SEGMENT_MAX, Math.max(DIRECTION_SEGMENT_MIN, raw));
-}
-
-/**
- * Конец сегмента направления. `out` — необязательный буфер для переиспользования
- * (кадровый цикл движка не должен аллоцировать — `.claude/rules/canvas.md`).
- */
-export function directionSegmentEnd(
-    from: TCoords,
-    angle: number,
-    length: number,
-    out: TCoords = { x: 0, y: 0 },
-): TCoords {
-    out.x = from.x + Math.cos(angle) * length;
-    out.y = from.y + Math.sin(angle) * length;
-    return out;
-}
+// Короткий сегмент направления удалён (issue #475): его заменила дуга предпросмотра
+// траектории — считается тем же кодом, что и полёт (`fillTrajectoryPreview`), и рисуется
+// движком (`GamePlay.drawAimPreview`). Расчёт луча оттяжки/чипа остаётся здесь.
 
 /** Прямоугольная зона жеста (клиентские или локальные координаты — важна лишь пара). */
 export type TGestureZone = { top: number; bottom: number; left: number; right: number };

@@ -210,4 +210,74 @@ describe('SegmentedControl', () => {
         const segment = screen.getByRole('radio', { name: 'День' });
         expect(segment.className).toMatch(/focus-visible:outline-\[var\(--accent\)\]/);
     });
+
+    // Равную ширину сегментов НЕЛЬЗЯ мерить здесь через offsetWidth: component-тесты
+    // идут в happy-dom (vitest.config.ts, environment: 'happy-dom'), а он не считает
+    // layout — offsetWidth у всех элементов = 0, и `toBe(firstWidth)` зелёный при
+    // ЛЮБОМ CSS, даже сломанном. Поэтому проверяем детерминированный контракт классов
+    // (flex-1 → flex: 1 1 0% → равная ширина), а фактическую раскладку меряет
+    // Playwright-e2e (как top-hud по вьюпортам).
+    it('даёт каждому сегменту flex-1 — из него следует равная ширина', () => {
+        render(
+            <SegmentedControl
+                label="Сложность"
+                options={DIFFICULTY_OPTIONS}
+                value="rookie"
+                onChange={() => {}}
+            />,
+        );
+
+        screen.getAllByRole('radio').forEach((btn) => {
+            expect(btn.className).toMatch(/\bflex-1\b/);
+        });
+    });
+
+    it('держит flex-1 на сегментах при переключении активного (ширина не зависит от выбора)', () => {
+        const { rerender } = render(
+            <SegmentedControl
+                label="Сложность"
+                options={DIFFICULTY_OPTIONS}
+                value="rookie"
+                onChange={() => {}}
+            />,
+        );
+
+        const everySegmentHasFlex1 = () =>
+            screen.getAllByRole('radio').every((btn) => /\bflex-1\b/.test(btn.className));
+
+        expect(everySegmentHasFlex1()).toBe(true);
+
+        rerender(
+            <SegmentedControl
+                label="Сложность"
+                options={DIFFICULTY_OPTIONS}
+                value="terminator"
+                onChange={() => {}}
+            />,
+        );
+
+        expect(everySegmentHasFlex1()).toBe(true);
+    });
+
+    it('держит flex-1 + overflow-hidden при разной длине подписей (текст не распирает сегмент)', () => {
+        render(
+            <SegmentedControl
+                label="Группа"
+                options={[
+                    { value: 'short', label: 'У' },
+                    { value: 'medium', label: 'Medium' },
+                    { value: 'very-long', label: 'Очень длинная подпись' },
+                ]}
+                value="short"
+                onChange={() => {}}
+            />,
+        );
+
+        // flex-1 (равная базовая ширина) + overflow-hidden (длинный текст усекается,
+        // а не растягивает сегмент) вместе держат равную ширину при любом тексте.
+        screen.getAllByRole('radio').forEach((btn) => {
+            expect(btn.className).toMatch(/\bflex-1\b/);
+            expect(btn.className).toMatch(/\boverflow-hidden\b/);
+        });
+    });
 });
