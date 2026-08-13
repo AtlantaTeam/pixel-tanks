@@ -4733,10 +4733,15 @@ describe('ветковая хореография в worktree раннера (#7
             expect(getVerifiedHead()).toBeNull();
         });
 
-        it('H3 в worktree: локальная ветка (общий ref кодер-сессий) != голова PR → false, чеки не гонялись', () => {
+        // #466 уточнил смысл: останавливает не любое расхождение, а именно ветвление —
+        // когда локально есть коммиты, которых нет в PR. Отставший ref подтягивается
+        // сам (отдельный тест ниже), поэтому здесь merge-base обязан сказать «не предок».
+        it('H3 в worktree: локальная ветка (общий ref кодер-сессий) разошлась с головой PR → false, чеки не гонялись', () => {
             const { shCmds, parkFn, deps } = mkDeps({
                 shImpl: (cmd: string) => {
                     if (cmd.startsWith('git rev-parse --verify')) return SHA_B;
+                    if (cmd.startsWith('git merge-base --is-ancestor'))
+                        throw new Error('not an ancestor');
                     return '';
                 },
             });
@@ -4744,6 +4749,45 @@ describe('ветковая хореография в worktree раннера (#7
             expect(shCmds).not.toContain('npm run build');
             expect(shCmds).not.toContain(`git checkout --detach ${SHA_A}`);
             expect(parkFn).toHaveBeenCalled();
+        });
+
+        // #466: отставший локальный ref — не расхождение, а нормальное состояние после
+        // того, как человек допушил в ветку фазы (влил main ради внешнего красного чека).
+        // Потери работы невозможны: localHead — предок головы PR. Раньше это останавливало
+        // петлю, а подсказка «синхронизируй (push/pull)» не чинила: дерево раннера
+        // detached, ref общий, и лечится только `git branch -f`.
+        it('#466 ref отстал (предок головы PR) → подтягиваем fast-forward и продолжаем', () => {
+            const { shCmds, parkFn, deps } = mkDeps({
+                shImpl: (cmd: string) => {
+                    if (cmd.startsWith('git rev-parse --verify')) return SHA_B;
+                    // merge-base --is-ancestor: код 0 → предок
+                    if (cmd.startsWith('git merge-base --is-ancestor')) return '';
+                    return '';
+                },
+            });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(true);
+            expect(shCmds).toContain(`git update-ref refs/heads/feature/m1 ${SHA_A}`);
+            expect(shCmds).toContain(`git checkout --detach ${SHA_A}`);
+            expect(parkFn).not.toHaveBeenCalled();
+        });
+
+        it('#466 ветки разошлись (не предок) → стоп, и в логе готовая команда с именем ветки', () => {
+            const logs: string[] = [];
+            const { shCmds, parkFn, deps } = mkDeps({
+                shImpl: (cmd: string) => {
+                    if (cmd.startsWith('git rev-parse --verify')) return SHA_B;
+                    if (cmd.startsWith('git merge-base --is-ancestor'))
+                        throw new Error('not an ancestor');
+                    return '';
+                },
+                logFn: (m: string) => logs.push(m),
+            });
+            expect(checksGreen('feature/m1', 42, deps)).toBe(false);
+            expect(shCmds).not.toContain('npm run build');
+            expect(shCmds).not.toContain(`git update-ref refs/heads/feature/m1 ${SHA_A}`);
+            expect(parkFn).toHaveBeenCalled();
+            // Подсказка обязана быть выполнимой: с именем ветки, а не «синхронизируй».
+            expect(logs.join('\n')).toContain('git branch -f feature/m1 origin/feature/m1');
         });
 
         it('локальной ветки нет (rev-parse падает) — не фатально: чеки идут на PR-голове', () => {

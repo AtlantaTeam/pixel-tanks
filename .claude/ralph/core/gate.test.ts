@@ -244,6 +244,8 @@ describe('checksGreen — прогон шагов на голове PR (#77)', (
         expect(sh).not.toHaveBeenCalledWith('npm run lint', expect.anything());
     });
 
+    // #466: останавливает ветвление, а не любое расхождение. `merge-base --is-ancestor`
+    // обязан сказать «не предок» — иначе это отставший ref, и он подтягивается сам.
     it('H3: локальная ветка разошлась с головой PR → false, чеки не гонятся', () => {
         const park = vi.fn();
         const syncDeps = vi.fn();
@@ -251,7 +253,10 @@ describe('checksGreen — прогон шагов на голове PR (#77)', (
         const sh = vi.fn((cmd: string) => (cmd.includes('rev-parse') ? OTHER_SHA : ''));
         const ok = g.checksGreen('feature/x', 7, {
             shFn: sh,
-            runArgvFn: () => '',
+            runArgvFn: (file: string, args: string[]) => {
+                if (args[0] === 'merge-base') throw new Error('not an ancestor');
+                return '';
+            },
             prHeadShaFn: () => SHA,
             syncDepsFn: syncDeps,
             checks: [['lint', 'npm run lint']],
@@ -259,6 +264,25 @@ describe('checksGreen — прогон шагов на голове PR (#77)', (
         expect(ok).toBe(false);
         expect(syncDeps).not.toHaveBeenCalled();
         expect(park).toHaveBeenCalledTimes(1);
+    });
+
+    it('#466 ref отстал (предок головы PR) → ff-подтяжка, чеки идут дальше', () => {
+        const park = vi.fn();
+        const g = createGateRunner(makeEnv({ parkOnOriginMain: park }));
+        const argv: Array<[string, string[]]> = [];
+        const ok = g.checksGreen('feature/x', 7, {
+            shFn: (cmd: string) => (cmd.includes('rev-parse') ? OTHER_SHA : ''),
+            runArgvFn: (file: string, args: string[]) => {
+                argv.push([file, args]);
+                return '';
+            },
+            prHeadShaFn: () => SHA,
+            syncDepsFn: () => {},
+            checks: [['lint', 'npm run lint']],
+        });
+        expect(ok).toBe(true);
+        expect(argv).toContainEqual(['git', ['update-ref', 'refs/heads/feature/x', SHA]]);
+        expect(park).not.toHaveBeenCalled();
     });
 
     it('шов отдал не-sha → fail-closed', () => {
