@@ -191,12 +191,20 @@ function HudIconButtons({ onPauseClick }: { onPauseClick?: () => void }) {
 function CellShell({
     label,
     compact,
+    tight,
     className,
     children,
 }: {
     label: string;
     /** Плотный паддинг мобильного HUD (#450) — уже, чем на планшете/десктопе. */
     compact?: boolean;
+    /** Без паддинга — только рамка + подложка (#528, десктопная пара «Снаряды»/
+     *  «Ходы»): на узком xl (1280) телеметрия — один нешринкающийся ряд
+     *  (`xl:shrink-0 xl:flex-nowrap`), и обычный паддинг двух новых карточек не
+     *  влезает в оставшийся бюджет ширины полосы (замер — 410px доступно против
+     *  431px с обычным `CellShell`). Планшет/1920 паддинг не жмёт, но тот же
+     *  компонент не должен «прыгать» составом между брейкпоинтами. */
+    tight?: boolean;
     className?: string;
     children: ReactNode;
 }) {
@@ -207,7 +215,7 @@ function CellShell({
                 'flex flex-col gap-0.5 border-[length:var(--border-w)] border-border',
                 // xl:px-1.5 (#489): та же экономия ширины узкого xl (1280…~1413) —
                 // планшет (768, тоже !compact) держит исходный px-2.5.
-                compact ? 'shrink-0 px-1 py-0.5' : 'px-2.5 py-1.5 xl:px-1.5',
+                tight ? '' : compact ? 'shrink-0 px-1 py-0.5' : 'px-2.5 py-1.5 xl:px-1.5',
                 className,
             )}
         >
@@ -512,15 +520,16 @@ function WindCell({
     );
 }
 
-function ResourcePips({
-    label,
+/** Сами пипы без подписи и без обёртки-карточки (#528) — общий визуал для
+ *  мобильной `ResourcePips` (своя подпись, своя плотная карточка) и десктопной
+ *  `CellShell`-обёртки (подпись и карточка — её работа, дублировать не нужно). */
+function ResourcePipVisual({
     pips,
     color,
     ariaLabel,
     size,
     gap,
 }: {
-    label: string;
     pips: boolean[];
     color: string;
     ariaLabel: string;
@@ -531,23 +540,60 @@ function ResourcePips({
     gap?: number;
 }) {
     return (
-        <div className="flex flex-col gap-1">
+        // xl-плотность (#489): на узком xl (1280…~1413) телеметрия в один
+        // нешринкающийся ряд (`shrink-0`) уезжает за край — компактнее пипы
+        // снарядов/ходов освобождают ей место. `size`/`gap` тут не передаются
+        // (Снаряды/Ходы = default 14px/5px, планшет не трогаем), поэтому цель —
+        // через arbitrary-variant по `data-testid`, а не проп: класс работает
+        // только под `xl:`-медиа, планшет (768, тот же `ResourcePipVisual`) их не видит.
+        <PipRow
+            pips={pips}
+            color={color}
+            label={ariaLabel}
+            size={size}
+            gap={gap}
+            className="xl:gap-[3px] xl:[&>[data-testid=pip]]:size-2.5"
+        />
+    );
+}
+
+/**
+ * Снаряды/ходы мобильного ряда телеметрии (#528): своя подпись + `ResourcePipVisual`,
+ * в собственной плотной карточке (см. использование ниже) — раньше висели прямо на
+ * небе без подложки, читались хуже соседних ячеек на светлом/тёмном пресете.
+ * `dense` сжимает внутренний зазор подпись↔пипы до 2px (было 4): бюджет ряда
+ * телеметрии — высота соседней ячейки «Угол» (55.5px), и на добавленный бордер
+ * карточки (4px) места хватает только при плотном зазоре — обычный `gap-1`
+ * (как на планшете/десктопе, где карточка не в стеснённом ряду) row вырастил бы.
+ */
+function ResourcePips({
+    label,
+    pips,
+    color,
+    ariaLabel,
+    size,
+    gap,
+    dense,
+}: {
+    label: string;
+    pips: boolean[];
+    color: string;
+    ariaLabel: string;
+    size?: number;
+    gap?: number;
+    dense?: boolean;
+}) {
+    return (
+        <div className={clsx('flex flex-col', dense ? 'gap-0.5' : 'gap-1')}>
             <span className="font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase">
                 {label}
             </span>
-            {/* xl-плотность (#489): на узком xl (1280…~1413) телеметрия в один
-                нешринкающийся ряд (`shrink-0`) уезжает за край — компактнее пипы
-                снарядов/ходов освобождают ей место. `size`/`gap` тут не передаются
-                (Снаряды/Ходы = default 14px/5px, планшет не трогаем), поэтому цель —
-                через arbitrary-variant по `data-testid`, а не проп: класс работает
-                только под `xl:`-медиа, планшет (768, тот же `ResourcePips`) их не видит. */}
-            <PipRow
+            <ResourcePipVisual
                 pips={pips}
                 color={color}
-                label={ariaLabel}
+                ariaLabel={ariaLabel}
                 size={size}
                 gap={gap}
-                className="xl:gap-[3px] xl:[&>[data-testid=pip]]:size-2.5"
             />
         </div>
     );
@@ -754,12 +800,23 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         className="ml-2"
                     />
                     <WindCell wind={wind} windRevealed={windRevealed} compact />
-                    {/* Снаряды и ходы — компактной колонкой (пипы 8px): два ряда
-                        держат подписи, но по ширине встают рядом с ячейками.
+                    {/* Снаряды и ходы — компактной карточкой (#528): та же подложка
+                        HUD_SURFACE + рамка, что у соседних ячеек — раньше висели
+                        прямо на небе без неё и почти терялись на светлом пресете.
+                        Один бордер на пару строк, а не на каждую: две отдельные
+                        карточки не влезли бы в бюджет высоты ряда (55.5px, тот же,
+                        что у ячейки «Угол»). `gap-0.5` и `dense` — тот же бюджет:
+                        обычный `gap-1` (как на планшете/десктопе, где карточка не в
+                        стеснённом ряду) вместе с бордером row вырастил бы.
                         `flex-1` + выравнивание вправо (#528): колонка добирает остаток
-                        строки, и правый край ряда телеметрии совпадает с рядами выше —
+                        строки, и правый край карточки совпадает с рядами выше —
                         раньше он не доходил до них 9 px и край панели выглядел рваным. */}
-                    <div className="flex flex-1 flex-col items-end justify-center gap-1">
+                    <div
+                        className={clsx(
+                            HUD_SURFACE,
+                            'flex flex-1 flex-col items-end justify-center gap-0.5 border-[length:var(--border-w)] border-border',
+                        )}
+                    >
                         <ResourcePips
                             label="Снаряды"
                             pips={ammoPips}
@@ -767,6 +824,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                             ariaLabel="снарядов"
                             size={8}
                             gap={2}
+                            dense
                         />
                         <ResourcePips
                             label="Ходы"
@@ -775,6 +833,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                             ariaLabel="ходов манёвра"
                             size={8}
                             gap={2}
+                            dense
                         />
                     </div>
                     {isBotTurn && (
@@ -860,18 +919,26 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         sizer={POWER_MAX}
                     />
                     <WindCell wind={wind} windRevealed={windRevealed} />
-                    <ResourcePips
-                        label="Снаряды"
-                        pips={ammoPips}
-                        color="var(--color-accent)"
-                        ariaLabel="снарядов"
-                    />
-                    <ResourcePips
-                        label="Ходы"
-                        pips={movePips}
-                        color="var(--color-warning)"
-                        ariaLabel="ходов манёвра"
-                    />
+                    {/* Планшет/десктоп (#528): та же `CellShell`-карточка (рамка +
+                        подложка), что у Угла/Силы/Ветра — раньше снаряды и ходы были
+                        единственной парой ячеек без неё. `tight` (без паддинга): на
+                        узком xl (1280) телеметрия — нешринкающийся ряд, обычный
+                        паддинг `CellShell` в оставшийся бюджет ширины не влезает
+                        (см. докблок `tight` в `CellShell`). */}
+                    <CellShell label="Снаряды" tight>
+                        <ResourcePipVisual
+                            pips={ammoPips}
+                            color="var(--color-accent)"
+                            ariaLabel="снарядов"
+                        />
+                    </CellShell>
+                    <CellShell label="Ходы" tight>
+                        <ResourcePipVisual
+                            pips={movePips}
+                            color="var(--color-warning)"
+                            ariaLabel="ходов манёвра"
+                        />
+                    </CellShell>
                 </div>
             </div>
         </div>
