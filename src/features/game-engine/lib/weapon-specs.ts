@@ -161,7 +161,13 @@ export const WEAPON_SPECS: Record<EWeaponKind, TWeaponSpec> = {
     },
 };
 
-/** Спека по типу; неизвестный тип (не должен возникать) — фугас как безопасный дефолт. */
+/**
+ * Спека по типу. `WEAPON_SPECS` — тотальный `Record<EWeaponKind, TWeaponSpec>`, а
+ * декодер реплея клампит `weaponId` в `WEAPON_KIND_ORDER`, поэтому невалидный `kind`
+ * сюда не приходит и `??`-ветка недостижима штатно. Фолбэк оставлен как страховка
+ * ТОЛЬКО на невалидный рантайм-каст извне системы типов (например, `kind` из
+ * непроверенного JSON, приведённый к `EWeaponKind`) — тогда вернётся фугас.
+ */
 export const weaponSpecFor = (kind: EWeaponKind): TWeaponSpec =>
     WEAPON_SPECS[kind] ?? WEAPON_SPECS[EWeaponKind.HighExplosive];
 

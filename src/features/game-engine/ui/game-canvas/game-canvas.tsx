@@ -102,11 +102,11 @@ function commitPlayerShot(
     if (!game.leftTank) return;
     // Тип оружия в реплей — ординал по `WEAPON_KIND_ORDER` (issue #483): кратер по
     // типу меняет рельеф, без записи типа воспроизведение разошлось бы с боем.
-    recordFire(
-        game.leftTank.gunpointAngle,
-        game.leftTank.power,
-        WEAPON_KIND_ORDER.indexOf(weapon.kind),
-    );
+    // Клампим ординал в источнике: `indexOf` вернёт -1 для kind вне порядка (не
+    // должен возникать, но `EWeaponKind` не тотален по построению), а -1 просочился
+    // бы в реплей и уронил бы кодек в конце боя. Неизвестный тип → фугас (0).
+    const weaponOrdinal = Math.max(0, WEAPON_KIND_ORDER.indexOf(weapon.kind));
+    recordFire(game.leftTank.gunpointAngle, game.leftTank.power, weaponOrdinal);
     game.onFire(weapon);
     removeWeaponById(weapon.id);
 }

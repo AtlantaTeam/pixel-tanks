@@ -289,6 +289,11 @@ export const decodeReplay = (code: string): TReplay | null => {
         offset += 2;
         const bottom = view.getUint16(offset);
         offset += 2;
+        // Нулевой блок инсетов → `insets: undefined` (запись без инсетов). Для v3
+        // это безопасно ТОЛЬКО потому, что `encodeReplay` никогда не пишет v3 с
+        // нулевыми инсетами (`hasInsets` требует ненулевой top/bottom, иначе версия
+        // падает до v2) — записи v3 с 0/0 в проде не существует. Нулевой блок несёт
+        // лишь v4 (фиксированная раскладка), и там 0/0 как раз и значит «без инсетов».
         if (top !== 0 || bottom !== 0) insets = { top, bottom };
     }
 

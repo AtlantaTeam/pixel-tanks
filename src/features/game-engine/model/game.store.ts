@@ -279,8 +279,16 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
     removeWeaponById: (id) =>
         set((s) => {
             const weapons = s.weapons.filter((w) => w.id !== id);
+            const removed = s.selectedWeapon;
+            // Выстрелянное оружие было выбранным — по возможности сохраняем выбор
+            // ТОГО ЖE типа, если он ещё есть в арсенале (неоднородный арсенал #483):
+            // выстрелив осознанно выбранным Кластером, игрок не должен на следующий
+            // ход обнаружить откат выбора к Фугасу. Своего типа не осталось — берём
+            // первый оставшийся, как и раньше.
             const selectedWeapon =
-                s.selectedWeapon?.id === id ? (weapons[0] ?? null) : s.selectedWeapon;
+                removed?.id === id
+                    ? (weapons.find((w) => w.kind === removed.kind) ?? weapons[0] ?? null)
+                    : s.selectedWeapon;
             return { weapons, selectedWeapon };
         }),
     setGameOver: () =>
@@ -345,7 +353,13 @@ export const useGameStore = create<TGameState & TGameActions>((set) => ({
         set((s) => ({
             replayMoves: [
                 ...s.replayMoves,
-                weaponId
+                // Пишем `weaponId` ровно по той же семантике, что и `encodeReplay`
+                // (гейт `weaponId > 0`): фугас (0) и отсутствие типа не пишем —
+                // запись остаётся совместимой со старыми. Явное `> 0` вместо
+                // truthiness ещё и отсекает случайный `-1` (kind вне
+                // `WEAPON_KIND_ORDER`), который иначе как `weaponId:-1` дошёл бы до
+                // кодека и уронил бы `encodeReplay` в конце боя — далеко от причины.
+                weaponId !== undefined && weaponId > 0
                     ? { kind: 'fire', angle, power, weaponId }
                     : { kind: 'fire', angle, power },
             ],
