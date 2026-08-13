@@ -54,7 +54,7 @@ describe('GameCanvas', () => {
 
     it('disables native touch gestures (scroll/zoom) on the canvas element', () => {
         const { container } = render(<GameCanvas seed={42} />);
-        const canvas = container.querySelector('canvas');
+        const canvas = container.querySelector('.game-canvas');
 
         expect(canvas).toHaveClass('touch-none');
     });
@@ -96,7 +96,7 @@ describe('GameCanvas', () => {
         });
 
         // Найти relative-контейнер, который содержит canvas
-        const canvas = container.querySelector('canvas') as HTMLCanvasElement;
+        const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
         const relativeContainer = canvas?.parentElement;
 
         // Контейнер должен иметь relative позиционирование
@@ -112,7 +112,7 @@ describe('GameCanvas', () => {
         useGameStore.getState().resetGame();
         useGameStore.setState({ angle: 0.5, power: 12 });
         const { container } = render(<GameCanvas seed={42} />);
-        const canvas = container.querySelector('canvas') as HTMLCanvasElement;
+        const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
 
         expect(useGameStore.getState().battleSeed).toBe(42);
         // Store → engine синк применил angle/power к leftTank ещё до клика.
