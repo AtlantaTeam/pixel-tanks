@@ -168,6 +168,13 @@ function CellValue({
     );
 }
 
+/**
+ * Кадр НАМЕРЕННО опускает геометрические размерники боевого виджета
+ * (`FixedNumeric` для угла/силы, невидимый ряд пипов ветра — #447/#473): они
+ * держат ширину бокса неизменной при СМЕНЕ значения, а витрина статична (угол
+ * всегда «47°», ветер всегда одно состояние) — «ездить» тут нечему. Не считать
+ * это упущением зеркала: размерник без меняющегося значения — мёртвый код.
+ */
 function NumberCell({
     label,
     value,
@@ -315,29 +322,31 @@ function FrozenNote({ className }: { className?: string }) {
     );
 }
 
-/** Планшет/десктоп (#472) — 1:1 с боевым `FreezeBadgeOrNothing` (`widgets/top-hud`):
- *  короткий бейдж рядом с пилюлей хода, слот зарезервирован всегда (`invisible`,
- *  не размонтирование — #447), полная фраза — `sr-only`. */
+/** Планшет/десктоп (#472) — зеркало боевого `FreezeBadgeOrNothing`
+ *  (`widgets/top-hud`): короткий бейдж рядом с пилюлей хода, слот зарезервирован
+ *  всегда (`invisible`, не размонтирование — #447). Сам бейдж ДЕКОРАТИВЕН
+ *  (`aria-hidden`): в боевом виджете о заморозке скринридеру сообщает отдельный
+ *  постоянный live-region (`FreezeAnnouncer`), а не `role` на этом узле — иначе
+ *  анонса нет. Кадр статичен и ничего не озвучивает, поэтому полную фразу держим
+ *  просто `sr-only`-текстом рядом (документирует, что именно услышит скринридер). */
 function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
     return (
-        <div
-            role={visible ? 'status' : undefined}
-            aria-hidden={visible ? undefined : true}
-            className={clsx(
-                HUD_SURFACE,
-                'flex min-h-10 shrink-0 items-center gap-1.5 border-[length:var(--border-w)] border-border px-2.5 py-1.5',
-                !visible && 'invisible',
-            )}
-        >
-            <Icon name="lock" size={12} className="shrink-0 text-text-muted" />
-            <span
+        <>
+            <div
                 aria-hidden
-                className="font-ui text-[10px] tracking-[0.1em] whitespace-nowrap text-text-muted uppercase"
+                className={clsx(
+                    HUD_SURFACE,
+                    'flex min-h-10 shrink-0 items-center gap-1.5 border-[length:var(--border-w)] border-border px-2.5 py-1.5',
+                    !visible && 'invisible',
+                )}
             >
-                Заморожено
-            </span>
+                <Icon name="lock" size={12} className="shrink-0 text-text-muted" />
+                <span className="font-ui text-[10px] tracking-[0.1em] whitespace-nowrap text-text-muted uppercase">
+                    Заморожено
+                </span>
+            </div>
             <span className="sr-only">{FROZEN_TEXT}</span>
-        </div>
+        </>
     );
 }
 

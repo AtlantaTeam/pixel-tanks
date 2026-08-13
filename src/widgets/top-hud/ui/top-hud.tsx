@@ -389,6 +389,14 @@ function TrimCell({
     );
 }
 
+/** Размер и зазор пипов ветра по плотности HUD — ЕДИНЫЙ источник для видимого ряда
+ *  пипов и невидимого размерника ширины (#473). Держи их порознь — поменяют размер
+ *  видимых пипов на десктопе, а хардкод размерника промолчит: бокс перестанет
+ *  держать ту же ширину, и ячейка «Ветер» снова «поедет» при раскрытии числа (ровно
+ *  баг, который размерник и чинит). */
+const WIND_PIP_DESKTOP = { size: 10, gap: 5 } as const;
+const WIND_PIP_COMPACT = { size: 8, gap: 3 } as const;
+
 function WindCell({
     wind,
     windRevealed,
@@ -400,6 +408,7 @@ function WindCell({
 }) {
     const direction = windDirection(wind);
     const magnitude = windMagnitude(wind);
+    const pipDims = compact ? WIND_PIP_COMPACT : WIND_PIP_DESKTOP;
     // Число пипов = верх шкалы силы (`WIND_DISPLAY_SCALE`), тот же, что и максимум
     // magnitude — иначе смена шкалы разведёт число пипов и потолок значения.
     const pips = Array.from({ length: WIND_DISPLAY_SCALE }, (_, index) => index < magnitude);
@@ -419,8 +428,8 @@ function WindCell({
         <PipRow
             pips={pips}
             color="var(--color-warning)"
-            size={compact ? 8 : 10}
-            gap={compact ? 3 : 5}
+            size={pipDims.size}
+            gap={pipDims.gap}
             label="грубая сила ветра"
         />
     );
@@ -462,7 +471,12 @@ function WindCell({
                     // самое широкое состояние, реальный контент рисуется поверх.
                     <span className="grid justify-items-center">
                         <span aria-hidden className="invisible col-start-1 row-start-1">
-                            <PipRow pips={pips} color="var(--color-warning)" size={10} gap={5} />
+                            <PipRow
+                                pips={pips}
+                                color="var(--color-warning)"
+                                size={WIND_PIP_DESKTOP.size}
+                                gap={WIND_PIP_DESKTOP.gap}
+                            />
                         </span>
                         <span className="col-start-1 row-start-1 flex items-center">{content}</span>
                     </span>
@@ -526,15 +540,19 @@ function FrozenNote({ className }: { className?: string }) {
  * Слот зарезервирован ВСЕГДА (тот же приём, что `TurnPillOrNothing` — #447):
  * узел остаётся в потоке, видимость — через `invisible`, а не размонтирование.
  * Появление/исчезновение бейджа не двигает ни пилюлю, ни иконки, ни телеметрию.
- * Полная фраза — `sr-only` для скринридера; видимый текст сокращён и
- * декоративен (`aria-hidden`), чтобы не звучать дважды.
+ *
+ * Бейдж — чисто ВИЗУАЛЬНЫЙ индикатор (`aria-hidden` всегда): скринридеру о
+ * заморозке сообщает отдельный постоянный live-region в корне HUD
+ * (`FreezeAnnouncer`), а не переключение `role` на этом узле. Live-region обязан
+ * уже существовать в дереве доступности ДО появления текста, иначе анонса нет;
+ * бейдж же то `aria-hidden`, то `invisible` — на такой смене большинство
+ * скринридеров молчат. Поэтому анонс вынесен из бейджа.
  */
 function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
     return (
         <div
             data-testid="freeze-badge"
-            role={visible ? 'status' : undefined}
-            aria-hidden={visible ? undefined : true}
+            aria-hidden
             className={clsx(
                 HUD_SURFACE,
                 'flex min-h-10 shrink-0 items-center gap-1.5 border-[length:var(--border-w)] border-border px-2.5 py-1.5',
@@ -542,14 +560,27 @@ function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
             )}
         >
             <Icon name="lock" size={12} className="shrink-0 text-text-muted" />
-            <span
-                aria-hidden
-                className="font-ui text-[10px] tracking-[0.1em] whitespace-nowrap text-text-muted uppercase"
-            >
+            <span className="font-ui text-[10px] tracking-[0.1em] whitespace-nowrap text-text-muted uppercase">
                 Заморожено
             </span>
-            <span className="sr-only">{FROZEN_TEXT}</span>
         </div>
+    );
+}
+
+/**
+ * Единственный анонс заморозки ввода для скринридера (a11y) — общий для обоих
+ * составов (мобильная `FrozenNote` и десктопный `FreezeBadgeOrNothing`
+ * визуальны/`aria-hidden`). Узел смонтирован ВСЕГДА и пуст на своём ходу; на ходе
+ * бота в него ВПИСЫВАЕТСЯ текст. Именно смена содержимого уже существующего
+ * `role="status"` (aria-live=polite) озвучивается — в отличие от появления узла
+ * или переключения `role`/`visibility` на готовом заполненном узле. `sr-only` —
+ * только для скринридера, `absolute` (вне потока), геометрию HUD не трогает.
+ */
+function FreezeAnnouncer({ frozen }: { frozen: boolean }) {
+    return (
+        <span data-testid="freeze-live" role="status" aria-live="polite" className="sr-only">
+            {frozen ? FROZEN_TEXT : ''}
+        </span>
     );
 }
 
@@ -607,6 +638,8 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
             className="pointer-events-none absolute inset-x-0 top-0 z-6 flex flex-col gap-2 p-2.5"
             style={{ paddingTop: 'calc(0.625rem + env(safe-area-inset-top))' }}
         >
+            {/* Анонс заморозки — один на оба состава, смонтирован всегда (a11y, #472). */}
+            <FreezeAnnouncer frozen={isBotTurn} />
             {/* Мобилка (<768): три ряда — HP-карточки (inline), пилюля хода +
                 иконки, единый ряд телеметрии. Компактная плотность (#450). */}
             <div

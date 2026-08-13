@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { reachBotTurn } from './helpers';
 
 // Канонические вьюпорты проекта (CLAUDE.md «Адаптив») + планшет — целевое
@@ -100,3 +100,91 @@ for (const width of [1280, 1920]) {
         });
     });
 }
+
+// Пересекаются ли прямоугольники ТОЛЬКО по вертикали — «на одной строке»:
+// пилюля/бейдж/иконки разведены по X, но обязаны делить строку. `boxesOverlap`
+// (обе оси) для соседей по строке всегда false, поэтому проверяем ось Y отдельно.
+function shareLine(a: { y: number; height: number }, b: { y: number; height: number }): boolean {
+    return a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+// Планшет 768, ход бота (ревью фазы 4): бейдж заморозки резервируется ВСЕГДА
+// (invisible на своём ходу — держит геометрию), но добавляет ~ширину чипа в
+// первый ряд `flex-wrap` (HP-блок `min-w-[420px] flex-1` + пилюля + бейдж +
+// иконки). Риск: бейдж «роняет» пилюлю/иконки на отдельную строку и полоса HUD
+// становится выше во ВСЕХ фазах равномерно — а равенство высот по фазам
+// (`hud-geometry-stable`) равномерный перенос не ловит. Барьер: пилюля хода и
+// кнопки mute/пауза остаются на одной строке И на своём ходу, И на ходе бота;
+// бейдж встаёт РЯДОМ с пилюлей (та же строка), не под ней; высота полосы между
+// фазами не меняется. Скриншот 768 (ход бота) — для человеческого гейта вкуса.
+test.describe('Верхний HUD — планшет 768, бейдж заморозки не роняет первый ряд', () => {
+    test.use({ viewport: { width: 768, height: 1024 } });
+
+    async function pillBox(page: Page) {
+        const box = await page
+            .getByTestId('top-hud-desktop')
+            .getByTestId('turn-pill')
+            .boundingBox();
+        if (!box) throw new Error('пилюля хода не найдена');
+        return box;
+    }
+
+    async function pauseBox(page: Page) {
+        const box = await page
+            .getByTestId('top-hud-desktop')
+            .getByRole('button', { name: 'Пауза' })
+            .boundingBox();
+        if (!box) throw new Error('кнопка «Пауза» не найдена');
+        return box;
+    }
+
+    async function hudHeight(page: Page) {
+        const box = await page.getByTestId('top-hud').boundingBox();
+        if (!box) throw new Error('top-hud не найден');
+        return box.height;
+    }
+
+    test('пилюля и иконки на одной строке (свой ход и ход бота), бейдж рядом с пилюлей, высота полосы стабильна', async ({
+        page,
+    }) => {
+        test.setTimeout(60_000);
+        await page.goto('/game?seed=42');
+        await expect(page.getByTestId('top-hud-desktop')).toBeVisible();
+
+        // Свой ход: бейдж зарезервирован (invisible), но первый ряд не переносится.
+        expect(
+            shareLine(await pillBox(page), await pauseBox(page)),
+            'свой ход: пилюля хода и кнопка паузы на одной строке',
+        ).toBe(true);
+        const ownTurnHeight = await hudHeight(page);
+
+        await reachBotTurn(page);
+        const badge = page.getByTestId('top-hud-desktop').getByTestId('freeze-badge');
+        await expect(badge).toBeVisible();
+        const badgeBox = await badge.boundingBox();
+        if (!badgeBox) throw new Error('бейдж заморозки не найден');
+
+        // Ход бота: пилюля и иконки по-прежнему на одной строке, бейдж — рядом с
+        // пилюлей (та же строка), а не «уронил» её или иконки на вторую.
+        expect(
+            shareLine(await pillBox(page), await pauseBox(page)),
+            'ход бота: пилюля хода и кнопка паузы на одной строке',
+        ).toBe(true);
+        expect(
+            shareLine(await pillBox(page), badgeBox),
+            'ход бота: бейдж заморозки на одной строке с пилюлей хода',
+        ).toBe(true);
+
+        // Равномерный перенос из-за бейджа рос бы во всех фазах — сверяем высоту
+        // полосы «свой ход» vs «ход бота» напрямую (не только равенство по фазам).
+        expect(
+            Math.round(await hudHeight(page)),
+            `высота top-hud: ход бота vs свой ход (${Math.round(ownTurnHeight)}px)`,
+        ).toBe(Math.round(ownTurnHeight));
+
+        await page.screenshot({
+            path: 'screenshots/top-hud-bot-turn-tablet-768.png',
+            fullPage: false,
+        });
+    });
+});

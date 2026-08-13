@@ -286,8 +286,45 @@ describe('TopHud', () => {
 
         expect(desktop.getByText('Угол')).toBeInTheDocument();
         expect(desktop.queryByText('Угол · заморожен')).not.toBeInTheDocument();
-        // Заморозку на десктопе показывает бейдж рядом с пилюлей (#472).
-        expect(desktop.getByTestId('freeze-badge')).toHaveAttribute('role', 'status');
+        // Заморозку на десктопе показывает бейдж рядом с пилюлей (#472) — на ходе
+        // бота он видим (не `invisible`); сам бейдж декоративен (`aria-hidden`),
+        // анонс несёт отдельный live-region (тест ниже).
+        const badge = desktop.getByTestId('freeze-badge');
+        expect(badge).not.toHaveClass('invisible');
+        expect(badge).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('десктоп: слот бейджа заморозки зарезервирован и на СВОЁМ ходу — бейдж present, invisible, aria-hidden (#472)', () => {
+        useGameStore.setState({ turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const desktop = within(getByTestId('top-hud-desktop'));
+
+        // Смысл компонента — не двигать пилюлю/иконки/телеметрию: на своём ходу
+        // бейдж не размонтируется, лишь скрывается видимостью. Регрессию «стали
+        // размонтировать на своём ходу» иначе ловит только тяжёлый e2e.
+        const badge = desktop.getByTestId('freeze-badge');
+        expect(badge).toBeInTheDocument();
+        expect(badge).toHaveClass('invisible');
+        expect(badge).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('заморозку ввода анонсирует постоянный live-region: пуст на своём ходу, текст на ходе бота (a11y, #472)', () => {
+        const { getByTestId, rerender } = render(<TopHud />);
+        useGameStore.setState({ turn: 'player' });
+        rerender(<TopHud />);
+
+        const live = getByTestId('freeze-live');
+        // role="status" (aria-live) смонтирован всегда и пуст на своём ходу —
+        // именно поэтому смена его содержимого потом озвучивается.
+        expect(live).toHaveAttribute('role', 'status');
+        expect(live).toBeEmptyDOMElement();
+
+        // Тот же узел (не пересоздан) наполняется текстом на ходе бота.
+        useGameStore.setState({ turn: 'enemy' });
+        rerender(<TopHud />);
+        expect(getByTestId('freeze-live')).toHaveTextContent(
+            'Твои числа заморожены до конца хода соперника',
+        );
     });
 
     // #447 — геометрия HUD не зависит ни от фазы боя, ни от значений.
