@@ -21,6 +21,29 @@ describe('SKY_PRESETS', () => {
             expect(preset.cloudAlpha).toBeLessThanOrEqual(1);
         });
     });
+
+    it('у каждого пресета есть палитра светила: солнце день/закат, луна ночь', () => {
+        const byId = new Map(SKY_PRESETS.map((preset) => [preset.id, preset]));
+        expect(byId.get('day')?.celestial.kind).toBe('sun');
+        expect(byId.get('sunset')?.celestial.kind).toBe('sun');
+        expect(byId.get('night')?.celestial.kind).toBe('moon');
+        SKY_PRESETS.forEach((preset) => {
+            expect(preset.celestial.core).toMatch(/^#[0-9a-f]{6}$/i);
+            expect(preset.celestial.glow).toMatch(/^#[0-9a-f]{6}$/i);
+        });
+    });
+
+    it('только у солнца задан цвет лучей, только у луны — цвет звёзд', () => {
+        SKY_PRESETS.forEach((preset) => {
+            if (preset.celestial.kind === 'sun') {
+                expect(preset.celestial.rayColor).toMatch(/^#[0-9a-f]{6}$/i);
+                expect(preset.celestial.starColor).toBeUndefined();
+            } else {
+                expect(preset.celestial.starColor).toMatch(/^#[0-9a-f]{6}$/i);
+                expect(preset.celestial.rayColor).toBeUndefined();
+            }
+        });
+    });
 });
 
 describe('pickSkyPreset', () => {

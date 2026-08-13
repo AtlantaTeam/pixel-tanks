@@ -1,7 +1,20 @@
 import { getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
+import {
+    buildStarField,
+    pickCelestialGeometry,
+    withAlpha,
+    type TCelestialGeometry,
+    type TStarInstance,
+} from './sky-celestial';
 import { buildCloudField, cloudSpriteWidth, windFactor, type TCloudInstance } from './cloud-field';
 import { wrapOffset } from './sky-parallax';
-import { pickSkyPreset, pickSkyPresetById, type TSkyPreset, type TSkyPresetId } from './sky-preset';
+import {
+    pickSkyPreset,
+    pickSkyPresetById,
+    type TCelestialPreset,
+    type TSkyPreset,
+    type TSkyPresetId,
+} from './sky-preset';
 
 /**
  * Ключи арта неба (файлы в `public/art/`). Облака — ОТДЕЛЬНЫЕ спрайты (`cloud-1..3`),
@@ -49,6 +62,10 @@ export class SkyScene {
     /** Множитель скорости и направления от ветра боя (#518). */
     private readonly wind: number;
     private field: TCloudInstance[];
+    /** Положение/размер солнца-луны — фиксируются сидом один раз, не зависят от ресайза. */
+    private readonly celestial: TCelestialGeometry;
+    /** Звёзды — только для ночного пресета; плотность зависит от ширины, как поле облаков. */
+    private stars: TStarInstance[];
     /** Накопленное время сцены, мс. Позиция облака = старт + скорость × elapsed. */
     private elapsed = 0;
 
@@ -73,11 +90,23 @@ export class SkyScene {
         // Ширина ещё неизвестна (resize придёт следом) — поле строится под дефолт и
         // пересобирается в resize, когда ширина изменилась.
         this.field = buildCloudField(this.seed, 0);
+        this.celestial = pickCelestialGeometry(this.seed, this.preset.id);
+        this.stars = this.preset.celestial.kind === 'moon' ? buildStarField(this.seed, 0) : [];
     }
 
     /** Поле облаков — для тестов детерминизма и плотности. */
     cloudField(): readonly TCloudInstance[] {
         return this.field;
+    }
+
+    /** Положение/размер светила — для тестов детерминизма и сектора неба. */
+    celestialGeometry(): TCelestialGeometry {
+        return this.celestial;
+    }
+
+    /** Звёздное поле — для тестов детерминизма и плотности (пусто вне ночного пресета). */
+    starField(): readonly TStarInstance[] {
+        return this.stars;
     }
 
     /** Накопленное время сцены, мс — для тестов движения. */
@@ -120,6 +149,9 @@ export class SkyScene {
         // поворот телефона не должен переставлять облака.
         if (nextWidth !== this.width) {
             this.field = buildCloudField(this.seed, nextWidth);
+            if (this.preset.celestial.kind === 'moon') {
+                this.stars = buildStarField(this.seed, nextWidth);
+            }
         }
         this.width = nextWidth;
         this.height = Math.max(0, Math.floor(height));
@@ -168,7 +200,7 @@ export class SkyScene {
         return canvas;
     }
 
-    /** Красит градиент неба + силуэт гор в переданный ctx (в CSS-пикселях). */
+    /** Красит градиент неба + светило + силуэт гор в переданный ctx (в CSS-пикселях). */
     private paintStatic(ctx: CanvasRenderingContext2D, width: number, height: number): void {
         const gradient = ctx.createLinearGradient(0, 0, 0, height);
         for (const stop of this.preset.sky) {
@@ -176,7 +208,178 @@ export class SkyScene {
         }
         ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, width, height);
+        // Светило/звёзды — ДО гор: у горизонта (закат) силуэт гор частично перекрывает
+        // диск, как в жизни, а не рисуется поверх него.
+        this.paintCelestial(ctx, width, height, gradient);
         this.paintMountains(ctx, width, height);
+    }
+
+    /**
+     * Солнце/луна + звёзды (#519) — рисуются программно примитивами (дуги, клинья,
+     * радиальные градиенты), без растра: при плавающем `world-scale` растровая
+     * текстура мылится (уроки #496/#483). Часть статичного слоя — не перерисовывается
+     * между кадрами (критерий #519 «кадр не проседает»).
+     */
+    private paintCelestial(
+        ctx: CanvasRenderingContext2D,
+        width: number,
+        height: number,
+        skyGradient: CanvasGradient,
+    ): void {
+        const cel = this.preset.celestial;
+        const cx = this.celestial.xFrac * width;
+        const cy = this.celestial.yFrac * height;
+        const radius = this.celestial.radiusFrac * Math.min(width, height);
+        if (cel.kind === 'sun') {
+            this.paintSun(ctx, cx, cy, radius, cel);
+            return;
+        }
+        this.paintMoon(ctx, cx, cy, radius, cel, skyGradient);
+        this.paintStars(ctx, width, height, cel);
+    }
+
+    /**
+     * Солнце: мягкий ореол (радиальный градиент), лучи-спицы статичным углом (issue
+     * просит начать без вращения — иначе слой перестал бы быть статичным) и диск
+     * сверху. Закат — солнце крупнее и ниже (геометрия задаёт это), лучи длиннее и
+     * мягче (ниже альфа), день — компактнее и ярче.
+     */
+    private paintSun(
+        ctx: CanvasRenderingContext2D,
+        cx: number,
+        cy: number,
+        radius: number,
+        cel: TCelestialPreset,
+    ): void {
+        const isSunset = this.preset.id === 'sunset';
+        const rayColor = cel.rayColor ?? cel.core;
+        const rayCount = isSunset ? 8 : 12;
+        const rayLength = radius * (isSunset ? 2.6 : 1.6);
+        const rayHalfAngle = isSunset ? 0.055 : 0.04;
+        const rayAlpha = isSunset ? 0.4 : 0.65;
+
+        ctx.save();
+        const haloRadius = radius * (isSunset ? 3.2 : 2.2);
+        const halo = ctx.createRadialGradient(cx, cy, radius * 0.5, cx, cy, haloRadius);
+        halo.addColorStop(0, withAlpha(cel.glow, isSunset ? 0.45 : 0.5));
+        halo.addColorStop(1, withAlpha(cel.glow, 0));
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(cx, cy, haloRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        for (let i = 0; i < rayCount; i++) {
+            const angle = this.celestial.rotation + (i / rayCount) * Math.PI * 2;
+            this.paintSunRay(
+                ctx,
+                cx,
+                cy,
+                radius,
+                angle,
+                rayLength,
+                rayHalfAngle,
+                rayColor,
+                rayAlpha,
+            );
+        }
+
+        ctx.beginPath();
+        ctx.fillStyle = cel.core;
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    /**
+     * Один луч-спица: клин от края диска к точке, залитый ровной полупрозрачной
+     * заливкой (не градиентом — иначе на закате с ~8 лучами статичный слой строил бы
+     * лишний десяток `createLinearGradient` на каждый ресайз без видимой пользы).
+     * Мягкость закатных лучей — за счёт большей длины и меньшей альфы, не блюра.
+     */
+    private paintSunRay(
+        ctx: CanvasRenderingContext2D,
+        cx: number,
+        cy: number,
+        baseRadius: number,
+        angle: number,
+        length: number,
+        halfAngle: number,
+        color: string,
+        alpha: number,
+    ): void {
+        const dirX = Math.cos(angle);
+        const dirY = Math.sin(angle);
+        const tipX = cx + dirX * (baseRadius + length);
+        const tipY = cy + dirY * (baseRadius + length);
+        ctx.beginPath();
+        ctx.moveTo(
+            cx + Math.cos(angle - halfAngle) * baseRadius,
+            cy + Math.sin(angle - halfAngle) * baseRadius,
+        );
+        ctx.lineTo(tipX, tipY);
+        ctx.lineTo(
+            cx + Math.cos(angle + halfAngle) * baseRadius,
+            cy + Math.sin(angle + halfAngle) * baseRadius,
+        );
+        ctx.closePath();
+        ctx.fillStyle = withAlpha(color, alpha);
+        ctx.fill();
+    }
+
+    /**
+     * Луна серпом: полный диск, затем «откушенный» смещённым кругом, залитым ТЕМ ЖЕ
+     * градиентом неба (`skyGradient`, тот же объект, что красит фон) — воспроизводит
+     * цвет неба в месте укуса аналитически, без `destination-out`, который стирал бы
+     * и то, что уже нарисовано под диском на статичном слое, а не только сам диск.
+     */
+    private paintMoon(
+        ctx: CanvasRenderingContext2D,
+        cx: number,
+        cy: number,
+        radius: number,
+        cel: TCelestialPreset,
+        skyGradient: CanvasGradient,
+    ): void {
+        ctx.save();
+        const haloRadius = radius * 2;
+        const halo = ctx.createRadialGradient(cx, cy, radius * 0.6, cx, cy, haloRadius);
+        halo.addColorStop(0, withAlpha(cel.glow, 0.35));
+        halo.addColorStop(1, withAlpha(cel.glow, 0));
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(cx, cy, haloRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.fillStyle = cel.core;
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        const offset = radius * 0.55;
+        ctx.beginPath();
+        ctx.fillStyle = skyGradient;
+        ctx.arc(cx + offset, cy - offset * 0.2, radius * 0.92, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    /**
+     * Звёзды ночи — точки от сида в статичном слое, не мерцают и не двигаются между
+     * кадрами. Квадратики, а не дуги: под пиксельную тему и без лишнего сглаживания.
+     */
+    private paintStars(
+        ctx: CanvasRenderingContext2D,
+        width: number,
+        height: number,
+        cel: TCelestialPreset,
+    ): void {
+        ctx.save();
+        ctx.fillStyle = cel.starColor ?? '#ffffff';
+        for (const star of this.stars) {
+            ctx.globalAlpha = star.alpha;
+            ctx.fillRect(star.xFrac * width, star.yFrac * height, star.size, star.size);
+        }
+        ctx.restore();
     }
 
     private paintMountains(ctx: CanvasRenderingContext2D, width: number, height: number): void {
