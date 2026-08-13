@@ -79,6 +79,10 @@ const ICON_PATHS = {
         { type: 'path', d: 'M2 6 H10 A2 2 0 1 0 8 4' },
         { type: 'path', d: 'M2 10 H12 A2 2 0 1 1 10 12' },
     ],
+    lock: [
+        { type: 'path', d: 'M5 7 V5 A3 3 0 0 1 11 5 V7' },
+        { type: 'rect', x: 4, y: 7, width: 8, height: 7 },
+    ],
     'wpn-фугас': [
         { type: 'rect', x: 6, y: 4, width: 4, height: 8 },
         { type: 'path', d: 'M6 4 L8 1 L10 4' },

@@ -37,3 +37,32 @@ export function GameScreenStatesRow() {
         </div>
     );
 }
+
+/** Бейдж заморозки телеметрии на планшете/десктопе (#472): короткий чип рядом
+ *  с пилюлей хода, а не полноширинная заметка внутри ряда телеметрии (лежала
+ *  поверх числовых ячеек на `xl`, где полоса телеметрии — 78px без запаса под
+ *  строку текста). Кадры брейкпоинтов выше уже показывают состояние «свой ход»
+ *  (слот зарезервирован, бейдж невидим) на всех четырёх ширинах — здесь второе
+ *  состояние («ход бота», бейдж виден) для планшета и десктопа: мобильный уже
+ *  покрыт рядом состояний выше (`GameScreenStatesRow`, срез «Ход бота»). */
+const FREEZE_BADGE_FRAMES = [
+    bp(768, SCREEN_FRAME_HEIGHT, 0.62, 'Планшет · 768 (ход бота)', 'tablet'),
+    bp(1280, SCREEN_FRAME_HEIGHT, 0.42, 'Desktop · 1280 (ход бота)', 'desktop'),
+];
+
+export function GameScreenFreezeBadgeRow() {
+    return (
+        <div data-testid="game-screen-freeze-badge" className="flex min-w-0 flex-col gap-2">
+            <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                Бейдж заморозки — планшет/десктоп, ход бота
+            </span>
+            <div className="flex min-w-0 flex-wrap items-start gap-5 overflow-x-auto pb-2">
+                {FREEZE_BADGE_FRAMES.map((frame) => (
+                    <ScreenFrame key={frame.label} frame={frame}>
+                        <GameScreenFrame variant={frame.variant} state="bot-turn" />
+                    </ScreenFrame>
+                ))}
+            </div>
+        </div>
+    );
+}

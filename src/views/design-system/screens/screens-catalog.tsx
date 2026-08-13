@@ -2,7 +2,7 @@ import type { ComponentType, ReactNode } from 'react';
 import { DailyScreenFrame } from './daily-screen-frame';
 import { frameset, type TScreenVariant } from './frameset';
 import { GameScreenFrame } from './game-screen-frame';
-import { GameScreenStatesRow } from './game-screen-states';
+import { GameScreenFreezeBadgeRow, GameScreenStatesRow } from './game-screen-states';
 import { LoginScreenFrame } from './login-screen-frame';
 import { OnboardingScreenFrame } from './onboarding-screen-frame';
 import { ProfileScreenFrame } from './profile-screen-frame';
@@ -60,7 +60,12 @@ const SCREENS: TScreenEntry[] = [
         note: 'Canvas + HUD + тач-рогатка; десктоп — HUD-бар сверху',
         Component: GameScreenFrame,
         framesTestId: 'game-screen-breakpoints',
-        renderStates: () => <GameScreenStatesRow />,
+        renderStates: () => (
+            <>
+                <GameScreenStatesRow />
+                <GameScreenFreezeBadgeRow />
+            </>
+        ),
     },
     {
         title: 'Utility · загрузка / 404 / ошибка',

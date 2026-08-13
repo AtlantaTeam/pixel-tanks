@@ -168,6 +168,13 @@ function CellValue({
     );
 }
 
+/**
+ * Кадр НАМЕРЕННО опускает геометрические размерники боевого виджета
+ * (`FixedNumeric` для угла/силы, невидимый ряд пипов ветра — #447/#473): они
+ * держат ширину бокса неизменной при СМЕНЕ значения, а витрина статична (угол
+ * всегда «47°», ветер всегда одно состояние) — «ездить» тут нечему. Не считать
+ * это упущением зеркала: размерник без меняющегося значения — мёртвый код.
+ */
 function NumberCell({
     label,
     value,
@@ -299,6 +306,8 @@ function ResourcePips({
     );
 }
 
+const FROZEN_TEXT = 'Твои числа заморожены до конца хода соперника';
+
 function FrozenNote({ className }: { className?: string }) {
     return (
         <p
@@ -308,8 +317,36 @@ function FrozenNote({ className }: { className?: string }) {
                 className,
             )}
         >
-            Твои числа заморожены до конца хода соперника
+            {FROZEN_TEXT}
         </p>
+    );
+}
+
+/** Планшет/десктоп (#472) — зеркало боевого `FreezeBadgeOrNothing`
+ *  (`widgets/top-hud`): короткий бейдж рядом с пилюлей хода, слот зарезервирован
+ *  всегда (`invisible`, не размонтирование — #447). Сам бейдж ДЕКОРАТИВЕН
+ *  (`aria-hidden`): в боевом виджете о заморозке скринридеру сообщает отдельный
+ *  постоянный live-region (`FreezeAnnouncer`), а не `role` на этом узле — иначе
+ *  анонса нет. Кадр статичен и ничего не озвучивает, поэтому полную фразу держим
+ *  просто `sr-only`-текстом рядом (документирует, что именно услышит скринридер). */
+function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
+    return (
+        <>
+            <div
+                aria-hidden
+                className={clsx(
+                    HUD_SURFACE,
+                    'flex min-h-10 shrink-0 items-center gap-1.5 border-[length:var(--border-w)] border-border px-2.5 py-1.5',
+                    !visible && 'invisible',
+                )}
+            >
+                <Icon name="lock" size={12} className="shrink-0 text-text-muted" />
+                <span className="font-ui text-[10px] tracking-[0.1em] whitespace-nowrap text-text-muted uppercase">
+                    Заморожено
+                </span>
+            </div>
+            <span className="sr-only">{FROZEN_TEXT}</span>
+        </>
     );
 }
 
@@ -634,6 +671,7 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                             />
                         </div>
                         <TurnPill label={scene.turnLabel} />
+                        <FreezeBadgeOrNothing visible={scene.isBotTurn} />
                         <HudIconButtons />
                     </div>
                     <div
@@ -657,7 +695,6 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                             color="var(--color-warning)"
                             ariaLabel="ходов манёвра"
                         />
-                        {scene.isBotTurn && <FrozenNote className="w-full" />}
                     </div>
                 </div>
             </div>
@@ -683,6 +720,7 @@ function TopHudOverlay({ scene, variant }: { scene: TSceneData; variant: TScreen
                         />
                     </div>
                     <TurnPill label={scene.turnLabel} />
+                    <FreezeBadgeOrNothing visible={scene.isBotTurn} />
                     <HudIconButtons />
                 </div>
                 <div
