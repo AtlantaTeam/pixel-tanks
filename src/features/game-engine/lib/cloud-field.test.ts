@@ -2,14 +2,22 @@ import { describe, expect, it } from 'vitest';
 import {
     buildCloudField,
     cloudCount,
+    cloudPlane,
     CLOUD_COUNT_MAX,
     CLOUD_COUNT_MIN,
+    CLOUD_HAZE_MIN,
     CLOUD_SCALE_MAX,
     CLOUD_SCALE_MIN,
-    CLOUD_SPEEDS,
+    CLOUD_SPEED_MAX,
+    CLOUD_SPEED_MIN,
+    CLOUD_SQUASH_MIN,
     cloudSpriteWidth,
+    MOUNTAIN_HORIZON_FRAC,
     windFactor,
+    Y_MAX,
+    Y_MIN,
 } from './cloud-field';
+import { computeWorldScale, WORLD_UNITS } from './world-scale';
 import { MAX_WIND } from './wind';
 
 describe('cloudCount — плотность от ширины', () => {
@@ -32,32 +40,72 @@ describe('cloudCount — плотность от ширины', () => {
     });
 });
 
-describe('cloudSpriteWidth — размер от ширины экрана (#523)', () => {
-    it('на 1280 облако 192 CSS-px — размер из одобренного кадра', () => {
-        expect(cloudSpriteWidth(1280)).toBe(192);
-    });
-
-    it('на телефоне облако не занимает полэкрана', () => {
-        // Фикс в 192 px давал на 390 ровно половину ширины — облака наезжали друг на друга.
-        expect(cloudSpriteWidth(390) / 390).toBeLessThan(0.2);
-    });
-
-    it('доля ширины держится одинаковой на всех разрешениях', () => {
-        for (const width of [414, 768, 1024, 1280]) {
-            const frac = cloudSpriteWidth(width) / width;
-            expect(frac).toBeGreaterThan(0.1);
-            expect(frac).toBeLessThan(0.2);
+describe('cloudSpriteWidth — размер из масштаба мира, а не доли ширины (#572)', () => {
+    it('база = мировая единица × общий масштаб мира — та же геометрия, что у танка', () => {
+        for (const width of [390, 768, 1280, 1920, 2560]) {
+            expect(cloudSpriteWidth(width)).toBeCloseTo(
+                WORLD_UNITS.cloudWidth * computeWorldScale(width),
+            );
         }
     });
 
-    it('на очень узком не вырождается в точку, на очень широком не раздувается', () => {
-        expect(cloudSpriteWidth(200)).toBeGreaterThanOrEqual(48);
-        expect(cloudSpriteWidth(4000)).toBe(192);
+    it('на 1920 и 2560 облако одного размера — масштаб мира упёрся в потолок', () => {
+        // Раньше доля ширины (0.15) упиралась в свой потолок на другой ширине, и
+        // пропорция «облако к танку» гуляла: на 24″ крупно, на 32″ приемлемо (#572).
+        expect(cloudSpriteWidth(1920)).toBe(cloudSpriteWidth(2560));
+    });
+
+    it('пропорция «облако к танку» одна на всех ширинах', () => {
+        const ratios = [1280, 1920, 2560].map(
+            (w) => cloudSpriteWidth(w) / (WORLD_UNITS.tankWidth * computeWorldScale(w)),
+        );
+        for (const r of ratios) {
+            expect(r).toBeCloseTo(ratios[0]);
+        }
     });
 
     it('битая ширина не роняет размер в ноль', () => {
         expect(cloudSpriteWidth(Number.NaN)).toBeGreaterThan(0);
         expect(cloudSpriteWidth(-5)).toBeGreaterThan(0);
+    });
+});
+
+describe('самое крупное облако — не больше ~2 корпусов танка (#572)', () => {
+    it('на любой ширине потолок размера облака ≤ 2 корпусов танка', () => {
+        for (const width of [1280, 1920, 2560]) {
+            const maxCloud = cloudSpriteWidth(width) * CLOUD_SCALE_MAX;
+            const tank = WORLD_UNITS.tankWidth * computeWorldScale(width);
+            expect(maxCloud / tank).toBeLessThanOrEqual(2);
+        }
+    });
+
+    it('фактические облака поля не превышают ~2 корпусов ни на одной ширине', () => {
+        for (const width of [1280, 1920, 2560]) {
+            const tank = WORLD_UNITS.tankWidth * computeWorldScale(width);
+            for (let seed = 0; seed < 20; seed++) {
+                for (const c of buildCloudField(`max-${seed}`, width)) {
+                    const cloud = cloudSpriteWidth(width) * c.scale;
+                    expect(cloud / tank).toBeLessThanOrEqual(2);
+                }
+            }
+        }
+    });
+});
+
+describe('cloudPlane — план облака выведен из высоты (#572)', () => {
+    it('у верха кадра план = 1 (ближний), у линии гор → 0 (дальний)', () => {
+        expect(cloudPlane(Y_MIN)).toBeCloseTo(1);
+        expect(cloudPlane(MOUNTAIN_HORIZON_FRAC)).toBeCloseTo(0);
+    });
+
+    it('монотонно убывает с высотой: ниже облако — меньше план', () => {
+        expect(cloudPlane(0.1)).toBeGreaterThan(cloudPlane(0.3));
+        expect(cloudPlane(0.3)).toBeGreaterThan(cloudPlane(0.48));
+    });
+
+    it('зажат в [0, 1] за пределами штатного диапазона высот', () => {
+        expect(cloudPlane(-1)).toBe(1);
+        expect(cloudPlane(1)).toBe(0);
     });
 });
 
@@ -106,67 +154,106 @@ describe('buildCloudField — детерминизм и разреженност
         }
     });
 
-    it('соседние облака плывут с разными скоростями — это и есть параллакс', () => {
-        const field = buildCloudField('seed-parallax', 1600);
-        expect(new Set(field.map((c) => c.speed)).size).toBeGreaterThan(1);
-        field.forEach((c) => expect(CLOUD_SPEEDS).toContain(c.speed));
-    });
-
-    it('облака живут в верхней части неба, над рельефом, но разброс по высоте шире прежнего (#515)', () => {
+    it('облака живут в верхней части неба, над рельефом', () => {
         for (const c of buildCloudField('seed-y', 1280)) {
-            expect(c.yFrac).toBeGreaterThanOrEqual(0.04);
-            expect(c.yFrac).toBeLessThanOrEqual(0.48);
+            expect(c.yFrac).toBeGreaterThanOrEqual(Y_MIN);
+            expect(c.yFrac).toBeLessThanOrEqual(Y_MAX);
+        }
+    });
+});
+
+describe('план монотонно связан с высотой: ниже — мельче, медленнее, бледнее, площе (#572)', () => {
+    it('скорость каждого облака = план его высоты (не отдельный бросок)', () => {
+        for (const c of buildCloudField('speed', 1600)) {
+            const t = cloudPlane(c.yFrac);
+            expect(c.speed).toBeCloseTo(CLOUD_SPEED_MIN + (CLOUD_SPEED_MAX - CLOUD_SPEED_MIN) * t);
         }
     });
 
-    it('разброс по вертикали действительно шире прежних 0.04–0.34 (#515)', () => {
-        // Прежняя верхняя граница была 0.34 — в эталоне облака стоят и ниже.
-        // Собираем большую выборку: на одном узком поле низких облаков может не выпасть.
-        let sawLower = false;
-        for (let seed = 0; seed < 40 && !sawLower; seed++) {
-            for (const c of buildCloudField(`low-cloud-${seed}`, 1600)) {
-                if (c.yFrac > 0.34) sawLower = true;
+    it('прозрачность и сжатие каждого облака = план его высоты', () => {
+        for (const c of buildCloudField('haze', 1600)) {
+            const t = cloudPlane(c.yFrac);
+            expect(c.alpha).toBeCloseTo(CLOUD_HAZE_MIN + (1 - CLOUD_HAZE_MIN) * t);
+            expect(c.squashY).toBeCloseTo(CLOUD_SQUASH_MIN + (1 - CLOUD_SQUASH_MIN) * t);
+        }
+    });
+
+    it('у горизонта облако бледнее и площе, у верха кадра — полное', () => {
+        for (const c of buildCloudField('range', 1600)) {
+            expect(c.alpha).toBeGreaterThanOrEqual(CLOUD_HAZE_MIN);
+            expect(c.alpha).toBeLessThanOrEqual(1);
+            expect(c.squashY).toBeGreaterThanOrEqual(CLOUD_SQUASH_MIN);
+            expect(c.squashY).toBeLessThanOrEqual(1);
+        }
+    });
+
+    it('чем выше облако (меньше yFrac), тем крупнее в среднем — размер связан с планом', () => {
+        // Разброс внутри плана — по многим сидам, а не по одному полю.
+        const upper: number[] = [];
+        const lower: number[] = [];
+        for (let seed = 0; seed < 60; seed++) {
+            for (const c of buildCloudField(`plane-scale-${seed}`, 1600)) {
+                (c.yFrac < (Y_MIN + Y_MAX) / 2 ? upper : lower).push(c.scale);
             }
         }
-        expect(sawLower).toBe(true);
+        const avg = (xs: number[]) => xs.reduce((s, v) => s + v, 0) / xs.length;
+        expect(avg(upper)).toBeGreaterThan(avg(lower));
     });
 
-    it('облака заметно разного размера в пределах одного поля (#515)', () => {
-        // Ведущая гипотеза приёмки: единый масштаб на все облака и есть причина
-        // «неинтересного» неба — нужен разброс, видимый на одном экране.
-        const field = buildCloudField('seed-scale', 1280);
-        const scales = field.map((c) => c.scale);
+    it('скорость и высота идут вместе: сортируем по высоте — скорость монотонна', () => {
+        const field = buildCloudField('mono', 1600)
+            .slice()
+            .sort((a, b) => a.yFrac - b.yFrac);
+        for (let i = 1; i < field.length; i++) {
+            // yFrac растёт (вниз) → скорость не растёт (медленнее у горизонта).
+            expect(field[i].speed).toBeLessThanOrEqual(field[i - 1].speed + 1e-9);
+        }
+    });
+});
+
+describe('разброс масштаба ВНУТРИ плана сохранён — поле не распадается на пресеты (#572)', () => {
+    it('масштаб не строго функция высоты: есть джиттер вокруг плана', () => {
+        let sawJitter = false;
+        for (let seed = 0; seed < 40 && !sawJitter; seed++) {
+            for (const c of buildCloudField(`jitter-${seed}`, 1600)) {
+                const base =
+                    CLOUD_SCALE_MIN + (CLOUD_SCALE_MAX - CLOUD_SCALE_MIN) * cloudPlane(c.yFrac);
+                if (Math.abs(c.scale - base) > 1e-6) sawJitter = true;
+            }
+        }
+        expect(sawJitter).toBe(true);
+    });
+
+    it('масштаб держится в границах по всему полю', () => {
+        for (const c of buildCloudField('bounds', 1280)) {
+            expect(c.scale).toBeGreaterThanOrEqual(CLOUD_SCALE_MIN);
+            expect(c.scale).toBeLessThanOrEqual(CLOUD_SCALE_MAX);
+        }
+    });
+
+    it('облака заметно разного размера в пределах одного поля', () => {
+        const scales = buildCloudField('seed-scale', 1280).map((c) => c.scale);
         expect(Math.max(...scales) - Math.min(...scales)).toBeGreaterThan(0.3);
-        for (const scale of scales) {
-            expect(scale).toBeGreaterThanOrEqual(CLOUD_SCALE_MIN);
-            expect(scale).toBeLessThanOrEqual(CLOUD_SCALE_MAX);
-        }
     });
+});
 
-    it('мелкое облако — оно же дальнее — оно же медленное: масштаб связан со скоростью (#515)', () => {
-        // Собираем большую выборку по многим сидам, а не полагаемся на один field —
-        // диапазоны ярусов пересекаются нарочно (внутри яруса тоже есть разброс).
-        const bySpeed = new Map<number, number[]>();
-        for (let seed = 0; seed < 40; seed++) {
-            for (const c of buildCloudField(`speed-scale-${seed}`, 1600)) {
-                const list = bySpeed.get(c.speed) ?? [];
-                list.push(c.scale);
-                bySpeed.set(c.speed, list);
+describe('распределение высот смещено к линии гор (#572)', () => {
+    it('у горизонта облаков больше — перспектива сжимает расстояния', () => {
+        let lower = 0;
+        let upper = 0;
+        const mid = (Y_MIN + Y_MAX) / 2;
+        for (let seed = 0; seed < 60; seed++) {
+            for (const c of buildCloudField(`bias-${seed}`, 1600)) {
+                if (c.yFrac >= mid) lower++;
+                else upper++;
             }
         }
-        const speeds = [...CLOUD_SPEEDS];
-        const avgScale = (speed: number) => {
-            const list = bySpeed.get(speed) ?? [];
-            return list.reduce((sum, v) => sum + v, 0) / list.length;
-        };
-        const avgBySpeed = speeds.map(avgScale);
-        for (let i = 1; i < avgBySpeed.length; i++) {
-            expect(avgBySpeed[i]).toBeGreaterThan(avgBySpeed[i - 1]);
-        }
+        expect(lower).toBeGreaterThan(upper);
     });
+});
 
-    it('часть облаков зеркалится по X — те же три спрайта дают разные силуэты (#515)', () => {
-        // На одном поле выборка маленькая (3–10 облаков) — набираем большую выборку по сидам.
+describe('часть облаков зеркалится по X — те же три спрайта дают разные силуэты (#515)', () => {
+    it('в большой выборке встречаются и зеркальные, и обычные', () => {
         const mirrored: boolean[] = [];
         for (let seed = 0; seed < 20; seed++) {
             for (const c of buildCloudField(`mirror-${seed}`, 1600)) {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cloudSpriteWidth } from './cloud-field';
+import { cloudSpriteWidth, CLOUD_SCALE_MAX, MOUNTAIN_HORIZON_FRAC } from './cloud-field';
 import { SkyScene, type TSkyImages } from './sky-scene';
 
 /**
@@ -206,7 +206,7 @@ describe('SkyScene.resize / draw', () => {
         expect(scene.cloudField().length).toBeGreaterThan(tall.length);
     });
 
-    it('размер облака — доля ширины экрана, а не фикс в CSS (#523)', () => {
+    it('размер облака — из масштаба мира, а не доли ширины экрана (#572)', () => {
         const original = window.devicePixelRatio;
         Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
         try {
@@ -221,29 +221,97 @@ describe('SkyScene.resize / draw', () => {
             expect(cloudCalls.length).toBeGreaterThan(0);
             const baseWidth = cloudSpriteWidth(1280);
             for (const call of cloudCalls) {
-                // Каждое облако домножает базовую (15% ширины) величину на свой scale
-                // (#515) — ширина уже не одна на всех, но остаётся в границах ярусов.
+                // Каждое облако домножает базовую (масштаб мира) величину на свой scale,
+                // выведенный из высоты (#572) — потолок держит `CLOUD_SCALE_MAX`.
                 expect(Math.abs(call[3])).toBeGreaterThan(0);
-                expect(Math.abs(call[3])).toBeLessThanOrEqual(Math.round(baseWidth * 1.4));
+                expect(Math.abs(call[3])).toBeLessThanOrEqual(
+                    Math.round(baseWidth * CLOUD_SCALE_MAX),
+                );
             }
 
-            // На телефоне облако НЕ остаётся 192 px (это было бы полэкрана): доля та же.
-            const narrowBaseWidth = cloudSpriteWidth(390);
-            const narrow = new SkyScene({ seed: 1, reducedMotion: false, images });
-            const narrowCtx = createFakeCtx();
-            narrow.resize(390, 844);
-            narrow.draw(narrowCtx as unknown as CanvasRenderingContext2D);
-            const narrowCall = narrowCtx.drawImage.mock.calls.find(
-                (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
-            ) as unknown as number[];
-            expect(Math.abs(narrowCall[3])).toBeLessThan(80);
-            expect(Math.abs(narrowCall[3])).toBeLessThanOrEqual(Math.round(narrowBaseWidth * 1.4));
+            // Облако на 1920 и 2560 одного размера — масштаб мира упёрся в потолок,
+            // а не растёт с шириной (в отличие от прежней доли 0.15).
+            expect(cloudSpriteWidth(1920)).toBe(cloudSpriteWidth(2560));
         } finally {
             Object.defineProperty(window, 'devicePixelRatio', {
                 value: original,
                 configurable: true,
             });
         }
+    });
+
+    it('облако не заходит низом за силуэт дальних гор (#572)', () => {
+        const images = allImages();
+        // Много сидов: на одном поле низкого облака у самого горизонта может не выпасть.
+        for (let seed = 0; seed < 30; seed++) {
+            const scene = new SkyScene({ seed, reducedMotion: false, images });
+            const ctx = createFakeCtx();
+            const height = 800;
+            scene.resize(1280, height);
+            scene.draw(ctx as unknown as CanvasRenderingContext2D);
+            const cloudCalls = ctx.drawImage.mock.calls.filter(
+                (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
+            ) as unknown as number[][];
+            for (const call of cloudCalls) {
+                const y = call[2];
+                const spriteHeight = Math.abs(call[4]);
+                // Низ облака (y + высота) не пересекает линию гор (+1 px на квантование).
+                expect(y + spriteHeight).toBeLessThanOrEqual(height * MOUNTAIN_HORIZON_FRAC + 1);
+            }
+        }
+    });
+
+    it('облако у горизонта сплюснуто по вертикали сильнее, чем у верха кадра (#572)', () => {
+        const images = allImages();
+        const scene = new SkyScene({ seed: 1, reducedMotion: false, images });
+        scene.resize(1280, 800);
+        const field = scene.cloudField();
+        const ctx = createFakeCtx();
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        const cloudCalls = ctx.drawImage.mock.calls.filter(
+            (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
+        ) as unknown as number[][];
+        expect(cloudCalls.length).toBe(field.length);
+        // Отношение нарисованной высоты к «неспл­ющенной» (по ширине и пропорции спрайта)
+        // должно повторять squashY облака: у горизонта заметно меньше 1.
+        field.forEach((cloud, i) => {
+            const image = images[cloud.sprite]!;
+            const spriteWidth = Math.abs(cloudCalls[i][3]);
+            const unsquashed = (image.height * spriteWidth) / image.width;
+            const drawnHeight = Math.abs(cloudCalls[i][4]);
+            expect(drawnHeight).toBe(Math.max(1, Math.round(unsquashed * cloud.squashY)));
+        });
+    });
+
+    it('облако у горизонта рисуется бледнее — воздушная дымка (#572)', () => {
+        const images = allImages();
+        const scene = new SkyScene({ seed: 1, reducedMotion: false, images, preset: 'day' });
+        // Захватываем globalAlpha в момент каждого drawImage облака.
+        const alphas: number[] = [];
+        let current = 1;
+        const ctx = {
+            ...createFakeCtx(),
+            set globalAlpha(v: number) {
+                current = v;
+            },
+            get globalAlpha() {
+                return current;
+            },
+            drawImage: vi.fn((img: unknown) => {
+                if (img === images.cloud1 || img === images.cloud2 || img === images.cloud3) {
+                    alphas.push(current);
+                }
+            }),
+        };
+        scene.resize(1280, 800);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        const field = scene.cloudField();
+        // Порядок drawImage совпадает с порядком поля.
+        const lowest = field.reduce((a, b) => (b.yFrac > a.yFrac ? b : a));
+        const highest = field.reduce((a, b) => (b.yFrac < a.yFrac ? b : a));
+        const lowIdx = field.indexOf(lowest);
+        const highIdx = field.indexOf(highest);
+        expect(alphas[lowIdx]).toBeLessThan(alphas[highIdx]);
     });
 
     it('облака поля заметно разного размера на 1280 — не единый масштаб на все (#515)', () => {
