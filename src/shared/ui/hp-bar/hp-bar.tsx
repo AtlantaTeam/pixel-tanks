@@ -1,3 +1,9 @@
+// Клиентский: вспышка попадания живёт состоянием и таймером (см. `HpTrack`). До #549
+// компонент был чисто презентационным и рендерился на сервере — стал stateful, значит
+// директива обязательна, иначе сборка падает на серверной ветке `replay-page`.
+'use client';
+
+import { useEffect, useState } from 'react';
 import { clsx } from 'clsx';
 import type { TFaction } from '@/shared/lib/theme';
 import { Icon } from '../icon';
@@ -17,9 +23,15 @@ type THPBarProps = {
     max?: number;
     layout?: THPBarLayout;
     className?: string;
+    /** Счётчик попаданий по этой стороне (issue #549) — см. докблок `HpTrack`. */
+    hitNonce?: number;
 };
 
 const DEFAULT_HP_MAX = 100;
+/** Сколько живут классы анимации попадания. Ровно длительность самой длинной из двух
+ *  (`animate-hp-hit-flash` 200ms против `animate-hp-hit-shake` 33ms, globals.css) —
+ *  держать дольше незачем, а держать бесконечно нельзя: см. докблок в `HpTrack`. */
+const HP_HIT_ANIMATION_MS = 200;
 /** Пороги перекраски — в процентах от `max`: success > 60%, warning > 30%, иначе danger. */
 const WARNING_THRESHOLD = 60;
 const DANGER_THRESHOLD = 30;
@@ -32,18 +44,30 @@ function hpFillClass(percent: number) {
 
 /** Иконка стороны (star/skull) + имя с усечением — фиксированный маркер «свой
  *  танк»/«враг», НЕ тематический `--accent` (не перекрашивается под data-faction
- *  предка). `min-w-0` — обязателен, чтобы `text-ellipsis` сработал во flex-строке. */
+ *  предка). `min-w-0` — обязателен, чтобы `text-ellipsis` сработал во flex-строке.
+ *  Максимальная ширина ника (#540): 6ch на мобилке, 16ch на планшете/десктопе —
+ *  разделение по приоритету сброса. Целиком ник виден с 1024: на 1280 и 1920 клипа
+ *  нет, замерено e2e.
+ *  ⚠️ На 768 верхняя граница НЕ работает: фактическую ширину решает не `max-w`, а
+ *  сжатие во флекс-ряду — первый ряд отдаёт место пилюле и иконкам (#538), а `min-w-0`
+ *  разрешает карточке схлопнуться, и бокс ника садится до 25px при содержимом 104px.
+ *  Разбирается в issue #561; до решения факт зафиксирован в `top-hud-viewports.spec.ts`. */
 function HpName({ label, faction }: { label: string; faction: THPBarFaction }) {
     return (
-        <span className="flex min-w-0 items-center gap-1.5 font-ui text-caption font-bold text-text">
+        <span className="flex min-w-0 max-w-[6ch] md:max-w-[16ch] items-center gap-1.5 font-ui text-caption font-bold text-text">
             <Icon
                 name={faction === 'enemy' ? 'skull' : 'star'}
                 size={14}
                 className={clsx('shrink-0', faction === 'enemy' ? 'text-enemy' : 'text-accent')}
             />
             {/* handoff «HP-карточка»: имя — ник профиля, длина не гарантирована —
-                обрезаем многоточием, а не переносим на узкой карточке. */}
-            <span className="overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
+                обрезаем многоточием, а не переносим на узкой карточке.
+                testid — на клипающем боксе (#540): усечение здесь чисто CSS'ное и следа
+                в textContent не оставляет, проверить его можно только замером
+                scrollWidth против clientWidth ИМЕННО этого узла. */}
+            <span data-testid="hp-name" className="overflow-hidden text-ellipsis whitespace-nowrap">
+                {label}
+            </span>
         </span>
     );
 }
@@ -73,13 +97,38 @@ function HpTrack({
     max,
     percent,
     className,
+    hitNonce,
 }: {
     label: string;
     clamped: number;
     max: number;
     percent: number;
     className?: string;
+    /** Счётчик попаданий по этой стороне (issue #549, §7.2 разбора #534) —
+     *  растёт на каждый хит. Ключ стоит на САМОМ `HpTrack` в `HPBar` (не на его
+     *  внутреннем узле): пересоздаётся инстанс целиком — и состояние вспышки, и
+     *  DOM-узел, поэтому CSS-анимация стартует заново, даже если предыдущий хит по
+     *  той же стороне ещё не отыграл. Тот же приём, что `WindShiftBanner` у
+     *  `windShiftNonce`. `undefined`/не меняется → полоса спокойна. */
+    hitNonce?: number;
 }) {
+    // Классы анимации живут РОВНО длительность анимации, а не «до следующего хита».
+    //
+    // Иначе они остаются на узле навсегда, а `top-hud` держит смонтированными сразу
+    // несколько составов (`md:hidden`/`xl:hidden`). В `display:none` CSS-анимация не
+    // идёт и стартует с нуля при показе: попадание на планшете → поворот экрана или
+    // ресайз через брейкпоинт → белая вспышка и сдвиг трека БЕЗ события. Игрок читает
+    // это как «в меня попали», хотя ничего не произошло.
+    // Стартовое значение, а не `setState` в эффекте: инстанс пересоздаётся на каждый хит
+    // (`key={hitNonce}` стоит на `HpTrack` в `HPBar`), поэтому «включить» вспышку
+    // достаточно начальным значением — эффект только ГАСИТ её по таймеру.
+    const [flashing, setFlashing] = useState(hitNonce != null);
+    useEffect(() => {
+        if (hitNonce == null) return;
+        const timer = setTimeout(() => setFlashing(false), HP_HIT_ANIMATION_MS);
+        return () => clearTimeout(timer);
+    }, [hitNonce]);
+
     return (
         <div
             role="progressbar"
@@ -88,7 +137,8 @@ function HpTrack({
             aria-valuemin={0}
             aria-valuemax={max}
             className={clsx(
-                'h-3 border-[length:var(--border-w)] border-border bg-surface',
+                'relative h-3 border-[length:var(--border-w)] border-border bg-surface',
+                flashing && 'animate-hp-hit-shake motion-reduce:animate-none',
                 className,
             )}
         >
@@ -97,6 +147,13 @@ function HpTrack({
                 className={clsx('h-full', hpFillClass(percent))}
                 style={{ width: `${percent}%` }}
             />
+            {flashing && (
+                <div
+                    aria-hidden
+                    data-testid="hp-bar-hit-flash"
+                    className="pointer-events-none absolute inset-0 bg-white animate-hp-hit-flash motion-reduce:hidden"
+                />
+            )}
         </div>
     );
 }
@@ -112,6 +169,7 @@ export function HPBar({
     max = DEFAULT_HP_MAX,
     layout = 'stacked',
     className,
+    hitNonce,
 }: THPBarProps) {
     const clamped = Math.min(max, Math.max(0, value));
     const percent = max > 0 ? (clamped / max) * 100 : 0;
@@ -124,11 +182,17 @@ export function HPBar({
             <div className={clsx('flex items-center gap-2', className)}>
                 <HpName label={label} faction={faction} />
                 <HpTrack
+                    // Ключ ЗДЕСЬ, а не на внутреннем div: смена ключа у div пересоздаёт
+                    // узел, но инстанс `HpTrack` с его состоянием живёт дальше — и
+                    // вспышка, включаемая инициализатором `useState`, не включалась бы
+                    // никогда. Ремаунт компонента перезапускает и состояние, и CSS-анимацию.
+                    key={hitNonce}
                     label={label}
                     clamped={clamped}
                     max={max}
                     percent={percent}
                     className="min-w-10 flex-1"
+                    hitNonce={hitNonce}
                 />
                 <HpCaption clamped={clamped} max={max} />
             </div>
@@ -141,7 +205,15 @@ export function HPBar({
                 <HpName label={label} faction={faction} />
                 <HpCaption clamped={clamped} max={max} />
             </div>
-            <HpTrack label={label} clamped={clamped} max={max} percent={percent} />
+            <HpTrack
+                // Ключ на компоненте — см. комментарий в inline-раскладке выше.
+                key={hitNonce}
+                label={label}
+                clamped={clamped}
+                max={max}
+                percent={percent}
+                hitNonce={hitNonce}
+            />
         </div>
     );
 }

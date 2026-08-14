@@ -1,7 +1,7 @@
 import { clsx } from 'clsx';
 import type { ReactNode } from 'react';
 import { MOVE_BUDGET, WEAPONS_AMOUNT, WIND_DISPLAY_SCALE } from '@/features/game-engine';
-import { BOT_NAME, MAX_HP } from '@/shared/config';
+import { BOT_NAME, HUD_SURFACE, MAX_HP } from '@/shared/config';
 import { ThemeScope } from '@/shared/lib/theme';
 import {
     Button,
@@ -24,11 +24,6 @@ import type { TScreenVariant } from './frameset';
  * дублировать диалог здесь незачем.
  */
 export type TGameScreenState = 'player-turn' | 'bot-turn' | 'aiming' | 'empty-ammo' | 'calm';
-
-/** Контраст над любым скином (handoff, решение E) — та же строка, что в реальных
- *  `widgets/top-hud` и `widgets/game-controls`: подложка + blur держат читаемость
- *  HUD-элементов поверх шумной/светлой арены независимо от арта. */
-const HUD_SURFACE = 'bg-[rgba(8,12,8,0.80)] backdrop-blur-[4px] shadow-[0_0_0_1px_rgba(0,0,0,.9)]';
 
 /** Снарядов на танк — половина общего арсенала боя (см. `dealWeapons`), как в `widgets/top-hud`. */
 const AMMO_TOTAL = WEAPONS_AMOUNT / 2;

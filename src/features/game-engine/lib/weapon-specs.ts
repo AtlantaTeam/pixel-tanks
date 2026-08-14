@@ -1,6 +1,11 @@
 import { EWeaponKind } from '@/shared/model';
 import { ENGINE_COLORS } from './engine-palette';
 import { GROUND_PARTICLE_COLORS } from './particle-pool';
+import {
+    buildExplosionSprite,
+    EXPLOSION_ALPHA_LEVELS,
+    type TExplosionSilhouette,
+} from './explosion-sprite';
 
 /**
  * Один очаг взрыва. Позиция — смещение по X от точки попадания в долях базового
@@ -59,10 +64,14 @@ export type TWeaponSpec = {
     trail: { size: number; life: number; color: string };
     /** Очаги взрыва (≥1). Больше одного — многоочаговый кластер. */
     foci: readonly TWeaponFocus[];
-    /** Ударная волна — обод по самому фронту (`r = explosionRadius`), мощный заряд. */
-    shockwave: boolean;
     /** Частицы узким столбом вместо широкого веера (роющий — выброс земли вверх). */
     groundColumn: boolean;
+    /**
+     * Силуэт пиксельной вспышки — подпись типа формой, а не цветом (issue #542).
+     * Форма считается в `explosion-sprite.ts` и рисуется целыми пикселями, чтобы
+     * взрыв читался в той же технике, что и остальная сцена.
+     */
+    silhouette: TExplosionSilhouette;
 };
 
 /** Единственный центральный очаг — для одиночных типов (не кластера). */
@@ -92,8 +101,8 @@ export const WEAPON_SPECS: Record<EWeaponKind, TWeaponSpec> = {
         bulletColor: null,
         trail: { size: 3, life: 10, color: ENGINE_COLORS.primary },
         foci: SINGLE_FOCUS(1),
-        shockwave: false,
         groundColumn: false,
+        silhouette: 'burst',
     },
     // МОЩНЫЙ ЗАРЯД — крупнее и горячее: ядро ffe08a/ff5500, R_max ×1.4, рост +2 целым
     // (длится столько же кадров, но крупнее), кратер ×1.4 (от большего радиуса),
@@ -112,8 +121,8 @@ export const WEAPON_SPECS: Record<EWeaponKind, TWeaponSpec> = {
         bulletColor: ENGINE_COLORS.danger,
         trail: { size: 4, life: 14, color: ENGINE_COLORS.danger },
         foci: SINGLE_FOCUS(1.4),
-        shockwave: true,
         groundColumn: false,
+        silhouette: 'blast',
     },
     // КЛАСТЕР — три последовательных очага тем же градиентом: центральный R×0.6, затем
     // два по ±0.8·R_фугаса, каждый R×0.45. groundBurst 9 на очаг, тряска 0.3 трижды,
@@ -136,8 +145,8 @@ export const WEAPON_SPECS: Record<EWeaponKind, TWeaponSpec> = {
             { dxFactor: -0.8, radiusFactor: 0.45 },
             { dxFactor: 0.8, radiusFactor: 0.45 },
         ],
-        shockwave: false,
         groundColumn: false,
+        silhouette: 'cluster',
     },
     // РОЮЩИЙ — визуально мал (R×0.5) в палитре грунта e8b06a/a35a2a/6b3f1d: читается
     // как выброс земли, не огонь. Глубина через сдвиг кратера вниз (y + 0.5·R,
@@ -156,8 +165,8 @@ export const WEAPON_SPECS: Record<EWeaponKind, TWeaponSpec> = {
         bulletColor: null,
         trail: { size: 3, life: 10, color: GROUND_PARTICLE_COLORS[1] },
         foci: SINGLE_FOCUS(0.5),
-        shockwave: false,
         groundColumn: true,
+        silhouette: 'digger',
     },
 };
 
@@ -172,10 +181,37 @@ export const weaponSpecFor = (kind: EWeaponKind): TWeaponSpec =>
     WEAPON_SPECS[kind] ?? WEAPON_SPECS[EWeaponKind.HighExplosive];
 
 /**
- * Рисует один кадр очага взрыва: радиальный градиент от ядра до `radius` плюс, для
- * ударной волны, тонкий обод РОВНО по фронту (`r = radius`, не впереди — критерий
- * #483). Единый примитив для боевого `Bullet.drawExplosion` и витрины
- * (`ui/weapon-fx-demo`): вид взрыва задаётся тут в одном месте, а не дублируется.
+ * Альфа четырёх уровней спрайта (index = уровень 1..4). Ровно 4 значения у края —
+ * квантование вместо плавного затухания убирает «мыло» (критерий #542). Альфа несётся
+ * ТОЛЬКО этим ramp'ом (`globalAlpha`), а не альфой в hex палитры, — иначе перемножение
+ * дало бы больше 4 значений; поэтому цвет берётся без альфа-канала (`stripAlpha`).
+ */
+const LEVEL_ALPHA = [0, 0.35, 0.55, 0.78, 1] as const;
+
+/** Отбрасывает альфа-канал у `#rrggbb(aa)` — оставляет непрозрачный `#rrggbb`. */
+function stripAlpha(hex: string): string {
+    return hex.length >= 7 ? hex.slice(0, 7) : hex;
+}
+
+/** Цвет ячейки по уровню: ядро (4) → середина (3–2) → фронт (1). Радиальные зоны. */
+function colorForLevel(level: number, colors: TWeaponExplosionColors): string {
+    if (level >= EXPLOSION_ALPHA_LEVELS) return stripAlpha(colors.core);
+    if (level >= 2) return stripAlpha(colors.mid);
+    return stripAlpha(colors.edge);
+}
+
+/**
+ * Рисует один кадр очага взрыва ПИКСЕЛЬНОЙ техникой (issue #542): силуэт считается в
+ * низком разрешении (`explosion-sprite.ts`) и заливается целыми квадратами `S×S` без
+ * сглаживания — та же ступенчатая техника, что у облаков и гор сцены, вместо мягкого
+ * градиента, из-за которого взрыв читался «в другой технике» и «так себе».
+ *
+ * Силуэт — подпись типа формой (круг с лучами / ромб с ободом / круг очага / конус
+ * вниз), а не только цветом: палитра занята семантикой и на закате не читается.
+ * Единый примитив для боевого `Bullet.drawExplosion` и витрины (`ui/weapon-fx-demo`).
+ *
+ * Заливка батчится по уровню альфы: один `fillStyle`/`globalAlpha` на уровень, ≤4
+ * прохода — у края вспышки не больше 4 значений альфы (критерий #542).
  */
 export function paintExplosionFocus(
     ctx: CanvasRenderingContext2D,
@@ -183,24 +219,34 @@ export function paintExplosionFocus(
     cy: number,
     radius: number,
     colors: TWeaponExplosionColors,
-    shockwave: boolean,
+    silhouette: TExplosionSilhouette,
 ): void {
-    const gradient = ctx.createRadialGradient(cx, cy, radius / 10, cx, cy, radius + radius / 2);
-    gradient.addColorStop(0, colors.core);
-    gradient.addColorStop(0.3, colors.mid);
-    gradient.addColorStop(1, colors.edge);
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, 2 * Math.PI, true);
-    ctx.fill();
-    ctx.closePath();
+    if (radius <= 0) return;
 
-    if (shockwave && radius > 0) {
-        ctx.strokeStyle = colors.core;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius, 0, 2 * Math.PI, true);
-        ctx.stroke();
-        ctx.closePath();
+    const sprite = buildExplosionSprite(silhouette, radius);
+    const { size, scale, levels } = sprite;
+    const half = (size - 1) / 2;
+    // Снап начала к целым пикселям канваса — крестики сетки без субпиксельного «мыла».
+    const originX = Math.floor(cx - half * scale);
+    const originY = Math.floor(cy - half * scale);
+
+    const prevAlpha = ctx.globalAlpha;
+    const prevSmoothing = ctx.imageSmoothingEnabled;
+    // Контракт техники: без сглаживания (на fillRect не влияет, но фиксирует намерение).
+    ctx.imageSmoothingEnabled = false;
+
+    for (let level = 1; level <= EXPLOSION_ALPHA_LEVELS; level++) {
+        ctx.globalAlpha = LEVEL_ALPHA[level];
+        ctx.fillStyle = colorForLevel(level, colors);
+        for (let row = 0; row < size; row++) {
+            const base = row * size;
+            for (let col = 0; col < size; col++) {
+                if (levels[base + col] !== level) continue;
+                ctx.fillRect(originX + col * scale, originY + row * scale, scale, scale);
+            }
+        }
     }
+
+    ctx.globalAlpha = prevAlpha;
+    ctx.imageSmoothingEnabled = prevSmoothing;
 }

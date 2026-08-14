@@ -28,8 +28,8 @@ describe('WEAPON_SPECS', () => {
             bulletColor: null,
             trail: { size: 3, life: 10, color: ENGINE_COLORS.primary },
             foci: [{ dxFactor: 0, radiusFactor: 1 }],
-            shockwave: false,
             groundColumn: false,
+            silhouette: 'burst',
         };
         expect(WEAPON_SPECS[EWeaponKind.HighExplosive]).toEqual(highExplosive);
     });
@@ -41,7 +41,6 @@ describe('WEAPON_SPECS', () => {
         expect(heavy.growthPerFrame).toBeGreaterThan(base.growthPerFrame);
         expect(heavy.shakeHit).toBeGreaterThan(base.shakeHit);
         expect(heavy.slowMoOnMiss).toBe(true);
-        expect(heavy.shockwave).toBe(true);
         expect(heavy.bulletSizeFactor).toBeGreaterThan(1);
     });
 
@@ -69,5 +68,38 @@ describe('WEAPON_SPECS', () => {
 
     it('weaponSpecFor отдаёт спеку по типу', () => {
         expect(weaponSpecFor(EWeaponKind.Cluster)).toBe(WEAPON_SPECS[EWeaponKind.Cluster]);
+    });
+
+    it('каждый тип несёт свой силуэт вспышки (подпись типа формой, #542)', () => {
+        const byKind = {
+            [EWeaponKind.HighExplosive]: 'burst',
+            [EWeaponKind.Heavy]: 'blast',
+            [EWeaponKind.Cluster]: 'cluster',
+            [EWeaponKind.Digger]: 'digger',
+        } as const;
+        const silhouettes = WEAPON_KIND_ORDER.map((k) => WEAPON_SPECS[k].silhouette);
+        // Все четыре силуэта разные — иначе типы сливаются формой.
+        expect(new Set(silhouettes).size).toBe(WEAPON_KIND_ORDER.length);
+        for (const kind of WEAPON_KIND_ORDER) {
+            expect(WEAPON_SPECS[kind].silhouette).toBe(byKind[kind]);
+        }
+    });
+
+    // Критерий #542: «через секунду после попадания — четыре разных профиля кратера».
+    // Профиль кратера задают: число очагов, радиус (`craterRadiusFactor` × макс. радиус
+    // очага `radiusFactor`) и глубина (`craterYOffsetFactor`). Проверяем, что у всех
+    // четырёх типов эта подпись различна.
+    it('четыре разных профиля кратера', () => {
+        const profileOf = (kind: EWeaponKind) => {
+            const s = WEAPON_SPECS[kind];
+            const maxFocusRadius = Math.max(...s.foci.map((f) => f.radiusFactor));
+            return [
+                s.foci.length,
+                Math.round(s.craterRadiusFactor * maxFocusRadius * 100) / 100,
+                s.craterYOffsetFactor,
+            ].join(':');
+        };
+        const profiles = WEAPON_KIND_ORDER.map(profileOf);
+        expect(new Set(profiles).size).toBe(WEAPON_KIND_ORDER.length);
     });
 });

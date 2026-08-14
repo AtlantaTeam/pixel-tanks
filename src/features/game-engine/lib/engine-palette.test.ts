@@ -33,9 +33,21 @@ describe('ENGINE_COLORS', () => {
         expect(ENGINE_COLORS.danger).toBe(cssDanger);
     });
 
+    it('зеркалит --color-surface из globals.css (ночная тонировка земли, #545)', () => {
+        const cssSurface = readCssToken('--color-surface');
+        expect(cssSurface).toBeDefined();
+        expect(ENGINE_COLORS.surface).toBe(cssSurface);
+    });
+
     it('зеркалит --color-border-strong из globals.css (линия земли демо витрины, issue #496)', () => {
         const cssBorderStrong = readCssToken('--color-border-strong');
         expect(cssBorderStrong).toBeDefined();
         expect(ENGINE_COLORS.borderStrong).toBe(cssBorderStrong);
+    });
+
+    it('зеркалит --color-enemy из globals.css (призрачная трасса бота, issue #543)', () => {
+        const cssEnemy = readCssToken('--color-enemy');
+        expect(cssEnemy).toBeDefined();
+        expect(ENGINE_COLORS.enemy).toBe(cssEnemy);
     });
 });

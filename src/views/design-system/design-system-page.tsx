@@ -14,10 +14,12 @@ import { GameControlsSection } from './game-controls-section';
 import { GameOverSection } from './game-over-section';
 import { IconSection } from './icon-section';
 import { PauseSection } from './pause-section';
+import { PrecipitationSection } from './precipitation-section';
 import { ScreensSection } from './screens-section';
 import { SkyBackgroundSection } from './sky-background-section';
 import { TankSkinsSection } from './tank-skins-section';
 import { WeaponsSection } from './weapons-section';
+import { WindDustSection } from './wind-dust-section';
 
 const FACTION_OPTIONS: TSegmentedControlOption<TFaction>[] = [
     { value: 'player', label: 'Игрок' },
@@ -475,6 +477,26 @@ export function DesignSystemPage() {
                             Оружие боя
                         </SectionHeading>
                         <WeaponsSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading
+                            number="18"
+                            headline="Ясно · дождь · снег · буря — пресет от сида"
+                        >
+                            Погода боя
+                        </SectionHeading>
+                        <PrecipitationSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading
+                            number="19"
+                            headline="Пылинки приземного слоя и ночная кайма — носитель ветра"
+                        >
+                            Ветер в арене
+                        </SectionHeading>
+                        <WindDustSection />
                     </section>
                 </div>
             </main>

@@ -1,11 +1,27 @@
 import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
 import type { TSeededRandom } from '@/shared/lib/random';
 import { computeTerrainHeights, EMPTY_ARENA_INSETS, type TArenaInsets } from './arena-insets';
+import { withAlpha } from './sky-celestial';
+import type { TGroundTintLayer } from './scene-light';
 
 type TExplosion = {
     bulletY: number;
     delta: number;
 };
+
+/**
+ * Осадки-дождь (#547, §7.8): столбцы воронок затемняются — размокший песок темнее
+ * сухого. `darkenAlpha` — сила затемнения, `edgeSoftenPx` — на сколько пикселей по
+ * краям воронки альфа спадает («оплывший» край, не резкий обрыв). Пусто (нет дождя)
+ * — воронки как обычно.
+ */
+export type TCraterStyle = {
+    darkenAlpha: number;
+    edgeSoftenPx: number;
+};
+
+/** Тёмный тон размокшей воронки (#547): почти чёрный, силу задаёт `darkenAlpha`. */
+const CRATER_DARKEN_COLOR = '#0a0806';
 
 type THeightBand = { min: number; max: number };
 
@@ -40,6 +56,28 @@ export class Ground {
      */
     private insets: TArenaInsets;
     private random: TSeededRandom;
+    /**
+     * Тонировка земли по времени суток (#545, §6): плоские слои цвета поверх силуэта
+     * рельефа (`source-atop`), «включатель» пресета. Пусто (день) → рельеф без тона,
+     * как было до светила. Запекается в offscreen-слой вместе с песком — не проход за
+     * кадр.
+     */
+    private tint: readonly TGroundTintLayer[];
+    /**
+     * Тон каймы светила (#545, §6): 1 px подсветка верхней кромки песка — ридж ловит
+     * свет. `undefined` (день/до светила) → кромку не подсвечиваем.
+     */
+    private edgeColor: string | undefined;
+    /**
+     * Стиль затемнения воронок дождём (#547). `undefined` (нет дождя) — воронки не
+     * темнеют. Запекается в offscreen-слой вместе с рельефом — не проход за кадр.
+     */
+    private craterStyle: TCraterStyle | undefined;
+    /**
+     * Столбцы, задетые воронкой (#547): `fall` помечает их, `darkenCraters` темнит.
+     * Постоянна на весь бой — воронка остаётся тёмной после осыпания. Индекс = X.
+     */
+    private cratered: boolean[];
     isFalling = false;
     // Статичный террейн — offscreen-слой (.claude/rules/canvas.md: «статичные
     // слои — отдельный offscreen canvas, перерисовывать только при изменении»).
@@ -56,8 +94,14 @@ export class Ground {
         random: TSeededRandom,
         sandImage?: HTMLImageElement,
         insets: TArenaInsets = EMPTY_ARENA_INSETS,
+        tint: readonly TGroundTintLayer[] = [],
+        edgeColor?: string,
+        craterStyle?: TCraterStyle,
     ) {
         this.random = random;
+        this.tint = tint;
+        this.edgeColor = edgeColor;
+        this.craterStyle = craterStyle;
         this.stepMax = 3;
         this.stepChange = 0.3;
         this.innerWidth = innerWidth;
@@ -74,6 +118,7 @@ export class Ground {
         this.sandImagePattern = null;
         this.heights = [];
         this.explosionHeights = [];
+        this.cratered = [];
         this.generate();
     }
 
@@ -102,6 +147,7 @@ export class Ground {
             }
             this.heights[x] = floor(height);
             this.explosionHeights[x] = 0;
+            this.cratered[x] = false;
         }
     };
 
@@ -125,6 +171,11 @@ export class Ground {
         this.heightMin = next.min;
         this.heights = new Array<number>(innerWidth);
         this.explosionHeights = new Array<number>(innerWidth).fill(0);
+        // Метки воронок (#547) переносим в новую ширину ближайшим столбцом — чтобы
+        // затемнение осталось на кратерах после ресайза. Ресайза в реплее нет
+        // (размер зафиксирован записью), так что на детерминизм это не влияет.
+        const oldCratered = this.cratered;
+        this.cratered = new Array<boolean>(innerWidth).fill(false);
         const step = innerWidth > 1 ? (oldWidth - 1) / (innerWidth - 1) : 0;
         for (let x = 0; x < innerWidth; x++) {
             const t = x * step;
@@ -133,6 +184,7 @@ export class Ground {
             const frac = t - x0;
             const interp = oldHeights[x0] * (1 - frac) + oldHeights[x1] * frac;
             this.heights[x] = floor(remapToBand(interp, prev, next));
+            this.cratered[x] = oldCratered[Math.round(t)] ?? false;
         }
         this.layerDirty = true;
     };
@@ -145,6 +197,10 @@ export class Ground {
             const katetOpposite = floor(Math.sqrt(radius * radius - katetNear * katetNear));
             this.explosionHeights[x - radius + i] = { bulletY: y, delta: katetOpposite * 2 };
             this.explosionHeights[x + radius - i] = { bulletY: y, delta: katetOpposite * 2 };
+        }
+        // Помечаем задетые воронкой столбцы (#547) — дождь затемнит их в offscreen-слое.
+        for (let cx = x - radius; cx <= x + radius; cx++) {
+            if (cx >= 0 && cx < this.innerWidth) this.cratered[cx] = true;
         }
         this.layerDirty = true;
     };
@@ -223,7 +279,91 @@ export class Ground {
         ctx.stroke();
         ctx.translate(0, -this.innerHeight);
         this.decorateWithSand(ctx, 0, this.innerWidth);
+        this.applyTint(ctx);
+        this.darkenCraters(ctx);
+        this.highlightCrest(ctx);
         this.layerDirty = false;
+    }
+
+    /**
+     * Затемняет столбцы воронок (#547, дождь): тёмный тон поверх силуэта рельефа
+     * через `source-atop` (краска только на песок), по столбцу на воронку. Край
+     * воронки «оплывает» — на `edgeSoftenPx` пикселей по краям альфа спадает
+     * (`craterEdgeFactor`), а не обрывается резко. Нет дождя (`craterStyle` пуст)
+     * или воронок ещё не было — no-op. Запекается в offscreen-слой, не проход за кадр.
+     */
+    private darkenCraters(ctx: CanvasRenderingContext2D) {
+        const style = this.craterStyle;
+        if (!style || style.darkenAlpha <= 0) return;
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-atop';
+        ctx.fillStyle = CRATER_DARKEN_COLOR;
+        const bandTop = this.innerHeight - this.heightMax;
+        for (let x = 0; x < this.innerWidth; x++) {
+            if (!this.cratered[x]) continue;
+            ctx.globalAlpha = style.darkenAlpha * this.craterEdgeFactor(x, style.edgeSoftenPx);
+            ctx.fillRect(x, bandTop, 1, this.heightMax);
+        }
+        ctx.restore();
+    }
+
+    /**
+     * Коэффициент затемнения столбца воронки по близости к её краю (#547): 1 внутри,
+     * меньше — у края. `edgeSoftenPx=1` даёт крайнему столбцу воронки 0.5 — край на
+     * 1 px мягче. `0` — жёсткий край (коэффициент всегда 1).
+     */
+    private craterEdgeFactor(x: number, softenPx: number): number {
+        if (softenPx <= 0) return 1;
+        let dist = softenPx + 1;
+        for (let d = 1; d <= softenPx; d++) {
+            const leftClear = x - d < 0 || !this.cratered[x - d];
+            const rightClear = x + d >= this.innerWidth || !this.cratered[x + d];
+            if (leftClear || rightClear) {
+                dist = d;
+                break;
+            }
+        }
+        return Math.min(1, dist / (softenPx + 1));
+    }
+
+    /**
+     * Тонировка земли по пресету (#545, §6): каждый слой заливается поверх силуэта
+     * рельефа через `source-atop` — краска ложится только на песок, не на небо между
+     * склонами. Пустой список (день) — no-op, поведение до светила. Полоса берётся
+     * по `heightMax` над горизонтом, как у `decorateWithSand`, чтобы тон покрыл всю
+     * возможную высоту рельефа.
+     */
+    private applyTint(ctx: CanvasRenderingContext2D) {
+        if (this.tint.length === 0) return;
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-atop';
+        for (const layer of this.tint) {
+            ctx.globalAlpha = layer.alpha;
+            ctx.fillStyle = layer.color;
+            ctx.fillRect(0, this.innerHeight - this.heightMax, this.innerWidth, this.heightMax);
+        }
+        ctx.restore();
+    }
+
+    /**
+     * Подсветка кромки песка (#545, §6): 1 px линия по верху рельефа тоном каймы
+     * светила — ридж ловит свет. Полупрозрачная, поверх тонировки (`source-over`),
+     * чтобы читалась как блик, а не перекрашивала кромку целиком. День/до светила
+     * (`edgeColor` не задан) — не рисуем.
+     */
+    private highlightCrest(ctx: CanvasRenderingContext2D) {
+        if (!this.edgeColor) return;
+        ctx.save();
+        ctx.beginPath();
+        // +0.5 — в центр пиксельной сетки, иначе 1 px линия размывается на два.
+        ctx.moveTo(0, this.innerHeight - this.heights[0] + 0.5);
+        for (let x = 1; x < this.innerWidth; x++) {
+            ctx.lineTo(x, this.innerHeight - this.heights[x] + 0.5);
+        }
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = withAlpha(this.edgeColor, 0.55);
+        ctx.stroke();
+        ctx.restore();
     }
 
     // Копирует срез закешированного слоя [xStart, xEnd] на целевой ctx. Источник —
@@ -254,21 +394,14 @@ export class Ground {
     private decorateWithSand(ctx: CanvasRenderingContext2D, xStart: number, xEnd: number) {
         if (!this.sandImage) return;
         if (!this.sandImagePattern) {
-            // Текстура не бесшовная (1920px): на экранах шире стык тайла виден линией.
-            // Зеркальный тайл 2× ширины делает повтор непрерывным. Аллокация одноразовая.
-            const tile = document.createElement('canvas');
-            tile.width = this.sandImage.width * 2;
-            tile.height = this.sandImage.height;
-            const tileCtx = tile.getContext('2d');
-            if (tileCtx) {
-                tileCtx.drawImage(this.sandImage, 0, 0);
-                tileCtx.translate(tile.width, 0);
-                tileCtx.scale(-1, 1);
-                tileCtx.drawImage(this.sandImage, 0, 0);
-                this.sandImagePattern = ctx.createPattern(tile, 'repeat');
-            } else {
-                this.sandImagePattern = ctx.createPattern(this.sandImage, 'repeat');
-            }
+            // Прямой `repeat` без зеркал: текстура (1024×1024) СДЕЛАНА бесшовной на этапе
+            // ассета — перекрёстным затуханием с собственной копией, сдвинутой по кругу на
+            // половину стороны (метод и замеры — `docs/game-visuals/design-briefs.md`).
+            //
+            // Зеркальный тайл, который стоял здесь раньше, шов прятал, но платил
+            // симметрией: отражённые дюны читаются «бабочкой», и на большом экране это
+            // заметнее исходного стыка. Правильное место лечения — картинка, а не рантайм.
+            this.sandImagePattern = ctx.createPattern(this.sandImage, 'repeat');
         }
         ctx.save();
         if (ctx.globalCompositeOperation !== 'source-atop') {

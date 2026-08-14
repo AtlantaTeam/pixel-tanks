@@ -34,15 +34,27 @@ async function fireUntilGameOver(page: Page): Promise<void> {
 }
 
 for (const viewport of VIEWPORTS) {
-    test.describe(`Лок ввода — ход бота (${viewport.name})`, () => {
+    test.describe(`Индикаторы хода бота (${viewport.name})`, () => {
         test.use({ viewport: { width: viewport.width, height: viewport.height } });
 
-        test('оверлей палубы и маджента-рамка арены видны, без переполнения', async ({ page }) => {
+        // После #539 состояние «ход соперника» несут ровно два индикатора вместо
+        // четырёх: плашка хода и маджента-рамка арены. Проверяем оба — именно они
+        // и остались контрактом состояния, а снятый `deck-lock` больше не рисуется.
+        //
+        // Пилюлю берём из полосы СВОЕГО брейкпоинта: мобильная и десктопная
+        // смонтированы обе всегда (одна скрыта классом), и нескопленный локатор дал бы
+        // strict mode violation на двух узлах. Здесь скоуп ещё и по делу: тест
+        // вьюпортный, и проверять он обязан ту пилюлю, которую видит пользователь.
+        const hudTestId = viewport.width < 768 ? 'top-hud-mobile' : 'top-hud-desktop';
+
+        test('плашка хода и маджента-рамка арены видны, без переполнения', async ({ page }) => {
             test.setTimeout(60_000);
             await page.goto('/game?seed=42');
             await reachBotTurn(page);
 
-            await expect(page.getByTestId('deck-lock')).toBeVisible();
+            const turnPill = page.getByTestId(hudTestId).getByTestId('turn-pill');
+            await expect(turnPill).toBeVisible();
+            await expect(turnPill).toContainText('ХОД СОПЕРНИКА');
             await expect(page.getByTestId('arena-turn-ring')).toBeVisible();
 
             const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
@@ -50,7 +62,7 @@ for (const viewport of VIEWPORTS) {
             expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 
             await page.screenshot({
-                path: `screenshots/deck-lock-bot-turn-${viewport.name}.png`,
+                path: `screenshots/bot-turn-${viewport.name}.png`,
                 fullPage: false,
             });
         });
@@ -98,21 +110,6 @@ for (const viewport of VIEWPORTS) {
     });
 }
 
-test.describe('Доступность движения — prefers-reduced-motion', () => {
-    test.use({ viewport: { width: 1280, height: 800 } });
-
-    test('лок ввода не крутит blink-анимацию маркера', async ({ page }) => {
-        test.setTimeout(60_000);
-        // `test.use({ reducedMotion })` не типизирован в PlaywrightTestOptions этой
-        // версии (только `contextOptions`/`page.emulateMedia`) — эмулируем медиа-запрос
-        // напрямую на странице, эквивалентно контексту с `reducedMotion: 'reduce'`.
-        await page.emulateMedia({ reducedMotion: 'reduce' });
-        await page.goto('/game?seed=42');
-        await reachBotTurn(page);
-
-        const marker = page.getByTestId('deck-lock').locator('.animate-lock-blink');
-        await expect(marker).toBeVisible();
-        const animationName = await marker.evaluate((el) => getComputedStyle(el).animationName);
-        expect(animationName).toBe('none');
-    });
-});
+// Проверка `prefers-reduced-motion` для blink-маркера переехала в
+// `design-system-showcase.spec.ts`: после #539 маркер остался только на витрине
+// (`DeckLockOverlay`), в бою его больше нет. Тест ушёл туда, где живёт предмет.

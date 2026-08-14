@@ -21,6 +21,30 @@ describe('TopHud', () => {
         expect(mobile.getByText(BOT_NAME)).toBeInTheDocument();
     });
 
+    it('вспышка HP-полосы (#549): lastHit.target=player красит только карточку игрока', () => {
+        useGameStore.setState({
+            hp: { player: 72, enemy: 38 },
+            lastHit: { target: 'player', nonce: 1 },
+        });
+        const { getByTestId } = render(<TopHud />);
+
+        const mobile = within(getByTestId('top-hud-mobile-hp-row'));
+        const bars = mobile.getAllByRole('progressbar');
+        // Первая карточка ряда — игрок, вторая — бот (см. разметку HpCard ниже).
+        expect(bars[0]).toHaveClass('animate-hp-hit-shake');
+        expect(bars[1]).not.toHaveClass('animate-hp-hit-shake');
+    });
+
+    it('вспышка HP-полосы (#549): без lastHit обе карточки спокойны', () => {
+        useGameStore.setState({ hp: { player: 72, enemy: 38 } });
+        const { getByTestId } = render(<TopHud />);
+
+        const mobile = within(getByTestId('top-hud-mobile-hp-row'));
+        for (const bar of mobile.getAllByRole('progressbar')) {
+            expect(bar).not.toHaveClass('animate-hp-hit-shake');
+        }
+    });
+
     it('пилюля хода показывает «ТВОЙ ХОД», когда ходит игрок', () => {
         useGameStore.setState({ turn: 'player', phase: 'aiming' });
         const { getByTestId } = render(<TopHud />);
@@ -97,6 +121,20 @@ describe('TopHud', () => {
         expect(
             mobile.queryByText('Твои числа заморожены до конца хода соперника'),
         ).not.toBeInTheDocument();
+    });
+
+    it('бейдж «Заморожено» скрыт во время полёта снаряда (даже если это полёт снаряда бота)', () => {
+        // На полёте плашка "ВЫСТРЕЛ" уже сообщает о состоянии, дополнительный
+        // бейдж "Заморожено" — лишнее (#539).
+        useGameStore.setState({ turn: 'enemy', phase: 'flight' });
+        const { getByTestId } = render(<TopHud />);
+
+        // Пилюля "ВЫСТРЕЛ" видима
+        expect(within(getByTestId('top-hud-desktop')).getByText('ВЫСТРЕЛ')).toBeInTheDocument();
+        // Бейдж "Заморожено" скрыт видимостью (invisible), остаётся в DOM для
+        // резервирования места в макете (#447 — тот же приём)
+        const badge = getByTestId('freeze-badge');
+        expect(badge).toHaveClass('invisible');
     });
 
     it('до первого выстрела ветер показывает только грубые пипы, без точного числа', () => {
@@ -333,6 +371,33 @@ describe('TopHud', () => {
         );
     });
 
+    it('смену ветра бурей озвучивает живой регион, а не плашка на арене (#547)', () => {
+        // Плашка `WindShiftBanner` монтируется на каждый показ (`key={nonce}`), а
+        // появление узла скринридеры молчат — озвучивается смена содержимого уже
+        // существующего live-region. Поэтому анонс живёт в HUD и смонтирован всегда.
+        useGameStore.setState({ wind: 0.03, windShiftNonce: 0 });
+        const { getByTestId, rerender } = render(<TopHud />);
+
+        const live = getByTestId('wind-shift-live');
+        expect(live).toHaveAttribute('aria-live', 'polite');
+        expect(live).toBeEmptyDOMElement();
+
+        // Буря сменила ветер: тот же узел наполняется текстом с НАПРАВЛЕНИЕМ — до #547
+        // направление вообще не попадало в дерево доступности (стрелка декоративна).
+        useGameStore.setState({ wind: -0.03, windShiftNonce: 1 });
+        rerender(<TopHud />);
+        expect(getByTestId('wind-shift-live')).toHaveTextContent(/Буря сменила ветер.*влево/);
+    });
+
+    it('ячейка ветра отдаёт направление и силу текстом (#547, a11y)', () => {
+        useGameStore.setState({ wind: -0.03, windRevealed: true });
+        const { getAllByRole } = render(<TopHud />);
+
+        const groups = getAllByRole('group', { name: /Ветер/ });
+        expect(groups.length).toBeGreaterThan(0);
+        expect(groups[0]).toHaveAccessibleName(/Ветер влево, сила \d+ из \d+/);
+    });
+
     // #447 — геометрия HUD не зависит ни от фазы боя, ни от значений.
 
     it('заметку о заморозке выводит из потока — absolute-оверлеем, не рядом (высота не растёт)', () => {
@@ -466,3 +531,18 @@ describe('TopHud', () => {
         }
     });
 });
+
+// #537 — клип HUD на 320px: ряд телеметрии переполняется, ячейка ресурсов вытолкнута,
+// кнопка паузы срезана. Решение: сжимать элементы по порядку приоритета.
+//
+// ЗДЕСЬ ЭТОГО ТЕСТА НЕТ НАМЕРЕННО. Стоявшая на этом месте проверка
+// `scrollWidth <= clientWidth + 1` в happy-dom не могла упасть никогда: раскладка не
+// считается, обе величины равны нулю, и ассерт сводился к `0 <= 1`. Комментарий обещал
+// «мимикрируем 320px viewport», но ширина нигде не задавалась, а выборка
+// `querySelectorAll(':scope > .flex')` при смене класса рядов молча давала пустой список —
+// то есть барьер был фальшивым дважды.
+//
+// Переполнение — свойство РАСКЛАДКИ, и проверяется там, где она есть: в браузере.
+// Сторожит `e2e/mobile-viewport.spec.ts` — пара тестов на 320 и 390: на 320 панель влезает
+// и второстепенное схлопнуто, на 390 схлопнутое возвращается. Дублировать это здесь
+// нечем: любая проверка ширины в happy-dom будет ровно такой же тавтологией.

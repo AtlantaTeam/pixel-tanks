@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { createSeededRandom } from '@/shared/lib/random';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
+import { SkyBackground } from '../sky-background';
+import { PrecipitationLayer } from '../precipitation-layer';
 import type { TReplay } from '@/entities/replays';
 import { getStoredTankSkinId, selectTankSkinForSeed } from '@/entities/tank-skins';
 import { useGameStore } from '../../model/game.store';
@@ -32,6 +34,11 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
     const [botBubble, setBotBubble] = useState<{ reply: TBotReply; x: number; y: number } | null>(
         null,
     );
+    // Ветер ВОСПРОИЗВОДИМОГО боя: движок считает его от сида записи, а слой осадков без
+    // него ронял бы снег/дождь строго вертикально — не так, как было в самом бою.
+    // Локальное состояние, а не стор: стор реплея держит HUD, и писать туда боевой ветер
+    // означало бы смешивать два источника (см. `onWindInit` в `GameCanvas`).
+    const [replayWind, setReplayWind] = useState(0);
 
     const applyDamage = useGameStore((s) => s.applyDamage);
     const setGameOver = useGameStore((s) => s.setGameOver);
@@ -64,6 +71,10 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
                         setGameOver();
                     }
                 },
+                onWindInit: (wind) => setReplayWind(wind),
+                // Смена ветра бурей (#547) — только у записей своей эпохи: у старых
+                // `weather:false`, и движок этот колбэк не дёргает вовсе.
+                onWindChange: (wind) => setReplayWind(wind),
                 onMovesChange: () => {},
                 onPowerChange: () => {},
                 onBotReply: (reply) => {
@@ -90,6 +101,15 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
                 // же сид + тот же скин игрока всегда дают тот же вид соперника.
                 leftSkinId: playerSkinId,
                 rightSkinId: selectTankSkinForSeed(replay.seed, playerSkinId),
+                // Сид записи — модели света сцены (#545): реплей показывает то же
+                // время суток (тень, тонировка), что и живой бой того же сида.
+                seed: replay.seed,
+                // Погода — ТОЛЬКО у записей своей эпохи (#546/#547, формат v5). Сид один и
+                // тот же, поэтому без флага снег и буря применились бы и к старым записям:
+                // ветер ×4/3 или его разворот после третьего выстрела — другие траектории,
+                // другой HP, на несчастливом сиде другой победитель. Реплей обязан
+                // показывать записанный бой, а не сегодняшние правила поверх него.
+                weather: replay.weather === true,
             },
         );
         // Инсеты safe-зоны записи — ДО генерации рельефа (loadImages → initPaint):
@@ -136,13 +156,33 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
 
     return (
         <>
+            {/* Небо того же сида, что у боя (#545): без него реплей показывал СЛЕДСТВИЯ
+                света — тень танков и тонировку рельефа от светила, которого на экране нет.
+                `reducedMotion` — облака статичны: реплей и так проигрывается по записи, а
+                живой параллакс в нём только отвлекал бы от разбора выстрелов. */}
+            <SkyBackground
+                seed={replay.seed}
+                wind={replayWind}
+                reducedMotion
+                className="pointer-events-none absolute inset-0"
+            />
             {/* Ввод не обрабатывается: реплей смотрят, а не играют. Бэкинг-стор
                 canvas — фиксированного логического размера боя; object-contain
                 вписывает его в экран, сохраняя пропорции поля (см. fixedLogicalSize). */}
             <canvas
                 ref={canvasRef}
-                className="game-canvas mx-auto block h-full w-full object-contain bg-bg"
+                className="game-canvas relative mx-auto block h-full w-full object-contain"
             />
+            {/* Осадки — ТОЛЬКО у записей своей эпохи (v5, см. `weather` выше): иначе на
+                старой записи шёл бы снег, которого в том бою не было, а «размокшие»
+                воронки в рельефе оставались бы необъяснёнными. */}
+            {replay.weather === true && (
+                <PrecipitationLayer
+                    seed={replay.seed}
+                    wind={replayWind}
+                    className="pointer-events-none absolute inset-0"
+                />
+            )}
             {botBubble && (
                 <ChatBubble
                     reply={botBubble.reply}

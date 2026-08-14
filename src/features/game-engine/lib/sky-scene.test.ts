@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { cloudSpriteWidth } from './cloud-field';
 import { SkyScene, type TSkyImages } from './sky-scene';
 
 /**
@@ -7,9 +8,11 @@ import { SkyScene, type TSkyImages } from './sky-scene';
  */
 const createFakeCtx = () => {
     const gradient = { addColorStop: vi.fn() };
+    const radialGradient = { addColorStop: vi.fn() };
     return {
         canvas: { width: 800, height: 600 },
         createLinearGradient: vi.fn(() => gradient),
+        createRadialGradient: vi.fn(() => radialGradient),
         fillRect: vi.fn(),
         clearRect: vi.fn(),
         drawImage: vi.fn(),
@@ -19,6 +22,10 @@ const createFakeCtx = () => {
         scale: vi.fn(),
         setTransform: vi.fn(),
         beginPath: vi.fn(),
+        closePath: vi.fn(),
+        moveTo: vi.fn(),
+        lineTo: vi.fn(),
+        arc: vi.fn(),
         fill: vi.fn(),
         set fillStyle(_v: unknown) {},
         get fillStyle() {
@@ -29,6 +36,7 @@ const createFakeCtx = () => {
             return 1;
         },
         gradient,
+        radialGradient,
     };
 };
 
@@ -211,12 +219,16 @@ describe('SkyScene.resize / draw', () => {
                 (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
             ) as unknown as number[][];
             expect(cloudCalls.length).toBeGreaterThan(0);
+            const baseWidth = cloudSpriteWidth(1280);
             for (const call of cloudCalls) {
-                // 15% ширины: на 1280 это 192 CSS-px — размер из одобренного кадра.
-                expect(call[3]).toBe(192);
+                // Каждое облако домножает базовую (15% ширины) величину на свой scale
+                // (#515) — ширина уже не одна на всех, но остаётся в границах ярусов.
+                expect(Math.abs(call[3])).toBeGreaterThan(0);
+                expect(Math.abs(call[3])).toBeLessThanOrEqual(Math.round(baseWidth * 1.4));
             }
 
             // На телефоне облако НЕ остаётся 192 px (это было бы полэкрана): доля та же.
+            const narrowBaseWidth = cloudSpriteWidth(390);
             const narrow = new SkyScene({ seed: 1, reducedMotion: false, images });
             const narrowCtx = createFakeCtx();
             narrow.resize(390, 844);
@@ -224,13 +236,38 @@ describe('SkyScene.resize / draw', () => {
             const narrowCall = narrowCtx.drawImage.mock.calls.find(
                 (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
             ) as unknown as number[];
-            expect(narrowCall[3]).toBeLessThan(80);
+            expect(Math.abs(narrowCall[3])).toBeLessThan(80);
+            expect(Math.abs(narrowCall[3])).toBeLessThanOrEqual(Math.round(narrowBaseWidth * 1.4));
         } finally {
             Object.defineProperty(window, 'devicePixelRatio', {
                 value: original,
                 configurable: true,
             });
         }
+    });
+
+    it('облака поля заметно разного размера на 1280 — не единый масштаб на все (#515)', () => {
+        const images = allImages();
+        const scene = new SkyScene({ seed: 1, reducedMotion: false, images });
+        const ctx = createFakeCtx();
+        scene.resize(1280, 800);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        const field = scene.cloudField();
+        const cloudCalls = ctx.drawImage.mock.calls.filter(
+            (c) => c[0] === images.cloud1 || c[0] === images.cloud2 || c[0] === images.cloud3,
+        ) as unknown as number[][];
+        expect(cloudCalls.length).toBe(field.length);
+
+        const baseWidth = cloudSpriteWidth(1280);
+        field.forEach((cloud, i) => {
+            const expectedWidth = Math.round(baseWidth * cloud.scale);
+            expect(Math.abs(cloudCalls[i][3])).toBe(expectedWidth);
+            // Отрицательная ширина назначения — контракт зеркалирования по X.
+            expect(cloudCalls[i][3] < 0).toBe(cloud.mirror);
+        });
+
+        const widths = new Set(cloudCalls.map((c) => Math.abs(c[3])));
+        expect(widths.size).toBeGreaterThan(1);
     });
 
     it('позиции квантованы по пикселям устройства — арт не кипит на ходу (#514)', () => {
@@ -399,5 +436,137 @@ describe('SkyScene.resize / draw', () => {
         scene.draw(ctx as unknown as CanvasRenderingContext2D);
         // Канвас создан ровно один раз: недоступность offscreen запомнена, не пере-создаётся.
         expect(created).toBe(1);
+    });
+});
+
+describe('SkyScene — светило и звёзды (#519)', () => {
+    it('один сид даёт то же положение светила и звёзд', () => {
+        const a = new SkyScene({ seed: 'daily-2026-08-13', reducedMotion: false, preset: 'night' });
+        const b = new SkyScene({ seed: 'daily-2026-08-13', reducedMotion: false, preset: 'night' });
+        a.resize(1280, 800);
+        b.resize(1280, 800);
+        expect(a.celestialGeometry()).toEqual(b.celestialGeometry());
+        expect(a.starField()).toEqual(b.starField());
+    });
+
+    it('разные сиды разносят светило по-разному', () => {
+        const a = new SkyScene({ seed: 'seed-a', reducedMotion: false, preset: 'day' });
+        const b = new SkyScene({ seed: 'seed-b', reducedMotion: false, preset: 'day' });
+        expect(a.celestialGeometry()).not.toEqual(b.celestialGeometry());
+    });
+
+    it('днём солнце стоит высоко в разумном секторе неба', () => {
+        for (let seed = 0; seed < 20; seed++) {
+            const scene = new SkyScene({ seed, reducedMotion: false, preset: 'day' });
+            const cel = scene.celestialGeometry();
+            expect(cel.xFrac).toBeGreaterThanOrEqual(0.14);
+            expect(cel.xFrac).toBeLessThanOrEqual(0.86);
+            expect(cel.yFrac).toBeGreaterThanOrEqual(0.26);
+            expect(cel.yFrac).toBeLessThanOrEqual(0.4);
+        }
+    });
+
+    it('на закате солнце ниже (у горизонта) и крупнее дневного', () => {
+        for (let seed = 0; seed < 20; seed++) {
+            const day = new SkyScene({ seed, reducedMotion: false, preset: 'day' });
+            const sunset = new SkyScene({ seed, reducedMotion: false, preset: 'sunset' });
+            expect(sunset.celestialGeometry().yFrac).toBeGreaterThan(day.celestialGeometry().yFrac);
+            expect(sunset.celestialGeometry().radiusFrac).toBeGreaterThan(
+                day.celestialGeometry().radiusFrac,
+            );
+        }
+    });
+
+    it('только ночной пресет несёт звёзды — день и закат без них', () => {
+        const day = new SkyScene({ seed: 1, reducedMotion: false, preset: 'day' });
+        const sunset = new SkyScene({ seed: 1, reducedMotion: false, preset: 'sunset' });
+        const night = new SkyScene({ seed: 1, reducedMotion: false, preset: 'night' });
+        day.resize(1280, 800);
+        sunset.resize(1280, 800);
+        night.resize(1280, 800);
+        expect(day.starField()).toHaveLength(0);
+        expect(sunset.starField()).toHaveLength(0);
+        expect(night.starField().length).toBeGreaterThan(0);
+    });
+
+    it('звёзды разбросаны выше силуэта гор', () => {
+        const night = new SkyScene({ seed: 3, reducedMotion: false, preset: 'night' });
+        night.resize(1280, 800);
+        for (const star of night.starField()) {
+            expect(star.yFrac).toBeGreaterThanOrEqual(0);
+            expect(star.yFrac).toBeLessThanOrEqual(0.56);
+        }
+    });
+
+    it('плотность звёзд растёт с шириной экрана', () => {
+        const narrow = new SkyScene({ seed: 5, reducedMotion: false, preset: 'night' });
+        const wide = new SkyScene({ seed: 5, reducedMotion: false, preset: 'night' });
+        narrow.resize(390, 844);
+        wide.resize(1920, 1080);
+        expect(wide.starField().length).toBeGreaterThan(narrow.starField().length);
+    });
+
+    it('светило рисуется в статичном слое: не перестраивается между кадрами', () => {
+        const offscreenCtx = createFakeCtx();
+        const offscreen = {
+            width: 0,
+            height: 0,
+            getContext: () => offscreenCtx,
+        } as unknown as HTMLCanvasElement;
+        const scene = new SkyScene({
+            seed: 1,
+            reducedMotion: false,
+            preset: 'day',
+            createCanvas: () => offscreen,
+        });
+        const ctx = createFakeCtx();
+        scene.resize(800, 600);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        const callsAfterFirstDraw = offscreenCtx.arc.mock.calls.length;
+        expect(callsAfterFirstDraw).toBeGreaterThan(0);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        // Второй кадр не трогает offscreen вовсе — светило не перерисовывается.
+        expect(offscreenCtx.arc.mock.calls.length).toBe(callsAfterFirstDraw);
+        scene.resize(400, 300);
+        scene.draw(ctx as unknown as CanvasRenderingContext2D);
+        // Ресайз — единственный повод перестроить светило заново.
+        expect(offscreenCtx.arc.mock.calls.length).toBeGreaterThan(callsAfterFirstDraw);
+    });
+
+    it('солнце и луна рисуются примитивами Canvas, без растровых image-спрайтов', () => {
+        // Критерий issue #519: программно, как взрыв, — растр не заводить.
+        for (const preset of ['day', 'sunset', 'night'] as const) {
+            const scene = new SkyScene({ seed: 7, reducedMotion: false, preset });
+            const ctx = createFakeCtx();
+            scene.resize(800, 600);
+            scene.draw(ctx as unknown as CanvasRenderingContext2D);
+            expect(ctx.arc).toHaveBeenCalled();
+        }
+    });
+});
+
+describe('SkyScene — контур гор от светила (#545)', () => {
+    it('при доступном offscreen блитит силуэт гор с контуром каймы для всех пресетов', () => {
+        for (const preset of ['day', 'sunset', 'night'] as const) {
+            const offscreenCtx = createFakeCtx();
+            const offscreen = {
+                width: 0,
+                height: 0,
+                getContext: () => offscreenCtx,
+            } as unknown as HTMLCanvasElement;
+            const scene = new SkyScene({
+                seed: 3,
+                reducedMotion: false,
+                preset,
+                images: allImages(),
+                createCanvas: () => offscreen,
+            });
+            const ctx = createFakeCtx();
+            scene.resize(800, 600);
+            // Контурная ветка (ensureEdgeMountain + сдвинутый силуэт) отрабатывает без падения.
+            expect(() => scene.draw(ctx as unknown as CanvasRenderingContext2D)).not.toThrow();
+            // Силуэт гор блитится на статичный слой (основной + контур каймы).
+            expect(offscreenCtx.drawImage).toHaveBeenCalled();
+        }
     });
 });

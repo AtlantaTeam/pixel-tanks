@@ -2,13 +2,17 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { SkyBackground } from '../sky-background';
+import { PrecipitationLayer } from '../precipitation-layer';
+import { WindDustLayer } from '../wind-dust-layer';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
+import { POWER_MAX } from '@/shared/config';
 import { WEAPON_KIND_ORDER, type TWeapon } from '@/shared/model';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { getStoredTankSkinId, selectTankSkinForSeed } from '@/entities/tank-skins';
-import { selectIsBotTurn, useGameStore } from '../../model/game.store';
+import { selectIsBotTurn, useGameStore, type TSide } from '../../model/game.store';
 import { GamePlay } from '../../lib/game-play';
+import { DamageNumber, type TDamageHit } from '../damage-number';
 import { dealWeapons } from '../../lib/weapons';
 import { createFxRandom } from '../../lib/fx-random';
 import { calculateDragAim } from '../../lib/drag-aim';
@@ -25,6 +29,7 @@ import {
 import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
 import { CHIP_WIDTH, GestureOverlay, type TGestureVisual } from '../gesture-overlay';
+import { DesktopHoverChip, type TDesktopHoverChipVisual } from '../desktop-hover-chip';
 
 type TDragState = {
     pointerId: number;
@@ -139,8 +144,15 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const [botBubble, setBotBubble] = useState<{ reply: TBotReply; x: number; y: number } | null>(
         null,
     );
+    // Число урона над задетым танком (issue #549) — местное состояние (как
+    // botBubble): само событие происходит здесь же, в GameCanvas, кросс-дерева
+    // (верхний HUD) сигналит только `lastHit` в сторе (см. `recordHit`).
+    const [damageNumber, setDamageNumber] = useState<TDamageHit | null>(null);
     // Визуал жеста (луч, кольцо, чип) — обновляется на pointermove, живёт в DOM-оверлее.
     const [gestureVisual, setGestureVisual] = useState<TGestureVisual | null>(null);
+    // Визуал наведения мышью на десктопе (#544): чип у ствола при hover мышью.
+    const [desktopHoverChipVisual, setDesktopHoverChipVisual] =
+        useState<TDesktopHoverChipVisual | null>(null);
 
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
@@ -158,6 +170,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const increaseAngle = useGameStore((s) => s.increaseAngle);
     const decrementMoves = useGameStore((s) => s.decrementMoves);
     const applyDamage = useGameStore((s) => s.applyDamage);
+    const recordHit = useGameStore((s) => s.recordHit);
     const recordPlayerHit = useGameStore((s) => s.recordPlayerHit);
     const isGameOver = useGameStore((s) => s.isGameOver);
     const setWeapons = useGameStore((s) => s.setWeapons);
@@ -172,6 +185,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     const recordFire = useGameStore((s) => s.recordFire);
     const setTurn = useGameStore((s) => s.setTurn);
     const setWind = useGameStore((s) => s.setWind);
+    const announceWindShift = useGameStore((s) => s.announceWindShift);
     const setPhase = useGameStore((s) => s.setPhase);
     const fireStore = useGameStore((s) => s.fire);
     const turn = useGameStore((s) => s.turn);
@@ -202,8 +216,13 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             {
                 // Попадание снимает урон оружия с HP того танка, в который попали
                 // (HP-модель, GDD §2.5): левый танк — игрок, правый — бот.
-                onTankHit: ({ hittedIsLeft, leftActive, power }) => {
-                    applyDamage(hittedIsLeft ? 'player' : 'enemy', power);
+                onTankHit: ({ hittedIsLeft, leftActive, power, x, y }) => {
+                    const target: TSide = hittedIsLeft ? 'player' : 'enemy';
+                    applyDamage(target, power);
+                    // Число урона в месте события (#549) + сигнал верхнему HUD
+                    // (вспышка HP-полосы задетой стороны, `top-hud.tsx`).
+                    setDamageNumber({ target, amount: power, x, y });
+                    recordHit(target);
                     // Попадание игрока по противнику — для точности game-over.
                     // leftActive → стрелял игрок; !hittedIsLeft → задет бот (не самострел).
                     if (leftActive && !hittedIsLeft) recordPlayerHit();
@@ -254,6 +273,13 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 // Верхний HUD (handoff «Состояние»): ветер — один раз при старте
                 // боя, ход и лок ввода — на каждой передаче/выстреле.
                 onWindInit: (wind) => setWind(wind),
+                // Буря сменила ветер в середине боя (#547): обновляем значение в HUD
+                // и поднимаем плашку «ветер изменился» — смена обязана быть видимой,
+                // иначе читается как баг (§7.8).
+                onWindChange: (wind) => {
+                    setWind(wind);
+                    announceWindShift();
+                },
                 onTurnChange: (turn) => setTurn(turn),
                 // fireStore сама решает, раскрывать ли ветер (только из aiming,
                 // см. game.store.fire) — тот же вызов годится и для игрока, и для
@@ -265,7 +291,9 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             // Отдельный поток для косметики (частицы, тряска): их FPS-зависимое
             // потребление random не должно сдвигать выборки бота (см. GamePlay).
             createFxRandom(battleSeed),
-            { leftSkinId, rightSkinId },
+            // Сид боя — модели света сцены (#545): тот же сид, что у неба
+            // (`SkyBackground`), поэтому тень/тонировка согласованы с диском светила.
+            { leftSkinId, rightSkinId, seed: battleSeed },
         );
         gameRef.current = game;
         game.loadImages();
@@ -280,6 +308,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             uninstallGameDebugHook();
             resetGame();
             setBotBubble(null);
+            setDamageNumber(null);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -299,6 +328,14 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     useEffect(() => {
         if (isGameOver) gameRef.current?.stop();
     }, [isGameOver]);
+
+    // Desktop hover chip скрывается при выстреле (#544): фаза полёта означает
+    // что снаряд в полёте и чип наведения мышью больше не нужен.
+    useEffect(() => {
+        if (phase === 'flight') {
+            setDesktopHoverChipVisual(null);
+        }
+    }, [phase]);
 
     // Sync store → engine (когда меняем угол/мощность через UI)
     useEffect(() => {
@@ -479,6 +516,10 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             <SkyBackground seed={battleSeed} wind={wind} className="absolute inset-0" />
             <canvas
                 ref={canvasRef}
+                // Точка входа e2e к состоянию движка: `GamePlay.activateMode` пишет сюда
+                // `data-engine-mode` на каждом переходе, и тесты ждут выхода из стартового
+                // `fire` по сигналу, а не по таймеру.
+                data-testid="game-canvas"
                 className="game-canvas relative block h-full w-full touch-none"
                 onPointerDown={(e) => {
                     // Мышь оставляем на своей схеме (движение — угол, клик — выстрел);
@@ -596,17 +637,66 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 }}
                 onMouseMove={(e) => {
                     const game = gameRef.current;
-                    if (!game || !game.leftTank?.isActive || game.isFireMode || !game.ctx) return;
+                    if (!game || !game.leftTank?.isActive || !game.ctx) return;
+
                     const curAngle = Math.atan2(
                         floor(e.clientY - e.currentTarget.offsetTop) - game.leftTank.gunpointY,
                         floor(e.clientX - e.currentTarget.offsetLeft) - game.leftTank.gunpointX,
                     );
-                    setAngle(curAngle);
+
+                    if (!game.isFireMode) {
+                        setAngle(curAngle);
+                    }
+
+                    // Desktop hover chip (#544): чип наведения мышью у ствола танка,
+                    // только при наведении и не во время выстрела.
+                    if (game.isFireMode) {
+                        setDesktopHoverChipVisual(null);
+                        return;
+                    }
+
+                    const containerRect = e.currentTarget.getBoundingClientRect();
+                    const zoneRect = zoneRef.current?.getBoundingClientRect();
+                    if (!containerRect || !zoneRect) return;
+
+                    const containerLeft = containerRect.left;
+                    const containerTop = containerRect.top;
+
+                    // Позиция ствола танка в локальных координатах контейнера.
+                    const gunpointX = game.leftTank.gunpointX;
+                    const gunpointY = game.leftTank.gunpointY;
+
+                    // Чип позиционируется над стволом, на расстояние CHIP_GAP.
+                    let chipTop = gunpointY - CHIP_GAP - CHIP_HEIGHT;
+                    let chipCenterX = gunpointX;
+
+                    // Применяем клэмпы зоны жеста (тот же алгоритм, что на мобиле).
+                    const zoneLocal: TGestureZone = {
+                        top: zoneRect.top - containerTop,
+                        bottom: zoneRect.bottom - containerTop,
+                        left: zoneRect.left - containerLeft,
+                        right: zoneRect.right - containerLeft,
+                    };
+                    chipTop = clampChipTop(gunpointY, zoneLocal, CHIP_HEIGHT, CHIP_GAP);
+                    chipCenterX = clampChipCenterX(gunpointX, zoneLocal, CHIP_WIDTH);
+
+                    // Получаем силу и максимум из стора.
+                    const currentPower = power;
+                    const isMax = currentPower >= POWER_MAX;
+
+                    setDesktopHoverChipVisual({
+                        chipCenterX,
+                        chipTop,
+                        angle: curAngle,
+                        power: isMax ? POWER_MAX : currentPower,
+                        isMax,
+                    });
                 }}
                 onWheel={(e) => gameRef.current?.changeTankPower(e.deltaY > 0 ? -1 : 1)}
                 onMouseLeave={() => {
                     const game = gameRef.current;
                     if (game?.isAngleMode) game.activateMode('idle');
+                    setDesktopHoverChipVisual(null);
                 }}
                 onClick={() => {
                     if (suppressClickRef.current) {
@@ -616,16 +706,31 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     fireSelectedWeapon();
                 }}
             />
+            {/* Ветровые пылинки приземного слоя (#550): «дешёвый носитель» ветра рядом с
+                ареной, не только цифра в HUD. Под осадками — дождь/снег ложится поверх. */}
+            <WindDustLayer seed={battleSeed} wind={wind} className="absolute inset-0" />
+            {/* Осадки как погодный пресет (#546): слой над ареной, но под UI-оверлеями
+                (жест, чип, бабл). Гаснут при активной оттяжке — тем же сигналом
+                `gestureVisual !== null`, что и чат-бабл (#527). При reduced-motion слой
+                частиц не рисует; погоду тогда несёт тонировка рельефа (`GamePlay`). */}
+            <PrecipitationLayer
+                seed={battleSeed}
+                wind={wind}
+                dimmed={gestureVisual !== null}
+                className="absolute inset-0"
+            />
             {/* Зона жеста (handoff): между верхним оверлеем и палубой. Всегда в DOM —
                 замеряется на старте оттяжки (гейт старта, прижатие чипа). Инсеты по
                 брейкпоинтам — в `GESTURE_ZONE_INSET` (там же правило синхронизации с
                 высотами HUD/деки). */}
             <div
                 ref={zoneRef}
+                data-testid="gesture-zone"
                 aria-hidden
                 className={`pointer-events-none absolute ${GESTURE_ZONE_INSET}`}
             />
             <GestureOverlay visual={gestureVisual} />
+            <DesktopHoverChip visual={desktopHoverChipVisual} />
             {/* Ход бота (handoff): маджента-рамка арены — без предсказания траектории,
                 игрок не должен заранее знать, попадёт ли соперник. */}
             {isBotTurn && (
@@ -645,6 +750,17 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     // Именно гаснет, а не размонтируется — таймер жизни продолжает идти.
                     dimmed={gestureVisual !== null}
                     onExpire={() => setBotBubble(null)}
+                />
+            )}
+            {damageNumber && (
+                <DamageNumber
+                    // Ключ по координатам и урону попадания: без него повторный хит в
+                    // живом инстансе не перезапустил бы CSS-анимацию всплытия — число
+                    // молча повисло бы на прежней фазе. Тот же приём, что `key={nonce}`
+                    // у трека HP и плашки смены ветра.
+                    key={`${damageNumber.x}:${damageNumber.y}:${damageNumber.amount}`}
+                    hit={damageNumber}
+                    onExpire={() => setDamageNumber(null)}
                 />
             )}
         </div>

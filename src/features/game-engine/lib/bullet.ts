@@ -4,7 +4,12 @@ import { advanceProjectile, BULLET_GRAVITY } from './bullet-physics';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { WORLD_UNITS } from './world-scale';
-import { paintExplosionFocus, WEAPON_SPECS, type TWeaponSpec } from './weapon-specs';
+import {
+    paintExplosionFocus,
+    WEAPON_SPECS,
+    type TWeaponFocus,
+    type TWeaponSpec,
+} from './weapon-specs';
 
 export class Bullet {
     radius: number;
@@ -109,9 +114,21 @@ export class Bullet {
         this.baseExplosionRadius = WORLD_UNITS.explosionMaxRadius * scale;
     }
 
-    /** Центр текущего очага по X: точка попадания плюс смещение очага (кластер). */
+    /** Центр текущего очага по X: точка попадания плюс смещение очага (кластер).
+     *
+     *  Клэмп индекса — не перестраховка: после последнего очага `focusIndex` равен
+     *  длине списка (это и есть признак `isFinished`), и чтение геттера в тот момент
+     *  дало бы `undefined.dxFactor`. Сейчас не падает лишь потому, что `moveBullet`
+     *  сбрасывает снаряд тем же кадром — то есть держится на порядке вызовов, а не на
+     *  инварианте. Любой новый вызов после финала ронял бы кадр. */
     get explosionCenterX(): number {
-        return this.x + this.spec.foci[this.focusIndex].dxFactor * this.baseExplosionRadius;
+        return this.x + this.currentFocus.dxFactor * this.baseExplosionRadius;
+    }
+
+    /** Текущий очаг с прижатым к границам индексом (см. `explosionCenterX`). */
+    private get currentFocus(): TWeaponFocus {
+        const foci = this.spec.foci;
+        return foci[Math.min(this.focusIndex, foci.length - 1)];
     }
 
     /** Центр текущего очага по Y (очаги смещены только по X; глубина кратера — отдельно). */
@@ -119,9 +136,13 @@ export class Bullet {
         return this.y;
     }
 
-    /** Максимальный радиус текущего очага (доля базового радиуса взрыва). */
+    /** Максимальный радиус текущего очага (доля базового радиуса взрыва).
+     *
+     *  Через тот же `currentFocus`, что и `explosionCenterX`: оба геттера читаются из
+     *  одного `draw()`, и клэмп только в одном из них не спасал ни от чего — падение
+     *  просто переезжало строкой ниже. */
     private get focusMaxRadius(): number {
-        return this.spec.foci[this.focusIndex].radiusFactor * this.baseExplosionRadius;
+        return this.currentFocus.radiusFactor * this.baseExplosionRadius;
     }
 
     /** Забор флага смены очага: возвращает true один раз на каждый новый очаг. */
@@ -223,7 +244,7 @@ export class Bullet {
 
         // Единый примитив кадра взрыва (общий с витриной): градиент до фронта плюс
         // обод ударной волны РОВНО по фронту, ничего впереди него (ловушка #483).
-        paintExplosionFocus(ctx, cx, cy, this.explosionRadius, colors, this.spec.shockwave);
+        paintExplosionFocus(ctx, cx, cy, this.explosionRadius, colors, this.spec.silhouette);
 
         this.explosionRadius += growthPerFrame;
         if (this.explosionRadius >= this.focusMaxRadius) {

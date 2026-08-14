@@ -34,10 +34,22 @@ import type { TReplay, TReplayMove } from '../t-replay';
  * v3, нулевой если инсетов нет) ради фиксированной раскладки. Записи, где ВСЕ
  * выстрелы — фугас (`weaponId` 0/отсутствует), кодируются v2/v3: старые ссылки не
  * меняются, а новые компактны, пока в бою не появился неоднородный арсенал.
+ *
+ * **Версия 5** ничего не добавляет к раскладке v4 — она РАЗДЕЛЯЕТ ЭПОХИ. С #546/#547 бой
+ * получил погоду, выведенную из сида: снег домножает ветер на 4/3, буря разворачивает его
+ * после третьего выстрела. Записи, сделанные ДО этого, ветра с поправкой не знали, и
+ * воспроизведение их по новым правилам дало бы другие траектории, другой HP и, на
+ * несчастливом сиде, другого победителя — примерно у четверти всех записей (снег и буря
+ * вместе ~27% сидов). Поэтому версия здесь работает признаком «бой шёл с погодой»:
+ * v2–v4 воспроизводятся БЕЗ модификаторов, ровно как записаны, v5 — с ними.
+ *
+ * Флаг отдаётся наружу полем `weather` декодированного реплея, а не номером версии:
+ * потребителю (`ReplayCanvas`) нужен ответ «включать ли погоду», а не устройство формата.
  */
 const REPLAY_FORMAT_VERSION_V2 = 2;
 const REPLAY_FORMAT_VERSION_V3 = 3;
 const REPLAY_FORMAT_VERSION_V4 = 4;
+const REPLAY_FORMAT_VERSION_V5 = 5;
 
 /** Верхняя граница ординала типа оружия (`WEAPON_KIND_ORDER`, 0..3). */
 const MAX_WEAPON_ID = WEAPON_KIND_ORDER.length - 1;
@@ -50,8 +62,6 @@ const MOVE_TAG_FIRE = 1;
 
 /** Байты на ход: тег + int16 delta. */
 const MOVE_RECORD_SIZE = 3;
-/** Байты на выстрел: тег + float64 angle + u8 power. */
-const FIRE_RECORD_SIZE = 10;
 /** Байты на выстрел в v4: тег + float64 angle + u8 power + u8 weaponId. */
 const FIRE_RECORD_SIZE_V4 = 11;
 /** Байты на размер поля: width u16 + height u16. */
@@ -157,26 +167,19 @@ export const encodeReplay = (replay: TReplay): string => {
         Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
     const insetTop = replay.insets ? normInset(replay.insets.top) : 0;
     const insetBottom = replay.insets ? normInset(replay.insets.bottom) : 0;
-    const hasInsets = insetTop !== 0 || insetBottom !== 0;
-    if (hasInsets) {
+    // Ненулевые инсеты валидируем; на выбор версии они больше не влияют — v5 всегда
+    // несёт блок инсетов (нулевой, если их нет) ради фиксированной раскладки.
+    if (insetTop !== 0 || insetBottom !== 0) {
         assertInRange(insetTop, 0, UINT16_MAX, 'верхний инсет');
         assertInRange(insetBottom, 0, UINT16_MAX, 'нижний инсет');
     }
-    // Тип оружия (issue #483): если хоть один выстрел не фугас (`weaponId` > 0) —
-    // формат v4 (weaponId у каждого выстрела). Иначе v2/v3 как раньше: чисто
-    // фугасные записи (в т.ч. все старые) остаются компактными и совместимыми.
-    const hasWeapon = replay.moves.some(
-        (move) => move.kind === 'fire' && move.weaponId !== undefined && move.weaponId > 0,
-    );
-    const version = hasWeapon
-        ? REPLAY_FORMAT_VERSION_V4
-        : hasInsets
-          ? REPLAY_FORMAT_VERSION_V3
-          : REPLAY_FORMAT_VERSION_V2;
-    // v4 всегда несёт блок инсетов (нулевой, если инсетов нет) ради фиксированной раскладки.
-    const writeInsets = hasInsets || version === REPLAY_FORMAT_VERSION_V4;
-    const fireRecordSize =
-        version === REPLAY_FORMAT_VERSION_V4 ? FIRE_RECORD_SIZE_V4 : FIRE_RECORD_SIZE;
+    // Новая запись — всегда v5: бой идёт с погодой, и это надо зафиксировать в самой
+    // записи. Раскладка та же, что у v4 (инсеты + weaponId), поэтому `hasWeapon`/`hasInsets`
+    // на неё больше не влияют — экономия 1–2 байта на запись не стоит второй развилки в
+    // чтении. Старые ссылки (v2–v4) продолжают читаться как читались.
+    const version = REPLAY_FORMAT_VERSION_V5;
+    const writeInsets = true;
+    const fireRecordSize = FIRE_RECORD_SIZE_V4;
 
     let size =
         2 + (seedBytes ? 2 + seedBytes.length : 8) + FIELD_SIZE + (writeInsets ? INSETS_SIZE : 0);
@@ -225,7 +228,7 @@ export const encodeReplay = (replay: TReplay): string => {
             offset += 8;
             bytes[offset++] = move.power;
             // v4: тип оружия. Отсутствующий weaponId → 0 (фугас).
-            if (version === REPLAY_FORMAT_VERSION_V4) {
+            if (version === REPLAY_FORMAT_VERSION_V5) {
                 const weaponId = move.weaponId ?? 0;
                 assertInRange(weaponId, 0, MAX_WEAPON_ID, 'тип оружия');
                 bytes[offset++] = weaponId;
@@ -246,7 +249,8 @@ export const decodeReplay = (code: string): TReplay | null => {
     if (
         version !== REPLAY_FORMAT_VERSION_V2 &&
         version !== REPLAY_FORMAT_VERSION_V3 &&
-        version !== REPLAY_FORMAT_VERSION_V4
+        version !== REPLAY_FORMAT_VERSION_V4 &&
+        version !== REPLAY_FORMAT_VERSION_V5
     ) {
         return null;
     }
@@ -281,7 +285,10 @@ export const decodeReplay = (code: string): TReplay | null => {
     // Значения u16 (0..65535) структурно валидны всегда; зону из них зажимает движок
     // (`computeArenaZone`), поэтому «инсет больше поля» не роняет декодер, а даёт
     // вырожденную зону при воспроизведении. Нулевой блок v4 читается как «без инсетов».
-    const withInsets = version === REPLAY_FORMAT_VERSION_V3 || version === REPLAY_FORMAT_VERSION_V4;
+    const withInsets =
+        version === REPLAY_FORMAT_VERSION_V3 ||
+        version === REPLAY_FORMAT_VERSION_V4 ||
+        version === REPLAY_FORMAT_VERSION_V5;
     let insets: TReplay['insets'];
     if (withInsets) {
         if (offset + INSETS_SIZE > bytes.length) return null;
@@ -309,12 +316,18 @@ export const decodeReplay = (code: string): TReplay | null => {
             if (Math.abs(delta) > MAX_MOVE_DELTA) return null;
             moves.push({ kind: 'move', delta });
         } else if (tag === MOVE_TAG_FIRE) {
-            const recordBytes = version === REPLAY_FORMAT_VERSION_V4 ? 10 : 9;
+            const recordBytes =
+                version === REPLAY_FORMAT_VERSION_V4 || version === REPLAY_FORMAT_VERSION_V5
+                    ? 10
+                    : 9;
             if (offset + recordBytes > bytes.length) return null;
             const angle = view.getFloat64(offset);
             const power = bytes[offset + 8];
             // v4: тип оружия следом за power. Старые версии его не имеют → фугас.
-            const weaponId = version === REPLAY_FORMAT_VERSION_V4 ? bytes[offset + 9] : 0;
+            const weaponId =
+                version === REPLAY_FORMAT_VERSION_V4 || version === REPLAY_FORMAT_VERSION_V5
+                    ? bytes[offset + 9]
+                    : 0;
             offset += recordBytes;
             // float64 из URL может быть NaN/±Infinity, power — любым u8, weaponId —
             // вне диапазона типов: отсекаем то, что не может быть исходом прицеливания.
@@ -329,5 +342,10 @@ export const decodeReplay = (code: string): TReplay | null => {
             return null;
         }
     }
-    return insets ? { seed, width, height, insets, moves } : { seed, width, height, moves };
+    // `weather` — не поле формата, а вывод из версии: погода появилась вместе с v5, и
+    // записи прошлых эпох обязаны воспроизводиться без неё (см. докблок про версии).
+    const weather = version === REPLAY_FORMAT_VERSION_V5;
+    return insets
+        ? { seed, width, height, insets, moves, weather }
+        : { seed, width, height, moves, weather };
 };

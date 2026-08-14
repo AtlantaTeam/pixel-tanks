@@ -1,4 +1,5 @@
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
+import { vi } from 'vitest';
 import { HPBar } from './hp-bar';
 
 describe('HPBar', () => {
@@ -151,5 +152,79 @@ describe('HPBar', () => {
         expect(bar).toHaveAttribute('aria-valuenow', '72');
         expect(bar).toHaveAttribute('aria-valuemin', '0');
         expect(bar).toHaveAttribute('aria-valuemax', '100');
+    });
+
+    describe('вспышка при попадании (issue #549)', () => {
+        it('без hitNonce трек спокоен — нет ни сдвига, ни засветки', () => {
+            const { getByRole, queryByTestId } = render(
+                <HPBar label="Игрок" value={72} faction="player" />,
+            );
+
+            expect(getByRole('progressbar')).not.toHaveClass('animate-hp-hit-shake');
+            expect(queryByTestId('hp-bar-hit-flash')).not.toBeInTheDocument();
+        });
+
+        it('hitNonce включает сдвиг трека и белую засветку заливки, гасимые reduced motion', () => {
+            const { getByRole, getByTestId } = render(
+                <HPBar label="Игрок" value={72} faction="player" hitNonce={1} />,
+            );
+
+            const track = getByRole('progressbar');
+            expect(track).toHaveClass('animate-hp-hit-shake', 'motion-reduce:animate-none');
+
+            const flash = getByTestId('hp-bar-hit-flash');
+            expect(flash).toHaveClass('animate-hp-hit-flash', 'motion-reduce:hidden');
+        });
+
+        it('ПРИХОД хита на уже смонтированном баре включает вспышку (#549)', () => {
+            // Ровно тот переход, что происходит в бою: HUD монтируется ДО первого
+            // попадания (`hitNonce === undefined`), а хит приходит позже. Проверять
+            // только `render(<HPBar hitNonce={1} />)` мало: это единственная
+            // конфигурация, где вспышка включается инициализатором состояния, и она
+            // остаётся зелёной даже если в реальном потоке фича мертва — так и вышло
+            // при первой правке (ключ стоял на внутреннем узле, инстанс не пересоздавался).
+            const { getByRole, queryByTestId, rerender } = render(
+                <HPBar label="Игрок" value={72} faction="player" />,
+            );
+            expect(getByRole('progressbar')).not.toHaveClass('animate-hp-hit-shake');
+            expect(queryByTestId('hp-bar-hit-flash')).not.toBeInTheDocument();
+
+            rerender(<HPBar label="Игрок" value={60} faction="player" hitNonce={1} />);
+
+            expect(getByRole('progressbar')).toHaveClass('animate-hp-hit-shake');
+            expect(queryByTestId('hp-bar-hit-flash')).toBeInTheDocument();
+        });
+
+        it('вспышка гаснет сама — классы не остаются на узле до следующего хита', () => {
+            // Иначе анимация «догоняет» при показе скрытого состава HUD: `top-hud`
+            // держит смонтированными несколько раскладок, и в `display:none`
+            // CSS-анимация не идёт, а стартует с нуля при переходе брейкпоинта —
+            // белая вспышка без события.
+            vi.useFakeTimers();
+            try {
+                const { getByRole, queryByTestId } = render(
+                    <HPBar label="Игрок" value={72} faction="player" hitNonce={1} />,
+                );
+                expect(getByRole('progressbar')).toHaveClass('animate-hp-hit-shake');
+
+                act(() => {
+                    vi.advanceTimersByTime(400);
+                });
+
+                expect(getByRole('progressbar')).not.toHaveClass('animate-hp-hit-shake');
+                expect(queryByTestId('hp-bar-hit-flash')).not.toBeInTheDocument();
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('повторный hitNonce на том же значении не ломает раскладку inline', () => {
+            const { getByRole } = render(
+                <HPBar label="Игрок" value={72} faction="player" layout="inline" hitNonce={3} />,
+            );
+
+            const track = getByRole('progressbar');
+            expect(track).toHaveClass('flex-1', 'animate-hp-hit-shake');
+        });
     });
 });

@@ -116,7 +116,7 @@ export function WeaponFxDemo({ kind }: TWeaponFxDemoProps) {
                 GROUND_Y - foci[0].maxRadius * 0.2,
                 foci[0].maxRadius * 0.55,
                 spec.colors,
-                spec.shockwave,
+                spec.silhouette,
             );
         };
 
@@ -139,7 +139,7 @@ export function WeaponFxDemo({ kind }: TWeaponFxDemoProps) {
                     GROUND_Y - focus.maxRadius * 0.2,
                     radius,
                     spec.colors,
-                    spec.shockwave,
+                    spec.silhouette,
                 );
                 radius += spec.growthPerFrame;
                 if (radius >= focus.maxRadius) {

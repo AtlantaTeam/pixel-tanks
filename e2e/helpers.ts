@@ -83,10 +83,21 @@ export async function fireOne(
 
 /**
  * Доводит бой до фазы полёта снаряда: тот же прицел на врага, что и `reachBotTurn`
- * (ствол к −45°, немного мощности), один выстрел — и ждёт, пока `deck-lock`
- * покажет причину «flight» (`DeckLock`, `phase === 'flight'`, issue #449). Полёт
- * снаряда — отдельное состояние геометрии HUD между своим ходом и ходом соперника,
- * у которого раньше не было точки входа в e2e.
+ * (ствол к −45°, немного мощности), один выстрел — и ждёт, пока плашка хода
+ * покажет «ВЫСТРЕЛ» (`phase === 'flight'`, issue #449). Полёт снаряда — отдельное
+ * состояние геометрии HUD между своим ходом и ходом соперника, у которого раньше
+ * не было точки входа в e2e.
+ *
+ * Сигналом служит `turn-pill`, а не снятый в #539 `deck-lock`: из четырёх
+ * индикаторов одного состояния осталось два, и плашка хода — единственный
+ * ТЕКСТОВЫЙ из них (второй — маджента-рамка арены, у неё подписи нет).
+ *
+ * Скоуп на мобильный HUD обязателен: пилюль в DOM ДВЕ — мобильная и десктопная
+ * полосы смонтированы обе всегда (одна скрыта классом), а strict mode Playwright
+ * скрытые узлы из подсчёта не исключает. Нескопленный `getByTestId('turn-pill')`
+ * резолвится в два элемента и падает «strict mode violation». Берём мобильную:
+ * хелпер зовут с разных вьюпортов, а этот узел смонтирован на всех, и подпись у
+ * обеих пилюль одна и та же — здесь проверяется ФАЗА боя, не вёрстка.
  */
 export async function reachFlightPhase(page: Page): Promise<void> {
     await expect(page.getByTestId('game-hud')).toBeVisible();
@@ -94,9 +105,10 @@ export async function reachFlightPhase(page: Page): Promise<void> {
     for (let i = 0; i < 45; i++) await page.keyboard.press('ArrowLeft');
     for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowUp');
     await page.keyboard.press('Space');
-    await expect(page.getByTestId('deck-lock')).toContainText('Снаряд в полёте', {
-        timeout: 10_000,
-    });
+    await expect(page.getByTestId('top-hud-mobile').getByTestId('turn-pill')).toContainText(
+        'ВЫСТРЕЛ',
+        { timeout: 10_000 },
+    );
 }
 
 /** Сколько снарядов ВСЕГО осталось у игрока (всех типов) — по атрибуту

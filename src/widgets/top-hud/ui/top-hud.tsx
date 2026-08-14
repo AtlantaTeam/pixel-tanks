@@ -15,7 +15,7 @@ import {
     type TPhase,
     type TSide,
 } from '@/features/game-engine';
-import { BOT_NAME, POWER_MAX } from '@/shared/config';
+import { BOT_NAME, HUD_SURFACE, POWER_MAX } from '@/shared/config';
 import { useAnimatedValue } from '@/shared/lib/animation';
 import { useMuteState } from '@/shared/lib/audio';
 import { useHoldRepeat } from '@/shared/lib/interaction';
@@ -26,12 +26,6 @@ import { Button, HPBar, Icon, PipRow, type THPBarLayout } from '@/shared/ui';
 const PLAYER_NAME_PLACEHOLDER = 'Rex Commander';
 /** Снарядов на танк — половина общего арсенала боя (см. `dealWeapons`). */
 const AMMO_TOTAL = WEAPONS_AMOUNT / 2;
-
-/** Контраст над любым скином (handoff, решение E) — единое правило для КАЖДОГО
- *  элемента HUD: подложка + blur держат читаемость над шумным/светлым рельефом
- *  арены независимо от арта. Общая строка, а не копия в каждом компоненте ниже —
- *  разойдись она, часть элементов станет нечитаемой поверх части скинов. */
-const HUD_SURFACE = 'bg-[rgba(8,12,8,0.80)] backdrop-blur-[4px] shadow-[0_0_0_1px_rgba(0,0,0,.9)]';
 
 type TTopHudProps = {
     /** Открыть паузу — сам стейт паузы и `PauseOverlay` держит `views/game-page`
@@ -67,29 +61,56 @@ function HpCard({
     value,
     active,
     layout = 'stacked',
+    hitNonce,
 }: {
     faction: TSide;
     label: string;
     value: number;
     active: boolean;
     /** `inline` — компактная карточка мобильного HUD (#450): имя/полоса/число в
-     *  одну строку и меньший паддинг. Планшет/десктоп остаются `stacked`. */
+     *  одну строку и меньший паддинг. Планшет/десктоп остаются `stacked`.
+     *  На 320px (#537) min-width 130px вместо 150px даёт место для обеих карточек
+     *  и зазора между ними. */
     layout?: THPBarLayout;
+    /** Счётчик попаданий по ЭТОЙ стороне (issue #549, §7.2 разбора #534) —
+     *  прокидывается в `HPBar`, триггерит сдвиг трека + белую засветку
+     *  заливки (см. докблок `HpTrack`). */
+    hitNonce?: number;
 }) {
     return (
         <div
             className={clsx(
                 HUD_SURFACE,
-                'min-w-[150px] flex-1 border-[length:var(--border-w)]',
-                layout === 'inline' ? 'px-2 py-1.5' : 'p-2',
+                'min-w-[130px] flex-1 border-[length:var(--border-w)]',
+                // На 768–1279 (#538) паддинг карточки ужат до p-1.5 — бюджет высоты
+                // ряда 1 (44px, вместе с пилюлей/бейджем/иконками) не оставляет места
+                // под исходный p-2. С xl (1280, полоса 78px фиксирована, есть запас)
+                // паддинг возвращается к каноничному p-2.
+                // py-1 (не py-1.5=6px, вне легального шага #541): карточка HP —
+                // прямой ребёнок ряда 1 (мобилка h-8=32, планшет md:h-11=44) и
+                // получает высоту ряда через stretch, а не через собственный
+                // паддинг — паддинг только держит контент от клипа на самом
+                // тесном (32px) бюджете.
+                layout === 'inline' ? 'px-1.5 py-1' : 'p-1.5 xl:p-2',
+                // Без glow (#548, разбор §2): HP — класс 2 «раз в ход», карточка
+                // держит активную сторону только цветом рамки. Glow остаётся
+                // только у угла/силы (класс 1) — иначе на кадре прицеливания
+                // светится и HP, и пилюля хода, и телеметрия одновременно.
                 active
                     ? faction === 'player'
-                        ? 'border-accent shadow-[var(--glow-accent),0_0_0_1px_rgba(0,0,0,.9)]'
-                        : 'border-enemy shadow-[var(--glow-enemy),0_0_0_1px_rgba(0,0,0,.9)]'
+                        ? 'border-accent'
+                        : 'border-enemy'
                     : 'border-border',
             )}
         >
-            <HPBar label={label} value={value} faction={faction} max={MAX_HP} layout={layout} />
+            <HPBar
+                label={label}
+                value={value}
+                faction={faction}
+                max={MAX_HP}
+                layout={layout}
+                hitNonce={hitNonce}
+            />
         </div>
     );
 }
@@ -120,12 +141,21 @@ function TurnPill({
                 // shrink-0: сосед по флекс-ряду — HP-блок с flex-1 — иначе забирает
                 // всё свободное место и пилюля сжимается ниже контента (текст
                 // разбивается на «ТВОЙ» / «ХОД» вместо одной строки на десктопе).
-                'flex min-h-10 items-center gap-2 border-[length:var(--border-w)] border-[color:var(--accent)] px-3 py-2 shadow-[var(--glow)]',
+                // На 320px (#537): `min-w-0` вместо `shrink-0` — позволяет пилюле
+                // сжиматься ниже min-content, если места критически мало.
+                // px-2 xl:px-3 (#538): на 768–1279 правая группа ряда 1 (пилюля +
+                // бейдж + иконки) конкурирует с HP-картами за ширину строки — HP по
+                // спеке обязан схлопываться последним (handoff «HP-карточка»), значит
+                // резерв под самую длинную подпись пилюли (#449) надо ужать первым.
+                // Без shadow-glow (#548): пилюля хода — класс 3 «состояние»,
+                // остаётся цветной плашкой (рамка + текст в --accent), не
+                // источником свечения — glow держат только угол и сила.
+                'flex min-h-10 min-w-0 items-center gap-1.5 border-[length:var(--border-w)] border-[color:var(--accent)] px-2 py-2 xl:gap-2 xl:px-3',
                 // На десктопе сосед по ряду — HP-блок с flex-1: без shrink-0 он забирает
                 // всё свободное место, и пилюля сжимается ниже контента («ТВОЙ» / «ХОД»
                 // в две строки). В мобильном ряду соседи — только кнопки фиксированной
                 // ширины, там плашка, наоборот, тянется сама (#528).
-                stretch ? 'flex-1' : 'shrink-0',
+                stretch ? 'flex-1' : 'shrink',
                 // Финал: `invisible` (visibility:hidden) прячет пилюлю, но сохраняет
                 // её бокс — ряд не теряет высоту (#447).
                 hidden && 'invisible',
@@ -144,13 +174,19 @@ function TurnPill({
                 ячеек: невидимый размерник с самой широкой подписью держит бокс
                 неизменным независимо от текущего текста. */}
             <span className="grid justify-items-start">
+                {/* text-[11px] tracking-[0.02em] xl:text-[13px] xl:tracking-[0.08em]
+                    (#538): тот же бюджет ширины ряда 1 — резерв под «ХОД СОПЕРНИКА»
+                    при каноничном 13px/0.08em (~150px) оставлял HP-картам всего
+                    ~250px на двоих (упирались в собственный `min-w-[130px]` каждая,
+                    имя схлопывалось до 0 — HP обязан схлопываться последним, не
+                    наоборот). С xl (полоса 78px, есть запас) — канон кода. */}
                 <span
                     aria-hidden
-                    className="invisible col-start-1 row-start-1 font-display text-[13px] tracking-[0.08em] whitespace-nowrap uppercase"
+                    className="invisible col-start-1 row-start-1 font-display text-[11px] tracking-[0.02em] whitespace-nowrap uppercase xl:text-[13px] xl:tracking-[0.08em]"
                 >
                     {TURN_PILL_SIZER}
                 </span>
-                <span className="col-start-1 row-start-1 font-display text-[13px] tracking-[0.08em] whitespace-nowrap text-[color:var(--accent)] uppercase [text-shadow:var(--glow)]">
+                <span className="col-start-1 row-start-1 font-display text-[11px] tracking-[0.02em] whitespace-nowrap text-[color:var(--accent)] uppercase xl:text-[13px] xl:tracking-[0.08em]">
                     {label}
                 </span>
             </span>
@@ -162,11 +198,24 @@ function HudIconButtons({ onPauseClick }: { onPauseClick?: () => void }) {
     const { isMuted, toggle } = useMuteState();
 
     return (
-        <div className="flex shrink-0 gap-2">
+        // items-center (#541): обёртка — прямой ребёнок кластера статуса,
+        // который на планшете/десктопе растянут (stretch) до высоты ряда
+        // (44/56px), а сами кнопки — фиксированные 44×44 (`size-11`,
+        // `Button` size="icon") и не тянутся вместе с обёрткой; центрируем
+        // их внутри, а не прижимаем к верхнему краю.
+        <div className="flex shrink-0 items-center gap-2">
             <Button
                 variant="ghost"
                 size="icon"
-                className="m-0"
+                // `!m-0` (important), не просто `m-0` (#538): базовый `Button`
+                // задаёт `m-1` для ВСЕХ кнопок (`button.tsx`), а генерируемый Tailwind
+                // 4 CSS упорядочивает утилиты `m-*` по числовой шкале, а не по
+                // порядку классов в JSX — `m-1` (правило дальше по шкале) в итоговом
+                // файле стоит ПОСЛЕ `m-0` и выигрывает каскад независимо от того, что
+                // `m-0` написан в className позже. Без `!` кнопки mute/пауза
+                // получали паразитные 4px margin со всех сторон (44+8=52px вместо
+                // 44), и ряд 1 HUD не укладывался в бюджет высоты 44px.
+                className="!m-0"
                 onClick={toggle}
                 aria-label={isMuted ? 'Включить звук' : 'Выключить звук'}
             >
@@ -175,7 +224,15 @@ function HudIconButtons({ onPauseClick }: { onPauseClick?: () => void }) {
             <Button
                 variant="ghost"
                 size="icon"
-                className="m-0"
+                // `!m-0` (important), не просто `m-0` (#538): базовый `Button`
+                // задаёт `m-1` для ВСЕХ кнопок (`button.tsx`), а генерируемый Tailwind
+                // 4 CSS упорядочивает утилиты `m-*` по числовой шкале, а не по
+                // порядку классов в JSX — `m-1` (правило дальше по шкале) в итоговом
+                // файле стоит ПОСЛЕ `m-0` и выигрывает каскад независимо от того, что
+                // `m-0` написан в className позже. Без `!` кнопки mute/пауза
+                // получали паразитные 4px margin со всех сторон (44+8=52px вместо
+                // 44), и ряд 1 HUD не укладывался в бюджет высоты 44px.
+                className="!m-0"
                 onClick={onPauseClick}
                 aria-label="Пауза"
             >
@@ -191,12 +248,20 @@ function HudIconButtons({ onPauseClick }: { onPauseClick?: () => void }) {
 function CellShell({
     label,
     compact,
+    tight,
     className,
     children,
 }: {
     label: string;
     /** Плотный паддинг мобильного HUD (#450) — уже, чем на планшете/десктопе. */
     compact?: boolean;
+    /** Без паддинга — только рамка + подложка (#528, десктопная пара «Снаряды»/
+     *  «Ходы»): на узком xl (1280) телеметрия — один нешринкающийся ряд
+     *  (`xl:shrink-0 xl:flex-nowrap`), и обычный паддинг двух новых карточек не
+     *  влезает в оставшийся бюджет ширины полосы (замер — 410px доступно против
+     *  431px с обычным `CellShell`). Планшет/1920 паддинг не жмёт, но тот же
+     *  компонент не должен «прыгать» составом между брейкпоинтами. */
+    tight?: boolean;
     className?: string;
     children: ReactNode;
 }) {
@@ -204,17 +269,51 @@ function CellShell({
         <div
             className={clsx(
                 HUD_SURFACE,
-                'flex flex-col gap-0.5 border-[length:var(--border-w)] border-border',
-                // xl:px-1.5 (#489): та же экономия ширины узкого xl (1280…~1413) —
-                // планшет (768, тоже !compact) держит исходный px-2.5.
-                compact ? 'shrink-0 px-1 py-0.5' : 'px-2.5 py-1.5 xl:px-1.5',
+                // justify-center (#541): высота ячейки теперь задаётся РЯДОМ
+                // (`items-stretch` на родителе, легальная высота 32/44/56), не
+                // суммой паддинга+контента — ячейка растягивается до высоты
+                // ряда, а метка+значение центрируются внутри неё, а не
+                // прилипают к верхнему краю.
+                'flex flex-col justify-center border-[length:var(--border-w)] border-border',
+                // gap-1 (4px, легальный «внутри ячейки» #541) на компактных
+                // мобильных ячейках; 0 — на планшете/десктопе (label+value уже
+                // укладываются в 44/56 без зазора, добавлять нечего). Прежние
+                // 0.5 (2px) и xl:0.5 (2px) — вне легального набора {4,8,16}.
+                compact ? 'gap-1' : 'gap-0',
+                // px-2 py-1 xl:px-1 xl:py-0 (#541, легальный набор {4,8,16} —
+                // прежние px-2.5=10px/xl:px-1.5=6px/py-0.5=2px вне набора).
+                // Вертикальный паддинг больше не держит высоту ячейки (её
+                // держит `items-stretch` ряда) — только не даёт контенту
+                // клипаться на самом тесном легальном бюджете (56px на xl при
+                // значении 40px + подписи 9px + рамке 4px).
+                // На 320px (#537) ячейки сжимаются: без `shrink-0` и с минимальным паддингом
+                // (px-0 py-0 экономит до 4px на каждой ячейке × 4 ячейки = 16px в ряду).
+                // Мобилка без shrink-0: на узком вьюпорте ячейки гибче к переносу,
+                // чем плотная раскладка которая не влезает совсем.
+                tight ? '' : compact ? 'px-0 py-0' : 'px-2 py-1 xl:px-1 xl:py-0',
                 className,
             )}
         >
             {/* whitespace-nowrap: подпись «Угол · заморожен» на ходе бота длиннее
                 «Угол» — без запрета переноса она уходит на вторую строку и растит
-                высоту ячейки (а с ней и всего HUD) относительно своего хода (#447). */}
-            <span className="font-ui text-[9px] tracking-[0.14em] whitespace-nowrap text-text-muted uppercase">
+                высоту ячейки (а с ней и всего HUD) относительно своего хода (#447).
+                На 320px (#537): метка схлопнута по ширине, остаётся в дереве
+                доступности. Гейт `max-[359px]:` обязателен: `compact` — это ВЕСЬ
+                мобильный блок (`md:hidden`, <768), и без гейта подписи «Угол»/«Сила»/
+                «Ветер» пропадали на каждом телефоне, хотя main их показывает. */}
+            <span
+                className={clsx(
+                    'font-ui text-[9px] tracking-[0.14em] whitespace-nowrap text-text-muted uppercase',
+                    // leading-none (#538, только !compact): без сброса унаследованный
+                    // line-height (~1.5×) добавлял 4.5px на каждой ячейке ряда 2
+                    // планшета — полоса не укладывалась в бюджет высоты. Мобилка
+                    // (compact) не тронута: метка скрыта (`w-0 overflow-hidden`), но
+                    // её line-height участвует в высоте существующих mobile e2e-барьеров
+                    // (`overlay-budget.spec.ts`, `hud-geometry-stable.spec.ts`).
+                    !compact && 'leading-none',
+                    compact && 'max-[359px]:w-0 max-[359px]:overflow-hidden',
+                )}
+            >
                 {label}
             </span>
             {children}
@@ -222,26 +321,47 @@ function CellShell({
     );
 }
 
-/** 18px моб. (`compact`) / 40px десктоп (`--text-hud-xl`), tabular-nums, glow-text
- *  (handoff «Числовые ячейки»); цвет — фиксированный токен пропом, не тематический
- *  `--accent`. */
+/** 18px моб. (`compact`) / 22px планшет / 40px десктоп xl (`--text-hud-xl`),
+ *  tabular-nums; цвет — фиксированный токен пропом, не тематический `--accent`.
+ *  На 768–1279 (#538) значение — 22px, не 40: `--text-hud-xl` держит ряд
+ *  телеметрии высотой ~71px — вместе с рядом 1 и зазорами это раздувало полосу
+ *  HUD выше объявленного зоне жеста инсета 128px. С xl (1280, полоса 78px c
+ *  запасом) возвращается канон кода — `--text-hud-xl`.
+ *  `glow` (#548, разбор §2) — text-shadow только для класса 1 «непрерывно»
+ *  (угол, сила): раньше glow-text висел на КАЖДОЙ числовой ячейке (включая
+ *  раскрытое число ветра), и на кадре прицеливания светилось всё сразу —
+ *  «светится почти всё, значит не светится ничто». Дефолт `false` — опт-ин,
+ *  не опт-аут, чтобы новый вызывающий не получил glow молча. */
 function CellValue({
     compact,
     valueClassName,
     ariaHidden,
+    glow,
     children,
 }: {
     compact?: boolean;
     valueClassName: string;
     ariaHidden?: boolean;
+    glow?: boolean;
     children: ReactNode;
 }) {
     return (
         <span
             aria-hidden={ariaHidden}
             className={clsx(
-                'font-ui font-bold tabular-nums [text-shadow:var(--glow-text)]',
-                compact ? 'text-[18px]' : 'text-hud-xl',
+                'font-ui font-bold tabular-nums',
+                glow && '[text-shadow:var(--glow-text)]',
+                // leading-none (#538, только !compact): `text-[22px]` — произвольное
+                // значение без своего `--text-*--line-height` (в отличие от
+                // `--text-hud-xl`, у него `line-height:1` уже в токене) — без сброса
+                // браузер считает высоту строки от унаследованного line-height
+                // (~1.5×), и 22px-цифра занимала 33px вместо 22 — ряд 2 планшета не
+                // укладывался в бюджет высоты полосы. Мобилка (`compact`, 18px) не
+                // тронута — держит исходный line-height, на который уже настроены
+                // существующие mobile e2e-барьеры высоты (`overlay-budget.spec.ts`,
+                // `hud-geometry-stable.spec.ts`).
+                !compact && 'leading-none',
+                compact ? 'text-[18px]' : 'text-[22px] xl:text-hud-xl',
                 valueClassName,
             )}
         >
@@ -263,12 +383,15 @@ function FixedNumeric({
     compact,
     valueClassName,
     sizer,
+    glow,
     children,
 }: {
     compact?: boolean;
     valueClassName: string;
     /** Самое широкое значение диапазона — задаёт неизменную ширину бокса. */
     sizer: ReactNode;
+    /** См. `CellValue.glow` (#548) — угол/сила прокидывают `true`. */
+    glow?: boolean;
     children: ReactNode;
 }) {
     return (
@@ -276,12 +399,14 @@ function FixedNumeric({
             <CellValue
                 compact={compact}
                 ariaHidden
+                glow={glow}
                 valueClassName={clsx(valueClassName, 'invisible col-start-1 row-start-1')}
             >
                 {sizer}
             </CellValue>
             <CellValue
                 compact={compact}
+                glow={glow}
                 valueClassName={clsx(valueClassName, 'col-start-1 row-start-1')}
             >
                 {children}
@@ -295,6 +420,7 @@ function NumberCell({
     value,
     valueClassName,
     sizer,
+    glow,
 }: {
     label: string;
     value: ReactNode;
@@ -304,15 +430,19 @@ function NumberCell({
      *  не «ездят» при смене числа знаков (угол `1°`…`345°`, сила `1`…`20`). Без
      *  `sizer` ячейка тянется по содержимому (обратная совместимость). */
     sizer?: ReactNode;
+    /** См. `CellValue.glow` (#548) — только угол/сила (класс 1). */
+    glow?: boolean;
 }) {
     return (
         <CellShell label={label}>
             {sizer !== undefined ? (
-                <FixedNumeric valueClassName={valueClassName} sizer={sizer}>
+                <FixedNumeric valueClassName={valueClassName} sizer={sizer} glow={glow}>
                     {value}
                 </FixedNumeric>
             ) : (
-                <CellValue valueClassName={valueClassName}>{value}</CellValue>
+                <CellValue valueClassName={valueClassName} glow={glow}>
+                    {value}
+                </CellValue>
             )}
         </CellShell>
     );
@@ -333,11 +463,13 @@ function TrimButton({
     ariaLabel,
     holdProps,
     children,
+    className,
 }: {
     disabled: boolean;
     ariaLabel: string;
     holdProps: ReturnType<typeof useHoldRepeat>;
     children: ReactNode;
+    className?: string;
 }) {
     return (
         <button
@@ -356,6 +488,7 @@ function TrimButton({
                 // бокс кнопки на 10px во все стороны (`-inset-2.5`) → 52×52 тач-цель
                 // шире визуального бокса, раскладку не растит (absolute вне потока).
                 "before:absolute before:-inset-2.5 before:content-['']",
+                className,
             )}
             {...holdProps}
         >
@@ -379,6 +512,7 @@ function TrimCell({
     decLabel,
     incLabel,
     className,
+    glow,
 }: {
     label: string;
     value: ReactNode;
@@ -392,6 +526,8 @@ function TrimCell({
     incLabel: string;
     /** Доп. отступ от соседней ячейки (#452) — см. использование у «Сила». */
     className?: string;
+    /** См. `CellValue.glow` (#548) — только угол/сила (класс 1). */
+    glow?: boolean;
 }) {
     // Удержание кнопки авто-повторяет шаг (#264) — тап/клавиатура дают один
     // шаг, `useHoldRepeat` сам решает, глотать ли клик после автоповтора.
@@ -400,14 +536,33 @@ function TrimCell({
 
     return (
         <CellShell label={label} compact className={className}>
-            <div className="flex items-center gap-0.5">
-                <TrimButton disabled={frozen} ariaLabel={decLabel} holdProps={decHold}>
+            <div className="flex min-w-0 items-center gap-0.5">
+                {/* На 320px (#537) ± кнопки скрыты визуально, остаются для a11y:
+                    экономит ~70px в ряду (две ячейки по две кнопки ~32px).
+                    ⚠️ Именно `max-[359px]:`, а не голый `sr-only`: безусловный класс
+                    скрывал кнопки на ВСЕХ мобильных ширинах, включая 390. Кнопки при
+                    этом оставались в разметке с боксом 32×32 (побеждал `size-8`), но
+                    `clip` из `sr-only` убирал их и из рисунка, и из хит-теста — то есть
+                    на телефоне подстройка угла и силы тапом просто исчезла, а тест
+                    «тач-цель ≥44» этого не видел: бокс-то на месте. Поймали
+                    `overlay-budget`/`hud-geometry-stable` через перехват клика. */}
+                <TrimButton
+                    disabled={frozen}
+                    ariaLabel={decLabel}
+                    holdProps={decHold}
+                    className="max-[359px]:sr-only"
+                >
                     −
                 </TrimButton>
-                <FixedNumeric compact valueClassName={valueClassName} sizer={sizer}>
+                <FixedNumeric compact valueClassName={valueClassName} sizer={sizer} glow={glow}>
                     {value}
                 </FixedNumeric>
-                <TrimButton disabled={frozen} ariaLabel={incLabel} holdProps={incHold}>
+                <TrimButton
+                    disabled={frozen}
+                    ariaLabel={incLabel}
+                    holdProps={incHold}
+                    className="max-[359px]:sr-only"
+                >
                     +
                 </TrimButton>
             </div>
@@ -460,9 +615,19 @@ function WindCell({
         />
     );
 
+    // Направление — ТЕКСТОМ для скринридера: стрелка декоративна (`Icon` без подписи), а
+    // `PipRow` отдаёт только силу. До #547 направление было константой боя, и его отсутствие
+    // в дереве доступности почти ничего не стоило; теперь буря меняет его посреди боя, и
+    // незрячий игрок целился бы по старому ветру.
+    const directionText = direction === 'left' ? 'влево' : 'вправо';
+
     return (
         <CellShell label="Ветер" compact={compact}>
-            <div className={clsx('flex items-center', compact ? 'gap-1' : 'gap-1.5')}>
+            <div
+                className={clsx('flex items-center', compact ? 'gap-1' : 'gap-1.5')}
+                role="group"
+                aria-label={`Ветер ${directionText}, сила ${magnitude} из ${WIND_DISPLAY_SCALE}`}
+            >
                 <Icon
                     name={direction === 'left' ? 'arrow-l' : 'arrow-r'}
                     size={compact ? 14 : 18}
@@ -512,15 +677,16 @@ function WindCell({
     );
 }
 
-function ResourcePips({
-    label,
+/** Сами пипы без подписи и без обёртки-карточки (#528) — общий визуал для
+ *  мобильной `ResourcePips` (своя подпись, своя плотная карточка) и десктопной
+ *  `CellShell`-обёртки (подпись и карточка — её работа, дублировать не нужно). */
+function ResourcePipVisual({
     pips,
     color,
     ariaLabel,
     size,
     gap,
 }: {
-    label: string;
     pips: boolean[];
     color: string;
     ariaLabel: string;
@@ -531,23 +697,70 @@ function ResourcePips({
     gap?: number;
 }) {
     return (
-        <div className="flex flex-col gap-1">
-            <span className="font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase">
+        // xl-плотность (#489): на узком xl (1280…~1413) телеметрия в один
+        // нешринкающийся ряд (`shrink-0`) уезжает за край — компактнее пипы
+        // снарядов/ходов освобождают ей место. `size`/`gap` тут не передаются
+        // (Снаряды/Ходы = default 14px/5px, планшет не трогаем), поэтому цель —
+        // через arbitrary-variant по `data-testid`, а не проп: класс работает
+        // только под `xl:`-медиа, планшет (768, тот же `ResourcePipVisual`) их не видит.
+        <PipRow
+            pips={pips}
+            color={color}
+            label={ariaLabel}
+            size={size}
+            gap={gap}
+            className="xl:gap-[3px] xl:[&>[data-testid=pip]]:size-2.5"
+        />
+    );
+}
+
+/**
+ * Снаряды/ходы мобильного ряда телеметрии (#528): своя подпись + `ResourcePipVisual`,
+ * в собственной плотной карточке (см. использование ниже) — раньше висели прямо на
+ * небе без подложки, читались хуже соседних ячеек на светлом/тёмном пресете.
+ * `dense` сжимает внутренний зазор подпись↔пипы до 2px (было 4): бюджет ряда
+ * телеметрии — высота соседней ячейки «Угол» (55.5px), и на добавленный бордер
+ * карточки (4px) места хватает только при плотном зазоре — обычный `gap-1`
+ * (как на планшете/десктопе, где карточка не в стеснённом ряду) row вырастил бы.
+ */
+function ResourcePips({
+    label,
+    pips,
+    color,
+    ariaLabel,
+    size,
+    gap,
+    dense,
+    hideLabel,
+}: {
+    label: string;
+    pips: boolean[];
+    color: string;
+    ariaLabel: string;
+    size?: number;
+    gap?: number;
+    dense?: boolean;
+    /** На 320px (#537) спрячь метку ради места. Гейт по ширине — внутри, в классе:
+     *  проп прокидывается безусловно, и без `max-[359px]:` метка исчезала бы на всех
+     *  телефонах, а не только на самом узком. */
+    hideLabel?: boolean;
+}) {
+    return (
+        <div className={clsx('flex flex-col', dense ? 'gap-0.5' : 'gap-1')}>
+            <span
+                className={clsx(
+                    'font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase',
+                    hideLabel && 'max-[359px]:w-0 max-[359px]:overflow-hidden',
+                )}
+            >
                 {label}
             </span>
-            {/* xl-плотность (#489): на узком xl (1280…~1413) телеметрия в один
-                нешринкающийся ряд (`shrink-0`) уезжает за край — компактнее пипы
-                снарядов/ходов освобождают ей место. `size`/`gap` тут не передаются
-                (Снаряды/Ходы = default 14px/5px, планшет не трогаем), поэтому цель —
-                через arbitrary-variant по `data-testid`, а не проп: класс работает
-                только под `xl:`-медиа, планшет (768, тот же `ResourcePips`) их не видит. */}
-            <PipRow
+            <ResourcePipVisual
                 pips={pips}
                 color={color}
-                label={ariaLabel}
+                ariaLabel={ariaLabel}
                 size={size}
                 gap={gap}
-                className="xl:gap-[3px] xl:[&>[data-testid=pip]]:size-2.5"
             />
         </div>
     );
@@ -594,12 +807,15 @@ function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
             aria-hidden
             className={clsx(
                 HUD_SURFACE,
-                'flex min-h-10 shrink-0 items-center gap-1.5 border-[length:var(--border-w)] border-border px-2.5 py-1.5',
+                // px-1.5 gap-1 xl:px-2.5 xl:gap-1.5 (#538): та же экономия ширины
+                // ряда 1 на 768–1279, что и у пилюли хода — HP-карты обязаны
+                // схлопываться последними.
+                'flex min-h-10 shrink-0 items-center gap-1 border-[length:var(--border-w)] border-border px-1.5 py-1.5 xl:gap-1.5 xl:px-2.5',
                 !visible && 'invisible',
             )}
         >
             <Icon name="lock" size={12} className="shrink-0 text-text-muted" />
-            <span className="font-ui text-[10px] tracking-[0.1em] whitespace-nowrap text-text-muted uppercase">
+            <span className="font-ui text-[9px] tracking-[0.06em] whitespace-nowrap text-text-muted uppercase xl:text-[10px] xl:tracking-[0.1em]">
                 Заморожено
             </span>
         </div>
@@ -621,6 +837,36 @@ function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
  * `sr-only` — только для скринридера, `absolute` (вне потока), геометрию HUD не
  * трогает.
  */
+/**
+ * Анонс смены ветра бурей (#547) для скринридера.
+ *
+ * Плашка `WindShiftBanner` этого не делает и сделать не может: она МОНТИРУЕТСЯ на каждый
+ * показ (`key={nonce}`), а появление нового узла с `role="status"` скринридеры молчат —
+ * озвучивается смена содержимого УЖЕ СУЩЕСТВУЮЩЕГО live-region. Тот же вывод записан
+ * в докблоке `FreezeAnnouncer` ниже, но на плашку ветра его тогда не распространили.
+ *
+ * Узел смонтирован всегда и пуст до первой смены. Текст включает номер смены — иначе
+ * повторная смена с тем же направлением не изменила бы содержимое и осталась бы
+ * неозвученной (сегодня буря меняет ветер один раз за бой, но это правило #547, а не
+ * свойство разметки).
+ */
+function WindShiftAnnouncer({ wind, nonce }: { wind: number; nonce: number }) {
+    const text =
+        nonce > 0
+            ? `Буря сменила ветер: теперь ${windDirection(wind) === 'left' ? 'влево' : 'вправо'}, сила ${windMagnitude(wind)} из ${WIND_DISPLAY_SCALE}`
+            : '';
+    return (
+        <span
+            data-testid="wind-shift-live"
+            aria-live="polite"
+            aria-atomic="true"
+            className="sr-only"
+        >
+            {text}
+        </span>
+    );
+}
+
 function FreezeAnnouncer({ frozen }: { frozen: boolean }) {
     return (
         <span data-testid="freeze-live" aria-live="polite" aria-atomic="true" className="sr-only">
@@ -644,11 +890,15 @@ function FreezeAnnouncer({ frozen }: { frozen: boolean }) {
 export function TopHud({ onPauseClick }: TTopHudProps = {}) {
     const playerHp = useGameStore((s) => s.hp.player);
     const enemyHp = useGameStore((s) => s.hp.enemy);
+    const lastHit = useGameStore((s) => s.lastHit);
     const turn = useGameStore((s) => s.turn);
     const phase = useGameStore((s) => s.phase);
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
     const wind = useGameStore((s) => s.wind);
+    // Счётчик смен ветра бурей (#547) — тот же источник, что у плашки на арене; здесь он
+    // нужен живому региону: без изменения ТЕКСТА скринридер молчит.
+    const windShiftNonce = useGameStore((s) => s.windShiftNonce);
     const windRevealed = useGameStore((s) => s.windRevealed);
     const weapons = useGameStore((s) => s.weapons);
     const moves = useGameStore((s) => s.moves);
@@ -658,6 +908,10 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
 
     const displayedPlayerHp = Math.round(useAnimatedValue(playerHp));
     const displayedEnemyHp = Math.round(useAnimatedValue(enemyHp));
+    // Вспышка HP-полосы задетой стороны (#549) — только та карточка, что
+    // реально задета этим попаданием, получает свежий nonce.
+    const playerHitNonce = lastHit?.target === 'player' ? lastHit.nonce : undefined;
+    const enemyHitNonce = lastHit?.target === 'enemy' ? lastHit.nonce : undefined;
 
     // Публикуем фактическую высоту HUD в верхний инсет арены (контракт safe-зоны,
     // #453): высота разная по брейкпоинтам и от safe-area — движок читает её из
@@ -670,6 +924,10 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
     // движок) — расходится с палубой (`phase !== 'flight'`) и клавиатурой
     // (гард `!isFireMode`), где ввод на выстреле уже залочен.
     const trimFrozen = isBotTurn || phase === 'flight';
+    // Бейдж "Заморожено" показываем только на ходе бота, но НЕ во время его
+    // полёта (#539): на полёте плашка "ВЫСТРЕЛ" уже сообщает о состоянии,
+    // дополнительный бейдж — лишнее сообщение об одном и том же.
+    const showFreezeBadge = isBotTurn && phase !== 'flight';
     const angleLabel = isBotTurn ? 'Угол · заморожен' : 'Угол';
     const angleValue = `${formatAngle(angle)}°`;
     const ammoPips = Array.from({ length: AMMO_TOTAL }, (_, index) => index < weapons.length);
@@ -685,19 +943,29 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
         >
             {/* Анонс заморозки — один на оба состава, смонтирован всегда (a11y, #472). */}
             <FreezeAnnouncer frozen={isBotTurn} />
+            {/* Анонс смены ветра бурей (#547) — там же и по той же причине: плашка на
+                арене монтируется заново и скринридером не читается. */}
+            <WindShiftAnnouncer wind={wind} nonce={windShiftNonce} />
             {/* Мобилка (<768): три ряда — HP-карточки (inline), пилюля хода +
                 иконки, единый ряд телеметрии. Компактная плотность (#450). */}
             <div
                 data-testid="top-hud-mobile"
-                className="pointer-events-auto flex flex-col gap-1.5 md:hidden"
+                // gap-2 (8px, легальный «между группами» #541) — было gap-1.5
+                // (6px), вне легального набора {4,8,16}.
+                className="pointer-events-auto flex flex-col gap-2 md:hidden"
             >
-                <div className="flex gap-2">
+                {/* h-8 (32px, легальная «служебная строка без тач-цели» #541):
+                    HP-карточки не несут собственных тач-целей — угол/сила
+                    рядом ниже уже используют 44px. items-stretch — дефолт
+                    flex без явного align-items, оставлен явно для читаемости. */}
+                <div className="flex h-8 items-stretch gap-2" data-testid="top-hud-mobile-hp-row">
                     <HpCard
                         faction="player"
                         label={PLAYER_NAME_PLACEHOLDER}
                         value={displayedPlayerHp}
                         active={turn === 'player'}
                         layout="inline"
+                        hitNonce={playerHitNonce}
                     />
                     <HpCard
                         faction="enemy"
@@ -705,24 +973,40 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         value={displayedEnemyHp}
                         active={turn === 'enemy'}
                         layout="inline"
+                        hitNonce={enemyHitNonce}
                     />
                 </div>
                 {/* Плашка хода тянется до кнопок сама (#528): раньше между ними стояла
                     распорка `flex-1`, и на 390 получалась дыра в 38 px при общем ритме
-                    панели в 8 — единственный такой провал в раскладке. */}
-                <div className="flex items-center gap-2">
-                    <TurnPillOrNothing turn={turn} phase={phase} stretch />
+                    панели в 8 — единственный такой провал в раскладке.
+                    На 320px (#537): плашка не тянется — бюджет узкий; `gap-1` вместо
+                    `gap-2` экономит ещё 2px. */}
+                {/* h-11 (44px, легальная «минимальная тач-цель» #541) — обе
+                    кнопки-иконки уже 44×44, пилюля хода растягивается
+                    (items-stretch) до той же высоты вместо собственных 40px. */}
+                <div
+                    className="flex h-11 min-w-0 items-stretch gap-1"
+                    data-testid="top-hud-mobile-status-row"
+                >
+                    <TurnPillOrNothing turn={turn} phase={phase} stretch={false} />
                     <HudIconButtons onPauseClick={onPauseClick} />
                 </div>
                 {/* Вся телеметрия — один ряд (#450): угол / сила / ветер / пипы.
                     Прежние два ряда съедали высоту; компактная плотность (ячейки
                     `compact`, кнопки ± визуально 34px, пипы 8px) укладывает их в
                     одну строку, удерживая бюджет HUD ≤180px.
-                    `relative`: заметка о заморозке (#447) выводится из потока —
-                    absolute-оверлеем поверх ряда, а не добавляя высоту. */}
+                    На 320px (#537): `min-w-0` разрешает flex-item сжиматься ниже
+                    min-width содержимого; `gap-0.5` вместо `gap-1.5` экономит ещё 4px
+                    (восемь промежутков по 2px вместо 4px). `relative`: заметка о
+                    заморозке (#447) выводится из потока — absolute-оверлеем поверх
+                    ряда, а не добавляя высоту. */}
                 <div
+                    data-testid="top-hud-mobile-telemetry-row"
                     className={clsx(
-                        'relative flex items-stretch gap-1.5',
+                        // h-14 (56px, легальная «ячейка с числом HUD-кегля»
+                        // #541) — было 49.5px натурального контента, вне
+                        // легального набора.
+                        'relative flex h-14 min-w-0 items-stretch gap-0',
                         isBotTurn && 'opacity-60',
                     )}
                 >
@@ -736,6 +1020,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         onInc={() => increaseAngle(-Math.PI / 180)}
                         decLabel="Угол меньше"
                         incLabel="Угол больше"
+                        glow
                     />
                     <TrimCell
                         label="Сила"
@@ -747,34 +1032,62 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         onInc={() => increasePower(1)}
                         decLabel="Сила меньше"
                         incLabel="Сила больше"
+                        glow
                         // Доп. отступ слева (#452): тач-цель кнопок ± шире визуального
-                        // бокса (`TrimButton`, псевдоэлемент 52×52) — без этого зазор
-                        // между «Угол больше» и «Сила меньше» падал до 2px хит-зон
-                        // вплотную к соседней ячейке (бюджет ≥8px, замер `overlay-budget`).
-                        className="ml-2"
+                        // бокса (`TrimButton` — 32px видимых, 48px хит-зоны, свес по 8px
+                        // с каждой стороны), и соседние ячейки «Угол»/«Сила» смыкаются
+                        // хит-зонами раньше, чем визуально.
+                        // 24px, а не 8: после компактизации ряда (#538: `px-1.5 gap-1`
+                        // вместо `px-2.5 gap-1.5`) прежних восьми стало мало — замер дал
+                        // ПЕРЕКРЫТИЕ хит-зон на 6px, то есть зазор 0 при бюджете ≥8
+                        // (`overlay-budget`, `hud-geometry-stable`). 24 − 8 − 8 = 8 ровно.
+                        // Меняешь плотность ряда — перезамеряй: связь тут не в вёрстке,
+                        // а в арифметике свесов, глазами она не видна.
+                        className="ml-6"
                     />
                     <WindCell wind={wind} windRevealed={windRevealed} compact />
-                    {/* Снаряды и ходы — компактной колонкой (пипы 8px): два ряда
-                        держат подписи, но по ширине встают рядом с ячейками.
+                    {/* Снаряды и ходы — компактной карточкой (#528): та же подложка
+                        HUD_SURFACE + рамка, что у соседних ячеек — раньше висели
+                        прямо на небе без неё и почти терялись на светлом пресете.
+                        Один бордер на пару строк, а не на каждую: две отдельные
+                        карточки не влезли бы в бюджет высоты ряда (55.5px, тот же,
+                        что у ячейки «Угол»). `gap-0.5` и `dense` — тот же бюджет:
+                        обычный `gap-1` (как на планшете/десктопе, где карточка не в
+                        стеснённом ряду) вместе с бордером row вырастил бы.
                         `flex-1` + выравнивание вправо (#528): колонка добирает остаток
-                        строки, и правый край ряда телеметрии совпадает с рядами выше —
+                        строки, и правый край карточки совпадает с рядами выше —
                         раньше он не доходил до них 9 px и край панели выглядел рваным. */}
-                    <div className="flex flex-1 flex-col items-end justify-center gap-1">
-                        <ResourcePips
-                            label="Снаряды"
-                            pips={ammoPips}
-                            color="var(--color-accent)"
-                            ariaLabel="снарядов"
-                            size={8}
-                            gap={2}
-                        />
+                    <div
+                        className={clsx(
+                            HUD_SURFACE,
+                            'flex flex-1 flex-col items-end justify-center gap-0.5 border-[length:var(--border-w)] border-border',
+                        )}
+                    >
+                        {/* На 320px (#537) снаряды скрыты согласно приоритету сброса
+                            (п. 2: снаряды первыми как дубль информации на палубе),
+                            остаются для a11y. Гейт по ширине обязателен: голый
+                            `w-0 overflow-hidden` — не «на 320», а на ЛЮБОМ телефоне,
+                            и ряд пропадал на 390, где main его показывал. */}
+                        <div className="max-[359px]:w-0 max-[359px]:overflow-hidden">
+                            <ResourcePips
+                                label="Снаряды"
+                                pips={ammoPips}
+                                color="var(--color-accent)"
+                                ariaLabel="снарядов"
+                                size={6}
+                                gap={1}
+                                dense
+                            />
+                        </div>
                         <ResourcePips
                             label="Ходы"
                             pips={movePips}
                             color="var(--color-warning)"
                             ariaLabel="ходов манёвра"
-                            size={8}
-                            gap={2}
+                            size={6}
+                            gap={1}
+                            dense
+                            hideLabel
                         />
                     </div>
                     {isBotTurn && (
@@ -783,45 +1096,105 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                 </div>
             </div>
 
-            {/* Планшет/десктоп (≥768): панель, без ±. 768 — 2 ряда (flex-col),
+            {/* Планшет/десктоп (≥768): панель, без ±. 768–1279 — 2 полноширинных
+                ряда (flex-col) БЕЗ переноса внутри ряда, каждый — две группы по
+                краям (#538): раньше оба ряда были `flex-wrap` резиновой шириной —
+                HP-блок (`min-w-[420px]`) + пилюля + бейдж + иконки не помещались
+                в 768 и переносились сами по себе на 2–3 внутренних подряда, раздувая
+                полосу до ~253px против объявленного зоне жеста инсета 128
+                (`GESTURE_ZONE_INSET` в `game-canvas.tsx`) — верх зоны прицеливания
+                лежал под панелью. Каждый ряд теперь — ровно одна строка, левая группа
+                растёт (`flex-1`/`min-w-0`), правая не сжимается (`shrink-0`) —
+                бюджет высоты 44 (ряд 1) + 56 (ряд 2) + зазоры укладывается в 128.
                 1280/1920 — 1 ряд (xl:flex-row), центр по max-width на 1920. */}
             <div
                 data-testid="top-hud-desktop"
                 // xl:gap-2 (#489, было xl:gap-5): узкий xl (1280…~1413) — телеметрия
                 // (shrink-0) и первый ряд (HP+пилюля+бейдж+иконки) вместе не влезали
                 // в полосу 78px, зазор между ними ужат в общий бюджет экономии.
-                className="pointer-events-auto hidden md:flex md:w-full md:flex-col md:gap-3 md:border-b-[length:var(--border-w)] md:border-border md:bg-panel md:px-4 md:py-3 xl:mx-auto xl:h-[78px] xl:max-w-[1280px] xl:flex-row xl:items-center xl:gap-2 xl:py-0"
+                // md:gap-1 md:py-1 (#541, легальный набор {4,8,16} — были gap-1.5/
+                // py-1.5 = 6px, вне набора): 44 (ряд 1) + 4 (зазор) + 44 (ряд 2) +
+                // 4+4 (паддинг) + 2 (рамка) = 102 против объявленного зоне жеста
+                // инсета 128 (плюс внешний паддинг оверлея 20px = 122 итого).
+                className="pointer-events-auto hidden md:flex md:w-full md:flex-col md:gap-1 md:border-b-[length:var(--border-w)] md:border-border md:bg-panel md:px-4 md:py-1 xl:mx-auto xl:h-[78px] xl:max-w-[1280px] xl:flex-row xl:items-center xl:gap-2 xl:py-0"
             >
                 {/* xl:gap-1 (#489, было gap-4 без override): тот же бюджет ширины —
                     первый ряд (HP-блок + пилюля + бейдж заморозки + mute/пауза)
                     ужимается плотнее на узком xl, освобождая место телеметрии.
                     С 1440 ужатие снимается (#528): бюджет ширины там уже не жмёт, а
                     4 px в левой группе против 8 в телеметрии читались как случайный
-                    сбой ритма — на широком экране панель идёт одним шагом. */}
-                <div className="flex flex-1 flex-wrap items-center gap-4 xl:flex-nowrap xl:gap-1 min-[1440px]:gap-2">
-                    {/* min-width 420 держит HP-бары на планшете (2 ряда, есть запас
-                        по высоте); на 1280/1920 та же полоса — один ряд высотой 78px
-                        фиксированно, и 420 там не помещается рядом с пилюлей, кнопками
-                        и телеметрией (в один ряд не влезает — та же причина, по которой
-                        спека прямым текстом требует 2 ряда на 768). `xl:min-w-0` снимает
-                        пол — карточки внутри сами держат минимум 150px каждая. */}
-                    <div className="flex min-w-[420px] flex-1 gap-2 xl:min-w-0">
+                    сбой ритма — на широком экране панель идёт одним шагом.
+                    Без `flex-wrap` (#538): HP-блок держит `flex-1` — сам растягивается
+                    и толкает правую группу к краю ряда, перенос строки больше не
+                    нужен для этого эффекта. */}
+                <div
+                    data-testid="top-hud-status-row"
+                    // md:h-11 xl:h-14 + items-stretch (#541): HP-блок и кластер
+                    // статуса — прямые дети этого ряда, растягиваются до общей
+                    // легальной высоты (44 на планшете, 56 на xl) вместо
+                    // центрирования разных по высоте боксов (55/44 на xl).
+                    className="flex flex-1 items-stretch gap-4 md:h-11 xl:h-14 xl:flex-nowrap xl:gap-1 min-[1440px]:gap-2"
+                >
+                    {/* На 768–1279 (#538) HP-бары держат минимум только собственных
+                        карточек (150px каждая, `HpCard`) — фикс `min-w-[420px]`
+                        конкурировал за ширину ряда с новой правой группой
+                        (пилюля+бейдж+иконки) и не помещался в 768. `xl:min-w-0` не
+                        нужен отдельно — низа `min-w-0` достаточно на всех брейкпоинтах,
+                        карточки сами держат минимум.
+                        Два состава по CSS-видимости, тот же приём, что у самого
+                        `TopHud` для мобилки/десктопа (#538): `stacked`-карточка (44px+
+                        имя/значение в две строки) на 768–1279 не укладывается в бюджет
+                        ряда 1 (44px, вместе с пилюлей/иконками) — `inline` (как на
+                        мобилке, #450) укладывается. С xl (полоса 78px, есть запас)
+                        возвращается канон `stacked`. */}
+                    <div className="flex min-w-0 flex-1 gap-2 xl:hidden">
                         <HpCard
                             faction="player"
                             label={PLAYER_NAME_PLACEHOLDER}
                             value={displayedPlayerHp}
                             active={turn === 'player'}
+                            layout="inline"
+                            hitNonce={playerHitNonce}
                         />
                         <HpCard
                             faction="enemy"
                             label={BOT_NAME}
                             value={displayedEnemyHp}
                             active={turn === 'enemy'}
+                            layout="inline"
+                            hitNonce={enemyHitNonce}
                         />
                     </div>
-                    <TurnPillOrNothing turn={turn} phase={phase} />
-                    <FreezeBadgeOrNothing visible={isBotTurn} />
-                    <HudIconButtons onPauseClick={onPauseClick} />
+                    <div className="hidden min-w-0 flex-1 gap-2 xl:flex">
+                        <HpCard
+                            faction="player"
+                            label={PLAYER_NAME_PLACEHOLDER}
+                            value={displayedPlayerHp}
+                            active={turn === 'player'}
+                            hitNonce={playerHitNonce}
+                        />
+                        <HpCard
+                            faction="enemy"
+                            label={BOT_NAME}
+                            value={displayedEnemyHp}
+                            active={turn === 'enemy'}
+                            hitNonce={enemyHitNonce}
+                        />
+                    </div>
+                    {/* Правая группа ряда 1 (#538): статус хода + mute/пауза — не
+                        сжимается и не переносится, HP-блок слева толкает её к краю
+                        своим `flex-1`. */}
+                    {/* items-stretch (#541): пилюля/бейдж/иконки — прямые дети,
+                        растягиваются до высоты кластера (которая сама
+                        растянута до высоты статус-ряда родителем выше). */}
+                    <div
+                        data-testid="top-hud-status-cluster"
+                        className="flex shrink-0 items-stretch gap-2"
+                    >
+                        <TurnPillOrNothing turn={turn} phase={phase} />
+                        <FreezeBadgeOrNothing visible={showFreezeBadge} />
+                        <HudIconButtons onPauseClick={onPauseClick} />
+                    </div>
                 </div>
                 <div
                     data-testid="top-hud-telemetry-desktop"
@@ -837,41 +1210,77 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         // в полосу 78px и уезжала за правый край — ужатый зазор
                         // (16px → 8px, ×4 промежутка) освобождает часть недостающей
                         // ширины. Планшет держит исходный `gap-4` (класс без префикса).
-                        'flex w-full flex-wrap items-center gap-4 xl:w-auto xl:shrink-0 xl:flex-nowrap xl:gap-2',
+                        // На 768–1279 (#538) `justify-between` вместо `flex-wrap`:
+                        // телеметрия слева, ресурсы (снаряды/ходы) справа — один ряд,
+                        // а не перенос на вторую строку.
+                        // md:h-11 xl:h-14 + items-stretch (#541): группа чисел и
+                        // группа ресурсов — прямые дети, растягиваются до общей
+                        // легальной высоты (44/56) вместо разных 39/27 (768) и 67/25 (xl).
+                        'flex w-full items-stretch justify-between gap-4 md:h-11 xl:h-14 xl:w-auto xl:shrink-0 xl:flex-nowrap xl:gap-2',
                         isBotTurn && 'opacity-60',
                     )}
                 >
-                    {/* Подпись — всегда «Угол» без суффикса «заморожен» (#473):
-                        на планшете/десктопе заморозку несёт бейдж рядом с пилюлей
-                        (`FreezeBadgeOrNothing`, #472), а более длинный лейбл растил бы
-                        ячейку на ходе бота. Мобильный `TrimCell` оставляет `angleLabel`
-                        со своей заметкой `FrozenNote` (состав не тронут). `sizer` под
-                        `360°`/`POWER_MAX` держит ширину бокса значения неизменной. */}
-                    <NumberCell
-                        label="Угол"
-                        value={angleValue}
-                        valueClassName="text-accent"
-                        sizer="360°"
-                    />
-                    <NumberCell
-                        label="Сила"
-                        value={power}
-                        valueClassName="text-warning"
-                        sizer={POWER_MAX}
-                    />
-                    <WindCell wind={wind} windRevealed={windRevealed} />
-                    <ResourcePips
-                        label="Снаряды"
-                        pips={ammoPips}
-                        color="var(--color-accent)"
-                        ariaLabel="снарядов"
-                    />
-                    <ResourcePips
-                        label="Ходы"
-                        pips={movePips}
-                        color="var(--color-warning)"
-                        ariaLabel="ходов манёвра"
-                    />
+                    <div
+                        data-testid="top-hud-telemetry-numbers"
+                        className="flex min-w-0 items-stretch gap-4 xl:gap-2"
+                    >
+                        {/* Подпись — всегда «Угол» без суффикса «заморожен» (#473):
+                            на планшете/десктопе заморозку несёт бейдж рядом с пилюлей
+                            (`FreezeBadgeOrNothing`, #472), а более длинный лейбл растил бы
+                            ячейку на ходе бота. Мобильный `TrimCell` оставляет `angleLabel`
+                            со своей заметкой `FrozenNote` (состав не тронут). `sizer` под
+                            `360°`/`POWER_MAX` держит ширину бокса значения неизменной. */}
+                        <NumberCell
+                            label="Угол"
+                            value={angleValue}
+                            valueClassName="text-accent"
+                            sizer="360°"
+                            glow
+                        />
+                        <NumberCell
+                            label="Сила"
+                            value={power}
+                            valueClassName="text-warning"
+                            sizer={POWER_MAX}
+                            glow
+                        />
+                        <WindCell wind={wind} windRevealed={windRevealed} />
+                    </div>
+                    <div
+                        data-testid="top-hud-telemetry-resources"
+                        className="flex shrink-0 items-stretch gap-4 xl:gap-2"
+                    >
+                        {/* Планшет/десктоп (#528): та же `CellShell`-карточка (рамка +
+                            подложка), что у Угла/Силы/Ветра — раньше снаряды и ходы были
+                            единственной парой ячеек без неё. `tight` (без паддинга): на
+                            узком xl (1280) телеметрия — нешринкающийся ряд, обычный
+                            паддинг `CellShell` в оставшийся бюджет ширины не влезает
+                            (см. докблок `tight` в `CellShell`). */}
+                        {/* «Снаряды» скрыты на xl (#548, разбор §2/§3): на десктопе
+                            (≥1280) селектор палубы уже показывает боезапас выбранного
+                            оружия («Фугас ×2», `game-controls.tsx`) — ячейка дублирует
+                            эту цифру и занимает ~90px в самом тесном месте полосы.
+                            На планшете (768–1279) палуба показывает то же самое, но
+                            там ячейка остаётся — бюджет ширины там не жмёт так, как на
+                            узком xl (#489), а разбор ограничивает удаление явно
+                            десктопом. `xl:hidden` (не размонтирование): ячейка не несёт
+                            своего состояния, спрятать классом дешевле и не меняет
+                            поведение ниже xl. */}
+                        <CellShell label="Снаряды" tight className="xl:hidden">
+                            <ResourcePipVisual
+                                pips={ammoPips}
+                                color="var(--color-accent)"
+                                ariaLabel="снарядов"
+                            />
+                        </CellShell>
+                        <CellShell label="Ходы" tight>
+                            <ResourcePipVisual
+                                pips={movePips}
+                                color="var(--color-warning)"
+                                ariaLabel="ходов манёвра"
+                            />
+                        </CellShell>
+                    </div>
                 </div>
             </div>
         </div>

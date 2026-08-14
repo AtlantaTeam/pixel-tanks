@@ -86,6 +86,15 @@ export const SkyBackground = ({
 }: TSkyBackgroundProps) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
+    // Смена ветра бурей (#547) не должна пересобирать небо: облака телепортировались бы
+    // в стартовые позиции сида. Стартовый ветер — из ref, смены доносит сеттер.
+    const windRef = useRef(wind);
+    const sceneRef = useRef<SkyScene | null>(null);
+    useEffect(() => {
+        windRef.current = wind;
+        sceneRef.current?.setWind(wind ?? 0);
+    }, [wind]);
+
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -99,10 +108,11 @@ export const SkyBackground = ({
         const scene = new SkyScene({
             seed: resolvedSeed,
             reducedMotion: reduced,
-            wind,
+            wind: windRef.current,
             preset,
             images: skyImages,
         });
+        sceneRef.current = scene;
 
         let rafId = 0;
         let lastTs = 0;
@@ -159,12 +169,13 @@ export const SkyBackground = ({
         observer?.observe(canvas);
 
         return () => {
+            sceneRef.current = null;
             disposed = true;
             cancelAnimationFrame(rafId);
             loadListeners.delete(redraw);
             observer?.disconnect();
         };
-    }, [seed, wind, preset, reducedMotion]);
+    }, [seed, preset, reducedMotion]);
 
     return (
         <canvas

@@ -2,6 +2,38 @@ import { describe, expect, it } from 'vitest';
 import type { TReplay, TReplayMove } from '../t-replay';
 import { decodeReplay, encodeReplay } from './replay-codec';
 
+/** Base64url кода реплея ↔ байты. Свои, а не экспорт из кодека: расширять его публичный
+ *  API ради теста — значит открыть внутренности всем потребителям. Алфавит и отсутствие
+ *  padding совпадают с `toBase64Url`/`fromBase64Url`. */
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const codeToBytes = (code: string): Uint8Array => {
+    const out: number[] = [];
+    let acc = 0;
+    let bits = 0;
+    for (const ch of code) {
+        acc = (acc << 6) | B64.indexOf(ch);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push((acc >> bits) & 0xff);
+        }
+    }
+    return Uint8Array.from(out);
+};
+const bytesToCode = (bytes: Uint8Array): string => {
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+        const b0 = bytes[i];
+        const b1 = bytes[i + 1] ?? 0;
+        const b2 = bytes[i + 2] ?? 0;
+        out += B64[b0 >> 2];
+        out += B64[((b0 & 0x03) << 4) | (b1 >> 4)];
+        if (i + 1 < bytes.length) out += B64[((b1 & 0x0f) << 2) | (b2 >> 6)];
+        if (i + 2 < bytes.length) out += B64[b2 & 0x3f];
+    }
+    return out;
+};
+
 /** Формат URL-safe base64 без padding: только буквы, цифры, `-` и `_`. */
 const URL_SAFE_PATTERN = /^[A-Za-z0-9_-]+$/;
 
@@ -27,7 +59,8 @@ describe('encodeReplay / decodeReplay', () => {
 
         const decoded = decodeReplay(encodeReplay(replay));
 
-        expect(decoded).toEqual(replay);
+        // `weather: true` — новая запись всегда v5 (эпоха погоды), см. докблок кодека.
+        expect(decoded).toEqual({ ...replay, weather: true });
     });
 
     it('сохраняет числовой seed числом — иначе PRNG даст другую последовательность', () => {
@@ -57,7 +90,7 @@ describe('encodeReplay / decodeReplay', () => {
             moves: [fire(-0.9, 8), move(-150)],
         };
 
-        expect(decodeReplay(encodeReplay(replay))).toEqual(replay);
+        expect(decodeReplay(encodeReplay(replay))).toEqual({ ...replay, weather: true });
     });
 
     it('округляет дробные инсеты до пикселя (рельеф целочислен)', () => {
@@ -151,7 +184,7 @@ describe('encodeReplay / decodeReplay', () => {
     it('кодирует бой без ходов', () => {
         const decoded = decodeReplay(encodeReplay(battle('empty', [])));
 
-        expect(decoded).toEqual(battle('empty', []));
+        expect(decoded).toEqual({ ...battle('empty', []), weather: true });
     });
 
     it('кодирует бой любой длины (500 ходов)', () => {
@@ -162,13 +195,13 @@ describe('encodeReplay / decodeReplay', () => {
 
         const decoded = decodeReplay(encodeReplay(battle('long-battle', moves)));
 
-        expect(decoded).toEqual(battle('long-battle', moves));
+        expect(decoded).toEqual({ ...battle('long-battle', moves), weather: true });
     });
 
     it('поддерживает seed с не-ASCII символами (UTF-8)', () => {
         const replay = battle('бой-дня-☀', [fire(0.5, 5)]);
 
-        expect(decodeReplay(encodeReplay(replay))).toEqual(replay);
+        expect(decodeReplay(encodeReplay(replay))).toEqual({ ...replay, weather: true });
     });
 
     it('выдаёт URL-safe строку без padding', () => {
@@ -270,7 +303,7 @@ describe('encodeReplay / decodeReplay', () => {
 
         const decoded = decodeReplay(encodeReplay(replay));
 
-        expect(decoded).toEqual(replay);
+        expect(decoded).toEqual({ ...replay, weather: true });
     });
 
     it('чисто фугасная запись (weaponId 0/отсутствует) остаётся без типа в ходах', () => {
@@ -292,5 +325,29 @@ describe('encodeReplay / decodeReplay', () => {
         expect(() =>
             encodeReplay(battle('s', [{ kind: 'fire', angle: 1, power: 10, weaponId: 99 }])),
         ).toThrow(RangeError);
+    });
+
+    // Версия как признак эпохи (#546/#547). Погода выводится из сида безусловно, поэтому
+    // без этой развилки старые записи переигрывались бы по сегодняшним правилам: снег
+    // множит ветер на 4/3, буря разворачивает его в середине боя — другие траектории и
+    // другой исход примерно у четверти сидов. Тесты держат обе стороны развилки.
+    describe('эпоха погоды — версия формата', () => {
+        it('новая запись кодируется версией 5 и читается как «с погодой»', () => {
+            const code = encodeReplay(battle('s', [fire(1, 5)]));
+            // Первый байт кода — версия (см. раскладку в докблоке кодека).
+            expect(codeToBytes(code)[0]).toBe(5);
+            expect(decodeReplay(code)?.weather).toBe(true);
+        });
+
+        it('запись прошлой эпохи (v4) читается как «без погоды»', () => {
+            const bytes = codeToBytes(encodeReplay(battle('s', [fire(1, 5)])));
+            // Раскладка v5 совпадает с v4 — подменяем ТОЛЬКО номер версии, получая
+            // байт-в-байт то, что записал бы прод до появления погоды.
+            bytes[0] = 4;
+            const decoded = decodeReplay(bytesToCode(bytes));
+            expect(decoded, 'запись v4 обязана остаться читаемой').not.toBeNull();
+            expect(decoded?.weather).toBe(false);
+            expect(decoded?.moves).toEqual(battle('s', [fire(1, 5)]).moves);
+        });
     });
 });

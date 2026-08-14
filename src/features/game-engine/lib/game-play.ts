@@ -18,9 +18,10 @@ import {
     type TArenaZone,
 } from './arena-insets';
 import { Ground } from './ground';
-import { Tank } from './tank';
+import { Tank, TANK_SHADOW_COLOR } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
+import { windFlagRotationRad } from './wind-flag';
 import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
 import { formatAngle } from './format-angle';
 import { ParticlePool, damageFlashBurst, groundBurst, groundColumnBurst } from './particle-pool';
@@ -28,7 +29,17 @@ import { weaponSpecFor } from './weapon-specs';
 import { CameraShake } from './camera-shake';
 import { SlowMotion } from './slow-motion';
 import { BulletTrail } from './bullet-trail';
+import { GhostTrail, ghostDashUnit } from './ghost-trail';
 import { ENGINE_COLORS } from './engine-palette';
+import { computeSceneLight, type TSceneLight } from './scene-light';
+import { pickPrecipPreset, precipGroundTint, type TPrecipPreset } from './precipitation';
+import {
+    applyWindModifier,
+    STORM_WIND_SHIFT_AFTER_SHOTS,
+    stormShiftedWind,
+    weatherModifierFor,
+    type TWeatherModifier,
+} from './weather-modifiers';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
 
 /**
@@ -72,8 +83,19 @@ export type TTanksWeapons = {
 export type TGameMode = 'idle' | 'fire' | 'angle' | 'move';
 
 export type TGamePlayCallbacks = {
-    /** Попадание снаряда в танк: снимает урон с HP задетой стороны (HP-модель, §2.5). */
-    onTankHit: (params: { hittedIsLeft: boolean; leftActive: boolean; power: number }) => void;
+    /**
+     * Попадание снаряда в танк: снимает урон с HP задетой стороны (HP-модель, §2.5).
+     * `x`/`y` — центр очага взрыва (`bullet.explosionCenterX/Y`, CSS-пиксели
+     * контейнера канваса) — по ним `GameCanvas` кладёт всплывающее число урона
+     * прямо над задетым танком (issue #549, §7.2 разбора #534).
+     */
+    onTankHit: (params: {
+        hittedIsLeft: boolean;
+        leftActive: boolean;
+        power: number;
+        x: number;
+        y: number;
+    }) => void;
     onGameOverCheck: (params: { leftWeapons: number; rightWeapons: number }) => void;
     onMovesChange: (delta: number) => void;
     onPowerChange: (delta: number) => void;
@@ -93,6 +115,13 @@ export type TGamePlayCallbacks = {
      * в сторе, а не читает движок напрямую.
      */
     onWindInit?: (wind: number) => void;
+    /**
+     * Ветер боя изменился в середине партии (буря, #547): движок зовёт один раз,
+     * когда пресет-буря меняет ветер после `STORM_WIND_SHIFT_AFTER_SHOTS` выстрелов.
+     * HUD обновляет значение ветра и показывает плашку «ветер изменился» — смена
+     * обязана быть видимым событием, иначе читается как баг (§7.8).
+     */
+    onWindChange?: (wind: number) => void;
     /**
      * Сообщает сторону, чей сейчас ход: один раз при старте боя (игрок всегда
      * первый) и на каждой передаче хода (`changeActiveTank`). Пилюля хода и
@@ -135,6 +164,27 @@ export type TGamePlayOptions = {
      */
     leftSkinId?: TTankSkinId;
     rightSkinId?: TTankSkinId;
+    /**
+     * Сид боя (#545) — для модели света сцены: пресет, положение светила, направление
+     * тени, тонировка земли (`computeSceneLight`). Тот же сид получает и небо
+     * (`SkyBackground`), поэтому свет в рельефном канвасе согласован с диском в канвасе
+     * неба. Не задан → сцена без света (день, без теней/тона) — совместимость с
+     * тестами/реплеем, которые сид не передают.
+     */
+    seed?: number | string;
+    /**
+     * Погода боя (#546/#547): пресет осадков от сида и его модификаторы ветра — снег
+     * домножает ветер на 4/3, буря разворачивает его после третьего выстрела.
+     *
+     * `false` — вести бой БЕЗ модификаторов. Нужно реплею записей прошлых эпох: погоды
+     * тогда не существовало, а выводится она из сида безусловно, поэтому воспроизведение
+     * старой записи по новым правилам дало бы другой ветер, другие траектории и другой
+     * исход примерно у четверти записей (снег и буря — ~27% сидов). Признак эпохи несёт
+     * версия формата: `TReplay.weather` (v5 и выше).
+     *
+     * По умолчанию `true` — живой бой всегда с погодой.
+     */
+    weather?: boolean;
 };
 
 const GAME_ASSET_PATHS = {
@@ -204,6 +254,37 @@ export class GamePlay {
     // потому что скин выбирается за бой, а не глобально для всего приложения.
     private readonly leftSkinId: TTankSkinId;
     private readonly rightSkinId: TTankSkinId;
+    /**
+     * Модель света сцены (#545): направление тени, тонировка земли, цвет подсветки
+     * кромок — из сида боя, тем же, что и небо. `undefined` — сид не передан (сцена
+     * без света, совместимость с тестами/реплеем).
+     */
+    private readonly sceneLight: TSceneLight | undefined;
+    /**
+     * Погодный пресет боя (#546) — из того же сида, что и небо/свет. Нужен только для
+     * тонировки рельефа при `prefers-reduced-motion` (частицы осадков рисует отдельный
+     * слой `PrecipitationLayer` над канвасом). `undefined` — сид не передан.
+     */
+    private readonly precipPreset: TPrecipPreset | undefined;
+    /**
+     * Числовые следствия погоды (#547): множитель ветра (снег), затемнение воронок
+     * (дождь), смена ветра в середине боя (буря). Выводится из пресета боя — тот же
+     * сид, поэтому реплей воспроизводит те же следствия. Нейтральный (без сида) →
+     * бой как до #547.
+     */
+    private readonly weatherModifier: TWeatherModifier;
+    /** Сид боя (#547) — из него выводится новый ветер бури (`stormShiftedWind`). */
+    private readonly seed: number | string | undefined;
+    /**
+     * Новый ветер бури (#547), выведенный из сида: применяется один раз после
+     * `STORM_WIND_SHIFT_AFTER_SHOTS` выстрелов. `undefined` — пресет не буря или сид
+     * не передан (смены ветра нет). Считается в `initPaint`, когда известен базовый ветер.
+     */
+    private stormWind: number | undefined;
+    /** Завершённых выстрелов боя (обе стороны) — таймер смены ветра бури (#547). */
+    private completedShots = 0;
+    /** Ветер бури уже сменён — смена одноразовая (#547). */
+    private stormWindShifted = false;
     private leftSkinImages: TTankSkinImages | undefined;
     private rightSkinImages: TTankSkinImages | undefined;
     // Кто стрелял последним: isActive у обоих танков уже false к моменту разрешения
@@ -228,6 +309,16 @@ export class GamePlay {
     // догорал в цвете своего типа даже после того, как снаряд убран (`bullet` уже
     // undefined, а `trail.draw` ещё чистит/гасит точки несколько кадров).
     private trailColor: string = ENGINE_COLORS.primary;
+    /**
+     * Призрачная трасса прошлого выстрела (issue #543): своя — до конца
+     * СЛЕДУЮЩЕГО своего выстрела (заменяется в `moveBullet` при каждом
+     * его завершении), трасса бота — до конца ВАШЕГО хода (гасится тем же
+     * местом, ровно когда свой выстрел долетел и ход уходит к боту).
+     * Публичные (не private), как `bullet`/`ground` — тесты и отладка читают
+     * состояние трасс напрямую.
+     */
+    readonly ownGhostTrail = new GhostTrail();
+    readonly enemyGhostTrail = new GhostTrail();
     // Отметка последнего кадра rAF: реальный dt для затухания shake/slow-mo,
     // считается КАЖДЫЙ кадр (в т.ч. пропущенные throttle'ом).
     private lastFrameTs = 0;
@@ -263,6 +354,15 @@ export class GamePlay {
         this.fixedLogicalSize = options?.fixedLogicalSize;
         this.leftSkinId = options?.leftSkinId ?? DEFAULT_TANK_SKIN_ID;
         this.rightSkinId = options?.rightSkinId ?? DEFAULT_TANK_SKIN_ID;
+        this.sceneLight = options?.seed !== undefined ? computeSceneLight(options.seed) : undefined;
+        // `weather: false` (реплей записи до #546/#547) — пресета нет вовсе, значит нет и
+        // модификаторов: `weatherModifierFor(undefined)` отдаёт нейтральный.
+        this.precipPreset =
+            options?.weather !== false && options?.seed !== undefined
+                ? pickPrecipPreset(options.seed)
+                : undefined;
+        this.weatherModifier = weatherModifierFor(this.precipPreset?.id);
+        this.seed = options?.seed;
         // Косметика (частицы, тряска) — на ОТДЕЛЬНОМ потоке random: CameraShake
         // берёт значения каждый кадр тряски, а число кадров зависит от FPS.
         // На общем потоке это недетерминированно сдвигало бы выборки бота
@@ -604,9 +704,35 @@ export class GamePlay {
             this.random,
             sand,
             this.arenaInsets,
+            // Тонировка земли и подсветка кромки — из модели света боя (#545). Без
+            // сида (тесты/реплей) — пусто: рельеф как до светила. Плюс тонировка от
+            // осадков при reduced-motion (#546): там частиц нет, погоду несёт цвет
+            // рельефа (мокрый песок темнее, наледь светлее, пыль бури — теплее).
+            [
+                ...(this.sceneLight?.groundTint ?? []),
+                ...precipGroundTint(this.precipPreset, this.reducedMotion),
+            ],
+            this.sceneLight?.edgeColor,
+            // Дождь темнит воронки и смягчает их край (#547). Стиль передаём, только
+            // если у пресета есть затемнение — иначе Ground рисует воронки как обычно.
+            this.weatherModifier.craterDarkenAlpha > 0
+                ? {
+                      darkenAlpha: this.weatherModifier.craterDarkenAlpha,
+                      edgeSoftenPx: this.weatherModifier.craterEdgeSoftenPx,
+                  }
+                : undefined,
         );
-        this.wind = generateWind(this.random);
+        // Базовый ветер боя с поправкой пресета (снег +1/3, #547). Домножение поверх
+        // одного `generateWind` — RNG-поток боя не сдвигается, реплей воспроизводится
+        // побитово.
+        this.wind = applyWindModifier(generateWind(this.random), this.weatherModifier);
         this.callbacks.onWindInit?.(this.wind);
+        // Новый ветер бури (#547) — из сида, чтобы смена в реплее была той же. Считаем
+        // здесь, когда известен базовый ветер (направление смены — противоположно ему).
+        this.stormWind =
+            this.weatherModifier.windShiftsMidBattle && this.seed !== undefined
+                ? stormShiftedWind(this.seed, this.wind)
+                : undefined;
         // Масштаб мира от ширины арены (issue #455): танки/ствол/снаряд/взрыв
         // считаются в мировых единицах и рисуются через этот коэффициент. В режиме
         // реплея innerWidth зафиксирован записью → scale тот же, что при записи.
@@ -634,6 +760,9 @@ export class GamePlay {
             !this.reducedMotion,
         );
         this.leftTank.isActive = true;
+        // Флажок ветра (#550) — только на своём танке (leftTank), сразу с боевым
+        // ветром: он уже посчитан выше (applyWindModifier(generateWind(...))).
+        this.leftTank.windFlagRotationRad = windFlagRotationRad(this.wind);
         // Игрок всегда ходит первым (см. §GDD) — HUD узнаёт об этом здесь же,
         // не дожидаясь первой передачи хода через changeActiveTank.
         this.callbacks.onTurnChange?.('player');
@@ -660,6 +789,13 @@ export class GamePlay {
             rightWheels,
             !this.reducedMotion,
         );
+        // Тень от светила (#545): оба танка получают направление света из модели боя.
+        // Без сида (тесты/реплей) sceneLight пуст — тени нет, поведение прежнее.
+        if (this.sceneLight) {
+            const shadow = { direction: this.sceneLight.direction, color: TANK_SHADOW_COLOR };
+            this.leftTank.shadow = shadow;
+            this.rightTank.shadow = shadow;
+        }
         if (this.ctx) {
             this.ground.draw(this.ctx);
         }
@@ -821,17 +957,21 @@ export class GamePlay {
     private explosionAreaRedraw(bullet: Bullet) {
         const padding = 5;
         if (this.ctx && this.ground) {
-            this.ctx.clearRect(
-                bullet.x - bullet.explosionRadius - padding,
-                0,
-                bullet.explosionRadius * 2 + padding * 2,
-                this.innerHeight,
-            );
+            const clearX = bullet.x - bullet.explosionRadius - padding;
+            const clearWidth = bullet.explosionRadius * 2 + padding * 2;
+            this.ctx.clearRect(clearX, 0, clearWidth, this.innerHeight);
             this.ground.draw(
                 this.ctx,
                 bullet.x - bullet.explosionRadius - padding,
                 bullet.x + bullet.explosionRadius * 2 + padding,
             );
+            // Точечная перерисовка чистит лишь узкую вертикальную полосу — призрачная
+            // трасса (issue #543), если проходит через неё, обязана быть перерисована
+            // здесь же (клип по этой полосе), иначе останется дыра до следующего
+            // fullRedraw. Клип же не даёт «пересветить» альфу нетронутых сегментов
+            // трассы вне этой полосы (compositing без клипа удваивал бы альфу на
+            // каждый кадр роста взрыва).
+            this.clippedGhostTrailRedraw(this.ctx, clearX, 0, clearWidth, this.innerHeight);
         }
     }
 
@@ -848,22 +988,56 @@ export class GamePlay {
         const padY = SHAKE_CLEAR_PAD + Math.abs(oy);
         this.ctx.clearRect(-padX, -padY, this.innerWidth + padX * 2, this.innerHeight + padY * 2);
         this.ground.draw(this.ctx);
+        this.drawGhostTrails(this.ctx);
         this.leftTank.draw(this.ctx, this.mousePos, this.ground);
         this.rightTank.draw(this.ctx, this.mousePos, this.ground);
         if (this.showAimPreview) this.drawAimPreview(this.ctx);
+    }
+
+    /**
+     * Рисует обе призрачные трассы (issue #543) — над рельефом, под танками:
+     * декорация арены, не должна перекрывать корпуса. `draw` внутри сам
+     * не рисует ничего, если трасса не активна (`!isActive` — ранний выход).
+     */
+    private drawGhostTrails(ctx: CanvasRenderingContext2D) {
+        const scale = this.leftTank?.scale ?? 1;
+        const dashUnit = ghostDashUnit(scale);
+        this.ownGhostTrail.draw(ctx, ENGINE_COLORS.accent, dashUnit);
+        this.enemyGhostTrail.draw(ctx, ENGINE_COLORS.enemy, dashUnit);
+    }
+
+    /**
+     * Патч-ап призрачных трасс поверх точечной перерисовки (issue #543): клип по
+     * ровно тому прямоугольнику, что был очищен вызывающим, — трасса
+     * перерисовывается там, где реально стёрта, и не задевает остальной канвас
+     * (без клипа повторный `stroke` по тому же контуру каждый кадр удваивал бы
+     * альфу — трасса темнела бы, а не оставалась ~35%).
+     */
+    private clippedGhostTrailRedraw(
+        ctx: CanvasRenderingContext2D,
+        x: number,
+        y: number,
+        width: number,
+        height: number,
+    ) {
+        if (!this.ownGhostTrail.isActive && !this.enemyGhostTrail.isActive) return;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, width, height);
+        ctx.clip();
+        this.drawGhostTrails(ctx);
+        ctx.restore();
     }
 
     private redrawGroundUnderTanks(tanks: Tank[]) {
         tanks.forEach((tank) => {
             const padding = 50;
             if (this.ctx && this.ground) {
-                this.ctx.clearRect(
-                    tank.x - padding,
-                    0,
-                    tank.tankWidth + padding * 2,
-                    this.innerHeight,
-                );
-                this.ground.draw(this.ctx, tank.x - padding, tank.x + tank.tankWidth + padding);
+                const x = tank.x - padding;
+                const width = tank.tankWidth + padding * 2;
+                this.ctx.clearRect(x, 0, width, this.innerHeight);
+                this.ground.draw(this.ctx, x, x + width);
+                this.clippedGhostTrailRedraw(this.ctx, x, 0, width, this.innerHeight);
             }
         });
     }
@@ -900,6 +1074,13 @@ export class GamePlay {
                 this.bullet.spec.trail.life,
                 this.bullet.spec.trail.size,
             );
+            // Призрачная трасса (issue #543): те же живые точки полёта, что и у
+            // затухающего следа выше — реально пройденный путь, не пересчитанная
+            // дуга (детерминизм реплея не тронут).
+            (this.lastShooterIsLeft ? this.ownGhostTrail : this.enemyGhostTrail).record(
+                this.bullet.x,
+                this.bullet.y,
+            );
         }
         if (this.bullet.isHit(ctx)) {
             // Разовая раздача попадания (урон, звук, подскок, slow-mo) — по явному
@@ -922,10 +1103,50 @@ export class GamePlay {
             this.bullet?.draw(ctx);
             return;
         }
+        // Владение призрачной трассой (issue #543): своя трасса заменяется здесь на
+        // только что долетевший выстрел (значит, живёт до конца следующего своего
+        // выстрела — а не до этого места); трасса бота гаснет ровно в конце вашего
+        // хода — то есть здесь же, когда СВОЙ выстрел долетел и ход уходит к боту.
+        if (this.lastShooterIsLeft) {
+            this.ownGhostTrail.commit();
+            this.enemyGhostTrail.clear();
+        } else {
+            this.enemyGhostTrail.commit();
+        }
         this.bullet = undefined;
         this.callbacks.onShotEnd?.();
+        // Выстрел завершён — считаем его для таймера смены ветра бури (#547) и, если
+        // подошёл момент, меняем ветер. До передачи хода: следующий стрелок целится
+        // уже с новым ветром, а HUD показывает смену на своём ходе.
+        this.completedShots += 1;
+        this.maybeShiftStormWind();
         this.changeActiveTank();
     };
+
+    /**
+     * Смена ветра бурей в середине боя (#547, §7.8): один раз, после
+     * `STORM_WIND_SHIFT_AFTER_SHOTS` завершённых выстрелов, ставит выведенный из сида
+     * `stormWind` и сообщает HUD (`onWindChange`) — смена обязана быть видимым
+     * событием. Момент фиксирован номером выстрела, поэтому в реплее он ровно тот же.
+     * Нет бури / уже сменили / рано — no-op.
+     */
+    private maybeShiftStormWind() {
+        if (this.stormWind === undefined || this.stormWindShifted) return;
+        if (this.completedShots < STORM_WIND_SHIFT_AFTER_SHOTS) return;
+        // Бой уже кончился этим же выстрелом — смены не объявляем: плашка «Буря сменила
+        // ветер» выехала бы поверх экрана результата, сообщая о ветре, которым уже некому
+        // пользоваться. Порядок вызовов делает это возможным: счётчик выстрелов растёт в
+        // конце разрешения снаряда, а `isOver` к этому моменту уже выставлен добиванием.
+        if (this.isOver) return;
+        this.stormWindShifted = true;
+        this.wind = this.stormWind;
+        this.callbacks.onWindChange?.(this.wind);
+        // Флажок ветра (#550) следует за сменой — иначе после бури он бы показывал
+        // старое направление, разойдясь с ячейкой «Ветер» и HUD-плашкой смены.
+        if (this.leftTank) {
+            this.leftTank.windFlagRotationRad = windFlagRotationRad(this.wind);
+        }
+    }
 
     /**
      * Разовая раздача детонации (issue #483): попадание в танк — вспышка урона,
@@ -959,6 +1180,8 @@ export class GamePlay {
                 hittedIsLeft: this.bullet.hittedTank === this.leftTank,
                 leftActive: !!this.leftTank?.isActive,
                 power: this.bullet.power,
+                x: this.bullet.explosionCenterX,
+                y: this.bullet.explosionCenterY,
             });
         } else {
             void this.audio.playSfx('miss');
@@ -1080,6 +1303,9 @@ export class GamePlay {
 
     fire = (activeTank: Tank, targetTank: Tank, ground: Ground, weaponType: TWeapon) => {
         this.lastShooterIsLeft = activeTank === this.leftTank;
+        // Новая запись пути (issue #543) — видимую (закоммиченную) трассу не трогает,
+        // та остаётся на арене, пока этот выстрел не долетит (см. moveBullet).
+        (this.lastShooterIsLeft ? this.ownGhostTrail : this.enemyGhostTrail).beginRecording();
         this.callbacks.onShotStart?.();
         this.activateMode('fire');
         // Тип оружия задаёт спеку взрыва (issue #483) — Bullet читает из неё числа
@@ -1124,6 +1350,25 @@ export class GamePlay {
                 this.isAngleMode = false;
                 this.isMoveMode = false;
         }
+        this.reflectMode();
+    }
+
+    /** Режим движка наружу — атрибутом на канвасе, ОДИН раз на переход (не в кадре).
+     *  Без него состояние живёт только в полях класса, и e2e ждали выхода из
+     *  стартового `fire` хардкод-паузой `waitForTimeout(400)` — таймер вместо
+     *  сигнала, то есть флейк на медленном CI. Пишем ФАКТИЧЕСКИЙ режим, а не
+     *  запрошенный: `angle`/`move` при активном `fire` игнорируются выше, и
+     *  запрошенное значение соврало бы. */
+    private reflectMode() {
+        const el = this.canvasRef.current;
+        if (!el) return;
+        el.dataset.engineMode = this.isFireMode
+            ? 'fire'
+            : this.isAngleMode
+              ? 'angle'
+              : this.isMoveMode
+                ? 'move'
+                : 'idle';
     }
 
     isIdleMode() {

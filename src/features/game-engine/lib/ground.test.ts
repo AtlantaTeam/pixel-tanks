@@ -198,7 +198,10 @@ describe('Ground.resize: перекладка рельефа в зону при 
 
 const makeLayerCtx = () => ({
     strokeStyle: '',
+    fillStyle: '',
     lineWidth: 0,
+    globalAlpha: 1,
+    globalCompositeOperation: 'source-over' as GlobalCompositeOperation,
     setTransform: vi.fn(),
     clearRect: vi.fn(),
     translate: vi.fn(),
@@ -206,6 +209,9 @@ const makeLayerCtx = () => ({
     moveTo: vi.fn(),
     lineTo: vi.fn(),
     stroke: vi.fn(),
+    save: vi.fn(),
+    restore: vi.fn(),
+    fillRect: vi.fn(),
 });
 
 const makeDestCtx = () => ({
@@ -277,5 +283,83 @@ describe('Ground: offscreen-кэш террейна (.claude/rules/canvas.md)', 
 
         expect(layerCtxMock.beginPath).toHaveBeenCalledTimes(1);
         expect(destCtx.drawImage).toHaveBeenCalledTimes(2);
+    });
+
+    it('тонировка (#545) заливает силуэт рельефа через source-atop по числу слоёв', () => {
+        const tint = [
+            { color: '#d9713e', alpha: 0.3 },
+            { color: '#c900ff', alpha: 0.08 },
+        ];
+        const ground = new Ground(100, 100, createSeededRandom(1), undefined, undefined, tint);
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        // По одному fillRect на слой тонировки, композит — source-atop (только песок).
+        expect(layerCtxMock.fillRect).toHaveBeenCalledTimes(tint.length);
+        expect(layerCtxMock.globalCompositeOperation).toBe('source-atop');
+    });
+
+    it('без тонировки (день) source-atop-заливки нет', () => {
+        const ground = new Ground(100, 100, createSeededRandom(1));
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        expect(layerCtxMock.fillRect).not.toHaveBeenCalled();
+    });
+
+    it('дождь (#547) затемняет столбцы воронок через source-atop, по одному fillRect на столбец', () => {
+        const ground = new Ground(
+            100,
+            100,
+            createSeededRandom(1),
+            undefined,
+            undefined,
+            [],
+            undefined,
+            { darkenAlpha: 0.28, edgeSoftenPx: 1 },
+        );
+        // Воронка радиусом 5 в центре: столбцы 45..55 (11 штук) помечаются кратерными.
+        ground.fall(50, 10, 5);
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+
+        expect(layerCtxMock.fillRect).toHaveBeenCalledTimes(11);
+        expect(layerCtxMock.globalCompositeOperation).toBe('source-atop');
+    });
+
+    it('без осадков-дождя (нет craterStyle) воронки не затемняются', () => {
+        const ground = new Ground(100, 100, createSeededRandom(1));
+        ground.fall(50, 10, 5);
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        expect(layerCtxMock.fillRect).not.toHaveBeenCalled();
+    });
+
+    it('до попадания (нет воронок) дождь ничего не затемняет', () => {
+        const ground = new Ground(
+            100,
+            100,
+            createSeededRandom(1),
+            undefined,
+            undefined,
+            [],
+            undefined,
+            {
+                darkenAlpha: 0.28,
+                edgeSoftenPx: 1,
+            },
+        );
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        expect(layerCtxMock.fillRect).not.toHaveBeenCalled();
+    });
+
+    it('подсветка кромки (#545) рисует линию по верху рельефа тоном каймы', () => {
+        const ground = new Ground(
+            100,
+            100,
+            createSeededRandom(1),
+            undefined,
+            undefined,
+            [],
+            '#ffb066',
+        );
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        // Крест-линия строит path (beginPath: рельеф + кромка) и штрихует её.
+        expect(layerCtxMock.beginPath).toHaveBeenCalledTimes(2);
+        expect(layerCtxMock.stroke).toHaveBeenCalledTimes(2);
     });
 });

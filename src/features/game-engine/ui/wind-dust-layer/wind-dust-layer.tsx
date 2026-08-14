@@ -1,0 +1,147 @@
+'use client';
+
+import { useEffect, useRef } from 'react';
+import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
+import { prefersReducedMotion } from '../../lib/prefers-reduced-motion';
+import { pickSkyPreset, type TSkyPresetId } from '../../lib/sky-preset';
+import { WindDust } from '../../lib/wind-dust-scene';
+
+type TWindDustLayerProps = {
+    /** Сид боя: та же раскладка пылинок и тот же ночной пресет, что у неба (#550). */
+    seed: number | string | null | undefined;
+    /** Ветер боя (`game.store.wind`): пылинки летят по нему, при 0 — их нет. */
+    wind: number;
+    /**
+     * Форсировать пресет времени суток вместо вывода из сида — только для витрины,
+     * тот же приём, что у `SkyBackground`/`PrecipitationLayer`. Ночью слой рисует не
+     * пылинки, а кайму песка, и без override эту ветку на витрине показать нечем:
+     * пришлось бы подбирать сид, дающий ночь, и молиться, чтобы он таким и остался.
+     */
+    preset?: TSkyPresetId;
+    /**
+     * Единичный статичный кадр на этом времени сцены (мс) вместо rAF-петли — для витрины,
+     * тот же паритет, что у `PrecipitationLayer` (#546). Без него слой пылинок нечем
+     * зафиксировать в визуальной регрессии без флейка: rAF даёт разное поле частиц на
+     * каждом прогоне, и снимок витрины краснел бы от движения, а не от вёрстки.
+     */
+    snapshotMs?: number;
+    /** Override `prefers-reduced-motion` — только для витрины/тестов. */
+    reducedMotion?: boolean;
+    className?: string;
+};
+
+/**
+ * Слой ветровых пылинок приземного слоя (#550, §7 разбора #534): «дешёвый носитель»
+ * ветра рядом с ареной, куда и так смотрит взгляд во время прицеливания — не только
+ * цифра в ячейке «Ветер» наверху HUD. Отдельный `<canvas>` над игровым, тот же паттерн,
+ * что `PrecipitationLayer` (#546): свой rAF с полной очисткой кадра не задевает
+ * dirty-rect оптимизацию игрового канваса.
+ *
+ * Ночью (пресет неба `night`, тот же сид, что у `SkyBackground`) пылинки плохо читаются
+ * на тёмном фоне — вместо них `WindDust` рисует подсветку кромки песка (см.
+ * `wind-dust-scene.ts`), не отдельные частицы.
+ */
+export const WindDustLayer = ({
+    seed,
+    wind,
+    preset,
+    snapshotMs,
+    reducedMotion,
+    className,
+}: TWindDustLayerProps) => {
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    // Ветер меняется бурей посреди боя (#547) — сцену за этим не пересобираем: поле
+    // пылинок вернулось бы к стартовой раскладке скачком. Стартовое значение — из ref,
+    // дальнейшие смены доносит сеттер (тот же приём, что у слоя осадков).
+    const windRef = useRef(wind);
+    const sceneRef = useRef<WindDust | null>(null);
+    useEffect(() => {
+        windRef.current = wind;
+        sceneRef.current?.setWind(wind);
+    }, [wind]);
+
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        // Нет 2D-контекста (happy-dom/SSR) — тихо выходим, слой не рисуем.
+        if (!ctx) return;
+
+        const reduced = reducedMotion ?? prefersReducedMotion();
+        const resolvedSeed = seed ?? 'default';
+        const isNight = (preset ?? pickSkyPreset(resolvedSeed).id) === 'night';
+        const scene = new WindDust({
+            seed: resolvedSeed,
+            wind: windRef.current,
+            isNight,
+            reducedMotion: reduced,
+        });
+        sceneRef.current = scene;
+
+        let rafId = 0;
+        let lastTs = 0;
+        let disposed = false;
+
+        const fit = () => {
+            const dpr = getDevicePixelRatio();
+            const rect = canvas.getBoundingClientRect();
+            const cssWidth = floor(rect.width || canvas.offsetWidth);
+            const cssHeight = floor(rect.height || canvas.offsetHeight);
+            if (cssWidth <= 0 || cssHeight <= 0) return;
+            const backingWidth = toDevicePixels(cssWidth, dpr);
+            const backingHeight = toDevicePixels(cssHeight, dpr);
+            if (canvas.width !== backingWidth) canvas.width = backingWidth;
+            if (canvas.height !== backingHeight) canvas.height = backingHeight;
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            scene.resize(cssWidth, cssHeight);
+        };
+
+        const frame = (ts: number) => {
+            if (disposed) return;
+            const dt = lastTs ? ts - lastTs : 0;
+            lastTs = ts;
+            scene.update(dt);
+            scene.draw(ctx);
+            // Анимировать нечего (штиль, ночная кайма, reduced-motion) — рисуем ОДИН
+            // кадр и выходим. Иначе петля весь бой гоняла бы `clearRect` пустого канваса
+            // 60 раз в секунду: в штиль это большинство боёв.
+            if (!scene.animated) return;
+            rafId = requestAnimationFrame(frame);
+        };
+
+        fit();
+
+        // Витрина: единичный статичный кадр на заданном времени — без rAF-петли, чтобы
+        // снапшот визуальной регрессии был детерминирован (паритет с `PrecipitationLayer`).
+        if (snapshotMs !== undefined) {
+            scene.update(snapshotMs);
+            scene.draw(ctx);
+        } else {
+            rafId = requestAnimationFrame(frame);
+        }
+
+        const observer =
+            typeof ResizeObserver !== 'undefined'
+                ? new ResizeObserver(() => {
+                      fit();
+                      scene.draw(ctx);
+                  })
+                : undefined;
+        observer?.observe(canvas);
+
+        return () => {
+            disposed = true;
+            sceneRef.current = null;
+            cancelAnimationFrame(rafId);
+            observer?.disconnect();
+        };
+    }, [seed, preset, snapshotMs, reducedMotion]);
+
+    return (
+        <canvas
+            ref={canvasRef}
+            aria-hidden
+            className={`pointer-events-none block h-full w-full ${className ?? ''}`}
+        />
+    );
+};

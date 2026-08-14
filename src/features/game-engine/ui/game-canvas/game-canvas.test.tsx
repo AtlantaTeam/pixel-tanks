@@ -12,6 +12,13 @@ type TCapturedCallbacks = {
     onTurnChange?: (turn: 'player' | 'enemy') => void;
     onShotStart?: () => void;
     onShotEnd?: () => void;
+    onTankHit: (params: {
+        hittedIsLeft: boolean;
+        leftActive: boolean;
+        power: number;
+        x: number;
+        y: number;
+    }) => void;
 };
 
 // Захватываем колбэки, которые GameCanvas передаёт в GamePlay, чтобы дёрнуть
@@ -19,7 +26,13 @@ type TCapturedCallbacks = {
 const { captured, BOT_TANK, LEFT_TANK } = vi.hoisted(() => ({
     captured: { current: null as TCapturedCallbacks | null },
     BOT_TANK: { x: 200, tankWidth: 40, y: 150, tankHeight: 30 },
-    LEFT_TANK: { isActive: true, gunpointAngle: 0.5, power: 12 },
+    LEFT_TANK: {
+        isActive: true,
+        gunpointAngle: 0.5,
+        power: 12,
+        gunpointX: 50,
+        gunpointY: 100,
+    },
 }));
 
 vi.mock('../../lib/game-play', () => ({
@@ -30,11 +43,13 @@ vi.mock('../../lib/game-play', () => ({
         isMoveMode = false;
         isOver = false;
         showAimPreview = false;
+        ctx = {} as CanvasRenderingContext2D;
         onFire = vi.fn();
         activateMode = vi.fn();
         changeTankPosition = vi.fn();
         setArenaInsets = vi.fn();
         getActiveAndTargetTanks = () => [LEFT_TANK, BOT_TANK];
+        setAimPreviewVisible = vi.fn();
         constructor(..._args: unknown[]) {
             captured.current = _args[2] as TCapturedCallbacks;
         }
@@ -262,6 +277,216 @@ describe('GameCanvas', () => {
             });
 
             expect(useGameStore.getState().replayMoves).toEqual([]);
+        });
+    });
+
+    // Desktop hover chip (#544): чип наведения мышью у ствола танка
+    describe('desktop hover chip', () => {
+        it('показывает чип при наведении мышью на canvas (mouse поинтер)', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ angle: 0.5, power: 12 });
+            const { queryByTestId } = render(<GameCanvas seed={42} />);
+            const canvas = document.querySelector('.game-canvas') as HTMLCanvasElement;
+
+            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
+
+            act(() => {
+                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
+            });
+
+            expect(queryByTestId('desktop-hover-chip')).toBeInTheDocument();
+        });
+
+        it('скрывает чип при наведении во время выстрела (isFireMode)', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ angle: 0.5, power: 12 });
+            const { queryByTestId, container } = render(<GameCanvas seed={42} />);
+            const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
+
+            act(() => {
+                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
+            });
+            expect(queryByTestId('desktop-hover-chip')).toBeInTheDocument();
+
+            // Имитируем выстрел (isFireMode = true)
+            act(() => {
+                useGameStore.setState({ phase: 'flight' });
+            });
+
+            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
+        });
+
+        it('не показывает чип при non-mouse поинтере (touch/pen)', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ angle: 0.5, power: 12 });
+            const { queryByTestId, container } = render(<GameCanvas seed={42} />);
+            const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
+
+            // Тач-событие
+            act(() => {
+                fireEvent.pointerMove(canvas, {
+                    clientX: 100,
+                    clientY: 100,
+                    pointerType: 'touch',
+                });
+            });
+
+            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
+        });
+
+        it('скрывает чип при mouseLeave', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ angle: 0.5, power: 12 });
+            const { queryByTestId, container } = render(<GameCanvas seed={42} />);
+            const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
+
+            act(() => {
+                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
+            });
+            expect(queryByTestId('desktop-hover-chip')).toBeInTheDocument();
+
+            act(() => {
+                fireEvent.mouseLeave(canvas);
+            });
+
+            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
+        });
+
+        it('отображает текущий угол и силу из стора', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ power: 50 });
+            const { queryByTestId, container } = render(<GameCanvas seed={42} />);
+            const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
+
+            act(() => {
+                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
+            });
+
+            const chip = queryByTestId('desktop-hover-chip');
+            expect(chip).toBeInTheDocument();
+            // Проверяем наличие °, означает что есть угол
+            expect(chip?.textContent).toMatch(/°/);
+            // Чип должен содержать какие-то числа (угол и силу), по крайней мере одно число
+            expect(chip?.textContent).toMatch(/\d/);
+        });
+
+        it('скрывает чип при выстреле (onClick)', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ angle: 0.5, power: 12 });
+            const { queryByTestId, container } = render(<GameCanvas seed={42} />);
+            const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
+
+            act(() => {
+                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
+            });
+            expect(queryByTestId('desktop-hover-chip')).toBeInTheDocument();
+
+            act(() => {
+                fireEvent.click(canvas);
+            });
+
+            // Ассерт, а не обещание в комментарии: раньше тест кончался словами
+            // «фактическая проверка будет через пост-выстрел фазу», то есть клик-путь
+            // скрытия чипа не сторожил никто.
+            //
+            // Чип наведения — подсказка ПРИЦЕЛИВАНИЯ: пока снаряд летит, целиться нечем,
+            // и висящий у ствола чип показывал бы угол, который уже ни на что не влияет.
+            act(() => {
+                useGameStore.setState({ phase: 'flight' });
+            });
+            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
+        });
+    });
+
+    // Число урона в месте события (#549): попадание должно читаться там же,
+    // где произошло, а не только по панели HP.
+    describe('damage number (#549)', () => {
+        it('показывает число урона над задетым танком в координатах взрыва', () => {
+            useGameStore.getState().resetGame();
+            const { getByText } = render(<GameCanvas seed={42} />);
+
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: false,
+                    leftActive: true,
+                    power: 24,
+                    x: 220,
+                    y: 120,
+                });
+            });
+
+            const number = getByText('-24');
+            expect(number.parentElement?.style.left).toBe('220px');
+            expect(number.parentElement?.style.top).toBe('120px');
+        });
+
+        it('красит число warning при попадании по боту, danger — при попадании по игроку', () => {
+            useGameStore.getState().resetGame();
+            const { getByText, rerender } = render(<GameCanvas seed={42} />);
+
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: false,
+                    leftActive: true,
+                    power: 24,
+                    x: 220,
+                    y: 120,
+                });
+            });
+            expect(getByText('-24').style.color).toBe('var(--color-warning)');
+
+            rerender(<GameCanvas seed={42} />);
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: true,
+                    leftActive: false,
+                    power: 10,
+                    x: 50,
+                    y: 100,
+                });
+            });
+            expect(getByText('-10').style.color).toBe('var(--color-danger)');
+        });
+
+        it('исчезает через 400мс после попадания', () => {
+            useGameStore.getState().resetGame();
+            const { queryByText } = render(<GameCanvas seed={42} />);
+
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: false,
+                    leftActive: true,
+                    power: 24,
+                    x: 220,
+                    y: 120,
+                });
+            });
+            expect(queryByText('-24')).toBeInTheDocument();
+
+            act(() => {
+                vi.advanceTimersByTime(400);
+            });
+
+            expect(queryByText('-24')).not.toBeInTheDocument();
+        });
+
+        it('снимает урон с HP задетой стороны и заводит счётчик lastHit в сторе', () => {
+            useGameStore.getState().resetGame();
+            render(<GameCanvas seed={42} />);
+
+            act(() => {
+                captured.current?.onTankHit({
+                    hittedIsLeft: false,
+                    leftActive: true,
+                    power: 24,
+                    x: 220,
+                    y: 120,
+                });
+            });
+
+            const state = useGameStore.getState();
+            expect(state.hp.enemy).toBe(100 - 24);
+            expect(state.lastHit).toEqual({ target: 'enemy', nonce: 1 });
         });
     });
 });

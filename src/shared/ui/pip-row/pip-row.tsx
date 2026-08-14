@@ -20,10 +20,12 @@ const DEFAULT_PIP_GAP = 5;
 
 /**
  * design-inventory.dc.html §HUD «PipRow»: ряд пипов для снарядов/ходов.
- * Активный пип — заполненный квадрат (дефолт 14×14px, `size-3.5`) с цветом и
- * glow, неактивный — полупрозрачный контур. Дефолтный размер — на Tailwind-
- * утилите (стабильна для существующих потребителей); нестандартный — inline
- * `style`, вместе с динамическим цветом из пропа `color`.
+ * Активный пип — заполненный квадрат (дефолт 14×14px, `size-3.5`) цветом из
+ * пропа `color`, неактивный — полупрозрачный контур. Без glow (#548, разбор
+ * §2): пипы несут HP/ветер/снаряды/ходы — класс 2 «раз в ход», glow держат
+ * только угол и сила (класс 1). Дефолтный размер — на Tailwind-утилите
+ * (стабильна для существующих потребителей); нестандартный — inline `style`,
+ * вместе с динамическим цветом из пропа `color`.
  */
 export function PipRow({
     pips,
@@ -52,7 +54,7 @@ export function PipRow({
                     className={clsx(
                         'inline-block border-2',
                         isDefaultSize && 'size-3.5',
-                        isActive ? 'shadow-[var(--glow)]' : 'border-border-strong opacity-50',
+                        !isActive && 'border-border-strong opacity-50',
                     )}
                     style={{
                         ...(isDefaultSize ? undefined : { width: size, height: size }),

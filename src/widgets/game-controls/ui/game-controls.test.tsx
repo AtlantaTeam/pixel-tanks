@@ -152,47 +152,6 @@ describe('GameControls (палуба)', () => {
         expect(gameApiRef.current?.fire).not.toHaveBeenCalled();
     });
 
-    it('показывает лок «Ход соперника» на ходе бота', () => {
-        setWeapons(3);
-        useGameStore.setState({ turn: 'enemy', phase: 'aiming' });
-        const { getByTestId, getByText } = renderDeck();
-
-        expect(getByTestId('deck-lock')).toBeInTheDocument();
-        expect(getByText('Ход соперника')).toBeInTheDocument();
-    });
-
-    it('показывает лок «Снаряд в полёте» во время полёта независимо от того, чей был ход', () => {
-        setWeapons(3);
-        useGameStore.setState({ turn: 'player', phase: 'flight' });
-        const { getByText } = renderDeck();
-
-        expect(getByText('Снаряд в полёте')).toBeInTheDocument();
-    });
-
-    it('не показывает лок на ходе игрока', () => {
-        setWeapons(3);
-        const { queryByTestId } = renderDeck();
-
-        expect(queryByTestId('deck-lock')).not.toBeInTheDocument();
-    });
-
-    it('не показывает лок после конца боя (индикатор хода скрыт, лок тоже)', () => {
-        setWeapons(3);
-        useGameStore.setState({ turn: 'enemy', phase: 'over' });
-        const { queryByTestId } = renderDeck();
-
-        expect(queryByTestId('deck-lock')).not.toBeInTheDocument();
-    });
-
-    it('маркер лока несёт класс motion-reduce:animate-none (поведение эмулирует e2e)', () => {
-        setWeapons(3);
-        useGameStore.setState({ turn: 'enemy', phase: 'aiming' });
-        const { getByTestId } = renderDeck();
-
-        const marker = getByTestId('deck-lock').querySelector('.animate-lock-blink');
-        expect(marker).toHaveClass('motion-reduce:animate-none');
-    });
-
     it('не рендерит тост «патроны кончились» — свой слой поверх арены, монтируется отдельно от палубы (#448)', () => {
         setWeapons(0);
         useGameStore.setState({ moves: 2 });

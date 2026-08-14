@@ -1,8 +1,21 @@
 import { floor, rotateFigure, rotateFigureByAngle, transformPoint } from '@/shared/lib/canvas';
 import type { TCoords, TWeapon } from '@/shared/model';
+import { ENGINE_COLORS } from './engine-palette';
 import { Ground } from './ground';
 import { POWER_MAX, POWER_MIN } from './power';
+import type { TLightDirection } from './scene-light';
+import { WIND_FLAG_HEIGHT, WIND_FLAG_POLE_HEIGHT, WIND_FLAG_WIDTH } from './wind-flag';
 import { WORLD_UNITS } from './world-scale';
+
+/**
+ * Тень танка от светила (#545): эллипс под корпусом на поверхности рельефа, смещённый
+ * в сторону, противоположную светилу (`direction.dx` — горизонталь направления света).
+ * `null` (день без модели света/до светила) — тень не рисуется.
+ */
+export type TTankShadow = { direction: TLightDirection; color: string } | null;
+
+/** Полутень корпуса: тёмный полупрозрачный тон, читается на песке любого пресета. */
+export const TANK_SHADOW_COLOR = 'rgba(12, 10, 8, 0.32)';
 
 type TGroundUnderTankData = {
     leftSideX: number;
@@ -103,6 +116,19 @@ export class Tank {
     isReadyToFire = true;
     closestToHit: { minDiff: number; angle: number; power: number; count: number } | null;
     weapons: TWeapon[];
+    /**
+     * Тень от светила (#545): ставит `GamePlay` из модели света боя (`computeSceneLight`)
+     * после конструирования, как и скины — `Tank` сам про сид/пресет не знает. `null` —
+     * тени нет (тесты/реплей без сида, день до светила).
+     */
+    shadow: TTankShadow = null;
+    /**
+     * Угол поворота флажка ветра на мачте (радианы, `windFlagRotationRad`) — «дешёвый
+     * носитель» ветра рядом с ареной (#550). Ставит `GamePlay` только на свой танк
+     * (`leftTank`), пересчитывая при каждой смене `this.wind`. `null` (дефолт, чужой
+     * танк) — флажок не рисуется.
+     */
+    windFlagRotationRad: number | null = null;
 
     constructor(
         x: number,
@@ -359,7 +385,74 @@ export class Tank {
         }
     }
 
+    /**
+     * Тень корпуса на рельефе (#545): плоский эллипс на поверхности земли под танком,
+     * смещённый по горизонтали в сторону, обратную светилу (`shadow.direction.dx`).
+     * Рисуется ДО корпуса (в неповёрнутом ctx, до наклонного трансформа `slopeTank`),
+     * поэтому лежит на склоне в мировых координатах, а не «висит» с корпусом. Эллипс
+     * центрируется по поверхности под серединой танка — даёт гарантированные пиксели
+     * контакта корпуса с рельефом (критерий #545), которых у «висящего» танка не было.
+     */
+    private drawShadow(ctx: CanvasRenderingContext2D, ground: Ground) {
+        if (!this.shadow) return;
+        const lastX = ground.heights.length - 1;
+        if (lastX < 0) return;
+        const centerX = Math.min(lastX, Math.max(0, floor(this.x + this.tankWidth / 2)));
+        const surfaceY = this.innerHeight - ground.heights[centerX];
+        const radiusX = this.tankWidth * 0.5;
+        // Тонкий эллипс (~2 px в каноне, масштабируется миром) — тень, не «клякса».
+        const radiusY = Math.max(2, 2 * this.scale);
+        // Смещение по свету: в сторону, обратную светилу. Модуль — доля ширины танка,
+        // тень «выползает» из-под корпуса, не отрываясь от него.
+        const offsetX = this.shadow.direction.dx * this.tankWidth * 0.28;
+        ctx.save();
+        ctx.beginPath();
+        ctx.fillStyle = this.shadow.color;
+        ctx.ellipse(centerX + offsetX, surfaceY, radiusX, radiusY, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    /**
+     * Якорь мачты (верх, у заднего края корпуса — не мешает стволу) в МИРОВЫХ
+     * координатах: тот же приём, что `recalcPosition` уже применяет к
+     * `gunpointX/Y` — локальная точка корпуса переносится наклонным трансформом
+     * склона (`this.currentTransformer`, `transformPoint`) без ctx.getTransform()
+     * (комментарий `rotate-figure.ts`: он вернул бы dpr-загрязнённую матрицу).
+     * Без трансформера (танк в воздухе/тесты без сида) — точка как есть.
+     */
+    private windFlagAnchor(): TCoords {
+        const local = {
+            x: this.x + this.tankWidth * 0.35,
+            y: this.y - this.tankHeight - WIND_FLAG_POLE_HEIGHT * this.scale,
+        };
+        return this.currentTransformer ? transformPoint(local, this.currentTransformer) : local;
+    }
+
+    /**
+     * Флажок ветра на мачте (#550): рисуется в мировых координатах (как ствол —
+     * `gunpointX/Y`), не под наклонным трансформом склона — иначе тилт танка на
+     * дюне складывался бы с наклоном от ветра и направление читалось бы неверно.
+     * Наклон вокруг вершины мачты — чисто `windFlagRotationRad`.
+     */
+    private drawWindFlag(ctx: CanvasRenderingContext2D) {
+        if (this.windFlagRotationRad === null) return;
+        const { x: poleTopX, y: poleTopY } = this.windFlagAnchor();
+        const poleHeight = WIND_FLAG_POLE_HEIGHT * this.scale;
+        const flagLength = WIND_FLAG_HEIGHT * this.scale;
+        const flagThickness = WIND_FLAG_WIDTH * this.scale;
+        ctx.save();
+        ctx.fillStyle = ENGINE_COLORS.borderStrong;
+        ctx.fillRect(poleTopX, poleTopY, Math.max(1, this.scale), poleHeight);
+        ctx.translate(poleTopX, poleTopY);
+        ctx.rotate(this.windFlagRotationRad);
+        ctx.fillStyle = ENGINE_COLORS.accent;
+        ctx.fillRect(0, -flagThickness / 2, flagLength, flagThickness);
+        ctx.restore();
+    }
+
     draw(ctx: CanvasRenderingContext2D, mousePos: TCoords | null, ground: Ground) {
+        this.drawShadow(ctx, ground);
         this.recalcPosition(ctx, ground);
         const body = this.bodyRect();
         if (this.tankBodyImg) {
@@ -372,6 +465,8 @@ export class Tank {
         this.tankHitArea.rect(body.x, body.y, body.width, body.height);
         this.tankHitAreaCtx = ctx;
         ctx.restore();
+        // Мировые координаты (наклон склона уже снят restore()) — как ствол ниже.
+        this.drawWindFlag(ctx);
 
         if (mousePos && this.isActive) {
             const { x, y } = mousePos;

@@ -9,10 +9,30 @@ export type TSkyStop = {
 export type TSkyPresetId = 'day' | 'sunset' | 'night';
 
 /**
+ * Палитра светила (#519): солнце днём/на закате или луна ночью. Только цвет — где
+ * оно стоит и какого размера, решает сид боя (`sky-celestial.ts`, геометрия отдельно
+ * от палитры, как поле облаков отделено от их тона). 6-значный hex без альфы: альфу
+ * подмешивает `withAlpha` в месте отрисовки (тот же приём, что 8-значный hex в
+ * `TWeaponExplosionColors`, только альфа считается на лету, а не зашита в константу).
+ */
+export type TCelestialPreset = {
+    kind: 'sun' | 'moon';
+    /** Цвет диска светила. */
+    core: string;
+    /** Базовый цвет ореола вокруг диска (альфа гаснет к краю при отрисовке). */
+    glow: string;
+    /** Цвет лучей-спиц — только у солнца. */
+    rayColor?: string;
+    /** Цвет звёзд — только у луны. */
+    starColor?: string;
+};
+
+/**
  * Пресет времени суток сцены боя — кодификация арта из [ЧЕЛОВЕК]-карточки #478
  * (палитры неба день/закат/ночь). Только цветовые данные сцены: градиент неба,
- * тон силуэта дальних гор и тон/прозрачность облаков. Пресет выбирается сидом боя
- * (`pickSkyPreset`), поэтому один сид даёт одну и ту же сцену — как рельеф и ветер.
+ * тон силуэта дальних гор, тон/прозрачность облаков и палитра светила. Пресет
+ * выбирается сидом боя (`pickSkyPreset`), поэтому один сид даёт одну и ту же сцену —
+ * как рельеф и ветер.
  */
 export type TSkyPreset = {
     id: TSkyPresetId;
@@ -26,6 +46,8 @@ export type TSkyPreset = {
     cloud: string;
     /** Прозрачность облачных слоёв: днём плотные, ночью еле видны. */
     cloudAlpha: number;
+    /** Палитра солнца/луны — геометрия (позиция, размер) считается отдельно от сида. */
+    celestial: TCelestialPreset;
 };
 
 export const SKY_PRESETS: readonly TSkyPreset[] = [
@@ -40,6 +62,7 @@ export const SKY_PRESETS: readonly TSkyPreset[] = [
         mountain: '#5b6f93',
         cloud: '#f4f9ff',
         cloudAlpha: 0.9,
+        celestial: { kind: 'sun', core: '#fff3d6', glow: '#fff6dd', rayColor: '#fffaf0' },
     },
     {
         id: 'sunset',
@@ -53,6 +76,7 @@ export const SKY_PRESETS: readonly TSkyPreset[] = [
         mountain: '#42324f',
         cloud: '#ffd9b0',
         cloudAlpha: 0.72,
+        celestial: { kind: 'sun', core: '#ff9c4d', glow: '#ff7a3d', rayColor: '#ffb066' },
     },
     {
         id: 'night',
@@ -65,6 +89,7 @@ export const SKY_PRESETS: readonly TSkyPreset[] = [
         mountain: '#0e1330',
         cloud: '#b9c6f2',
         cloudAlpha: 0.5,
+        celestial: { kind: 'moon', core: '#e7ecff', glow: '#8f9bdb', starColor: '#f4f7ff' },
     },
 ];
 
