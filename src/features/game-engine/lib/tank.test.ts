@@ -338,7 +338,8 @@ describe('Tank.draw — тень от светила (#545)', () => {
         tank.shadow = { direction: { dx: -0.6, dy: 0.8 }, color: 'rgba(0,0,0,0.3)' };
         const { ctx, ellipseCalls } = makeShadowCtx();
         tank.draw(ctx, null, flatGround());
-        expect(ellipseCalls).toHaveLength(1);
+        // Несколько эллипсов для рассеивания края (критерий #571).
+        expect(ellipseCalls.length).toBeGreaterThanOrEqual(1);
         // Центр эллипса левее середины корпуса — знак совпадает со знаком dx (влево).
         expect(ellipseCalls[0][0]).toBeLessThan(centerX(tank));
     });
@@ -348,7 +349,8 @@ describe('Tank.draw — тень от светила (#545)', () => {
         tank.shadow = { direction: { dx: 0.6, dy: 0.8 }, color: 'rgba(0,0,0,0.3)' };
         const { ctx, ellipseCalls } = makeShadowCtx();
         tank.draw(ctx, null, flatGround());
-        expect(ellipseCalls).toHaveLength(1);
+        // Несколько эллипсов для рассеивания края (критерий #571).
+        expect(ellipseCalls.length).toBeGreaterThanOrEqual(1);
         expect(ellipseCalls[0][0]).toBeGreaterThan(centerX(tank));
     });
 
@@ -359,5 +361,21 @@ describe('Tank.draw — тень от светила (#545)', () => {
         // Плоский рельеф высотой 100 → поверхность на HEIGHT-100.
         tank.draw(ctx, null, flatGround());
         expect(ellipseCalls[0][1]).toBe(HEIGHT - 100);
+    });
+
+    it('край тени рассеян — несколько эллипсов с убывающей альфой (критерий #571)', () => {
+        const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON], bodyImg);
+        tank.shadow = { direction: { dx: -0.6, dy: 0.8 }, color: 'rgba(12,10,8,0.32)' };
+        const { ctx, ellipseCalls } = makeShadowCtx();
+        tank.draw(ctx, null, flatGround());
+        // Минимум 2 эллипса для рассеивания: плотный центр + растворяющийся край.
+        expect(ellipseCalls.length).toBeGreaterThanOrEqual(2);
+        // Все эллипсы центрированы в одной точке (одно смещение).
+        const centerX = ellipseCalls[0][0];
+        const centerY = ellipseCalls[0][1];
+        for (let i = 1; i < ellipseCalls.length; i++) {
+            expect(ellipseCalls[i][0]).toBe(centerX);
+            expect(ellipseCalls[i][1]).toBe(centerY);
+        }
     });
 });

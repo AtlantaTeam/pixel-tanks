@@ -45,6 +45,16 @@ export function wheelRotationDelta(distance: number, wheelRadiusPx: number): num
 }
 
 /**
+ * Изменяет альфа-канал в rgba-строке. Парсит `rgba(r,g,b,a)`, заменяет альфу
+ * и возвращает новую строку. Используется для рассеивания края тени.
+ */
+function setRgbaAlpha(rgbaStr: string, newAlpha: number): string {
+    const match = rgbaStr.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*[\d.]+\)/);
+    if (!match) return rgbaStr;
+    return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${newAlpha})`;
+}
+
+/**
  * Рисует катки поверх корпуса: каждый — вокруг СВОЕГО центра на угол `rotation`
  * (issue #496), позиция и радиус — доли `body` из `wheel.cx/cy/r`. Чистая
  * функция (без аллокаций — `save/restore` вокруг `drawImage`, как остальной
@@ -405,11 +415,31 @@ export class Tank {
         // Смещение по свету: в сторону, обратную светилу. Модуль — доля ширины танка,
         // тень «выползает» из-под корпуса, не отрываясь от него.
         const offsetX = this.shadow.direction.dx * this.tankWidth * 0.28;
+
         ctx.save();
-        ctx.beginPath();
-        ctx.fillStyle = this.shadow.color;
-        ctx.ellipse(centerX + offsetX, surfaceY, radiusX, radiusY, 0, 0, Math.PI * 2);
-        ctx.fill();
+        // Парсим альфу из исходного цвета для рассеивания
+        const colorMatch = this.shadow.color.match(/(rgba\(\d+,\s*\d+,\s*\d+,\s*)([\d.]+)\)/);
+        const baseAlpha = colorMatch ? parseFloat(colorMatch[2]) : 0.32;
+
+        // Рисуем несколько слоёв эллипса с убывающей альфой для рассеивания края
+        const layers = 3;
+        for (let i = 0; i < layers; i++) {
+            // Альфа убывает от 100% в центре к 0 на краю
+            const alpha = baseAlpha * (1 - i / (layers - 1));
+            const scaleFactor = 1 + (i / (layers - 1)) * 0.5; // радиус растёт к краю
+            ctx.beginPath();
+            ctx.fillStyle = setRgbaAlpha(this.shadow.color, alpha);
+            ctx.ellipse(
+                centerX + offsetX,
+                surfaceY,
+                radiusX * scaleFactor,
+                radiusY,
+                0,
+                0,
+                Math.PI * 2,
+            );
+            ctx.fill();
+        }
         ctx.restore();
     }
 
