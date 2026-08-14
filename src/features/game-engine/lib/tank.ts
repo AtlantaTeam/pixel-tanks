@@ -409,12 +409,16 @@ export class Tank {
         if (lastX < 0) return;
         const centerX = Math.min(lastX, Math.max(0, floor(this.x + this.tankWidth / 2)));
         const surfaceY = this.innerHeight - ground.heights[centerX];
-        const radiusX = this.tankWidth * 0.5;
-        // Тонкий эллипс (~2 px в каноне, масштабируется миром) — тень, не «клякса».
-        const radiusY = Math.max(2, 2 * this.scale);
-        // Смещение по свету: в сторону, обратную светилу. Модуль — доля ширины танка,
-        // тень «выползает» из-под корпуса, не отрываясь от него.
-        const offsetX = this.shadow.direction.dx * this.tankWidth * 0.28;
+
+        // Геометрия тени зависит от высоты светила (dy): при низком светиле тень
+        // длиннее, при высоком — компактнее (#571).
+        const dy = this.shadow.direction.dy;
+        // При dy=1 (светило над головой) базовый радиус = 0.5, при dy→0 растягивается до ~1.5
+        const radiusX = this.tankWidth * (0.5 + (1 - dy) * 1.0);
+        // Тонкий эллипс (~2 px в каноне) — основа; при низком светиле чуть толще
+        const radiusY = Math.max(2, 2 * this.scale * (0.5 + dy * 0.5));
+        // Смещение по свету зависит от его высоты: при низком светиле смещение больше
+        const offsetX = this.shadow.direction.dx * this.tankWidth * (0.28 + (1 - dy) * 0.32);
 
         ctx.save();
         // Парсим альфу из исходного цвета для рассеивания

@@ -378,4 +378,22 @@ describe('Tank.draw — тень от светила (#545)', () => {
             expect(ellipseCalls[i][1]).toBe(centerY);
         }
     });
+
+    it('тень длиннее при низком светиле (малое dy)', () => {
+        const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON], bodyImg);
+        // dy=0.2 — светило низко над горизонтом (закатное солнце)
+        tank.shadow = { direction: { dx: -0.98, dy: 0.2 }, color: 'rgba(12,10,8,0.32)' };
+        const { ctx: ctxLow, ellipseCalls: callsLow } = makeShadowCtx();
+        tank.draw(ctxLow, null, flatGround());
+        const radiusXLow = callsLow[0][2];
+
+        // dy=0.95 — светило высоко (полдень)
+        tank.shadow = { direction: { dx: -0.31, dy: 0.95 }, color: 'rgba(12,10,8,0.32)' };
+        const { ctx: ctxHigh, ellipseCalls: callsHigh } = makeShadowCtx();
+        tank.draw(ctxHigh, null, flatGround());
+        const radiusXHigh = callsHigh[0][2];
+
+        // При низком светиле тень раскидывается шире (больший radiusX).
+        expect(radiusXLow).toBeGreaterThan(radiusXHigh);
+    });
 });
