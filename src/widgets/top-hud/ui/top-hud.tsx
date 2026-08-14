@@ -615,9 +615,19 @@ function WindCell({
         />
     );
 
+    // Направление — ТЕКСТОМ для скринридера: стрелка декоративна (`Icon` без подписи), а
+    // `PipRow` отдаёт только силу. До #547 направление было константой боя, и его отсутствие
+    // в дереве доступности почти ничего не стоило; теперь буря меняет его посреди боя, и
+    // незрячий игрок целился бы по старому ветру.
+    const directionText = direction === 'left' ? 'влево' : 'вправо';
+
     return (
         <CellShell label="Ветер" compact={compact}>
-            <div className={clsx('flex items-center', compact ? 'gap-1' : 'gap-1.5')}>
+            <div
+                className={clsx('flex items-center', compact ? 'gap-1' : 'gap-1.5')}
+                role="group"
+                aria-label={`Ветер ${directionText}, сила ${magnitude} из ${WIND_DISPLAY_SCALE}`}
+            >
                 <Icon
                     name={direction === 'left' ? 'arrow-l' : 'arrow-r'}
                     size={compact ? 14 : 18}
@@ -827,6 +837,36 @@ function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
  * `sr-only` — только для скринридера, `absolute` (вне потока), геометрию HUD не
  * трогает.
  */
+/**
+ * Анонс смены ветра бурей (#547) для скринридера.
+ *
+ * Плашка `WindShiftBanner` этого не делает и сделать не может: она МОНТИРУЕТСЯ на каждый
+ * показ (`key={nonce}`), а появление нового узла с `role="status"` скринридеры молчат —
+ * озвучивается смена содержимого УЖЕ СУЩЕСТВУЮЩЕГО live-region. Тот же вывод записан
+ * в докблоке `FreezeAnnouncer` ниже, но на плашку ветра его тогда не распространили.
+ *
+ * Узел смонтирован всегда и пуст до первой смены. Текст включает номер смены — иначе
+ * повторная смена с тем же направлением не изменила бы содержимое и осталась бы
+ * неозвученной (сегодня буря меняет ветер один раз за бой, но это правило #547, а не
+ * свойство разметки).
+ */
+function WindShiftAnnouncer({ wind, nonce }: { wind: number; nonce: number }) {
+    const text =
+        nonce > 0
+            ? `Буря сменила ветер: теперь ${windDirection(wind) === 'left' ? 'влево' : 'вправо'}, сила ${windMagnitude(wind)} из ${WIND_DISPLAY_SCALE}`
+            : '';
+    return (
+        <span
+            data-testid="wind-shift-live"
+            aria-live="polite"
+            aria-atomic="true"
+            className="sr-only"
+        >
+            {text}
+        </span>
+    );
+}
+
 function FreezeAnnouncer({ frozen }: { frozen: boolean }) {
     return (
         <span data-testid="freeze-live" aria-live="polite" aria-atomic="true" className="sr-only">
@@ -856,6 +896,9 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
     const wind = useGameStore((s) => s.wind);
+    // Счётчик смен ветра бурей (#547) — тот же источник, что у плашки на арене; здесь он
+    // нужен живому региону: без изменения ТЕКСТА скринридер молчит.
+    const windShiftNonce = useGameStore((s) => s.windShiftNonce);
     const windRevealed = useGameStore((s) => s.windRevealed);
     const weapons = useGameStore((s) => s.weapons);
     const moves = useGameStore((s) => s.moves);
@@ -900,6 +943,9 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
         >
             {/* Анонс заморозки — один на оба состава, смонтирован всегда (a11y, #472). */}
             <FreezeAnnouncer frozen={isBotTurn} />
+            {/* Анонс смены ветра бурей (#547) — там же и по той же причине: плашка на
+                арене монтируется заново и скринридером не читается. */}
+            <WindShiftAnnouncer wind={wind} nonce={windShiftNonce} />
             {/* Мобилка (<768): три ряда — HP-карточки (inline), пилюля хода +
                 иконки, единый ряд телеметрии. Компактная плотность (#450). */}
             <div

@@ -62,8 +62,12 @@ async function rowGapPadding(
     return row.evaluate((el) => {
         const cs = getComputedStyle(el);
         const parse = (v: string) => Math.round(parseFloat(v) || 0);
+        // Ряды HUD горизонтальны, значит зазор между детьми — `column-gap`. Прежний
+        // `rowGap || gap` для них не годился: у горизонтального ряда `row-gap` равен
+        // `normal` → 0, и «легально» проходило ЛЮБОЕ значение, включая `gap-x-[10px]`.
+        // Берём максимум из двух — ряд может быть и колонкой (`top-hud-mobile`).
         return {
-            gap: parse(cs.rowGap || cs.gap),
+            gap: Math.max(parse(cs.columnGap), parse(cs.rowGap)),
             paddingTop: parse(cs.paddingTop),
             paddingBottom: parse(cs.paddingBottom),
         };
@@ -105,8 +109,12 @@ test.describe('Ритм сетки HUD (#541) — mobile-390', () => {
             'top-hud-mobile-telemetry-row',
         ]) {
             const row = page.getByTestId(testId);
-            const { gap } = await rowGapPadding(row);
+            const { gap, paddingTop, paddingBottom } = await rowGapPadding(row);
             assertLegalSpacing(gap, `${testId}: gap`);
+            // Паддинги замерялись, но не проверялись: залётный `py-[10px]` проходил мимо
+            // барьера, хотя ритм ломает ровно так же, как незаконный зазор.
+            assertLegalSpacing(paddingTop, `${testId}: padding-top`);
+            assertLegalSpacing(paddingBottom, `${testId}: padding-bottom`);
         }
 
         const container = await rowGapPadding(page.getByTestId('top-hud-mobile'));

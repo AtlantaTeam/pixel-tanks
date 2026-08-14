@@ -1,3 +1,9 @@
+// Клиентский: вспышка попадания живёт состоянием и таймером (см. `HpTrack`). До #549
+// компонент был чисто презентационным и рендерился на сервере — стал stateful, значит
+// директива обязательна, иначе сборка падает на серверной ветке `replay-page`.
+'use client';
+
+import { useEffect, useState } from 'react';
 import { clsx } from 'clsx';
 import type { TFaction } from '@/shared/lib/theme';
 import { Icon } from '../icon';
@@ -22,6 +28,10 @@ type THPBarProps = {
 };
 
 const DEFAULT_HP_MAX = 100;
+/** Сколько живут классы анимации попадания. Ровно длительность самой длинной из двух
+ *  (`animate-hp-hit-flash` 200ms против `animate-hp-hit-shake` 33ms, globals.css) —
+ *  держать дольше незачем, а держать бесконечно нельзя: см. докблок в `HpTrack`. */
+const HP_HIT_ANIMATION_MS = 200;
 /** Пороги перекраски — в процентах от `max`: success > 60%, warning > 30%, иначе danger. */
 const WARNING_THRESHOLD = 60;
 const DANGER_THRESHOLD = 30;
@@ -102,6 +112,23 @@ function HpTrack({
      *  меняется → полоса спокойна. */
     hitNonce?: number;
 }) {
+    // Классы анимации живут РОВНО длительность анимации, а не «до следующего хита».
+    //
+    // Иначе они остаются на узле навсегда, а `top-hud` держит смонтированными сразу
+    // несколько составов (`md:hidden`/`xl:hidden`). В `display:none` CSS-анимация не
+    // идёт и стартует с нуля при показе: попадание на планшете → поворот экрана или
+    // ресайз через брейкпоинт → белая вспышка и сдвиг трека БЕЗ события. Игрок читает
+    // это как «в меня попали», хотя ничего не произошло.
+    // Стартовое значение, а не `setState` в эффекте: узел и так пересоздаётся на каждый
+    // хит (`key={hitNonce}` ниже), поэтому «включить» вспышку достаточно начальным значением —
+    // эффект только ГАСИТ её по таймеру.
+    const [flashing, setFlashing] = useState(hitNonce != null);
+    useEffect(() => {
+        if (hitNonce == null) return;
+        const timer = setTimeout(() => setFlashing(false), HP_HIT_ANIMATION_MS);
+        return () => clearTimeout(timer);
+    }, [hitNonce]);
+
     return (
         <div
             key={hitNonce}
@@ -112,7 +139,7 @@ function HpTrack({
             aria-valuemax={max}
             className={clsx(
                 'relative h-3 border-[length:var(--border-w)] border-border bg-surface',
-                hitNonce != null && 'animate-hp-hit-shake motion-reduce:animate-none',
+                flashing && 'animate-hp-hit-shake motion-reduce:animate-none',
                 className,
             )}
         >
@@ -121,7 +148,7 @@ function HpTrack({
                 className={clsx('h-full', hpFillClass(percent))}
                 style={{ width: `${percent}%` }}
             />
-            {hitNonce != null && (
+            {flashing && (
                 <div
                     aria-hidden
                     data-testid="hp-bar-hit-flash"

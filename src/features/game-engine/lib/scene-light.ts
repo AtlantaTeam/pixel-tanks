@@ -1,5 +1,6 @@
 import { pickCelestialGeometry, type TCelestialGeometry } from './sky-celestial';
 import { pickSkyPreset, type TSkyPreset, type TSkyPresetId } from './sky-preset';
+import { ENGINE_COLORS } from './engine-palette';
 
 /**
  * Свет от светила (#545): направление света, тень танка, подсветка кромок и тонировка
@@ -56,10 +57,16 @@ export type TGroundTintLayer = { color: string; alpha: number };
 export const GROUND_TINT: Record<TSkyPresetId, readonly TGroundTintLayer[]> = {
     day: [],
     sunset: [
+        // Красно-оранжевый вечера — свой цвет сцены, в палитре UI его нет.
         { color: '#d9713e', alpha: 0.3 },
-        { color: '#c900ff', alpha: 0.08 },
+        // Маджента тени — ТОТ ЖЕ токен, что вражеская разметка канваса: берём из
+        // `ENGINE_COLORS`, а не третьей копией hex. Копии расходятся молча — палитру
+        // перетюнят, трасса бота поедет за токеном, а тень заката останется прежней.
+        { color: ENGINE_COLORS.enemy, alpha: 0.08 },
     ],
-    night: [{ color: '#101711', alpha: 0.3 }],
+    // Тёмный сине-зелёный ночи — поверхность UI (`--color-surface`): та же подложка,
+    // что у панелей, и сверяется с globals.css тем же тестом палитры.
+    night: [{ color: ENGINE_COLORS.surface, alpha: 0.3 }],
 };
 
 /** Цвет RGB (0..255) как тройка чисел — промежуточное представление для композита/ΔE. */

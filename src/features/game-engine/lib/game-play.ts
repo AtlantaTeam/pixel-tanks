@@ -172,6 +172,19 @@ export type TGamePlayOptions = {
      * тестами/реплеем, которые сид не передают.
      */
     seed?: number | string;
+    /**
+     * Погода боя (#546/#547): пресет осадков от сида и его модификаторы ветра — снег
+     * домножает ветер на 4/3, буря разворачивает его после третьего выстрела.
+     *
+     * `false` — вести бой БЕЗ модификаторов. Нужно реплею записей прошлых эпох: погоды
+     * тогда не существовало, а выводится она из сида безусловно, поэтому воспроизведение
+     * старой записи по новым правилам дало бы другой ветер, другие траектории и другой
+     * исход примерно у четверти записей (снег и буря — ~27% сидов). Признак эпохи несёт
+     * версия формата: `TReplay.weather` (v5 и выше).
+     *
+     * По умолчанию `true` — живой бой всегда с погодой.
+     */
+    weather?: boolean;
 };
 
 const GAME_ASSET_PATHS = {
@@ -342,8 +355,12 @@ export class GamePlay {
         this.leftSkinId = options?.leftSkinId ?? DEFAULT_TANK_SKIN_ID;
         this.rightSkinId = options?.rightSkinId ?? DEFAULT_TANK_SKIN_ID;
         this.sceneLight = options?.seed !== undefined ? computeSceneLight(options.seed) : undefined;
+        // `weather: false` (реплей записи до #546/#547) — пресета нет вовсе, значит нет и
+        // модификаторов: `weatherModifierFor(undefined)` отдаёт нейтральный.
         this.precipPreset =
-            options?.seed !== undefined ? pickPrecipPreset(options.seed) : undefined;
+            options?.weather !== false && options?.seed !== undefined
+                ? pickPrecipPreset(options.seed)
+                : undefined;
         this.weatherModifier = weatherModifierFor(this.precipPreset?.id);
         this.seed = options?.seed;
         // Косметика (частицы, тряска) — на ОТДЕЛЬНОМ потоке random: CameraShake
@@ -1116,6 +1133,11 @@ export class GamePlay {
     private maybeShiftStormWind() {
         if (this.stormWind === undefined || this.stormWindShifted) return;
         if (this.completedShots < STORM_WIND_SHIFT_AFTER_SHOTS) return;
+        // Бой уже кончился этим же выстрелом — смены не объявляем: плашка «Буря сменила
+        // ветер» выехала бы поверх экрана результата, сообщая о ветре, которым уже некому
+        // пользоваться. Порядок вызовов делает это возможным: счётчик выстрелов растёт в
+        // конце разрешения снаряда, а `isOver` к этому моменту уже выставлен добиванием.
+        if (this.isOver) return;
         this.stormWindShifted = true;
         this.wind = this.stormWind;
         this.callbacks.onWindChange?.(this.wind);

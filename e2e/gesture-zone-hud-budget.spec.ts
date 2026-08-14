@@ -68,6 +68,18 @@ test.describe('Высота HUD на планшете (768) в бюджете', 
  *  `aim-preview-viewports.spec.ts`, но со стартовой точкой в АБСОЛЮТНЫХ
  *  координатах страницы (а не в долях от канваса) — нужно, чтобы прицельно
  *  стартовать оттяжку в конкретной строке пикселей верхней части арены. */
+/**
+ * Оттяжка синтетическими pointer-событиями на канвасе.
+ *
+ * ВАЖНО, чего эта функция НЕ проверяет: `dispatchEvent` доставляет событие адресату
+ * напрямую, минуя браузерный hit-testing — накрой панель HUD эту точку, событие всё
+ * равно придёт на канвас. Поэтому перекрытие проверяется ОТДЕЛЬНО, ассертом
+ * `expectPointHitsCanvas` ниже, и без него тест не доказывает своего заголовка.
+ *
+ * Реальный `page.mouse` здесь не годится: движок принимает жест-рогатку только от
+ * touch/pen, мышь идёт своей схемой (движение — угол, клик — выстрел), см.
+ * `game-canvas.tsx`. А `page.touchscreen` умеет только `tap` — оттяжки в API нет.
+ */
 async function holdDragAt(
     page: Page,
     start: { x: number; y: number },
@@ -92,6 +104,23 @@ async function holdDragAt(
             );
         },
         { start, end },
+    );
+}
+
+/**
+ * Палец в этой точке попадёт В КАНВАС, а не в панель — по настоящему hit-testing'у
+ * браузера (`elementFromPoint`), с учётом абсолютных детей HUD, вылезающих за бокс
+ * родителя. Это и есть критерий #538, который синтетический жест проверить не может.
+ */
+async function expectPointHitsCanvas(page: Page, point: { x: number; y: number }): Promise<void> {
+    const hit = await page.evaluate(({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        if (!el) return 'ничего';
+        const cls = el.getAttribute('class') ?? '';
+        return `${el.tagName}${cls ? `.${cls.split(' ').slice(0, 2).join('.')}` : ''}`;
+    }, point);
+    expect(hit, `точка (${point.x}, ${point.y}) обязана попадать в канвас, а не в HUD`).toContain(
+        'CANVAS',
     );
 }
 
@@ -121,6 +150,9 @@ test.describe('Оттяжка у верха арены на планшете (76
 
         const startX = zoneBox.x + zoneBox.width / 2;
         const startY = zoneBox.y + 10;
+        // Сначала — что палец сюда вообще доходит (панель не перекрывает), потом — что
+        // движок принял жест. Порознь ни то, ни другое критерия #538 не доказывает.
+        await expectPointHitsCanvas(page, { x: startX, y: startY });
         await holdDragAt(page, { x: startX, y: startY }, { x: startX - 60, y: startY + 60 });
 
         await expect(page.getByText('ОТПУСТИ — ВЫСТРЕЛ')).toBeVisible();

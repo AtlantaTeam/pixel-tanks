@@ -239,8 +239,9 @@ describe('детерминизм реплея: сериализованный б
         ]);
         const decoded = decodeReplay(encodeReplay(mixed));
         expect(decoded).not.toBeNull();
-        // Типы каждого выстрела переживают сериализацию бит-в-бит.
-        expect(decoded).toEqual(mixed);
+        // Типы каждого выстрела переживают сериализацию бит-в-бит. `weather: true` —
+        // признак эпохи из версии формата (v5), в исходном объекте его нет.
+        expect(decoded).toEqual({ ...mixed, weather: true });
         expect(simulateBattleHp(decoded!)).toEqual(simulateBattleHp(mixed));
     });
 

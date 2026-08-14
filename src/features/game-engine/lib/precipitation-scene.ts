@@ -42,7 +42,7 @@ export class Precipitation {
     readonly preset: TPrecipPreset;
     private readonly reducedMotion: boolean;
     /** Ветер, нормированный в [-1, 1]: знак — сторона сноса, модуль — сила. */
-    private readonly windNorm: number;
+    private windNorm: number;
     private readonly seed: number | string;
     private field: TPrecipParticle[];
     /** Накопленное время сцены, мс. Позиция частицы = старт + скорость × elapsed. */
@@ -75,6 +75,25 @@ export class Precipitation {
     /** Гашение на прицеливании: `gestureVisual !== null` (тот же сигнал, что у #527). */
     setDimmed(dimmed: boolean): void {
         this.dimmed = dimmed;
+    }
+
+    /**
+     * Есть ли что анимировать: при пресете `clear` поле частиц пусто (~60% боёв), при
+     * `reduced-motion` частицы не рисуются вовсе. В обоих случаях rAF крутил бы весь
+     * бой пустой `clearRect` 60 раз в секунду.
+     */
+    get animated(): boolean {
+        return this.field.length > 0 && !this.reducedMotion;
+    }
+
+    /**
+     * Новый ветер боя БЕЗ пересборки сцены (#547). Буря меняет ветер в середине боя, и
+     * если бы слой пересоздавался, поле частиц скачком вернулось бы к t=0 — ровно в тот
+     * кадр, когда игрок читает плашку «Буря сменила ветер». Частицы уже считают снос
+     * покадрово, поэтому достаточно подменить нормированное значение.
+     */
+    setWind(wind: number): void {
+        this.windNorm = precipWindNorm(wind);
     }
 
     /**

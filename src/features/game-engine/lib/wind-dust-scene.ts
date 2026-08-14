@@ -41,7 +41,7 @@ const NIGHT_EDGE_COLOR = edgeHighlightColor(pickSkyPresetById('night'));
  */
 export class WindDust {
     private readonly field: TWindDustParticle[];
-    private readonly driftNorm: number;
+    private driftNorm: number;
     private readonly isNight: boolean;
     private readonly reducedMotion: boolean;
     /** Накопленное время сцены, мс. Позиция частицы = старт + скорость × elapsed. */
@@ -59,6 +59,21 @@ export class WindDust {
     /** Поле частиц — для тестов детерминизма/плотности. */
     dustField(): readonly TWindDustParticle[] {
         return this.field;
+    }
+
+    /**
+     * Есть ли что анимировать. Ночью слой рисует статичную кайму, в штиль — ничего,
+     * при `reduced-motion` — тоже ничего: во всех трёх случаях rAF крутил бы пустой
+     * `clearRect` 60 раз в секунду весь бой (правило `.claude/rules/canvas.md` —
+     * «статичные слои перерисовываются только при изменении»).
+     */
+    get animated(): boolean {
+        return this.field.length > 0 && !this.isNight && !this.reducedMotion;
+    }
+
+    /** Новый ветер боя без пересборки поля пылинок (#547) — см. `PrecipitationScene.setWind`. */
+    setWind(wind: number): void {
+        this.driftNorm = precipWindNorm(wind);
     }
 
     update(dt: number): void {

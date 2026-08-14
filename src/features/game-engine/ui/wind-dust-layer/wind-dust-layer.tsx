@@ -50,6 +50,15 @@ export const WindDustLayer = ({
     className,
 }: TWindDustLayerProps) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    // Ветер меняется бурей посреди боя (#547) — сцену за этим не пересобираем: поле
+    // пылинок вернулось бы к стартовой раскладке скачком. Стартовое значение — из ref,
+    // дальнейшие смены доносит сеттер (тот же приём, что у слоя осадков).
+    const windRef = useRef(wind);
+    const sceneRef = useRef<WindDust | null>(null);
+    useEffect(() => {
+        windRef.current = wind;
+        sceneRef.current?.setWind(wind);
+    }, [wind]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -61,7 +70,13 @@ export const WindDustLayer = ({
         const reduced = reducedMotion ?? prefersReducedMotion();
         const resolvedSeed = seed ?? 'default';
         const isNight = (preset ?? pickSkyPreset(resolvedSeed).id) === 'night';
-        const scene = new WindDust({ seed: resolvedSeed, wind, isNight, reducedMotion: reduced });
+        const scene = new WindDust({
+            seed: resolvedSeed,
+            wind: windRef.current,
+            isNight,
+            reducedMotion: reduced,
+        });
+        sceneRef.current = scene;
 
         let rafId = 0;
         let lastTs = 0;
@@ -87,8 +102,10 @@ export const WindDustLayer = ({
             lastTs = ts;
             scene.update(dt);
             scene.draw(ctx);
-            // reduced-motion: движения нет — после первого кадра петля не нужна.
-            if (reduced) return;
+            // Анимировать нечего (штиль, ночная кайма, reduced-motion) — рисуем ОДИН
+            // кадр и выходим. Иначе петля весь бой гоняла бы `clearRect` пустого канваса
+            // 60 раз в секунду: в штиль это большинство боёв.
+            if (!scene.animated) return;
             rafId = requestAnimationFrame(frame);
         };
 
@@ -114,10 +131,11 @@ export const WindDustLayer = ({
 
         return () => {
             disposed = true;
+            sceneRef.current = null;
             cancelAnimationFrame(rafId);
             observer?.disconnect();
         };
-    }, [seed, wind, preset, snapshotMs, reducedMotion]);
+    }, [seed, preset, snapshotMs, reducedMotion]);
 
     return (
         <canvas

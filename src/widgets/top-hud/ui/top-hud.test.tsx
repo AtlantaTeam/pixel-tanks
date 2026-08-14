@@ -371,6 +371,33 @@ describe('TopHud', () => {
         );
     });
 
+    it('смену ветра бурей озвучивает живой регион, а не плашка на арене (#547)', () => {
+        // Плашка `WindShiftBanner` монтируется на каждый показ (`key={nonce}`), а
+        // появление узла скринридеры молчат — озвучивается смена содержимого уже
+        // существующего live-region. Поэтому анонс живёт в HUD и смонтирован всегда.
+        useGameStore.setState({ wind: 0.03, windShiftNonce: 0 });
+        const { getByTestId, rerender } = render(<TopHud />);
+
+        const live = getByTestId('wind-shift-live');
+        expect(live).toHaveAttribute('aria-live', 'polite');
+        expect(live).toBeEmptyDOMElement();
+
+        // Буря сменила ветер: тот же узел наполняется текстом с НАПРАВЛЕНИЕМ — до #547
+        // направление вообще не попадало в дерево доступности (стрелка декоративна).
+        useGameStore.setState({ wind: -0.03, windShiftNonce: 1 });
+        rerender(<TopHud />);
+        expect(getByTestId('wind-shift-live')).toHaveTextContent(/Буря сменила ветер.*влево/);
+    });
+
+    it('ячейка ветра отдаёт направление и силу текстом (#547, a11y)', () => {
+        useGameStore.setState({ wind: -0.03, windRevealed: true });
+        const { getAllByRole } = render(<TopHud />);
+
+        const groups = getAllByRole('group', { name: /Ветер/ });
+        expect(groups.length).toBeGreaterThan(0);
+        expect(groups[0]).toHaveAccessibleName(/Ветер влево, сила \d+ из \d+/);
+    });
+
     // #447 — геометрия HUD не зависит ни от фазы боя, ни от значений.
 
     it('заметку о заморозке выводит из потока — absolute-оверлеем, не рядом (высота не растёт)', () => {
@@ -505,19 +532,17 @@ describe('TopHud', () => {
     });
 });
 
-// #537 — клип HUD на 320px: telemetry row переполняется, ячейка ресурсов вытолкнута,
+// #537 — клип HUD на 320px: ряд телеметрии переполняется, ячейка ресурсов вытолкнута,
 // кнопка паузы срезана. Решение: сжимать элементы по порядку приоритета.
-it('на 320px весь HUD влезает без горизонтального переполнения', () => {
-    // Мимикрируем 320px viewport: контейнер mobile width: 300 (320 - 20px padding)
-    const { getByTestId } = render(<TopHud />);
-    const mobile = getByTestId('top-hud-mobile') as HTMLElement;
-
-    // Все 3 ряда должны иметь scrollWidth <= clientWidth (без горизонтального overflow)
-    const rows = mobile.querySelectorAll(':scope > .flex');
-    rows.forEach((row) => {
-        // Допускаем 1px разницу из-за субпиксельного рендера
-        expect((row as HTMLElement).scrollWidth).toBeLessThanOrEqual(
-            (row as HTMLElement).clientWidth + 1,
-        );
-    });
-});
+//
+// ЗДЕСЬ ЭТОГО ТЕСТА НЕТ НАМЕРЕННО. Стоявшая на этом месте проверка
+// `scrollWidth <= clientWidth + 1` в happy-dom не могла упасть никогда: раскладка не
+// считается, обе величины равны нулю, и ассерт сводился к `0 <= 1`. Комментарий обещал
+// «мимикрируем 320px viewport», но ширина нигде не задавалась, а выборка
+// `querySelectorAll(':scope > .flex')` при смене класса рядов молча давала пустой список —
+// то есть барьер был фальшивым дважды.
+//
+// Переполнение — свойство РАСКЛАДКИ, и проверяется там, где она есть: в браузере.
+// Сторожит `e2e/mobile-viewport.spec.ts` — пара тестов на 320 и 390: на 320 панель влезает
+// и второстепенное схлопнуто, на 390 схлопнутое возвращается. Дублировать это здесь
+// нечем: любая проверка ширины в happy-dom будет ровно такой же тавтологией.

@@ -56,6 +56,17 @@ export const PrecipitationLayer = ({
     useEffect(() => {
         dimmedRef.current = dimmed;
     }, [dimmed]);
+    // Ветер боя МЕНЯЕТСЯ в середине боя (буря, #547) — и это не повод пересобирать сцену.
+    // Пересборка вернула бы поле частиц к t=0 ровно в тот кадр, когда игрок читает плашку
+    // «Буря сменила ветер»: осадки скачком телепортируются, вместо того чтобы сменить
+    // наклон. Поэтому ветер живёт в ref (стартовое значение) и доносится сеттером —
+    // тот же приём, что уже применён к `dimmed` выше.
+    const windRef = useRef(wind);
+    const sceneRef = useRef<Precipitation | null>(null);
+    useEffect(() => {
+        windRef.current = wind;
+        sceneRef.current?.setWind(wind ?? 0);
+    }, [wind]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -68,10 +79,11 @@ export const PrecipitationLayer = ({
         const resolvedSeed = seed ?? 'default';
         const scene = new Precipitation({
             seed: resolvedSeed,
-            wind,
+            wind: windRef.current,
             reducedMotion: reduced,
             preset,
         });
+        sceneRef.current = scene;
 
         let rafId = 0;
         let lastTs = 0;
@@ -98,8 +110,9 @@ export const PrecipitationLayer = ({
             scene.setDimmed(dimmedRef.current);
             scene.update(dt);
             scene.draw(ctx);
-            // reduced-motion: частиц нет — после первого кадра петля не нужна.
-            if (reduced) return;
+            // Анимировать нечего (пресет «ясно» — ~60% боёв, либо reduced-motion) —
+            // один кадр и выход, вместо холостого `clearRect` 60 раз в секунду.
+            if (!scene.animated) return;
             rafId = requestAnimationFrame(frame);
         };
 
@@ -126,10 +139,11 @@ export const PrecipitationLayer = ({
 
         return () => {
             disposed = true;
+            sceneRef.current = null;
             cancelAnimationFrame(rafId);
             observer?.disconnect();
         };
-    }, [seed, wind, preset, reducedMotion, snapshotMs]);
+    }, [seed, preset, reducedMotion, snapshotMs]);
 
     return (
         <canvas

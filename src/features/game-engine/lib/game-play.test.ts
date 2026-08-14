@@ -421,3 +421,58 @@ describe('GamePlay — призрачная трасса прошлого выс
         expect(gamePlay.ownGhostTrail.isActive).toBe(true);
     });
 });
+
+/**
+ * Погодный путь САМОГО движка (#546/#547 + разбор ревью PR !560).
+ *
+ * Раньше погоду сторожил только `weather-replay-determinism.test.ts` — а он гоняет
+ * рукописную КОПИЮ оркестровки (`simulateWeatherBattleHp`), не `GamePlay`. Проверено
+ * мутацией: убери из движка `applyWindModifier` — весь сьют оставался зелёным, потому
+ * что ни один тест не создавал `GamePlay` с сидом, и погодная ветка была мертва.
+ *
+ * Здесь ветер читается с движка после `initPaint`: это единственное место, где
+ * множитель реально применяется к бою.
+ */
+describe('GamePlay — ветер с поправкой погоды', () => {
+    /** Сиды подобраны по `pickPrecipPreset`: у них устойчивый пресет. */
+    const SNOW_SEED = 's12';
+    const CLEAR_SEED = 's0';
+
+    const windOf = (options: { seed?: number | string; weather?: boolean }): number => {
+        const random = createSeededRandom(1);
+        const game = new GamePlay(
+            { current: null },
+            { leftTankWeapons: [WEAPON], rightTankWeapons: [WEAPON] },
+            {
+                onTankHit: vi.fn(),
+                onGameOverCheck: vi.fn(),
+                onMovesChange: vi.fn(),
+                onPowerChange: vi.fn(),
+                onBotReply: vi.fn(),
+                onTurnChange: vi.fn(),
+                onShotStart: vi.fn(),
+                onShotEnd: vi.fn(),
+            },
+            random,
+            createSeededRandom(2),
+            { fixedLogicalSize: { width: WIDTH, height: HEIGHT }, ...options },
+        );
+        game.initPaint();
+        return game.wind;
+    };
+
+    it('снег домножает ветер боя — множитель применяет движок, а не только хелпер', () => {
+        const snow = windOf({ seed: SNOW_SEED });
+        const clear = windOf({ seed: CLEAR_SEED });
+        // Оба сида дают свой рельеф и свой базовый ветер, поэтому сравниваем не числа, а
+        // отношение к бою БЕЗ погоды на том же сиде: на снегу оно обязано быть 4/3.
+        expect(snow / windOf({ seed: SNOW_SEED, weather: false })).toBeCloseTo(4 / 3, 10);
+        expect(clear / windOf({ seed: CLEAR_SEED, weather: false })).toBeCloseTo(1, 10);
+    });
+
+    it('weather:false отключает погоду целиком — реплей старой записи идёт как записан', () => {
+        // Ровно то, ради чего заведена версия формата v5: запись прошлой эпохи
+        // воспроизводится с тем ветром, что был при записи, а не с сегодняшним.
+        expect(windOf({ seed: SNOW_SEED, weather: false })).toBe(windOf({}));
+    });
+});

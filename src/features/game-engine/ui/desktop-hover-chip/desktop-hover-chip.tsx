@@ -32,6 +32,9 @@ export function DesktopHoverChip({ visual }: TDesktopHoverChipProps) {
     return (
         <div
             data-testid="desktop-hover-chip"
+            // Дублирует ячейки «Угол» и «Сила» верхнего HUD — для скринридера это шум:
+            // те же числа он уже прочитал там, где они живут постоянно.
+            aria-hidden
             className="pointer-events-none absolute"
             style={{
                 left: chipCenterX,

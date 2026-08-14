@@ -14,6 +14,9 @@ export const ENGINE_COLORS = {
     // в canvas — зеркалит `--color-enemy` из globals.css.
     enemy: '#c900ff',
     danger: '#ff4242',
+    // Тонировка земли ночью (#545, `GROUND_TINT`) — `--color-surface`: та же тёмная
+    // подложка, что у панелей UI. Здесь, а не третьей копией hex в `scene-light.ts`.
+    surface: '#101711',
     // Нейтральная линия земли демо-канваса витрины (issue #496, `TankWheelDemo`) —
     // `--color-border-strong`, не «просто хардкод»: та же граница, что у остальной UI-хромы.
     borderStrong: '#3f5a41',

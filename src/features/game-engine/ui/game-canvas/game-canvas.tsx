@@ -753,7 +753,15 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 />
             )}
             {damageNumber && (
-                <DamageNumber hit={damageNumber} onExpire={() => setDamageNumber(null)} />
+                <DamageNumber
+                    // Ключ по координатам и урону попадания: без него повторный хит в
+                    // живом инстансе не перезапустил бы CSS-анимацию всплытия — число
+                    // молча повисло бы на прежней фазе. Тот же приём, что `key={nonce}`
+                    // у трека HP и плашки смены ветра.
+                    key={`${damageNumber.x}:${damageNumber.y}:${damageNumber.amount}`}
+                    hit={damageNumber}
+                    onExpire={() => setDamageNumber(null)}
+                />
             )}
         </div>
     );

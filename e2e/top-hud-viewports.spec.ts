@@ -43,7 +43,7 @@ for (const viewport of VIEWPORTS) {
         // (`scrollWidth > clientWidth`), а не сравнение текста: прежний ассерт
         // `not.toContain('…')` не мог упасть никогда и был зелёным на 390, где ник
         // визуально обрезан ровно так, как #540 и запрещает на больших экранах.
-        test('ник не усекается на больших экранах (#540)', async ({ page }) => {
+        test('усечение ника соответствует брейкпоинту (#540, на 768 — #561)', async ({ page }) => {
             await page.goto('/game?seed=42');
 
             const hud = page.getByTestId('top-hud');

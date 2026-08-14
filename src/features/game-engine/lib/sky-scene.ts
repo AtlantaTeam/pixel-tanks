@@ -61,7 +61,7 @@ export class SkyScene {
     private readonly createCanvas: () => HTMLCanvasElement;
     private readonly seed: number | string;
     /** Множитель скорости и направления от ветра боя (#518). */
-    private readonly wind: number;
+    private wind: number;
     private field: TCloudInstance[];
     /** Положение/размер солнца-луны — фиксируются сидом один раз, не зависят от ресайза. */
     private readonly celestial: TCelestialGeometry;
@@ -140,6 +140,12 @@ export class SkyScene {
      * `старт + скорость × elapsed`, поэтому дрейфа между облаками не накапливается,
      * а каждое по-прежнему едет со своей скоростью.
      */
+    /** Новый ветер боя без пересборки поля облаков (#547): иначе смена ветра бурей
+     *  телепортировала бы облака в стартовые позиции сида посреди боя. */
+    setWind(wind: number): void {
+        this.wind = windFactor(wind);
+    }
+
     update(dt: number): void {
         if (this.reducedMotion || dt <= 0) return;
         this.elapsed += dt;

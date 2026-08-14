@@ -4,6 +4,7 @@ import { pickSkyPreset, SKY_PRESETS, type TSkyPresetId } from './sky-preset';
 import {
     applyGroundTint,
     ARENA_CENTER,
+    GROUND_TINT,
     BASE_SAND_RGB,
     computeLightDirection,
     computeSceneLight,
@@ -118,10 +119,11 @@ describe('computeSceneLight — детерминизм и связь с небо
         for (let seed = 0; seed < 20; seed++) {
             const light = computeSceneLight(seed);
             expect(light.edgeColor).toBe(edgeHighlightColor(light.preset));
-            expect(light.groundTint).toBe(
-                // тонировка — та же ссылка, что в GROUND_TINT по id пресета
-                computeSceneLight(seed).groundTint,
-            );
+            // Сверка со СПРАВОЧНИКОМ по id пресета. Раньше здесь стояло
+            // `toBe(computeSceneLight(seed).groundTint)` — сравнение значения с самим
+            // собой: тест проходил бы и при сломанном маппинге (например, если бы всякий
+            // сид получал тонировку дня).
+            expect(light.groundTint).toBe(GROUND_TINT[light.preset.id]);
         }
     });
 });

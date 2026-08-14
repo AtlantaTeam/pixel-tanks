@@ -33,7 +33,9 @@ describe('buildReplaySharePayload', () => {
         });
         const code = url.split('/replay/')[1];
 
-        expect(decodeReplay(code)).toEqual({ seed, width, height, moves });
+        // `weather: true` — признак эпохи из версии формата (v5, #546/#547): новая
+        // запись всегда идёт с погодой, старые ссылки (v2–v4) декодируются с `false`.
+        expect(decodeReplay(code)).toEqual({ seed, width, height, moves, weather: true });
     });
 
     it('прокидывает инсеты safe-зоны в ссылку (декодируются обратно)', () => {

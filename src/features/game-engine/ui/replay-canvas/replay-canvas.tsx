@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { createSeededRandom } from '@/shared/lib/random';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
+import { SkyBackground } from '../sky-background';
+import { PrecipitationLayer } from '../precipitation-layer';
 import type { TReplay } from '@/entities/replays';
 import { getStoredTankSkinId, selectTankSkinForSeed } from '@/entities/tank-skins';
 import { useGameStore } from '../../model/game.store';
@@ -93,6 +95,12 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
                 // Сид записи — модели света сцены (#545): реплей показывает то же
                 // время суток (тень, тонировка), что и живой бой того же сида.
                 seed: replay.seed,
+                // Погода — ТОЛЬКО у записей своей эпохи (#546/#547, формат v5). Сид один и
+                // тот же, поэтому без флага снег и буря применились бы и к старым записям:
+                // ветер ×4/3 или его разворот после третьего выстрела — другие траектории,
+                // другой HP, на несчастливом сиде другой победитель. Реплей обязан
+                // показывать записанный бой, а не сегодняшние правила поверх него.
+                weather: replay.weather === true,
             },
         );
         // Инсеты safe-зоны записи — ДО генерации рельефа (loadImages → initPaint):
@@ -139,13 +147,31 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
 
     return (
         <>
+            {/* Небо того же сида, что у боя (#545): без него реплей показывал СЛЕДСТВИЯ
+                света — тень танков и тонировку рельефа от светила, которого на экране нет.
+                `reducedMotion` — облака статичны: реплей и так проигрывается по записи, а
+                живой параллакс в нём только отвлекал бы от разбора выстрелов. */}
+            <SkyBackground
+                seed={replay.seed}
+                reducedMotion
+                className="pointer-events-none absolute inset-0"
+            />
             {/* Ввод не обрабатывается: реплей смотрят, а не играют. Бэкинг-стор
                 canvas — фиксированного логического размера боя; object-contain
                 вписывает его в экран, сохраняя пропорции поля (см. fixedLogicalSize). */}
             <canvas
                 ref={canvasRef}
-                className="game-canvas mx-auto block h-full w-full object-contain bg-bg"
+                className="game-canvas relative mx-auto block h-full w-full object-contain"
             />
+            {/* Осадки — ТОЛЬКО у записей своей эпохи (v5, см. `weather` выше): иначе на
+                старой записи шёл бы снег, которого в том бою не было, а «размокшие»
+                воронки в рельефе оставались бы необъяснёнными. */}
+            {replay.weather === true && (
+                <PrecipitationLayer
+                    seed={replay.seed}
+                    className="pointer-events-none absolute inset-0"
+                />
+            )}
             {botBubble && (
                 <ChatBubble
                     reply={botBubble.reply}

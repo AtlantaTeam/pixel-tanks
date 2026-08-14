@@ -16,8 +16,10 @@ import { SkyBackground, WindDustLayer } from '@/features/game-engine';
 const CARDS = [
     { id: 'calm', name: 'Штиль', wind: 0, preset: 'day' as const },
     { id: 'light', name: 'Слабый ветер', wind: 0.004, preset: 'day' as const },
-    { id: 'strong', name: 'Сильный ветер', wind: 0.012, preset: 'day' as const },
-    { id: 'night', name: 'Ночь — кайма песка', wind: 0.012, preset: 'night' as const },
+    // MAX_WIND = 0.01 — витрина обязана показывать достижимое в бою: 0.012 давало бы
+    // «сильный ветер», которого в игре не бывает.
+    { id: 'strong', name: 'Сильный ветер', wind: 0.01, preset: 'day' as const },
+    { id: 'night', name: 'Ночь — кайма песка', wind: 0.01, preset: 'night' as const },
 ];
 
 /** Время кадра: пылинки успевают разойтись от стартовой раскладки, но ещё не наматывают

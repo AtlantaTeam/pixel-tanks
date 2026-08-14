@@ -78,7 +78,13 @@ type TShot = { angle: number; power: number };
  * пресета; после `STORM_WIND_SHIFT_AFTER_SHOTS` выстрелов буря меняет ветер на
  * выведенный из сида `stormShiftedWind` — ровно так же, как движок в живом бою.
  */
-const simulateWeatherBattleHp = (seed: number | string, shots: TShot[]): THp => {
+const simulateWeatherBattleHp = (
+    seed: number | string,
+    shots: TShot[],
+    /** `skipStormShift` — тот же бой БЕЗ смены ветра бурей: контрольная сторона для
+     *  проверки, что смена вообще влияет на исход, а не только на подпись в HUD. */
+    options?: { skipStormShift?: boolean },
+): THp => {
     const preset = pickPrecipPreset(seed);
     const modifier = weatherModifierFor(preset.id);
 
@@ -86,7 +92,10 @@ const simulateWeatherBattleHp = (seed: number | string, shots: TShot[]): THp => 
     const ground = new Ground(WIDTH, HEIGHT, random, undefined);
     // Порядок расхода RNG совпадает с GamePlay.initPaint: сначала рельеф, потом ветер.
     let wind = applyWindModifier(generateWind(random), modifier);
-    const shiftWind = modifier.windShiftsMidBattle ? stormShiftedWind(seed, wind) : undefined;
+    const shiftWind =
+        modifier.windShiftsMidBattle && !options?.skipStormShift
+            ? stormShiftedWind(seed, wind)
+            : undefined;
 
     const scale = computeWorldScale(WIDTH);
     const leftX = floor(WIDTH / 4);
@@ -165,14 +174,30 @@ const SHOTS: TShot[] = [
 ];
 
 describe('детерминизм боя с погодой (#547)', () => {
-    it('снег: два прогона одного сида дают идентичный HP', () => {
+    // ВАЖНО про форму этих проверок. Прежде здесь стояло
+    // `expect(sim(seed, SHOTS)).toEqual(sim(seed, SHOTS))` — двойной вызов ЧИСТОЙ функции
+    // в одном процессе, то есть тавтология: тест был зелёным при любой реализации, включая
+    // сломанную. Детерминизм доказывается не повтором, а тем, что результат НЕ зависит от
+    // постороннего состояния и ОТЛИЧАЕТСЯ там, где погода обязана влиять.
+
+    it('снег: HP боя не зависит от порядка прогонов и мусора в общем RNG', () => {
         const seed = seedFor('snow');
-        expect(simulateWeatherBattleHp(seed, SHOTS)).toEqual(simulateWeatherBattleHp(seed, SHOTS));
+        const first = simulateWeatherBattleHp(seed, SHOTS);
+        // Между прогонами жжём глобальный RNG-поток и гоняем ЧУЖОЙ сид: если бы симуляция
+        // где-то опиралась на общий поток или на остаточное состояние, второй прогон разошёлся.
+        const noise = createSeededRandom('noise');
+        for (let i = 0; i < 50; i++) noise();
+        simulateWeatherBattleHp(seedFor('rain'), SHOTS);
+        expect(simulateWeatherBattleHp(seed, SHOTS)).toEqual(first);
     });
 
-    it('буря: два прогона одного сида (со сменой ветра в середине) дают идентичный HP', () => {
+    it('буря: смена ветра в середине боя меняет ИСХОД, а не только показания HUD', () => {
         const seed = seedFor('sandstorm');
-        expect(simulateWeatherBattleHp(seed, SHOTS)).toEqual(simulateWeatherBattleHp(seed, SHOTS));
+        const withShift = simulateWeatherBattleHp(seed, SHOTS);
+        // Тот же бой без единственного отличия — смены ветра бурей. Если HP совпадёт,
+        // значит смена ни на что не влияет, и «буря как модификатор» (#547) — декор.
+        const withoutShift = simulateWeatherBattleHp(seed, SHOTS, { skipStormShift: true });
+        expect(withShift).not.toEqual(withoutShift);
     });
 
     it('снег усиливает ветер — тот же выстрел летит по другой траектории (не декор)', () => {
