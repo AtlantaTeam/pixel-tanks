@@ -3,7 +3,7 @@ import { weaponCount } from './helpers';
 
 // Предпросмотр траектории при жесте-рогатке (issue #475): во время оттяжки на арене
 // видны дуга предпросмотра (canvas), индикатор «угол·сила» у ствола (canvas) и луч
-// натяжения с чипом (DOM-оверлей). Проверяем на канонических вьюпортах проекта
+// натяжения с кольцом пальца (DOM-оверлей). Проверяем на канонических вьюпортах проекта
 // (CLAUDE.md «Адаптив»), удерживая жест (pointerdown+move без pointerup), чтобы
 // превью оставалось на экране в момент скриншота. Seed фиксируем — рельеф и ветер
 // детерминированы (.claude/rules/canvas.md), скриншот воспроизводим.
@@ -80,8 +80,9 @@ for (const viewport of VIEWPORTS) {
             await reachPlayerAim(page);
 
             await holdDragGesture(page, SHOT);
-            // Чип оверлея — прокси того, что жест-рогатка активна и превью на экране.
-            await expect(page.getByText('ОТПУСТИ — ВЫСТРЕЛ')).toBeVisible();
+            // Оверлей жеста (луч+кольцо) — прокси того, что жест-рогатка активна и
+            // превью на экране. Чип с текстом удалён (#565), сигналим по testid.
+            await expect(page.getByTestId('gesture-overlay')).toBeVisible();
             // Кадр движка успевает отрисовать дугу и индикатор у ствола на канвасе.
             await page.waitForTimeout(200);
 
@@ -107,7 +108,7 @@ test.describe('Предпросмотр траектории — prefers-reduced
         await reachPlayerAim(page);
 
         await holdDragGesture(page, SHOT);
-        await expect(page.getByText('ОТПУСТИ — ВЫСТРЕЛ')).toBeVisible();
+        await expect(page.getByTestId('gesture-overlay')).toBeVisible();
         await page.waitForTimeout(200);
 
         await page.screenshot({

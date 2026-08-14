@@ -23,8 +23,14 @@ type TCapturedCallbacks = {
 
 // Захватываем колбэки, которые GameCanvas передаёт в GamePlay, чтобы дёрнуть
 // onBotReply без полной симуляции боя. Позиция танка бота — фиксированная.
-const { captured, BOT_TANK, LEFT_TANK } = vi.hoisted(() => ({
+const { captured, gameInstance, BOT_TANK, LEFT_TANK } = vi.hoisted(() => ({
     captured: { current: null as TCapturedCallbacks | null },
+    gameInstance: {
+        current: null as {
+            setBarrelReadoutVisible: ReturnType<typeof vi.fn>;
+            isFireMode: boolean;
+        } | null,
+    },
     BOT_TANK: { x: 200, tankWidth: 40, y: 150, tankHeight: 30 },
     LEFT_TANK: {
         isActive: true,
@@ -43,6 +49,7 @@ vi.mock('../../lib/game-play', () => ({
         isMoveMode = false;
         isOver = false;
         showAimPreview = false;
+        showBarrelReadout = false;
         ctx = {} as CanvasRenderingContext2D;
         onFire = vi.fn();
         activateMode = vi.fn();
@@ -50,8 +57,10 @@ vi.mock('../../lib/game-play', () => ({
         setArenaInsets = vi.fn();
         getActiveAndTargetTanks = () => [LEFT_TANK, BOT_TANK];
         setAimPreviewVisible = vi.fn();
+        setBarrelReadoutVisible = vi.fn();
         constructor(..._args: unknown[]) {
             captured.current = _args[2] as TCapturedCallbacks;
+            gameInstance.current = this;
         }
         loadImages() {}
         destroy() {}
@@ -280,121 +289,117 @@ describe('GameCanvas', () => {
         });
     });
 
-    // Desktop hover chip (#544): чип наведения мышью у ствола танка
-    describe('desktop hover chip', () => {
-        it('показывает чип при наведении мышью на canvas (mouse поинтер)', () => {
+    // Подпись «угол·сила» у ствола при наведении мышью (#565): вместо DOM-чипа
+    // в небе движок рисует ту же canvas-подпись, что при жесте, только без дуги.
+    // Управляется флагом `setBarrelReadoutVisible` — его и проверяем.
+    describe('desktop hover — подпись у ствола (#565)', () => {
+        it('включает подпись у ствола при наведении мышью (mouse поинтер)', () => {
             useGameStore.getState().resetGame();
             useGameStore.setState({ angle: 0.5, power: 12 });
-            const { queryByTestId } = render(<GameCanvas seed={42} />);
+            render(<GameCanvas seed={42} />);
             const canvas = document.querySelector('.game-canvas') as HTMLCanvasElement;
+            const setReadout = gameInstance.current!.setBarrelReadoutVisible;
+            setReadout.mockClear();
 
-            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
+            act(() => {
+                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
+            });
+
+            expect(setReadout).toHaveBeenCalledWith(true);
+        });
+
+        it('гасит подпись при наведении во время выстрела (isFireMode)', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ angle: 0.5, power: 12 });
+            const { container } = render(<GameCanvas seed={42} />);
+            const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
+            const game = gameInstance.current!;
+            game.isFireMode = true;
+            const setReadout = game.setBarrelReadoutVisible;
+            setReadout.mockClear();
 
             act(() => {
                 fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
             });
 
-            expect(queryByTestId('desktop-hover-chip')).toBeInTheDocument();
+            expect(setReadout).toHaveBeenCalledWith(false);
         });
 
-        it('скрывает чип при наведении во время выстрела (isFireMode)', () => {
+        it('гасит подпись при mouseLeave', () => {
             useGameStore.getState().resetGame();
             useGameStore.setState({ angle: 0.5, power: 12 });
-            const { queryByTestId, container } = render(<GameCanvas seed={42} />);
+            const { container } = render(<GameCanvas seed={42} />);
             const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
-
-            act(() => {
-                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
-            });
-            expect(queryByTestId('desktop-hover-chip')).toBeInTheDocument();
-
-            // Имитируем выстрел (isFireMode = true)
-            act(() => {
-                useGameStore.setState({ phase: 'flight' });
-            });
-
-            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
-        });
-
-        it('не показывает чип при non-mouse поинтере (touch/pen)', () => {
-            useGameStore.getState().resetGame();
-            useGameStore.setState({ angle: 0.5, power: 12 });
-            const { queryByTestId, container } = render(<GameCanvas seed={42} />);
-            const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
-
-            // Тач-событие
-            act(() => {
-                fireEvent.pointerMove(canvas, {
-                    clientX: 100,
-                    clientY: 100,
-                    pointerType: 'touch',
-                });
-            });
-
-            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
-        });
-
-        it('скрывает чип при mouseLeave', () => {
-            useGameStore.getState().resetGame();
-            useGameStore.setState({ angle: 0.5, power: 12 });
-            const { queryByTestId, container } = render(<GameCanvas seed={42} />);
-            const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
-
-            act(() => {
-                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
-            });
-            expect(queryByTestId('desktop-hover-chip')).toBeInTheDocument();
+            const setReadout = gameInstance.current!.setBarrelReadoutVisible;
+            setReadout.mockClear();
 
             act(() => {
                 fireEvent.mouseLeave(canvas);
             });
 
-            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
+            expect(setReadout).toHaveBeenCalledWith(false);
         });
 
-        it('отображает текущий угол и силу из стора', () => {
-            useGameStore.getState().resetGame();
-            useGameStore.setState({ power: 50 });
-            const { queryByTestId, container } = render(<GameCanvas seed={42} />);
-            const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
-
-            act(() => {
-                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
-            });
-
-            const chip = queryByTestId('desktop-hover-chip');
-            expect(chip).toBeInTheDocument();
-            // Проверяем наличие °, означает что есть угол
-            expect(chip?.textContent).toMatch(/°/);
-            // Чип должен содержать какие-то числа (угол и силу), по крайней мере одно число
-            expect(chip?.textContent).toMatch(/\d/);
-        });
-
-        it('скрывает чип при выстреле (onClick)', () => {
+        it('гасит подпись при переходе в фазу полёта (снаряд летит — целиться нечем)', () => {
             useGameStore.getState().resetGame();
             useGameStore.setState({ angle: 0.5, power: 12 });
+            render(<GameCanvas seed={42} />);
+            const setReadout = gameInstance.current!.setBarrelReadoutVisible;
+            setReadout.mockClear();
+
+            act(() => {
+                useGameStore.setState({ phase: 'flight' });
+            });
+
+            expect(setReadout).toHaveBeenCalledWith(false);
+        });
+    });
+
+    // Разовая подсказка прицеливания (#565): обучающий текст показывается один раз
+    // и переживает перезагрузку (localStorage), вместо чипа на каждом жесте.
+    describe('разовая подсказка прицеливания (#565)', () => {
+        beforeEach(() => localStorage.clear());
+        afterEach(() => localStorage.clear());
+
+        it('показывает подсказку у верха зоны, если её ещё не видели', () => {
+            useGameStore.getState().resetGame();
+            const { queryByTestId } = render(<GameCanvas seed={42} />);
+
+            expect(queryByTestId('aim-hint')).toBeInTheDocument();
+        });
+
+        it('не показывает подсказку, если флаг уже сохранён (переживает перезагрузку)', () => {
+            localStorage.setItem('pt-aim-hint-seen', '1');
+            useGameStore.getState().resetGame();
+            const { queryByTestId } = render(<GameCanvas seed={42} />);
+
+            expect(queryByTestId('aim-hint')).not.toBeInTheDocument();
+        });
+
+        it('гасит подсказку после первого выстрела и запоминает это (клик мышью)', () => {
+            useGameStore.getState().resetGame();
             const { queryByTestId, container } = render(<GameCanvas seed={42} />);
             const canvas = container.querySelector('.game-canvas') as HTMLCanvasElement;
 
-            act(() => {
-                fireEvent.mouseMove(canvas, { clientX: 100, clientY: 100 });
-            });
-            expect(queryByTestId('desktop-hover-chip')).toBeInTheDocument();
+            expect(queryByTestId('aim-hint')).toBeInTheDocument();
 
             act(() => {
                 fireEvent.click(canvas);
             });
 
-            // Ассерт, а не обещание в комментарии: раньше тест кончался словами
-            // «фактическая проверка будет через пост-выстрел фазу», то есть клик-путь
-            // скрытия чипа не сторожил никто.
-            //
-            // Чип наведения — подсказка ПРИЦЕЛИВАНИЯ: пока снаряд летит, целиться нечем,
-            // и висящий у ствола чип показывал бы угол, который уже ни на что не влияет.
+            expect(localStorage.getItem('pt-aim-hint-seen')).toBe('1');
+            expect(queryByTestId('aim-hint')).not.toBeInTheDocument();
+        });
+
+        it('не показывает подсказку на ходе бота', () => {
+            useGameStore.getState().resetGame();
+            const { queryByTestId } = render(<GameCanvas seed={42} />);
+
             act(() => {
-                useGameStore.setState({ phase: 'flight' });
+                useGameStore.setState({ turn: 'enemy', phase: 'aiming' });
             });
-            expect(queryByTestId('desktop-hover-chip')).not.toBeInTheDocument();
+
+            expect(queryByTestId('aim-hint')).not.toBeInTheDocument();
         });
     });
 

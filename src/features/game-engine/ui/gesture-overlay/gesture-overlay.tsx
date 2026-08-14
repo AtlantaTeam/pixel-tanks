@@ -1,18 +1,21 @@
 'use client';
 
-import { clsx } from 'clsx';
-import { HUD_SURFACE, POWER_MAX } from '@/shared/config';
-import { formatAngle } from '../../lib/format-angle';
+import { POWER_MAX } from '@/shared/config';
 
 /**
  * Визуал жеста «оттяни-отпусти» (handoff «Прицеливание `aim`»): DOM/SVG-оверлей
- * поверх канваса — луч оттяжки, кольцо пальца и чип предпросмотра. Здесь, а не на
- * канвасе, потому что этим элементам нужны токены дизайн-системы и текст
- * (`var(--accent)`, `--glow`, `tabular-nums`, шрифты). Короткий сегмент направления
- * от ствола рисует движок (`game-play.drawAimPreview`) — он заякорен на стволе в
+ * поверх канваса — луч оттяжки и кольцо пальца. Здесь, а не на канвасе, потому что
+ * этим элементам нужны токены дизайн-системы (`var(--accent)`, `--glow`). Короткий
+ * сегмент направления и подпись «угол · сила» рисует движок у ствола
+ * (`game-play.drawAimPreview`/`drawBarrelReadout`) — они заякорены на стволе в
  * canvas-координатах. Все координаты здесь — ЛОКАЛЬНЫЕ (относительно контейнера
  * канваса), расчёт вынесен в чистые функции `lib/gesture-aim.ts` (рендер отделён
  * от расчёта — `.claude/rules/canvas.md`).
+ *
+ * Чип предпросмотра «угол · сила» удалён (issue #565): его числа дублировали
+ * верхнюю панель и подпись у ствола, а на мобиле в момент полной оттяжки чип
+ * ложился прямо на танк. Обучающие строки переехали в разовую подсказку
+ * (`ui/aim-hint`) у верха зоны.
  *
  * `pointer-events:none` на всех слоях — жест ловит сам канвас через pointer capture,
  * оверлей не должен перехватывать события.
@@ -23,16 +26,12 @@ export type TGestureVisual = {
     /** Точка касания (старт оттяжки) — начало луча и точка 8×8. */
     originX: number;
     originY: number;
-    /** Текущая позиция пальца — центр кольца и якорь чипа. */
+    /** Текущая позиция пальца — центр кольца. */
     fingerX: number;
     fingerY: number;
-    /** Верх чипа (уже прижат к зоне — `clampChipTop`). */
-    chipTop: number;
-    /** Горизонтальный центр чипа (уже прижат к зоне — `clampChipCenterX`). */
-    chipCenterX: number;
     angle: number;
     power: number;
-    /** Превышение максимума: луч и чип краснеют, чип показывает «МАКС». */
+    /** Превышение максимума: луч краснеет. */
     isMax: boolean;
 };
 
@@ -43,12 +42,6 @@ const RING_SIZE = 56;
 /** Толщина луча натяжения по силе (issue #475): от тонкого к жирному. */
 const TENSION_MIN_WIDTH = 2;
 const TENSION_MAX_WIDTH = 7;
-/**
- * Фиксированная ширина чипа (px). Совпадает с `CHIP_WIDTH` в `game-canvas`
- * (`clampChipCenterX`): чип центрируется над пальцем, поэтому клэмп должен знать
- * его ровную ширину, иначе край уезжает за зону (горизонтальное переполнение).
- */
-export const CHIP_WIDTH = 200;
 
 type TGestureOverlayProps = {
     visual: TGestureVisual | null;
@@ -57,9 +50,8 @@ type TGestureOverlayProps = {
 export function GestureOverlay({ visual }: TGestureOverlayProps) {
     if (!visual) return null;
 
-    const { originX, originY, fingerX, fingerY, chipTop, chipCenterX, angle, power, isMax } =
-        visual;
-    // Луч и чип краснеют при превышении максимума (handoff): семантический токен,
+    const { originX, originY, fingerX, fingerY, power, isMax } = visual;
+    // Луч краснеет при превышении максимума (handoff): семантический токен,
     // не хардкод hex.
     const strokeColor = isMax ? 'var(--color-danger)' : 'var(--color-accent)';
     // Толщина луча натяжения растёт с силой (issue #475): сильнее оттяжка — жирнее
@@ -68,7 +60,11 @@ export function GestureOverlay({ visual }: TGestureOverlayProps) {
     const tensionWidth = TENSION_MIN_WIDTH + tension * (TENSION_MAX_WIDTH - TENSION_MIN_WIDTH);
 
     return (
-        <div className="pointer-events-none absolute inset-0" aria-hidden>
+        <div
+            className="pointer-events-none absolute inset-0"
+            data-testid="gesture-overlay"
+            aria-hidden
+        >
             {/* Луч оттяжки от точки касания к пальцу + точка старта 8×8. */}
             <svg
                 className="absolute inset-0 h-full w-full overflow-visible"
@@ -92,7 +88,7 @@ export function GestureOverlay({ visual }: TGestureOverlayProps) {
                 />
             </svg>
 
-            {/* Кольцо пальца — всегда accent (краснеет только луч и чип). */}
+            {/* Кольцо пальца — всегда accent (краснеет только луч). */}
             <div
                 className="absolute rounded-full border-2 border-dashed border-accent opacity-70"
                 style={{
@@ -103,49 +99,6 @@ export function GestureOverlay({ visual }: TGestureOverlayProps) {
                     transform: 'translate(-50%, -50%)',
                 }}
             />
-
-            {/* Чип предпросмотра — выше пальца, прижат к зоне (не под палубу).
-                Фиксированная ширина (CHIP_WIDTH) центрируется над пальцем: клэмп
-                держит его в границах зоны, длинная подпись переносится внутрь. */}
-            <div
-                className={clsx(
-                    'absolute flex flex-col items-center gap-1 border-2 px-3 py-2 text-center',
-                    HUD_SURFACE,
-                    isMax ? 'border-danger' : 'border-accent',
-                )}
-                style={{
-                    left: chipCenterX,
-                    top: chipTop,
-                    width: CHIP_WIDTH,
-                    transform: 'translateX(-50%)',
-                }}
-            >
-                <div className="flex items-baseline gap-2 font-ui font-bold tabular-nums [text-shadow:var(--glow-text)]">
-                    <span className={isMax ? 'text-danger' : 'text-accent'}>
-                        <span className="text-[22px] leading-none">{formatAngle(angle)}</span>
-                        <span className="text-[13px]">°</span>
-                    </span>
-                    <span
-                        className={clsx(
-                            'text-[22px] leading-none',
-                            isMax ? 'text-danger' : 'text-warning',
-                        )}
-                    >
-                        {isMax ? 'МАКС' : power}
-                    </span>
-                </div>
-                <span
-                    className={clsx(
-                        'font-ui text-[9px] font-bold tracking-[0.12em] uppercase',
-                        isMax ? 'text-danger' : 'text-text-muted',
-                    )}
-                >
-                    ОТПУСТИ — ВЫСТРЕЛ
-                </span>
-                <span className="font-ui text-[8px] leading-tight tracking-[0.06em] text-text-dim">
-                    только направление · падение не показываем
-                </span>
-            </div>
         </div>
     );
 }

@@ -128,9 +128,10 @@ async function expectPointHitsCanvas(page: Page, point: { x: number; y: number }
 // жеста, а не в панель. До фикса эта строка пикселей (чуть ниже объявленного
 // инсета зоны 128px) лежала под фактической ~253px панелью — pointerdown
 // глотался бы HUD-оверлеем/его дочерними элементами до канваса, а не
-// начинал прицеливание. Сигнал «жест начался» — чип «ОТПУСТИ — ВЫСТРЕЛ»
-// (тот же приём, что `aim-preview-viewports.spec.ts`): он появляется, только
-// если движок принял pointerdown и активировал режим прицеливания.
+// начинал прицеливание. Сигнал «жест начался» — оверлей жеста (луч+кольцо,
+// testid `gesture-overlay`; тот же приём, что `aim-preview-viewports.spec.ts`):
+// он появляется, только если движок принял pointerdown и активировал режим
+// прицеливания. Чип с текстом «ОТПУСТИ — ВЫСТРЕЛ» удалён (#565).
 test.describe('Оттяжка у верха арены на планшете (768) начинает прицеливание', () => {
     test.use({ viewport: { width: 768, height: 1024 }, hasTouch: true, isMobile: true });
 
@@ -155,6 +156,6 @@ test.describe('Оттяжка у верха арены на планшете (76
         await expectPointHitsCanvas(page, { x: startX, y: startY });
         await holdDragAt(page, { x: startX, y: startY }, { x: startX - 60, y: startY + 60 });
 
-        await expect(page.getByText('ОТПУСТИ — ВЫСТРЕЛ')).toBeVisible();
+        await expect(page.getByTestId('gesture-overlay')).toBeVisible();
     });
 });
