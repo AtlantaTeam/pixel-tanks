@@ -2,9 +2,17 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TTankWheelSpec as TSkinWheelSpec } from '@/entities/tank-skins';
 import { createSeededRandom } from '@/shared/lib/random';
 import { EWeaponKind, type TWeapon } from '@/shared/model';
+import { ENGINE_COLORS } from './engine-palette';
 import { Ground } from './ground';
 import { drawTankWheels, Tank, wheelRotationDelta, type TTankWheelSpec } from './tank';
-import { WORLD_UNITS } from './world-scale';
+import {
+    WIND_FLAG_HEIGHT,
+    WIND_FLAG_MIN_SCALE,
+    WIND_FLAG_PENNANT,
+    WIND_FLAG_POLE_WIDTH,
+    windFlagRotationRad,
+} from './wind-flag';
+import { WORLD_SCALE_MIN, WORLD_UNITS } from './world-scale';
 
 // Пин структурного совпадения `TTankWheelSpec` движка (`tank.ts`) и реестра
 // скинов (`entities/tank-skins`). `Tank` намеренно НЕ импортирует тип из
@@ -360,4 +368,207 @@ describe('Tank.draw — тень от светила (#545)', () => {
         tank.draw(ctx, null, flatGround());
         expect(ellipseCalls[0][1]).toBe(HEIGHT - 100);
     });
+});
+
+/** Запись одной операции рисования вместе с цветом/толщиной на момент вызова. */
+type TDrawOp = {
+    op: 'fillRect' | 'fill' | 'stroke' | 'translate' | 'rotate' | 'vertex';
+    args: number[];
+    color: string;
+    lineWidth: number;
+};
+
+/**
+ * ctx-заглушка для флажка ветра (#579): пишет упорядоченный журнал операций с
+ * цветом на момент вызова. Порядок важен — по нему проверяется, что древко
+ * рисуется ПОВЕРХ полотнища, а вершины контура идут после поворота на угол ветра.
+ */
+class FlagCtxStub {
+    fillStyle = '';
+    strokeStyle = '';
+    lineWidth = 0;
+    lineJoin = 'miter';
+    ops: TDrawOp[] = [];
+
+    private push(op: TDrawOp['op'], args: number[]) {
+        this.ops.push({
+            op,
+            args,
+            color: op === 'stroke' ? this.strokeStyle : this.fillStyle,
+            lineWidth: this.lineWidth,
+        });
+    }
+
+    save() {}
+    restore() {}
+    setTransform() {}
+    beginPath() {}
+    closePath() {}
+    drawImage() {}
+    ellipse() {}
+    translate(x: number, y: number) {
+        this.push('translate', [x, y]);
+    }
+    rotate(angle: number) {
+        this.push('rotate', [angle]);
+    }
+    moveTo(x: number, y: number) {
+        this.push('vertex', [x, y]);
+    }
+    lineTo(x: number, y: number) {
+        this.push('vertex', [x, y]);
+    }
+    fillRect(x: number, y: number, w: number, h: number) {
+        this.push('fillRect', [x, y, w, h]);
+    }
+    fill() {
+        this.push('fill', []);
+    }
+    stroke() {
+        this.push('stroke', []);
+    }
+}
+
+/** Относительная яркость hex-цвета (0..1) — грубая, для сравнения «темнее/светлее». */
+const luminance = (hex: string) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+describe('Tank.draw — флажок ветра: вымпел, а не прямоугольник (#579)', () => {
+    const WIND_ROTATION = windFlagRotationRad(0.004);
+
+    const drawFlag = (scale = 1, rotation: number | null = WIND_ROTATION) => {
+        const tank = new Tank(
+            200,
+            HEIGHT - 100,
+            WIDTH,
+            HEIGHT,
+            0,
+            [WEAPON],
+            bodyImg,
+            undefined,
+            scale,
+        );
+        tank.windFlagRotationRad = rotation;
+        const stub = new FlagCtxStub();
+        tank.draw(stub as unknown as CanvasRenderingContext2D, null, flatGround());
+        return { tank, ops: stub.ops };
+    };
+
+    /** Индекс поворота полотнища — граница между древком/корпусом и контуром вымпела. */
+    const flagRotateIndex = (ops: TDrawOp[]) =>
+        ops.findIndex((o) => o.op === 'rotate' && o.args[0] === WIND_ROTATION);
+
+    it('без угла (чужой танк) флажок не рисуется вовсе', () => {
+        const { ops } = drawFlag(1, null);
+        expect(ops.filter((o) => o.op === 'vertex')).toHaveLength(0);
+    });
+
+    it('полотнище — замкнутый контур из вершин канона, а не fillRect', () => {
+        const { ops } = drawFlag();
+        const vertices = ops.filter((o) => o.op === 'vertex');
+        expect(vertices).toHaveLength(WIND_FLAG_PENNANT.length);
+        expect(vertices.length).toBeGreaterThan(4);
+    });
+
+    it('наклон полотнища берётся из windFlagRotationRad (модель #550 не тронута)', () => {
+        const { ops } = drawFlag();
+        expect(flagRotateIndex(ops)).toBeGreaterThanOrEqual(0);
+        const vertices = ops.filter((o) => o.op === 'vertex');
+        // Вершины идут ПОСЛЕ поворота — контур рисуется в повёрнутой системе,
+        // а не пересчитывается руками мимо модели.
+        expect(ops.indexOf(vertices[0])).toBeGreaterThan(flagRotateIndex(ops));
+    });
+
+    it('полотнище зеркалится по направлению ветра — при обоих знаках висит под осью', () => {
+        const verticesOf = (wind: number) => {
+            const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON], bodyImg);
+            tank.windFlagRotationRad = windFlagRotationRad(wind);
+            const stub = new FlagCtxStub();
+            tank.draw(stub as unknown as CanvasRenderingContext2D, null, flatGround());
+            return stub.ops.filter((o) => o.op === 'vertex').map((o) => o.args);
+        };
+        const right = verticesOf(0.01);
+        const left = verticesOf(-0.01);
+        expect(right).toHaveLength(WIND_FLAG_PENNANT.length);
+        right.forEach(([x, y], i) => {
+            expect(left[i][0]).toBeCloseTo(x, 6);
+            expect(left[i][1]).toBeCloseTo(-y, 6);
+        });
+    });
+
+    it('цвет полотнища не равен ENGINE_COLORS.accent (не кусок UI на корпусе)', () => {
+        const { ops } = drawFlag();
+        const fill = ops.find((o) => o.op === 'fill');
+        expect(fill).toBeDefined();
+        expect(fill?.color).not.toBe(ENGINE_COLORS.accent);
+    });
+
+    it('полотнище отделено от фона тёмной обводкой', () => {
+        const { ops } = drawFlag();
+        const fill = ops.find((o) => o.op === 'fill');
+        const stroke = ops.find((o) => o.op === 'stroke');
+        expect(stroke).toBeDefined();
+        expect(stroke?.lineWidth).toBeGreaterThan(0);
+        expect(luminance(String(stroke?.color))).toBeLessThan(luminance(String(fill?.color)));
+        expect(luminance(String(stroke?.color))).toBeLessThan(0.2);
+    });
+
+    it('древко различимо: не тоньше 2 px даже на минимальном масштабе мира', () => {
+        const { ops } = drawFlag(WORLD_SCALE_MIN);
+        const rotateAt = flagRotateIndex(ops);
+        // Прямоугольники ПОСЛЕ контура полотнища — древко (тёмный контур + ядро).
+        const poleRects = ops.filter((o, i) => o.op === 'fillRect' && i > rotateAt);
+        expect(poleRects.length).toBeGreaterThan(0);
+        for (const rect of poleRects) {
+            expect(rect.args[2]).toBeGreaterThanOrEqual(WIND_FLAG_POLE_WIDTH);
+        }
+    });
+
+    it('на узкой арене флажок не ужимается ниже пола читаемости', () => {
+        const { ops } = drawFlag(WORLD_SCALE_MIN);
+        const fly = ops
+            .filter((o) => o.op === 'vertex')
+            .reduce((max, o) => Math.max(max, Math.abs(o.args[0])), 0);
+        // Честная пропорция дала бы WIND_FLAG_HEIGHT * 0.5; пол держит 0.8.
+        expect(fly).toBeCloseTo(WIND_FLAG_HEIGHT * WIND_FLAG_MIN_SCALE, 6);
+    });
+
+    it('на широкой арене флажок масштабируется миром, а не залипает на поле', () => {
+        const scale = 1.5;
+        const { ops } = drawFlag(scale);
+        const fly = ops
+            .filter((o) => o.op === 'vertex')
+            .reduce((max, o) => Math.max(max, Math.abs(o.args[0])), 0);
+        expect(fly).toBeCloseTo(WIND_FLAG_HEIGHT * scale, 6);
+    });
+
+    it('древко рисуется поверх полотнища — не прячется под ним в штиль', () => {
+        const { ops } = drawFlag();
+        const strokeAt = ops.findIndex((o) => o.op === 'stroke');
+        const poleAt = ops.map((o) => o.op).lastIndexOf('fillRect');
+        expect(strokeAt).toBeGreaterThanOrEqual(0);
+        expect(poleAt).toBeGreaterThan(strokeAt);
+    });
+
+    // Узкая арена — худший случай: там работает пол масштаба флажка, и мачта могла бы
+    // оказаться короче полотнища относительно корпуса.
+    it.each([WORLD_SCALE_MIN, 1, 1.28, 1.5])(
+        'в покое (scale=%p) конец вымпела не достаёт до силуэта корпуса',
+        (scale) => {
+            const { tank, ops } = drawFlag(scale);
+            // Вершина мачты — последний translate ПЕРЕД поворотом на угол ветра: до
+            // него в журнале лежат translate'ы наклона корпуса и разворота ствола.
+            const pivot = ops
+                .slice(0, flagRotateIndex(ops))
+                .filter((o) => o.op === 'translate')
+                .at(-1);
+            expect(pivot).toBeDefined();
+            // Нейтраль — поворот на 90°, полотнище уходит вниз ровно на свою длину.
+            const clothTipY =
+                Number(pivot?.args[1]) + WIND_FLAG_HEIGHT * Math.max(WIND_FLAG_MIN_SCALE, scale);
+            expect(clothTipY).toBeLessThan(tank.bodyRect().y);
+        },
+    );
 });

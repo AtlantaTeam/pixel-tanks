@@ -187,7 +187,9 @@ export type TGamePlayOptions = {
     weather?: boolean;
 };
 
-const GAME_ASSET_PATHS = {
+/** Общий для всех боёв арт арены. Экспортируется, чтобы демо витрины
+ *  (`WindFlagDemo`, #579) брали тот же песок, а не вторую копию пути. */
+export const GAME_ASSET_PATHS = {
     sand: '/game/sand.jpg',
 };
 

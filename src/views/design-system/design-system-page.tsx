@@ -20,6 +20,7 @@ import { SkyBackgroundSection } from './sky-background-section';
 import { TankSkinsSection } from './tank-skins-section';
 import { WeaponsSection } from './weapons-section';
 import { WindDustSection } from './wind-dust-section';
+import { WindFlagSection } from './wind-flag-section';
 
 const FACTION_OPTIONS: TSegmentedControlOption<TFaction>[] = [
     { value: 'player', label: 'Игрок' },
@@ -497,6 +498,16 @@ export function DesignSystemPage() {
                             Ветер в арене
                         </SectionHeading>
                         <WindDustSection />
+                    </section>
+
+                    <section>
+                        <SectionHeading
+                            number="20"
+                            headline="Вымпел на мачте своего танка — направление и сила ветра"
+                        >
+                            Флажок ветра
+                        </SectionHeading>
+                        <WindFlagSection />
                     </section>
                 </div>
             </main>
