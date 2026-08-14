@@ -98,12 +98,12 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Экран боя · Прицеливание и панель",
-                "branch": "feature/aim-hud-fixes"
+                "milestone": "Экран боя · Хвост правок",
+                "branch": "feature/battle-tail-fixes"
             },
             {
-                "milestone": "Экран боя · Снаряд и сцена",
-                "branch": "feature/projectile-scene-fixes"
+                "milestone": "Раннер · Барьеры и форж",
+                "branch": "feature/ralph-forge-trust"
             }
         ]
     },
