@@ -1044,8 +1044,6 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         decLabel="Угол меньше"
                         incLabel="Угол больше"
                         glow
-                        decDisabled={false}
-                        incDisabled={false}
                     />
                     <TrimCell
                         label="Сила"

@@ -27,7 +27,7 @@ import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
 import { markAimHintSeen, useAimHintSeen } from '../../lib/aim-hint';
 import { GestureOverlay, type TGestureVisual } from '../gesture-overlay';
-import { AimHint } from '../aim-hint';
+import { AimHint, AimHintAnnouncer } from '../aim-hint';
 
 type TDragState = {
     pointerId: number;
@@ -184,6 +184,10 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     // снаряд бота не долетит, см. `changeActiveTank`). Бой окончен — рамки нет,
     // финал закрывает GameOverDialog.
     const isBotTurn = selectIsBotTurn({ turn, phase });
+    // Разовая подсказка активна: не видена, не ход бота, бой не окончен. Один
+    // источник для визуальной плашки `AimHint` и всегда-смонтированного
+    // `AimHintAnnouncer` — визуал и анонс не должны разъехаться по условию.
+    const aimHintActive = !aimHintSeen && !isBotTurn && !isGameOver;
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -592,6 +596,12 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     suppressClickRef.current = true;
                     const game = gameRef.current;
                     game?.setAimPreviewVisible(false);
+                    // Гибрид (мышь+тач), как в onPointerCancel: предшествующий hover мог
+                    // оставить `showBarrelReadout=true`. Тап без оттяжки (`calculateDragAim`
+                    // вернёт null — ранний выход ниже) не проходит через phase→flight,
+                    // который гасит readout, поэтому сбрасываем его здесь явно — иначе
+                    // canvas-подпись зависнет до следующего mousemove/mouseleave/выстрела.
+                    game?.setBarrelReadoutVisible(false);
                     const aim = calculateDragAim(
                         { x: drag.startX, y: drag.startY },
                         { x: e.clientX, y: e.clientY },
@@ -678,8 +688,12 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             />
             {/* Разовая подсказка прицеливания (#565) у верха зоны — показана один раз,
                 гаснет после первого выстрела и не воскресает (localStorage). Не
-                показываем на ходе бота и после конца боя. */}
-            <AimHint visible={!aimHintSeen && !isBotTurn && !isGameOver} />
+                показываем на ходе бота и после конца боя. Факт для скринридера несёт
+                отдельный, всегда смонтированный `AimHintAnnouncer` (a11y, ревью #574):
+                live-region обязан быть в дереве ДО появления текста, поэтому он не
+                внутри условной плашки. */}
+            <AimHint visible={aimHintActive} />
+            <AimHintAnnouncer active={aimHintActive} />
             <GestureOverlay visual={gestureVisual} />
             {/* Ход бота (handoff): маджента-рамка арены — без предсказания траектории,
                 игрок не должен заранее знать, попадёт ли соперник. */}

@@ -1,1 +1,1 @@
-export { AimHint } from './aim-hint';
+export { AimHint, AimHintAnnouncer } from './aim-hint';
