@@ -7,6 +7,12 @@ import { HUD_SURFACE } from '@/shared/config';
  * танк на мобиле. У верха зоны — не над стволом и не под пальцем: читается до
  * первого выстрела и больше не мешает.
  *
+ * Несёт ровно то, чего нет больше нигде — что предпросмотр показывает НАПРАВЛЕНИЕ,
+ * а не точку падения (вердикт GDD). «Как стрелять» уже сказано постоянно: на
+ * мобиле — строкой палубы «тяни по арене — отпусти, чтобы выстрелить», на
+ * десктопе — легендой управления на палубе. Поэтому текст device-neutral и не
+ * повторяет ни то, ни другое.
+ *
  * `pointer-events:none` — подсказка не перехватывает жест, его ловит канвас.
  */
 type TAimHintProps = {
@@ -23,10 +29,10 @@ export function AimHint({ visible }: TAimHintProps) {
             className={`pointer-events-none absolute top-[252px] left-1/2 flex -translate-x-1/2 flex-col items-center gap-1 border-2 border-accent px-3 py-2 text-center md:top-[138px] lg:top-[88px] ${HUD_SURFACE}`}
         >
             <span className="font-ui text-[11px] font-bold tracking-[0.12em] text-accent uppercase [text-shadow:var(--glow-text)]">
-                Оттяни и отпусти — выстрел
+                Прицел — только направление
             </span>
             <span className="font-ui text-[9px] leading-tight tracking-[0.06em] text-text-dim">
-                показываем только направление, не точку падения
+                точку падения не показываем — доводи сам
             </span>
         </div>
     );
