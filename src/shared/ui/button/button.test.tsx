@@ -157,6 +157,17 @@ describe('Button', () => {
             expect(primary).toMatch(/\bdisabled:shadow-none\b/);
             expect(primary).toMatch(/\bsize-11\b/);
         });
+
+        it('keeps the variant text colour when the caller passes a theme font size', () => {
+            // Ревью #554: голый `twMerge` не знает кастомных `--text-*` из @theme и
+            // считает `text-hud` ЦВЕТОМ — цвет варианта вылетал, размер варианта
+            // оставался. Настроенный `shared/lib/tw-merge` разбирает их как размер.
+            const merged = buttonClasses('accent', 'md', 'text-hud');
+
+            expect(merged).toMatch(/\btext-hud\b/);
+            expect(merged).toMatch(/text-\[var\(--accent-ink\)\]/);
+            expect(merged).not.toMatch(/\btext-xs\b/);
+        });
     });
 
     it('renders disabled state from semantic muted tokens, not opacity', () => {
