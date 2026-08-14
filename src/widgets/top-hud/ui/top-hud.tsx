@@ -297,8 +297,10 @@ function CellShell({
             {/* whitespace-nowrap: подпись «Угол · заморожен» на ходе бота длиннее
                 «Угол» — без запрета переноса она уходит на вторую строку и растит
                 высоту ячейки (а с ней и всего HUD) относительно своего хода (#447).
-                На 320px (#537): метка скрыта при compact=true (sr-only), остаётся в
-                дереве доступности. */}
+                На 320px (#537): метка схлопнута по ширине, остаётся в дереве
+                доступности. Гейт `max-[359px]:` обязателен: `compact` — это ВЕСЬ
+                мобильный блок (`md:hidden`, <768), и без гейта подписи «Угол»/«Сила»/
+                «Ветер» пропадали на каждом телефоне, хотя main их показывает. */}
             <span
                 className={clsx(
                     'font-ui text-[9px] tracking-[0.14em] whitespace-nowrap text-text-muted uppercase',
@@ -309,7 +311,7 @@ function CellShell({
                     // её line-height участвует в высоте существующих mobile e2e-барьеров
                     // (`overlay-budget.spec.ts`, `hud-geometry-stable.spec.ts`).
                     !compact && 'leading-none',
-                    compact && 'w-0 overflow-hidden',
+                    compact && 'max-[359px]:w-0 max-[359px]:overflow-hidden',
                 )}
             >
                 {label}
@@ -728,7 +730,9 @@ function ResourcePips({
     size?: number;
     gap?: number;
     dense?: boolean;
-    /** На 320px (#537) спрячь метку для сэкономить места. */
+    /** На 320px (#537) спрячь метку ради места. Гейт по ширине — внутри, в классе:
+     *  проп прокидывается безусловно, и без `max-[359px]:` метка исчезала бы на всех
+     *  телефонах, а не только на самом узком. */
     hideLabel?: boolean;
 }) {
     return (
@@ -736,7 +740,7 @@ function ResourcePips({
             <span
                 className={clsx(
                     'font-ui text-[9px] tracking-[0.14em] text-text-muted uppercase',
-                    hideLabel && 'w-0 overflow-hidden',
+                    hideLabel && 'max-[359px]:w-0 max-[359px]:overflow-hidden',
                 )}
             >
                 {label}
@@ -1015,8 +1019,10 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     >
                         {/* На 320px (#537) снаряды скрыты согласно приоритету сброса
                             (п. 2: снаряды первыми как дубль информации на палубе),
-                            остаются для a11y. */}
-                        <div className="w-0 overflow-hidden">
+                            остаются для a11y. Гейт по ширине обязателен: голый
+                            `w-0 overflow-hidden` — не «на 320», а на ЛЮБОМ телефоне,
+                            и ряд пропадал на 390, где main его показывал. */}
+                        <div className="max-[359px]:w-0 max-[359px]:overflow-hidden">
                             <ResourcePips
                                 label="Снаряды"
                                 pips={ammoPips}
