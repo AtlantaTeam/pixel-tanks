@@ -136,9 +136,13 @@ export class Bullet {
         return this.y;
     }
 
-    /** Максимальный радиус текущего очага (доля базового радиуса взрыва). */
+    /** Максимальный радиус текущего очага (доля базового радиуса взрыва).
+     *
+     *  Через тот же `currentFocus`, что и `explosionCenterX`: оба геттера читаются из
+     *  одного `draw()`, и клэмп только в одном из них не спасал ни от чего — падение
+     *  просто переезжало строкой ниже. */
     private get focusMaxRadius(): number {
-        return this.spec.foci[this.focusIndex].radiusFactor * this.baseExplosionRadius;
+        return this.currentFocus.radiusFactor * this.baseExplosionRadius;
     }
 
     /** Забор флага смены очага: возвращает true один раз на каждый новый очаг. */

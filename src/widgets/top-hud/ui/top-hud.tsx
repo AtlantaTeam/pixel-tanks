@@ -535,13 +535,20 @@ function TrimCell({
     return (
         <CellShell label={label} compact className={className}>
             <div className="flex min-w-0 items-center gap-0.5">
-                {/* На 320px (#537) ± кнопки скрыты визуально (sr-only), остаются
-                    для a11y. Экономит ~70px в ряду (две ячейки, по 4 кнопки ~32px+32px). */}
+                {/* На 320px (#537) ± кнопки скрыты визуально, остаются для a11y:
+                    экономит ~70px в ряду (две ячейки по две кнопки ~32px).
+                    ⚠️ Именно `max-[359px]:`, а не голый `sr-only`: безусловный класс
+                    скрывал кнопки на ВСЕХ мобильных ширинах, включая 390. Кнопки при
+                    этом оставались в разметке с боксом 32×32 (побеждал `size-8`), но
+                    `clip` из `sr-only` убирал их и из рисунка, и из хит-теста — то есть
+                    на телефоне подстройка угла и силы тапом просто исчезла, а тест
+                    «тач-цель ≥44» этого не видел: бокс-то на месте. Поймали
+                    `overlay-budget`/`hud-geometry-stable` через перехват клика. */}
                 <TrimButton
                     disabled={frozen}
                     ariaLabel={decLabel}
                     holdProps={decHold}
-                    className="sr-only"
+                    className="max-[359px]:sr-only"
                 >
                     −
                 </TrimButton>
@@ -552,7 +559,7 @@ function TrimCell({
                     disabled={frozen}
                     ariaLabel={incLabel}
                     holdProps={incHold}
-                    className="sr-only"
+                    className="max-[359px]:sr-only"
                 >
                     +
                 </TrimButton>
@@ -977,10 +984,16 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         incLabel="Сила больше"
                         glow
                         // Доп. отступ слева (#452): тач-цель кнопок ± шире визуального
-                        // бокса (`TrimButton`, псевдоэлемент 52×52) — без этого зазор
-                        // между «Угол больше» и «Сила меньше» падал до 2px хит-зон
-                        // вплотную к соседней ячейке (бюджет ≥8px, замер `overlay-budget`).
-                        className="ml-2"
+                        // бокса (`TrimButton` — 32px видимых, 48px хит-зоны, свес по 8px
+                        // с каждой стороны), и соседние ячейки «Угол»/«Сила» смыкаются
+                        // хит-зонами раньше, чем визуально.
+                        // 24px, а не 8: после компактизации ряда (#538: `px-1.5 gap-1`
+                        // вместо `px-2.5 gap-1.5`) прежних восьми стало мало — замер дал
+                        // ПЕРЕКРЫТИЕ хит-зон на 6px, то есть зазор 0 при бюджете ≥8
+                        // (`overlay-budget`, `hud-geometry-stable`). 24 − 8 − 8 = 8 ровно.
+                        // Меняешь плотность ряда — перезамеряй: связь тут не в вёрстке,
+                        // а в арифметике свесов, глазами она не видна.
+                        className="ml-6"
                     />
                     <WindCell wind={wind} windRevealed={windRevealed} compact />
                     {/* Снаряды и ходы — компактной карточкой (#528): та же подложка

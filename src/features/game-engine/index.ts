@@ -3,6 +3,7 @@ export type { TGameCanvasHandle } from './ui/game-canvas';
 export { ReplayCanvas } from './ui/replay-canvas';
 export { SkyBackground } from './ui/sky-background';
 export { PrecipitationLayer } from './ui/precipitation-layer';
+export { WindDustLayer } from './ui/wind-dust-layer';
 export { TankWheelDemo } from './ui/tank-wheel-demo';
 export type { TTankWheelDemoProps } from './ui/tank-wheel-demo';
 export { WeaponFxDemo } from './ui/weapon-fx-demo';

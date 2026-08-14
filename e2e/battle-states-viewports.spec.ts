@@ -40,12 +40,21 @@ for (const viewport of VIEWPORTS) {
         // После #539 состояние «ход соперника» несут ровно два индикатора вместо
         // четырёх: плашка хода и маджента-рамка арены. Проверяем оба — именно они
         // и остались контрактом состояния, а снятый `deck-lock` больше не рисуется.
+        //
+        // Пилюлю берём из полосы СВОЕГО брейкпоинта: мобильная и десктопная
+        // смонтированы обе всегда (одна скрыта классом), и нескопленный локатор дал бы
+        // strict mode violation на двух узлах. Здесь скоуп ещё и по делу: тест
+        // вьюпортный, и проверять он обязан ту пилюлю, которую видит пользователь.
+        const hudTestId = viewport.width < 768 ? 'top-hud-mobile' : 'top-hud-desktop';
+
         test('плашка хода и маджента-рамка арены видны, без переполнения', async ({ page }) => {
             test.setTimeout(60_000);
             await page.goto('/game?seed=42');
             await reachBotTurn(page);
 
-            await expect(page.getByTestId('turn-pill')).toContainText('ХОД СОПЕРНИКА');
+            const turnPill = page.getByTestId(hudTestId).getByTestId('turn-pill');
+            await expect(turnPill).toBeVisible();
+            await expect(turnPill).toContainText('ХОД СОПЕРНИКА');
             await expect(page.getByTestId('arena-turn-ring')).toBeVisible();
 
             const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);

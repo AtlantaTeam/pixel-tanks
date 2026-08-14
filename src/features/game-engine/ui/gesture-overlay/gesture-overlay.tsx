@@ -1,8 +1,7 @@
 'use client';
 
 import { clsx } from 'clsx';
-import { HUD_SURFACE } from '@/shared/config';
-import { POWER_MAX } from '@/shared/config';
+import { HUD_SURFACE, POWER_MAX } from '@/shared/config';
 import { formatAngle } from '../../lib/format-angle';
 
 /**

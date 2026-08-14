@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
 import { prefersReducedMotion } from '../../lib/prefers-reduced-motion';
-import { pickSkyPreset } from '../../lib/sky-preset';
+import { pickSkyPreset, type TSkyPresetId } from '../../lib/sky-preset';
 import { WindDust } from '../../lib/wind-dust-scene';
 
 type TWindDustLayerProps = {
@@ -11,6 +11,13 @@ type TWindDustLayerProps = {
     seed: number | string | null | undefined;
     /** Ветер боя (`game.store.wind`): пылинки летят по нему, при 0 — их нет. */
     wind: number;
+    /**
+     * Форсировать пресет времени суток вместо вывода из сида — только для витрины,
+     * тот же приём, что у `SkyBackground`/`PrecipitationLayer`. Ночью слой рисует не
+     * пылинки, а кайму песка, и без override эту ветку на витрине показать нечем:
+     * пришлось бы подбирать сид, дающий ночь, и молиться, чтобы он таким и остался.
+     */
+    preset?: TSkyPresetId;
     /**
      * Единичный статичный кадр на этом времени сцены (мс) вместо rAF-петли — для витрины,
      * тот же паритет, что у `PrecipitationLayer` (#546). Без него слой пылинок нечем
@@ -37,6 +44,7 @@ type TWindDustLayerProps = {
 export const WindDustLayer = ({
     seed,
     wind,
+    preset,
     snapshotMs,
     reducedMotion,
     className,
@@ -52,7 +60,7 @@ export const WindDustLayer = ({
 
         const reduced = reducedMotion ?? prefersReducedMotion();
         const resolvedSeed = seed ?? 'default';
-        const isNight = pickSkyPreset(resolvedSeed).id === 'night';
+        const isNight = (preset ?? pickSkyPreset(resolvedSeed).id) === 'night';
         const scene = new WindDust({ seed: resolvedSeed, wind, isNight, reducedMotion: reduced });
 
         let rafId = 0;
@@ -109,7 +117,7 @@ export const WindDustLayer = ({
             cancelAnimationFrame(rafId);
             observer?.disconnect();
         };
-    }, [seed, wind, snapshotMs, reducedMotion]);
+    }, [seed, wind, preset, snapshotMs, reducedMotion]);
 
     return (
         <canvas
