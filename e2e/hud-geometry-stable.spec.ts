@@ -155,11 +155,11 @@ test.describe('Ширина ячеек и координаты кнопок ± �
 
         // Прогоняем угол через 1 → 2 → 3 знака нажатиями ArrowLeft: координата
         // левого края кнопки «+» обязана остаться неизменной (значение центрируется
-        // в зарезервированном под «360°» боксе). Старт (0 нажатий) — уже «360°»
-        // (formatAngle(0) === 360), т.е. потолок диапазона проверяется тем же
-        // семплом, без отдельного сценария.
+        // в зарезервированном под «360°» боксе). Старт (0 нажатий) — «0°»
+        // (горизонталь ствола, #457), дальше 5 / 50 / 170 нажатий дают два и три
+        // знака: все ширины значения проверены одним сценарием.
         const samples: Array<{ label: string; x: number }> = [];
-        samples.push({ label: '0 нажатий (360°)', x: await plusButtonX() });
+        samples.push({ label: '0 нажатий (0°)', x: await plusButtonX() });
         for (const presses of [5, 45, 120]) {
             for (let i = 0; i < presses; i++) await page.keyboard.press('ArrowLeft');
             samples.push({ label: `после ${presses} нажатий подряд`, x: await plusButtonX() });
@@ -399,7 +399,7 @@ async function desktopPlayThroughAllPhases(page: Page): Promise<TDesktopSample[]
         });
     }
 
-    await sample('старт (угол 360°, сила 10, «ТВОЙ ХОД»)');
+    await sample('старт (угол 0°, сила 10, «ТВОЙ ХОД»)');
 
     // Угол через смену числа знаков (1°…3 знака) — ArrowLeft крутит ствол.
     for (let i = 0; i < 120; i++) await page.keyboard.press('ArrowLeft');

@@ -285,8 +285,9 @@ describe('TopHud', () => {
             const desktop = within(getByTestId('top-hud-desktop'));
 
             // Невидимый размерник «360°» держит ширину бокса значения неизменной —
-            // как `FixedNumeric` на мобилке. `aria-hidden`-селектор отсекает реальное
-            // значение (при угле 0° оно тоже «360°», formatAngle(0) === 360).
+            // как `FixedNumeric` на мобилке. `aria-hidden`-селектор отделяет его от
+            // реального значения (само оно «360°» уже не бывает — см. #457: показ
+            // угла нормализован в [0, 360), поэтому размерник шире любого значения).
             const sizer = desktop.getByText('360°', { selector: '[aria-hidden="true"]' });
             expect(sizer).toBeInTheDocument();
             unmount();
@@ -425,6 +426,32 @@ describe('TopHud', () => {
                 'Твои числа заморожены до конца хода соперника',
             ),
         ).not.toBeInTheDocument();
+    });
+
+    // #457: в начале боя телеметрия показывала «УГОЛ 360°» — ствол игрока стоит
+    // горизонтально (`angle: 0`), а формат читал ноль как полный круг. Проверяем
+    // ровно старт боя (дефолт стора после `startGame`) в обоих составах HUD.
+    it('в начале боя показывает фактический угол ствола 0°, а не 360°', () => {
+        useGameStore.getState().startGame();
+        const { getByTestId } = render(<TopHud />);
+
+        for (const layout of ['top-hud-mobile', 'top-hud-desktop']) {
+            const hud = within(getByTestId(layout));
+            // Видимое значение — без `aria-hidden` (тот несёт размерник «360°»).
+            expect(hud.getByText('0°', { selector: ':not([aria-hidden="true"])' })).toBeVisible();
+            expect(
+                hud.queryByText('360°', { selector: ':not([aria-hidden="true"])' }),
+            ).not.toBeInTheDocument();
+        }
+    });
+
+    it('после хода игрока показывает наведённый угол (не сбрасывается на старт)', () => {
+        useGameStore.getState().startGame();
+        useGameStore.setState({ angle: -Math.PI / 2 });
+        const { getByTestId } = render(<TopHud />);
+
+        const mobile = within(getByTestId('top-hud-mobile'));
+        expect(mobile.getByText('90°', { selector: ':not([aria-hidden="true"])' })).toBeVisible();
     });
 
     it('ширина ячейки угла зарезервирована под максимум диапазона (360°) при любом значении', () => {
