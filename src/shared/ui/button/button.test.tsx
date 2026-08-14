@@ -1,5 +1,5 @@
 import { render } from '@testing-library/react';
-import { Button } from './button';
+import { Button, buttonClasses } from './button';
 
 describe('Button', () => {
     it('renders icon size as a 44px touch target', () => {
@@ -92,6 +92,71 @@ describe('Button', () => {
             /focus-visible:shadow-\[var\(--ring-focus\)\]/,
         );
         expect(getByRole('button').className).not.toMatch(/var\(--edge-pixel\)/);
+    });
+
+    // #554: классы собирались простой конкатенацией (clsx), поэтому при равной
+    // специфичности исход решал порядок в СГЕНЕРИРОВАННОМ Tailwind-стиле, а не
+    // порядок в атрибуте. `className="m-0"` не перебивал базовый `m-1` —
+    // у 13 кнопок в коде оставался живой `margin: 4px`.
+    describe('слияние конфликтующих utility-классов (#554)', () => {
+        it('drops the base margin when the caller passes m-0', () => {
+            const { getByRole } = render(<Button className="m-0">Пауза</Button>);
+
+            const button = getByRole('button');
+            expect(button.className).toMatch(/\bm-0\b/);
+            expect(button.className).not.toMatch(/\bm-1\b/);
+        });
+
+        it('keeps the base margin when the caller passes no className', () => {
+            const { getByRole } = render(<Button>Новая игра</Button>);
+
+            expect(getByRole('button').className).toMatch(/\bm-1\b/);
+        });
+
+        it('keeps the base margin when the caller class does not conflict with it', () => {
+            const { getByRole } = render(<Button className="flex-1">Играть</Button>);
+
+            const button = getByRole('button');
+            expect(button.className).toMatch(/\bm-1\b/);
+            expect(button.className).toMatch(/\bflex-1\b/);
+        });
+
+        it('leaves an important-modified caller class alone instead of merging it', () => {
+            // Граница инструмента, о которую спотыкались в #538: tailwind-merge
+            // сливает только классы с ОДИНАКОВЫМ набором модификаторов, поэтому
+            // `!m-0` базовый `m-1` из строки не выкидывает — он побеждает уже в
+            // CSS, через `!important`. Работает, но лечит симптом: обходить баг
+            // важностью больше не нужно, хватает простого `m-0`.
+            const merged = buttonClasses('ghost', 'icon', '!m-0');
+
+            expect(merged).toMatch(/!m-0/);
+            expect(merged).toMatch(/\bm-1\b/);
+        });
+
+        it('lets the caller override variant and size utilities too, not just margin', () => {
+            const merged = buttonClasses('primary', 'md', 'px-8 bg-transparent');
+
+            expect(merged).toMatch(/\bpx-8\b/);
+            expect(merged).not.toMatch(/\bpx-5\b/);
+            expect(merged).toMatch(/\bbg-transparent\b/);
+            expect(merged).not.toMatch(/\bbg-primary\b/);
+        });
+
+        it('keeps every variant/size class when nothing conflicts', () => {
+            // Слияние не должно съедать «соседей» по префиксу: у ghost/danger/outline
+            // ширина рамки (`border-[length:…]`) и её цвет (`border-*`) — разные
+            // свойства, у sm/icon `text-[10px]` (размер) и `text-*` (цвет) — тоже.
+            const ghost = buttonClasses('ghost', 'sm');
+            expect(ghost).toMatch(/border-\[length:var\(--border-w\)\]/);
+            expect(ghost).toMatch(/\bborder-border-strong\b/);
+            expect(ghost).toMatch(/text-\[10px\]/);
+            expect(ghost).toMatch(/\btext-text\b/);
+
+            const primary = buttonClasses('primary', 'icon');
+            expect(primary).toMatch(/shadow-\[var\(--edge-pixel\)\]/);
+            expect(primary).toMatch(/\bdisabled:shadow-none\b/);
+            expect(primary).toMatch(/\bsize-11\b/);
+        });
     });
 
     it('renders disabled state from semantic muted tokens, not opacity', () => {
