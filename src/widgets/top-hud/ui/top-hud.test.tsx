@@ -293,13 +293,16 @@ describe('TopHud', () => {
         }
     });
 
-    it('десктоп: ширина ячейки силы зарезервирована под потолок POWER_MAX при любом значении (#473)', () => {
+    it('десктоп: ширина ячейки силы зарезервирована под самую широкую подпись «МАКС» при любом значении (#473/#567)', () => {
+        // Размерник — «МАКС», а не число `POWER_MAX`: на потолке значение это
+        // подпись «МАКС» (#567), которая в моноширинном font-ui шире числа «20».
+        // Резерв под число дал бы рост ячейки на потолке и сдвиг соседей (#473/#474).
         for (const power of [1, 9, POWER_MAX]) {
             useGameStore.setState({ power, turn: 'player' });
             const { getByTestId, unmount } = render(<TopHud />);
             const desktop = within(getByTestId('top-hud-desktop'));
 
-            const sizer = desktop.getByText(String(POWER_MAX), {
+            const sizer = desktop.getByText('МАКС', {
                 selector: '[aria-hidden="true"]',
             });
             expect(sizer).toBeInTheDocument();
@@ -439,13 +442,16 @@ describe('TopHud', () => {
         }
     });
 
-    it('ширина ячейки силы зарезервирована под потолок POWER_MAX при любом значении', () => {
+    it('ширина ячейки силы зарезервирована под самую широкую подпись «МАКС» при любом значении (#567)', () => {
+        // Как и на десктопе: размерник — «МАКС» (подпись потолка, #567), не число
+        // `POWER_MAX`; в моноширинном font-ui «МАКС» шире «20», и резерв под число
+        // дал бы рост ячейки на потолке силы.
         for (const power of [1, 9, POWER_MAX]) {
             useGameStore.setState({ power, turn: 'player' });
             const { getByTestId, unmount } = render(<TopHud />);
             const mobile = within(getByTestId('top-hud-mobile'));
 
-            const sizer = mobile.getByText(String(POWER_MAX), {
+            const sizer = mobile.getByText('МАКС', {
                 selector: '[aria-hidden="true"]',
             });
             expect(sizer).toBeInTheDocument();
@@ -558,12 +564,17 @@ describe('TopHud', () => {
         expect(mobile.getByRole('button', { name: 'Сила больше' })).not.toBeDisabled();
     });
 
+    // Селектор `:not([aria-hidden="true"])` отсекает невидимый размерник ячейки
+    // силы: с #567 он тоже несёт текст «МАКС» (размерник теперь под самую широкую
+    // подпись, #473/#474), и без фильтра «МАКС» нашёлся бы в двух узлах.
     it('на максимуме силы ячейка показывает «МАКС» вместо числа (мобилка)', () => {
         useGameStore.setState({ power: POWER_MAX, turn: 'player' });
         const { getByTestId } = render(<TopHud />);
         const mobile = within(getByTestId('top-hud-mobile'));
 
-        expect(mobile.getByText('МАКС')).toBeInTheDocument();
+        expect(
+            mobile.getByText('МАКС', { selector: ':not([aria-hidden="true"])' }),
+        ).toBeInTheDocument();
     });
 
     it('на максимуме силы значение красится danger вместо warning (мобилка)', () => {
@@ -571,7 +582,7 @@ describe('TopHud', () => {
         const { getByTestId } = render(<TopHud />);
         const mobile = within(getByTestId('top-hud-mobile'));
 
-        const maxText = mobile.getByText('МАКС');
+        const maxText = mobile.getByText('МАКС', { selector: ':not([aria-hidden="true"])' });
         expect(maxText).toHaveClass('text-danger');
     });
 
@@ -580,7 +591,9 @@ describe('TopHud', () => {
         const { getByTestId } = render(<TopHud />);
         const desktop = within(getByTestId('top-hud-desktop'));
 
-        expect(desktop.getByText('МАКС')).toBeInTheDocument();
+        expect(
+            desktop.getByText('МАКС', { selector: ':not([aria-hidden="true"])' }),
+        ).toBeInTheDocument();
     });
 
     it('на максимуме силы значение красится danger вместо warning (десктоп)', () => {
@@ -588,7 +601,7 @@ describe('TopHud', () => {
         const { getByTestId } = render(<TopHud />);
         const desktop = within(getByTestId('top-hud-desktop'));
 
-        const maxText = desktop.getByText('МАКС');
+        const maxText = desktop.getByText('МАКС', { selector: ':not([aria-hidden="true"])' });
         expect(maxText).toHaveClass('text-danger');
     });
 
@@ -598,7 +611,10 @@ describe('TopHud', () => {
         const mobile = within(getByTestId('top-hud-mobile'));
 
         expect(mobile.getByText('10')).toBeInTheDocument();
-        expect(mobile.queryByText('МАКС')).not.toBeInTheDocument();
+        // Видимого «МАКС» нет; размерник (#567, aria-hidden) исключён селектором.
+        expect(
+            mobile.queryByText('МАКС', { selector: ':not([aria-hidden="true"])' }),
+        ).not.toBeInTheDocument();
     });
 
     it('при промежуточном значении силы число красится warning (мобилка)', () => {

@@ -118,6 +118,17 @@ function HpCard({
 /** Самая широкая из трёх подписей пилюли — резервирует её ширину (#449), см. ниже. */
 const TURN_PILL_SIZER = 'ХОД СОПЕРНИКА';
 
+/** Размерник ширины ячейки «Сила» (#567): на потолке значение — подпись «МАКС»
+ *  (4 знака), а не число. В моноширинном font-ui «МАКС» шире максимального числа
+ *  `POWER_MAX` (2 знака `20`), поэтому под сила-ячейку резервируем ширину именно
+ *  под «МАКС» — иначе на потолке силы бокс растёт под неё и двигает соседние
+ *  ячейки телеметрии (барьер геометрии #473/#474: `hud-geometry-stable`). */
+const POWER_VALUE_SIZER = 'МАКС';
+/** Подпись значения «Сила» под текущую силу: на потолке — «МАКС», иначе число. */
+function powerLabel(power: number): ReactNode {
+    return power === POWER_MAX ? 'МАКС' : power;
+}
+
 function TurnPill({
     turn,
     phase,
@@ -1038,8 +1049,8 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     />
                     <TrimCell
                         label="Сила"
-                        value={power === POWER_MAX ? 'МАКС' : power}
-                        sizer={POWER_MAX}
+                        value={powerLabel(power)}
+                        sizer={POWER_VALUE_SIZER}
                         valueClassName={power === POWER_MAX ? 'text-danger' : 'text-warning'}
                         frozen={trimFrozen}
                         onDec={() => increasePower(-1)}
@@ -1255,9 +1266,9 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         />
                         <NumberCell
                             label="Сила"
-                            value={power === POWER_MAX ? 'МАКС' : power}
+                            value={powerLabel(power)}
                             valueClassName={power === POWER_MAX ? 'text-danger' : 'text-warning'}
-                            sizer={POWER_MAX}
+                            sizer={POWER_VALUE_SIZER}
                             glow
                         />
                         <WindCell wind={wind} windRevealed={windRevealed} />
