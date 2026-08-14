@@ -34,6 +34,11 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
     const [botBubble, setBotBubble] = useState<{ reply: TBotReply; x: number; y: number } | null>(
         null,
     );
+    // Ветер ВОСПРОИЗВОДИМОГО боя: движок считает его от сида записи, а слой осадков без
+    // него ронял бы снег/дождь строго вертикально — не так, как было в самом бою.
+    // Локальное состояние, а не стор: стор реплея держит HUD, и писать туда боевой ветер
+    // означало бы смешивать два источника (см. `onWindInit` в `GameCanvas`).
+    const [replayWind, setReplayWind] = useState(0);
 
     const applyDamage = useGameStore((s) => s.applyDamage);
     const setGameOver = useGameStore((s) => s.setGameOver);
@@ -66,6 +71,10 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
                         setGameOver();
                     }
                 },
+                onWindInit: (wind) => setReplayWind(wind),
+                // Смена ветра бурей (#547) — только у записей своей эпохи: у старых
+                // `weather:false`, и движок этот колбэк не дёргает вовсе.
+                onWindChange: (wind) => setReplayWind(wind),
                 onMovesChange: () => {},
                 onPowerChange: () => {},
                 onBotReply: (reply) => {
@@ -153,6 +162,7 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
                 живой параллакс в нём только отвлекал бы от разбора выстрелов. */}
             <SkyBackground
                 seed={replay.seed}
+                wind={replayWind}
                 reducedMotion
                 className="pointer-events-none absolute inset-0"
             />
@@ -169,6 +179,7 @@ export function ReplayCanvas({ replay }: TReplayCanvasProps) {
             {replay.weather === true && (
                 <PrecipitationLayer
                     seed={replay.seed}
+                    wind={replayWind}
                     className="pointer-events-none absolute inset-0"
                 />
             )}
