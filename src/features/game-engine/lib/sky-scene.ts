@@ -6,7 +6,13 @@ import {
     type TCelestialGeometry,
     type TStarInstance,
 } from './sky-celestial';
-import { buildCloudField, cloudSpriteWidth, windFactor, type TCloudInstance } from './cloud-field';
+import {
+    buildCloudField,
+    cloudSpriteWidth,
+    MOUNTAIN_HORIZON_FRAC,
+    windFactor,
+    type TCloudInstance,
+} from './cloud-field';
 import { computeLightDirection, edgeHighlightColor } from './scene-light';
 import { wrapOffset } from './sky-parallax';
 import {
@@ -400,7 +406,7 @@ export class SkyScene {
         // Высота — доля высоты неба (арт 1024×130 ≈ 8:1, растяжение по вертикали
         // читается как атмосферная дымка, гор в бою всё равно касаются взглядом мельком).
         const bandHeight = Math.round(height * 0.16);
-        const bottom = Math.round(height * 0.62);
+        const bottom = Math.round(height * MOUNTAIN_HORIZON_FRAC);
         const top = bottom - bandHeight;
         // Контур 1 px по обращённому к светилу склону (#545, §6): силуэт в тоне каймы
         // рисуется со сдвигом на сторону светила и на 1 px вверх, затем перекрывается
@@ -476,23 +482,27 @@ export class SkyScene {
      */
     private drawClouds(ctx: CanvasRenderingContext2D, width: number, height: number): void {
         ctx.save();
-        ctx.globalAlpha = this.preset.cloudAlpha;
         const dpr = getDevicePixelRatio();
         const devicePixel = 1 / dpr;
-        // Базовый размер — доля ширины экрана (`cloudSpriteWidth`), а не фиксированные
-        // CSS-пиксели: 192 px совпадали с десктопным эталоном, но на 390 занимали
-        // половину ширины (#523). К dpr привязывать тоже нельзя — на экране без
-        // ретины облако выходило вдвое крупнее макета (#514). Одинаковый на всех
-        // облаках он и был причиной «неинтересного» неба (#515) — каждое облако
-        // домножает его на свой `scale`.
+        // Базовый размер — из МАСШТАБА МИРА (`cloudSpriteWidth` = `WORLD_UNITS.cloudWidth`
+        // × `computeWorldScale`), той же геометрии, что у танка (#572). Прежняя доля
+        // ширины экрана (0.15) на 1920 давала облако в три корпуса танка: небо и арена
+        // жили по разным законам. Каждое облако домножает базу на свой `scale`,
+        // выведенный из высоты (`cloud.scale`).
         const baseWidth = cloudSpriteWidth(width);
+        // Низ облака не должен заходить за силуэт дальних гор (#572): облака рисуются
+        // ПОВЕРХ статичного слоя с горами, и при `yFrac` у нижней границы низ спрайта
+        // перекрывал бы силуэт. Ограничиваем именно низ облака, а не его верх.
+        const horizonPx = height * MOUNTAIN_HORIZON_FRAC;
         for (const cloud of this.field) {
             const image = this.images[cloud.sprite];
             if (!image || !image.width || !image.height) continue;
             const spriteWidth = Math.max(1, Math.round(baseWidth * cloud.scale));
+            // Вертикальное сжатие по плану (#572): слой под острым углом сплющен, поэтому
+            // далёкие облака — плоские полоски, а не те же клубы помельче.
             const spriteHeight = Math.max(
                 1,
-                Math.round((image.height * spriteWidth) / image.width),
+                Math.round(((image.height * spriteWidth) / image.width) * cloud.squashY),
             );
             // Поле шире экрана на спрайт: облако уезжает за край и въезжает с другого,
             // не исчезая на глазах.
@@ -506,7 +516,11 @@ export class SkyScene {
             const travelled =
                 snapToDevicePixel(cloud.xFrac * span, dpr) + direction * steps * devicePixel;
             const x = wrapOffset(travelled, span) - spriteWidth;
-            const y = snapToDevicePixel(height * cloud.yFrac, dpr);
+            const rawY = Math.min(height * cloud.yFrac, horizonPx - spriteHeight);
+            const y = snapToDevicePixel(rawY, dpr);
+            // Прозрачность по плану (#572): у горизонта облако бледнее — воздушная дымка.
+            // Множитель поверх альфы пресета, поэтому день/закат/ночь сохраняют свой тон.
+            ctx.globalAlpha = this.preset.cloudAlpha * cloud.alpha;
             // Зеркалим через отрицательную ширину назначения (валидно по спеке Canvas
             // 2D): drawImage сам разворачивает спрайт, не трогая матрицу трансформации —
             // ctx.scale(-1,1) сдвинул бы систему координат для всех кадров после этого

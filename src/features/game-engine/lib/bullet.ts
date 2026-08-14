@@ -271,13 +271,17 @@ export class Bullet {
 
     draw(ctx: CanvasRenderingContext2D) {
         if (this.isPositionChanged()) {
+            // Спрайт центрирован по x/y (issue #569) — та же конвенция, что и у
+            // физики (отскоки, хит-детект) и следа (`BulletTrail.draw`): без
+            // смещения на half след выходил из левого верхнего угла квадрата.
             const size = this.radius * 2 * this.spec.bulletSizeFactor;
-            ctx.clearRect(this.lastX, this.lastY, size, size);
+            const half = size / 2;
+            ctx.clearRect(this.lastX - half, this.lastY - half, size, size);
 
             if (ctx.fillStyle !== this.color) {
                 ctx.fillStyle = this.color;
             }
-            ctx.fillRect(this.x, this.y, size, size);
+            ctx.fillRect(this.x - half, this.y - half, size, size);
             this.lastX = this.x;
             this.lastY = this.y;
         }
