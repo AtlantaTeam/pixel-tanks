@@ -41,6 +41,7 @@ import {
     type TWeatherModifier,
 } from './weather-modifiers';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
+import { computeBarrelLabelAnchor } from './barrel-label-anchor';
 
 /**
  * Ёмкости пула хватает на одновременный залп земли и вспышку урона. Максимальный
@@ -71,16 +72,8 @@ const SEGMENT_OPACITY = 0.85;
 const ARC_TAIL_OPACITY_FACTOR = 0.12;
 /** Скорость бегущего пунктира дуги (px/мс). Гасится при prefers-reduced-motion. */
 const ARC_DASH_SPEED = 0.04;
-/** Толщина индикатора «угол·сила» у ствола и его отступ от точки крепления. */
+/** Шрифт индикатора «угол·сила» у ствола. */
 const BARREL_LABEL_FONT = '700 13px "JetBrains Mono", ui-monospace, monospace';
-/**
- * Отступ подписи от точки крепления ствола ВДОЛЬ вектора выстрела (issue #565):
- * не строго вверх, а по прицелу — палец при жесте-рогатке приходит снизу-слева,
- * а дуга уходит вверх-вправо, поэтому сдвинутая по прицелу подпись уходит от
- * пальца, а не ложится под него. Расстояние с запасом на длину ствола (~35·scale),
- * чтобы подпись не села на дульный срез.
- */
-const BARREL_LABEL_OFFSET = 44;
 
 export type TTanksWeapons = {
     leftTankWeapons: TWeapon[];
@@ -558,9 +551,12 @@ export class GamePlay {
         color: string,
     ) {
         const label = `${formatAngle(activeTank.gunpointAngle)}° · ${isMax ? 'МАКС' : activeTank.power}`;
-        const angle = activeTank.gunpointAngle;
-        const x = activeTank.gunpointX + Math.cos(angle) * BARREL_LABEL_OFFSET;
-        const y = activeTank.gunpointY + Math.sin(angle) * BARREL_LABEL_OFFSET;
+        const { x, y } = computeBarrelLabelAnchor(
+            activeTank.gunpointX,
+            activeTank.gunpointY,
+            activeTank.gunpointAngle,
+            activeTank.scale,
+        );
         ctx.save();
         ctx.font = BARREL_LABEL_FONT;
         ctx.textAlign = 'center';

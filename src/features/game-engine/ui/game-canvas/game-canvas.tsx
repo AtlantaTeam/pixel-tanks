@@ -612,7 +612,13 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 onPointerCancel={() => {
                     dragRef.current = null;
                     setGestureVisual(null);
-                    gameRef.current?.setAimPreviewVisible(false);
+                    const game = gameRef.current;
+                    game?.setAimPreviewVisible(false);
+                    // Гибрид (мышь+тач): до жеста мог быть hover с `showBarrelReadout=true`.
+                    // Отменённый жест (не завершён выстрелом) не проходит через phase→flight,
+                    // поэтому readout гасим здесь явно — иначе canvas-подпись висит до
+                    // следующего mousemove/mouseleave/выстрела.
+                    game?.setBarrelReadoutVisible(false);
                 }}
                 onMouseMove={(e) => {
                     const game = gameRef.current;
