@@ -1,3 +1,4 @@
+import { clamp, lerp } from '@/shared/lib/math';
 import { createSeededRandom } from '@/shared/lib/random';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
 import { MAX_WIND } from './wind';
@@ -134,16 +135,6 @@ const CALM_DRIFT = 0.25;
 
 /** Прибавка к дрейфу при ветре в полную силу (`MAX_WIND`). */
 const WIND_GAIN = 1.75;
-
-/** Линейная интерполяция: `a` при t=0, `b` при t=1. */
-function lerp(a: number, b: number, t: number): number {
-    return a + (b - a) * t;
-}
-
-/** Зажимает `value` в отрезок `[min, max]`. */
-function clamp(value: number, min: number, max: number): number {
-    return Math.min(max, Math.max(min, value));
-}
 
 /**
  * Множитель скорости облаков от ветра боя. Знак — направление: ветер влево несёт

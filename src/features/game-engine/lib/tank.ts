@@ -17,6 +17,21 @@ export type TTankShadow = { direction: TLightDirection; color: string } | null;
 /** Полутень корпуса: тёмный полупрозрачный тон, читается на песке любого пресета. */
 export const TANK_SHADOW_COLOR = 'rgba(12, 10, 8, 0.32)';
 
+/** Слоёв рассеивания края тени: плотный центр + два всё более прозрачных кольца. */
+const SHADOW_LAYERS = 3;
+/** Полуширина тени как доля ширины корпуса при высоком светиле (dy→1). */
+const SHADOW_RADIUS_X_BASE_FRAC = 0.5;
+/** Базовая толщина тени в CSS-пикселях (scale=1) — тонкий эллипс на поверхности. */
+const SHADOW_RADIUS_Y_BASE_PX = 2;
+/** Доля толщины у горизонта (dy→0): низкое светило даёт чуть более тонкую тень. */
+const SHADOW_RADIUS_Y_LOW_SUN_FACTOR = 0.5;
+/** Горизонтальное смещение тени как доля ширины корпуса при высоком светиле. */
+const SHADOW_OFFSET_BASE_FRAC = 0.28;
+/** Прибавка к смещению у горизонта (dy→0), доля ширины корпуса: длинная закатная тень. */
+const SHADOW_OFFSET_LOW_SUN_FRAC = 0.32;
+/** Насколько внешнее кольцо шире центра — рассеивание края (обе полуоси растут одинаково). */
+const SHADOW_EDGE_SCATTER = 0.5;
+
 type TGroundUnderTankData = {
     leftSideX: number;
     rightSideX: number;
@@ -45,13 +60,38 @@ export function wheelRotationDelta(distance: number, wheelRadiusPx: number): num
 }
 
 /**
- * Изменяет альфа-канал в rgba-строке. Парсит `rgba(r,g,b,a)`, заменяет альфу
- * и возвращает новую строку. Используется для рассеивания края тени.
+ * Разбирает `rgb(...)`/`rgba(...)` (целые или дробные каналы) в числа за один проход.
+ * `null` на нераспознанном формате (hex и пр.) — вызывающий берёт запасной тон, а не
+ * молча тащит исходную строку во все слои без рассеивания (тихая деградация).
  */
-function setRgbaAlpha(rgbaStr: string, newAlpha: number): string {
-    const match = rgbaStr.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*[\d.]+\)/);
-    if (!match) return rgbaStr;
-    return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${newAlpha})`;
+function parseRgba(color: string): { r: number; g: number; b: number; a: number } | null {
+    const m = color.match(
+        /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)/,
+    );
+    if (!m) return null;
+    return {
+        r: Math.round(parseFloat(m[1])),
+        g: Math.round(parseFloat(m[2])),
+        b: Math.round(parseFloat(m[3])),
+        a: m[4] !== undefined ? parseFloat(m[4]) : 1,
+    };
+}
+
+/**
+ * Предрассчитывает цвета слоёв тени ОДИН раз при установке `shadow` — не в кадре
+ * (правило `.claude/rules/canvas.md`: никаких regex/аллокаций строк в render). Цвет
+ * разбирается единожды, из готовых чисел собираются `SHADOW_LAYERS` строк с убывающей,
+ * но ненулевой альфой (от `baseAlpha` в центре к `baseAlpha/SHADOW_LAYERS` на краю —
+ * иначе внешнее кольцо заливалось бы прозрачным и рассеивало впустую).
+ */
+function buildShadowLayerColors(color: string): string[] {
+    const parsed = parseRgba(color) ?? { r: 12, g: 10, b: 8, a: 0.32 };
+    const colors: string[] = [];
+    for (let i = 0; i < SHADOW_LAYERS; i++) {
+        const alpha = (parsed.a * (SHADOW_LAYERS - i)) / SHADOW_LAYERS;
+        colors.push(`rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${alpha})`);
+    }
+    return colors;
 }
 
 /**
@@ -126,12 +166,25 @@ export class Tank {
     isReadyToFire = true;
     closestToHit: { minDiff: number; angle: number; power: number; count: number } | null;
     weapons: TWeapon[];
+    private _shadow: TTankShadow = null;
+    /**
+     * Цвета слоёв тени, предрассчитанные в сеттере `shadow` (`buildShadowLayerColors`):
+     * `drawShadow` не собирает строки/regex в кадре (правило `.claude/rules/canvas.md`).
+     */
+    private shadowLayerColors: readonly string[] = [];
     /**
      * Тень от светила (#545): ставит `GamePlay` из модели света боя (`computeSceneLight`)
      * после конструирования, как и скины — `Tank` сам про сид/пресет не знает. `null` —
-     * тени нет (тесты/реплей без сида, день до светила).
+     * тени нет (тесты/реплей без сида, день до светила). Сеттер предрассчитывает цвета
+     * слоёв один раз, чтобы горячий путь `drawShadow` не аллоцировал строки в кадре.
      */
-    shadow: TTankShadow = null;
+    get shadow(): TTankShadow {
+        return this._shadow;
+    }
+    set shadow(value: TTankShadow) {
+        this._shadow = value;
+        this.shadowLayerColors = value ? buildShadowLayerColors(value.color) : [];
+    }
     /**
      * Угол поворота флажка ветра на мачте (радианы, `windFlagRotationRad`) — «дешёвый
      * носитель» ветра рядом с ареной (#550). Ставит `GamePlay` только на свой танк
@@ -404,40 +457,41 @@ export class Tank {
      * контакта корпуса с рельефом (критерий #545), которых у «висящего» танка не было.
      */
     private drawShadow(ctx: CanvasRenderingContext2D, ground: Ground) {
-        if (!this.shadow) return;
+        if (!this._shadow) return;
         const lastX = ground.heights.length - 1;
         if (lastX < 0) return;
         const centerX = Math.min(lastX, Math.max(0, floor(this.x + this.tankWidth / 2)));
         const surfaceY = this.innerHeight - ground.heights[centerX];
 
         // Геометрия тени зависит от высоты светила (dy): при низком светиле тень
-        // длиннее, при высоком — компактнее (#571).
-        const dy = this.shadow.direction.dy;
-        // При dy=1 (светило над головой) базовый радиус = 0.5, при dy→0 растягивается до ~1.5
-        const radiusX = this.tankWidth * (0.5 + (1 - dy) * 1.0);
-        // Тонкий эллипс (~2 px в каноне) — основа; при низком светиле чуть толще
-        const radiusY = Math.max(2, 2 * this.scale * (0.5 + dy * 0.5));
-        // Смещение по свету зависит от его высоты: при низком светиле смещение больше
-        const offsetX = this.shadow.direction.dx * this.tankWidth * (0.28 + (1 - dy) * 0.32);
+        // длиннее и смещена дальше, при высоком — компактнее (#571).
+        const dy = this._shadow.direction.dy;
+        // Полуширина: база `SHADOW_RADIUS_X_BASE_FRAC` корпуса при высоком светиле (dy→1),
+        // растёт до +1 корпуса у горизонта (dy→0).
+        const radiusX = this.tankWidth * (SHADOW_RADIUS_X_BASE_FRAC + (1 - dy));
+        // Тонкий эллипс — основа; при высоком светиле чуть толще, у горизонта площе.
+        const radiusY = Math.max(
+            SHADOW_RADIUS_Y_BASE_PX,
+            SHADOW_RADIUS_Y_BASE_PX * this.scale * SHADOW_RADIUS_Y_LOW_SUN_FACTOR * (1 + dy),
+        );
+        const offsetX =
+            this._shadow.direction.dx *
+            this.tankWidth *
+            (SHADOW_OFFSET_BASE_FRAC + (1 - dy) * SHADOW_OFFSET_LOW_SUN_FRAC);
 
         ctx.save();
-        // Парсим альфу из исходного цвета для рассеивания
-        const colorMatch = this.shadow.color.match(/(rgba\(\d+,\s*\d+,\s*\d+,\s*)([\d.]+)\)/);
-        const baseAlpha = colorMatch ? parseFloat(colorMatch[2]) : 0.32;
-
-        // Рисуем несколько слоёв эллипса с убывающей альфой для рассеивания края
-        const layers = 3;
-        for (let i = 0; i < layers; i++) {
-            // Альфа убывает от 100% в центре к 0 на краю
-            const alpha = baseAlpha * (1 - i / (layers - 1));
-            const scaleFactor = 1 + (i / (layers - 1)) * 0.5; // радиус растёт к краю
+        // Концентрические эллипсы с убывающей (но ненулевой) альфой — мягкий край.
+        // Обе полуоси растут к краю на один множитель, чтобы рассеивание было
+        // симметричным (иначе размывался бы только левый/правый край, не верх/низ).
+        for (let i = 0; i < SHADOW_LAYERS; i++) {
+            const scaleFactor = 1 + (i / (SHADOW_LAYERS - 1)) * SHADOW_EDGE_SCATTER;
             ctx.beginPath();
-            ctx.fillStyle = setRgbaAlpha(this.shadow.color, alpha);
+            ctx.fillStyle = this.shadowLayerColors[i];
             ctx.ellipse(
                 centerX + offsetX,
                 surfaceY,
                 radiusX * scaleFactor,
-                radiusY,
+                radiusY * scaleFactor,
                 0,
                 0,
                 Math.PI * 2,

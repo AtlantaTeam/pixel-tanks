@@ -1,5 +1,7 @@
+import { POWER_MAX } from '@/shared/config';
 import { floor } from '@/shared/lib/canvas';
 import { ENGINE_COLORS } from './engine-palette';
+import { WEAPON_SPECS } from './weapon-specs';
 
 /**
  * Точка следа снаряда. Неподвижна (в отличие от частиц ParticlePool) — только
@@ -22,26 +24,51 @@ export type TTrailPoint = {
 };
 
 /**
- * Ёмкость с запасом под интерполяцию (issue #570): на быстром снаряде один `emit`
- * кладёт до `MAX_TRAIL_INTERPOLATION_STEPS + 1` точек за кадр, а не одну. Слот
- * переиспользуется курсором ПО КРУГУ без проверки, погасла ли точка в нём —
- * поэтому ёмкость обязана перекрывать полный оборот с запасом: (шагов на кадр) ×
- * (жизнь точки в кадрах + 1 кадр на дочистку). Самый долгоживущий след сейчас —
- * 14 кадров (`weapon-specs.ts`), самый частый шаг — 5 точек/кадр; 96 даёт
- * двукратный запас, чтобы курсор не догонял ещё не отрисованный дочиста хвост.
+ * Пределы следов из таблицы оружия (`weapon-specs.ts`) — выведены, а не вписаны
+ * числом, чтобы кап доливки и ёмкость буфера не разъезжались при перетюне весов.
  */
-export const DEFAULT_TRAIL_CAPACITY = 96;
+const TRAIL_SPECS = Object.values(WEAPON_SPECS).map((s) => s.trail);
+/** Самый долгоживущий след (кадры) — задаёт нижнюю границу ёмкости кольца. */
+const MAX_TRAIL_LIFE_FRAMES = Math.max(...TRAIL_SPECS.map((t) => t.life));
+/** Самый тонкий след — на нём разрывы видны раньше всего, по нему считаем кап доливки. */
+const MIN_TRAIL_SIZE = Math.min(...TRAIL_SPECS.map((t) => t.size));
+
+/**
+ * Максимальный разрыв точек следа между кадрами: скорость снаряда = сила выстрела
+ * (`Bullet`: dx=cos·power, dy=sin·power ⇒ |v| = power ≤ POWER_MAX px/кадр). Снос ветром
+ * и гравитацией за один кадр пренебрежимо мал рядом с этим потолком, а сам `power`
+ * жёстко зажат `clampPower` — быстрее снаряд не летит.
+ */
+const MAX_GAP_PER_FRAME = POWER_MAX;
+
+/**
+ * Максимум точек, доливаемых интерполяцией МЕЖДУ прошлым и текущим `emit` за один кадр
+ * (issue #570): без неё быстрый снаряд (шаг больше своего размера) кладёт след с
+ * разрывами — отдельные квадраты вместо сплошной линии. Кап выведен из требования
+ * непрерывности «шаг ≤ size» для самого тонкого следа на макс. скорости: при доливке
+ * spacing = gap/(steps+1), и `ceil` гарантирует spacing ≤ size, когда steps+1 ≥ gap/size.
+ * Значит на скоростях ≤ POWER_MAX даже тончайший след остаётся сплошным; быстрее физика
+ * снаряд не пускает, а выше капа кадр не разъедал бы полкольца буфера.
+ */
+const MAX_TRAIL_INTERPOLATION_STEPS = Math.max(
+    1,
+    Math.ceil(MAX_GAP_PER_FRAME / MIN_TRAIL_SIZE) - 1,
+);
+
+/**
+ * Ёмкость кольцевого буфера (issue #570). Слот переиспользуется курсором ПО КРУГУ без
+ * проверки, погасла ли точка в нём, поэтому буфер обязан перекрывать полный оборот:
+ * (макс. точек за кадр) × (кадров жизни точки + 1 на дочистку). Берём пессимистичное
+ * произведение — макс. частоту доливки (тончайший след) и макс. жизнь (самый долгий
+ * след) вместе, хотя одно оружие их не совмещает: это даёт ~2× запас над реальным
+ * худшим весом и, будучи формулой от `WEAPON_SPECS`/`POWER_MAX`, не протухает при
+ * правке оружия.
+ */
+export const DEFAULT_TRAIL_CAPACITY =
+    (MAX_TRAIL_INTERPOLATION_STEPS + 1) * (MAX_TRAIL_LIFE_FRAMES + 1);
 export const DEFAULT_TRAIL_LIFE = 10;
 export const DEFAULT_TRAIL_SIZE = 3;
 export const TRAIL_COLOR = ENGINE_COLORS.primary;
-
-/**
- * Максимум точек, доливаемых интерполяцией МЕЖДУ прошлым и текущим `emit` за один
- * кадр (issue #570): без неё быстрый снаряд (шаг больше своего размера) кладёт след
- * с разрывами — отдельные квадраты вместо сплошной линии. Кап — чтобы кадр с
- * экстремальной скоростью не разово съедал полкольца буфера.
- */
-const MAX_TRAIL_INTERPOLATION_STEPS = 4;
 
 /**
  * Затухающий след снаряда: кольцевой буфер снятых по пути точек, каждая живёт
@@ -106,7 +133,12 @@ export class BulletTrail {
             const dy = y - this.lastEmitY;
             const distance = Math.hypot(dx, dy);
             if (distance > size) {
-                const steps = Math.min(MAX_TRAIL_INTERPOLATION_STEPS, Math.floor(distance / size));
+                // `ceil(distance/size) - 1` доливок даёт spacing = distance/(steps+1) ≤ size
+                // (сплошной след, #570); кап держит буфер при разрыве выше макс. скорости.
+                const steps = Math.min(
+                    MAX_TRAIL_INTERPOLATION_STEPS,
+                    Math.ceil(distance / size) - 1,
+                );
                 for (let i = 1; i <= steps; i++) {
                     const t = i / (steps + 1);
                     this.place(this.lastEmitX + dx * t, this.lastEmitY + dy * t, life, size);

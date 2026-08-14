@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { POWER_MAX } from '@/shared/config';
 import { BulletTrail, DEFAULT_TRAIL_CAPACITY } from './bullet-trail';
 
 const makeCtx = () => ({
@@ -117,19 +118,22 @@ describe('BulletTrail: затухающий след без аллокаций',
         expect(newDrawnSize).toBeLessThan(firstDrawnSize);
     });
 
-    it('доливает интерполированные точки, когда снаряд между кадрами проходит больше своего размера', () => {
-        const trail = new BulletTrail(32);
+    it('доливка держит шаг между соседними точками ≤ size на макс. скорости снаряда (сплошной след #570)', () => {
+        const trail = new BulletTrail(64);
+        const size = 2; // самый тонкий след — на нём разрыв виден раньше всего
 
-        trail.emit(0, 0, 10, 2); // первая точка следа — интерполировать пока не от чего
-        trail.emit(40, 0, 10, 2); // быстрый снаряд: разрыв 40px при размере точки 2px
+        trail.emit(0, 0, 10, size); // первая точка следа — интерполировать пока не от чего
+        // Разрыв = макс. путь снаряда за кадр (скорость = сила выстрела ≤ POWER_MAX).
+        trail.emit(POWER_MAX, 0, 10, size);
 
         const active = trail.pointsView.filter((p) => p.active);
-        // Голова (40,0) + минимум одна доливка между (0,0) и (40,0) — иначе разрыв виден как есть.
         expect(active.length).toBeGreaterThan(2);
 
+        // Настоящий инвариант непрерывности: соседние точки отстоят не дальше своего
+        // размера — иначе след визуально распадается на отдельные квадраты.
         const xs = active.map((p) => p.x).sort((a, b) => a - b);
         for (let i = 1; i < xs.length; i++) {
-            expect(xs[i] - xs[i - 1]).toBeLessThan(40);
+            expect(xs[i] - xs[i - 1]).toBeLessThanOrEqual(size);
         }
     });
 
