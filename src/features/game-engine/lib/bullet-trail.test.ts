@@ -78,6 +78,70 @@ describe('BulletTrail: затухающий след без аллокаций',
         expect(trail.hasActive()).toBe(false);
     });
 
+    it('толщина бокса убывает от головы к хвосту следа (комета, а не цепочка одинаковых квадратов)', () => {
+        const trail = new BulletTrail(4);
+        const ctx = makeCtx();
+        trail.emit(5, 5, 4, 8);
+
+        trail.draw(asCtx(ctx)); // life 4/4 — голова следа, самый толстый кадр
+        const headSize = ctx.fillRect.mock.calls[0][2];
+
+        ctx.fillRect.mockClear();
+        trail.draw(asCtx(ctx));
+        trail.draw(asCtx(ctx));
+        trail.draw(asCtx(ctx)); // life 1/4 — последний кадр перед гашением, самый тонкий
+        const tailSize = ctx.fillRect.mock.calls.at(-1)![2];
+
+        expect(tailSize).toBeLessThan(headSize);
+        expect(tailSize).toBeGreaterThanOrEqual(1); // пол в 1px — хвост не схлопывается в невидимую точку
+    });
+
+    it('очищает прошлым кадром нарисованный (больший) бокс, а не текущий уменьшившийся размер', () => {
+        const trail = new BulletTrail(4);
+        const ctx = makeCtx();
+        trail.emit(10, 10, 2, 8); // maxLife 2: первый кадр size=8, второй — уже меньше
+
+        trail.draw(asCtx(ctx)); // рисует полноразмерный бокс 8×8, life 2 -> 1
+        const firstDrawnSize = ctx.fillRect.mock.calls[0][2];
+        expect(firstDrawnSize).toBe(8);
+
+        ctx.clearRect.mockClear();
+        ctx.fillRect.mockClear();
+        trail.draw(asCtx(ctx)); // life 1 -> 0: сначала чистит бокс прошлого кадра (8×8), потом рисует меньший
+
+        const [, , clearedW, clearedH] = ctx.clearRect.mock.calls[0];
+        expect(clearedW).toBe(firstDrawnSize);
+        expect(clearedH).toBe(firstDrawnSize);
+
+        const newDrawnSize = ctx.fillRect.mock.calls[0][2];
+        expect(newDrawnSize).toBeLessThan(firstDrawnSize);
+    });
+
+    it('доливает интерполированные точки, когда снаряд между кадрами проходит больше своего размера', () => {
+        const trail = new BulletTrail(32);
+
+        trail.emit(0, 0, 10, 2); // первая точка следа — интерполировать пока не от чего
+        trail.emit(40, 0, 10, 2); // быстрый снаряд: разрыв 40px при размере точки 2px
+
+        const active = trail.pointsView.filter((p) => p.active);
+        // Голова (40,0) + минимум одна доливка между (0,0) и (40,0) — иначе разрыв виден как есть.
+        expect(active.length).toBeGreaterThan(2);
+
+        const xs = active.map((p) => p.x).sort((a, b) => a - b);
+        for (let i = 1; i < xs.length; i++) {
+            expect(xs[i] - xs[i - 1]).toBeLessThan(40);
+        }
+    });
+
+    it('не доливает точки, если снаряд между кадрами не выходит за размер точки', () => {
+        const trail = new BulletTrail(32);
+
+        trail.emit(0, 0, 10, 8);
+        trail.emit(3, 0, 10, 8); // разрыв 3px меньше размера точки (8px)
+
+        expect(trail.pointsView.filter((p) => p.active)).toHaveLength(2);
+    });
+
     it('clear гасит все точки без обращения к canvas', () => {
         const trail = new BulletTrail(4);
         trail.emit(1, 1);
