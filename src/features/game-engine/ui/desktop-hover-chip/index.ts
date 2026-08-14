@@ -1,5 +1,1 @@
-export {
-    DesktopHoverChip,
-    DESKTOP_CHIP_WIDTH,
-    type TDesktopHoverChipVisual,
-} from './desktop-hover-chip';
+export { DesktopHoverChip, type TDesktopHoverChipVisual } from './desktop-hover-chip';

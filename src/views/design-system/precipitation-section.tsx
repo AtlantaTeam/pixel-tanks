@@ -1,5 +1,11 @@
 import { PRECIP_PRESETS, PrecipitationLayer, SkyBackground } from '@/features/game-engine';
 
+/** Ветер витрины: одинаков для всех четырёх пресетов — снос частиц показывает НАКЛОН
+ *  струи, а не силу ветра, и разные значения читались бы как разница между пресетами,
+ *  которой нет. Величина — середина рабочего диапазона боя, при ней наклон различим
+ *  на кадре 1400 мс и не вырождается ни в вертикаль, ни в горизонталь. */
+const SHOWCASE_WIND = 0.006;
+
 /**
  * Витрина осадков как погодного пресета (#546, §7.7): ясно / дождь / снег / буря.
  * Пресеты форсируются явно (в бою выбор идёт от сида). Частицы показаны СТАТИЧНЫМ
@@ -22,7 +28,7 @@ export function PrecipitationSection() {
                         <PrecipitationLayer
                             seed={`showcase-weather-${preset.id}`}
                             preset={preset.id}
-                            wind={0.006}
+                            wind={SHOWCASE_WIND}
                             snapshotMs={1400}
                             className="absolute inset-0"
                         />

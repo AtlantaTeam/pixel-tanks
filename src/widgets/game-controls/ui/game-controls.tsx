@@ -9,13 +9,10 @@ import {
     useGameStore,
     type TGameCanvasHandle,
 } from '@/features/game-engine';
+import { HUD_SURFACE } from '@/shared/config';
 import { Icon, WeaponSelector, type TIconName, type TWeaponSelectorWeapon } from '@/shared/ui';
 import { EWeaponKind, type TWeapon } from '@/shared/model';
 import { KeyboardSchemeHint } from './keyboard-scheme-hint';
-
-/** Контраст над любым скином (handoff, решение E) — та же строка, что в `top-hud`:
- *  подложка + blur держат читаемость текстовой подсказки поверх шумной/светлой арены. */
-const HUD_SURFACE = 'bg-[rgba(8,12,8,0.80)] backdrop-blur-[4px] shadow-[0_0_0_1px_rgba(0,0,0,.9)]';
 
 /** GDD §9-E: тип оружия → иконка. Связь по `kind`-enum, а не по строке имени
  *  (issue #483): движок раздаёт четыре типа, и иконки больше не падают в fallback.

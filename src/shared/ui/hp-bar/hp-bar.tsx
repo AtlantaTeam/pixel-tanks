@@ -47,8 +47,13 @@ function HpName({ label, faction }: { label: string; faction: THPBarFaction }) {
                 className={clsx('shrink-0', faction === 'enemy' ? 'text-enemy' : 'text-accent')}
             />
             {/* handoff «HP-карточка»: имя — ник профиля, длина не гарантирована —
-                обрезаем многоточием, а не переносим на узкой карточке. */}
-            <span className="overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
+                обрезаем многоточием, а не переносим на узкой карточке.
+                testid — на клипающем боксе (#540): усечение здесь чисто CSS'ное и следа
+                в textContent не оставляет, проверить его можно только замером
+                scrollWidth против clientWidth ИМЕННО этого узла. */}
+            <span data-testid="hp-name" className="overflow-hidden text-ellipsis whitespace-nowrap">
+                {label}
+            </span>
         </span>
     );
 }

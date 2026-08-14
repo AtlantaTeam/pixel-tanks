@@ -29,11 +29,7 @@ import {
 import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
 import { CHIP_WIDTH, GestureOverlay, type TGestureVisual } from '../gesture-overlay';
-import {
-    DesktopHoverChip,
-    DESKTOP_CHIP_WIDTH,
-    type TDesktopHoverChipVisual,
-} from '../desktop-hover-chip';
+import { DesktopHoverChip, type TDesktopHoverChipVisual } from '../desktop-hover-chip';
 
 type TDragState = {
     pointerId: number;
@@ -520,6 +516,10 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             <SkyBackground seed={battleSeed} wind={wind} className="absolute inset-0" />
             <canvas
                 ref={canvasRef}
+                // Точка входа e2e к состоянию движка: `GamePlay.activateMode` пишет сюда
+                // `data-engine-mode` на каждом переходе, и тесты ждут выхода из стартового
+                // `fire` по сигналу, а не по таймеру.
+                data-testid="game-canvas"
                 className="game-canvas relative block h-full w-full touch-none"
                 onPointerDown={(e) => {
                     // Мышь оставляем на своей схеме (движение — угол, клик — выстрел);
@@ -678,7 +678,7 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                         right: zoneRect.right - containerLeft,
                     };
                     chipTop = clampChipTop(gunpointY, zoneLocal, CHIP_HEIGHT, CHIP_GAP);
-                    chipCenterX = clampChipCenterX(gunpointX, zoneLocal, DESKTOP_CHIP_WIDTH);
+                    chipCenterX = clampChipCenterX(gunpointX, zoneLocal, CHIP_WIDTH);
 
                     // Получаем силу и максимум из стора.
                     const currentPower = power;

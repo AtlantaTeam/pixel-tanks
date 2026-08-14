@@ -11,6 +11,13 @@ type TWindDustLayerProps = {
     seed: number | string | null | undefined;
     /** Ветер боя (`game.store.wind`): пылинки летят по нему, при 0 — их нет. */
     wind: number;
+    /**
+     * Единичный статичный кадр на этом времени сцены (мс) вместо rAF-петли — для витрины,
+     * тот же паритет, что у `PrecipitationLayer` (#546). Без него слой пылинок нечем
+     * зафиксировать в визуальной регрессии без флейка: rAF даёт разное поле частиц на
+     * каждом прогоне, и снимок витрины краснел бы от движения, а не от вёрстки.
+     */
+    snapshotMs?: number;
     /** Override `prefers-reduced-motion` — только для витрины/тестов. */
     reducedMotion?: boolean;
     className?: string;
@@ -27,7 +34,13 @@ type TWindDustLayerProps = {
  * на тёмном фоне — вместо них `WindDust` рисует подсветку кромки песка (см.
  * `wind-dust-scene.ts`), не отдельные частицы.
  */
-export const WindDustLayer = ({ seed, wind, reducedMotion, className }: TWindDustLayerProps) => {
+export const WindDustLayer = ({
+    seed,
+    wind,
+    snapshotMs,
+    reducedMotion,
+    className,
+}: TWindDustLayerProps) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     useEffect(() => {
@@ -72,7 +85,15 @@ export const WindDustLayer = ({ seed, wind, reducedMotion, className }: TWindDus
         };
 
         fit();
-        rafId = requestAnimationFrame(frame);
+
+        // Витрина: единичный статичный кадр на заданном времени — без rAF-петли, чтобы
+        // снапшот визуальной регрессии был детерминирован (паритет с `PrecipitationLayer`).
+        if (snapshotMs !== undefined) {
+            scene.update(snapshotMs);
+            scene.draw(ctx);
+        } else {
+            rafId = requestAnimationFrame(frame);
+        }
 
         const observer =
             typeof ResizeObserver !== 'undefined'
@@ -88,7 +109,7 @@ export const WindDustLayer = ({ seed, wind, reducedMotion, className }: TWindDus
             cancelAnimationFrame(rafId);
             observer?.disconnect();
         };
-    }, [seed, wind, reducedMotion]);
+    }, [seed, wind, snapshotMs, reducedMotion]);
 
     return (
         <canvas

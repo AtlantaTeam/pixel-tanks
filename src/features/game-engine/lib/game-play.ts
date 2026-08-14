@@ -1328,6 +1328,25 @@ export class GamePlay {
                 this.isAngleMode = false;
                 this.isMoveMode = false;
         }
+        this.reflectMode();
+    }
+
+    /** Режим движка наружу — атрибутом на канвасе, ОДИН раз на переход (не в кадре).
+     *  Без него состояние живёт только в полях класса, и e2e ждали выхода из
+     *  стартового `fire` хардкод-паузой `waitForTimeout(400)` — таймер вместо
+     *  сигнала, то есть флейк на медленном CI. Пишем ФАКТИЧЕСКИЙ режим, а не
+     *  запрошенный: `angle`/`move` при активном `fire` игнорируются выше, и
+     *  запрошенное значение соврало бы. */
+    private reflectMode() {
+        const el = this.canvasRef.current;
+        if (!el) return;
+        el.dataset.engineMode = this.isFireMode
+            ? 'fire'
+            : this.isAngleMode
+              ? 'angle'
+              : this.isMoveMode
+                ? 'move'
+                : 'idle';
     }
 
     isIdleMode() {

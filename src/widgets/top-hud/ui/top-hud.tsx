@@ -15,7 +15,7 @@ import {
     type TPhase,
     type TSide,
 } from '@/features/game-engine';
-import { BOT_NAME, POWER_MAX } from '@/shared/config';
+import { BOT_NAME, HUD_SURFACE, POWER_MAX } from '@/shared/config';
 import { useAnimatedValue } from '@/shared/lib/animation';
 import { useMuteState } from '@/shared/lib/audio';
 import { useHoldRepeat } from '@/shared/lib/interaction';
@@ -26,12 +26,6 @@ import { Button, HPBar, Icon, PipRow, type THPBarLayout } from '@/shared/ui';
 const PLAYER_NAME_PLACEHOLDER = 'Rex Commander';
 /** Снарядов на танк — половина общего арсенала боя (см. `dealWeapons`). */
 const AMMO_TOTAL = WEAPONS_AMOUNT / 2;
-
-/** Контраст над любым скином (handoff, решение E) — единое правило для КАЖДОГО
- *  элемента HUD: подложка + blur держат читаемость над шумным/светлым рельефом
- *  арены независимо от арта. Общая строка, а не копия в каждом компоненте ниже —
- *  разойдись она, часть элементов станет нечитаемой поверх части скинов. */
-const HUD_SURFACE = 'bg-[rgba(8,12,8,0.80)] backdrop-blur-[4px] shadow-[0_0_0_1px_rgba(0,0,0,.9)]';
 
 type TTopHudProps = {
     /** Открыть паузу — сам стейт паузы и `PauseOverlay` держит `views/game-page`

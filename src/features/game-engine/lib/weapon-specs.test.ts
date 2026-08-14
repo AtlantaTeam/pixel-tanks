@@ -28,7 +28,6 @@ describe('WEAPON_SPECS', () => {
             bulletColor: null,
             trail: { size: 3, life: 10, color: ENGINE_COLORS.primary },
             foci: [{ dxFactor: 0, radiusFactor: 1 }],
-            shockwave: false,
             groundColumn: false,
             silhouette: 'burst',
         };
@@ -42,7 +41,6 @@ describe('WEAPON_SPECS', () => {
         expect(heavy.growthPerFrame).toBeGreaterThan(base.growthPerFrame);
         expect(heavy.shakeHit).toBeGreaterThan(base.shakeHit);
         expect(heavy.slowMoOnMiss).toBe(true);
-        expect(heavy.shockwave).toBe(true);
         expect(heavy.bulletSizeFactor).toBeGreaterThan(1);
     });
 

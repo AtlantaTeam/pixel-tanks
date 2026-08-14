@@ -39,3 +39,24 @@ for (const viewport of VIEWPORTS) {
         });
     });
 }
+
+test.describe('Доступность движения — prefers-reduced-motion', () => {
+    test.use({ viewport: { width: 1280, height: 800 } });
+
+    // Переехал из `battle-states-viewports.spec.ts`: после #539 blink-маркер
+    // остался только здесь, на кадре витрины «ход соперника» (`DeckLockOverlay`).
+    // Сторожим ту же связку `@utility animate-lock-blink` + `motion-reduce:animate-none`,
+    // просто в единственном месте, где она теперь рисуется.
+    test('blink-маркер лока не крутит анимацию', async ({ page }) => {
+        // `test.use({ reducedMotion })` не типизирован в PlaywrightTestOptions этой
+        // версии (только `contextOptions`/`page.emulateMedia`) — эмулируем медиа-запрос
+        // напрямую на странице, эквивалентно контексту с `reducedMotion: 'reduce'`.
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await page.goto('/design-system');
+
+        const marker = page.locator('.animate-lock-blink').first();
+        await expect(marker).toBeVisible();
+        const animationName = await marker.evaluate((el) => getComputedStyle(el).animationName);
+        expect(animationName).toBe('none');
+    });
+});

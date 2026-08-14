@@ -1,4 +1,4 @@
-import { getDevicePixelRatio } from '@/shared/lib/canvas';
+import { getDevicePixelRatio, snapToDevicePixel } from '@/shared/lib/canvas';
 import { pickPrecipPresetById, precipWindNorm } from './precipitation';
 import { edgeHighlightColor } from './scene-light';
 import { pickSkyPresetById } from './sky-preset';
@@ -90,13 +90,12 @@ export class WindDust {
 
     private paintDust(ctx: CanvasRenderingContext2D, width: number, height: number): void {
         const dpr = getDevicePixelRatio();
-        const snap = (value: number) => Math.round(value * dpr) / dpr;
         ctx.save();
         ctx.fillStyle = DUST_COLOR;
         for (const p of this.field) {
             const drift = DRIFT_SPEED * this.driftNorm * p.speed * this.elapsed;
-            const x = snap(wrap01(p.xFrac + drift) * width);
-            const y = snap(p.yFrac * height);
+            const x = snapToDevicePixel(wrap01(p.xFrac + drift) * width, dpr);
+            const y = snapToDevicePixel(p.yFrac * height, dpr);
             ctx.globalAlpha = p.alpha;
             ctx.fillRect(x, y, 1, 1);
         }
@@ -104,7 +103,9 @@ export class WindDust {
     }
 
     private paintEdgeGlow(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-        const y = Math.round(height * WIND_DUST_BAND_MIN);
+        // Тот же dpr-снап, что у пылинок этого же класса: на дробном dpr `Math.round`
+        // по логическим пикселям оставляет кайму на полупикселе, и линия размывается.
+        const y = snapToDevicePixel(height * WIND_DUST_BAND_MIN, getDevicePixelRatio());
         ctx.save();
         ctx.globalAlpha = Math.min(0.5, 0.15 + 0.35 * Math.abs(this.driftNorm));
         ctx.fillStyle = NIGHT_EDGE_COLOR;

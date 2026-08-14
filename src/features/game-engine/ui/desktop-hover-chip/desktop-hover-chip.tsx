@@ -1,6 +1,6 @@
-'use client';
-
 import { clsx } from 'clsx';
+import { HUD_SURFACE } from '@/shared/config';
+import { CHIP_WIDTH } from '../gesture-overlay';
 import { formatAngle } from '../../lib/format-angle';
 
 /** Визуальный состав чипа наведения мышью на десктопе (аналог чипа жеста на мобиле). */
@@ -14,9 +14,6 @@ export type TDesktopHoverChipVisual = {
     /** Превышение максимума: чип краснеет, показывает «МАКС». */
     isMax: boolean;
 };
-
-/** Фиксированная ширина чипа (px) — совпадает с `CHIP_WIDTH` в gesture-overlay. */
-export const DESKTOP_CHIP_WIDTH = 200;
 
 type TDesktopHoverChipProps = {
     visual: TDesktopHoverChipVisual | null;
@@ -45,11 +42,14 @@ export function DesktopHoverChip({ visual }: TDesktopHoverChipProps) {
             <div
                 className={clsx(
                     'flex flex-col items-center gap-1 border-2 px-3 py-2 text-center',
-                    'bg-[rgba(8,12,8,0.80)] backdrop-blur-[4px] shadow-[0_0_0_1px_rgba(0,0,0,.9)]',
+                    HUD_SURFACE,
                     isMax ? 'border-danger' : 'border-accent',
                 )}
+                // Ширина — та же константа, что у чипа жеста (#544): чипы обязаны быть
+                // одной ширины, и держать это комментарием об «одинаковых 200» уже
+                // пробовали — число разъезжается молча.
                 style={{
-                    width: DESKTOP_CHIP_WIDTH,
+                    width: CHIP_WIDTH,
                 }}
             >
                 <div className="flex items-baseline gap-2 font-ui font-bold tabular-nums [text-shadow:var(--glow-text)]">

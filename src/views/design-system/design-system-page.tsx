@@ -14,9 +14,9 @@ import { GameControlsSection } from './game-controls-section';
 import { GameOverSection } from './game-over-section';
 import { IconSection } from './icon-section';
 import { PauseSection } from './pause-section';
+import { PrecipitationSection } from './precipitation-section';
 import { ScreensSection } from './screens-section';
 import { SkyBackgroundSection } from './sky-background-section';
-import { PrecipitationSection } from './precipitation-section';
 import { TankSkinsSection } from './tank-skins-section';
 import { WeaponsSection } from './weapons-section';
 

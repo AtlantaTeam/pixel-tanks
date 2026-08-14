@@ -64,8 +64,6 @@ export type TWeaponSpec = {
     trail: { size: number; life: number; color: string };
     /** Очаги взрыва (≥1). Больше одного — многоочаговый кластер. */
     foci: readonly TWeaponFocus[];
-    /** Ударная волна — обод по самому фронту (`r = explosionRadius`), мощный заряд. */
-    shockwave: boolean;
     /** Частицы узким столбом вместо широкого веера (роющий — выброс земли вверх). */
     groundColumn: boolean;
     /**
@@ -103,7 +101,6 @@ export const WEAPON_SPECS: Record<EWeaponKind, TWeaponSpec> = {
         bulletColor: null,
         trail: { size: 3, life: 10, color: ENGINE_COLORS.primary },
         foci: SINGLE_FOCUS(1),
-        shockwave: false,
         groundColumn: false,
         silhouette: 'burst',
     },
@@ -124,7 +121,6 @@ export const WEAPON_SPECS: Record<EWeaponKind, TWeaponSpec> = {
         bulletColor: ENGINE_COLORS.danger,
         trail: { size: 4, life: 14, color: ENGINE_COLORS.danger },
         foci: SINGLE_FOCUS(1.4),
-        shockwave: true,
         groundColumn: false,
         silhouette: 'blast',
     },
@@ -149,7 +145,6 @@ export const WEAPON_SPECS: Record<EWeaponKind, TWeaponSpec> = {
             { dxFactor: -0.8, radiusFactor: 0.45 },
             { dxFactor: 0.8, radiusFactor: 0.45 },
         ],
-        shockwave: false,
         groundColumn: false,
         silhouette: 'cluster',
     },
@@ -170,7 +165,6 @@ export const WEAPON_SPECS: Record<EWeaponKind, TWeaponSpec> = {
         bulletColor: null,
         trail: { size: 3, life: 10, color: GROUND_PARTICLE_COLORS[1] },
         foci: SINGLE_FOCUS(0.5),
-        shockwave: false,
         groundColumn: true,
         silhouette: 'digger',
     },

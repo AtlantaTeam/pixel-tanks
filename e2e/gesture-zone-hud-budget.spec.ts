@@ -112,7 +112,8 @@ test.describe('Оттяжка у верха арены на планшете (76
         await expect.poll(() => weaponCount(page)).toBe(5);
         // Движок гасит pointerdown, пока не вышел из стартового fire-режима в
         // idle (та же причина, что в `reachPlayerAim` — `aim-preview-viewports.spec.ts`).
-        await page.waitForTimeout(400);
+        // Ждём по сигналу движка, а не по таймеру.
+        await expect(page.getByTestId('game-canvas')).toHaveAttribute('data-engine-mode', 'idle');
 
         const zoneBox = await page.getByTestId('gesture-zone').boundingBox();
         expect(zoneBox).not.toBeNull();

@@ -1,4 +1,4 @@
-import { getDevicePixelRatio } from '@/shared/lib/canvas';
+import { getDevicePixelRatio, snapToDevicePixel } from '@/shared/lib/canvas';
 import {
     buildPrecipField,
     pickPrecipPreset,
@@ -135,15 +135,14 @@ export class Precipitation {
      */
     private paintParticles(ctx: CanvasRenderingContext2D, width: number, height: number): void {
         const dpr = getDevicePixelRatio();
-        const snap = (value: number) => Math.round(value * dpr) / dpr;
         const alphaScale = precipAlphaScale(this.dimmed);
         ctx.save();
         ctx.fillStyle = this.preset.color;
         for (const p of this.field) {
             const fall = this.preset.fallSpeed * p.speed * this.elapsed;
             const drift = this.preset.driftSpeed * this.windNorm * p.speed * this.elapsed;
-            const x = snap(wrap01(p.xFrac + drift) * width);
-            const y = snap(wrap01(p.yFrac + fall) * height);
+            const x = snapToDevicePixel(wrap01(p.xFrac + drift) * width, dpr);
+            const y = snapToDevicePixel(wrap01(p.yFrac + fall) * height, dpr);
             ctx.globalAlpha = p.alpha * alphaScale;
             this.paintShape(ctx, x, y, p);
         }

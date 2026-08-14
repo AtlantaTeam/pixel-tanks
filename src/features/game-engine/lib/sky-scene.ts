@@ -1,4 +1,4 @@
-import { getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
+import { getDevicePixelRatio, snapToDevicePixel, toDevicePixels } from '@/shared/lib/canvas';
 import {
     buildStarField,
     pickCelestialGeometry,
@@ -473,7 +473,6 @@ export class SkyScene {
         ctx.globalAlpha = this.preset.cloudAlpha;
         const dpr = getDevicePixelRatio();
         const devicePixel = 1 / dpr;
-        const snap = (value: number) => Math.round(value * dpr) / dpr;
         // Базовый размер — доля ширины экрана (`cloudSpriteWidth`), а не фиксированные
         // CSS-пиксели: 192 px совпадали с десктопным эталоном, но на 390 занимали
         // половину ширины (#523). К dpr привязывать тоже нельзя — на экране без
@@ -498,9 +497,10 @@ export class SkyScene {
             const msPerDevicePixel = devicePixel / (cloud.speed * Math.abs(this.wind));
             const steps = Math.floor(this.elapsed / msPerDevicePixel);
             const direction = this.wind < 0 ? -1 : 1;
-            const travelled = snap(cloud.xFrac * span) + direction * steps * devicePixel;
+            const travelled =
+                snapToDevicePixel(cloud.xFrac * span, dpr) + direction * steps * devicePixel;
             const x = wrapOffset(travelled, span) - spriteWidth;
-            const y = snap(height * cloud.yFrac);
+            const y = snapToDevicePixel(height * cloud.yFrac, dpr);
             // Зеркалим через отрицательную ширину назначения (валидно по спеке Canvas
             // 2D): drawImage сам разворачивает спрайт, не трогая матрицу трансформации —
             // ctx.scale(-1,1) сдвинул бы систему координат для всех кадров после этого

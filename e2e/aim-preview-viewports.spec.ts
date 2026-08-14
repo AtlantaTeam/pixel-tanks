@@ -57,9 +57,11 @@ async function holdDragGesture(page: Page, shot: typeof SHOT): Promise<void> {
 async function reachPlayerAim(page: Page): Promise<void> {
     await expect(page.getByTestId('game-hud')).toBeVisible();
     await expect.poll(() => weaponCount(page)).toBe(5);
-    // Движок гасит pointerdown, пока не вышел из стартового fire-режима в idle —
-    // короткая пауза даёт первым кадрам rAF перевести ход в аим.
-    await page.waitForTimeout(400);
+    // Движок гасит pointerdown, пока не вышел из стартового fire-режима в idle.
+    // Ждём сам сигнал (`data-engine-mode` пишет `GamePlay.activateMode`), а не время:
+    // хардкод-пауза была единственной задержкой по таймеру в тесте и флейком на
+    // медленном CI.
+    await expect(page.getByTestId('game-canvas')).toHaveAttribute('data-engine-mode', 'idle');
 }
 
 for (const viewport of VIEWPORTS) {

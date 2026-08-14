@@ -37,24 +37,35 @@ for (const viewport of VIEWPORTS) {
             });
         });
 
+        // Усечение ника задаётся ЧИСТО CSS (`max-w-[6ch]` / `md:max-w-[16ch]` +
+        // `text-ellipsis`, hp-bar.tsx): многоточие рисует браузер, в textContent оно не
+        // попадает и строку не режет. Поэтому проверка усечения — замер бокса
+        // (`scrollWidth > clientWidth`), а не сравнение текста: прежний ассерт
+        // `not.toContain('…')` не мог упасть никогда и был зелёным на 390, где ник
+        // визуально обрезан ровно так, как #540 и запрещает на больших экранах.
         test('ник не усекается на больших экранах (#540)', async ({ page }) => {
             await page.goto('/game?seed=42');
 
             const hud = page.getByTestId('top-hud');
             await expect(hud).toBeVisible();
 
-            // На всех вьюпортах ник должен быть видим без усечения (не более 16 символов)
-            // На 768+ ник полностью видим как «Rex Commander» (12 символов)
-            const playerNames = await page
-                .locator('[data-testid="top-hud"] span:has-text("Rex")')
-                .all();
-            for (const nameSpan of playerNames) {
-                const text = await nameSpan.textContent();
-                // Проверяем что ник не обрезан многоточием (…)
-                expect(text).not.toContain('…');
-                // На планшете (768) и выше ник должен быть видим полностью
+            const names = page.locator('[data-testid="top-hud"] [data-testid="hp-name"]');
+            // Гвард от vacuous pass: сменится разметка или плейсхолдер — `.all()`
+            // вернёт пустой список, цикл не выполнится, и тест был бы зелёным впустую.
+            await expect(names.first()).toBeVisible();
+            const boxes = await names.all();
+            expect(boxes.length).toBeGreaterThan(0);
+
+            for (const box of boxes) {
+                const clipped = await box.evaluate((el) => el.scrollWidth > el.clientWidth);
                 if (viewport.width >= 768) {
-                    expect(text?.trim()).toBe('Rex Commander');
+                    // 16ch против ника «Rex Commander» (13 символов) — клипа быть не должно.
+                    expect(clipped).toBe(false);
+                    expect((await box.textContent())?.trim()).toBe('Rex Commander');
+                } else {
+                    // На мобилке лимит 6ch — усечение здесь ОЖИДАЕМО и является спекой,
+                    // а не дефектом: фиксируем его, чтобы правка ширины не прошла молча.
+                    expect(clipped).toBe(true);
                 }
             }
         });

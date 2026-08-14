@@ -7,7 +7,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
  * набора. До фикса ряды сходились на разнобое (28/34/40/50/52/55/72) — глаз
  * читает лестницу, а не полосу приборов.
  *
- * Легальные зазоры/паддинги — {4,8,16}px плюс задокументированный белый
+ * Легальные зазоры/паддинги — {0,4,8,16}px: шаг решётки {4,8,16} плюс белый
  * список (значения, которые НЕ являются проектным «шагом решётки», а честным
  * нулём — «зазора нет» — или иным осознанным исключением, а не забытым
  * недобитым числом типа 6/10/14).
@@ -52,7 +52,7 @@ async function expectEqualLegalHeights(row: Locator, label: string): Promise<voi
 function assertLegalSpacing(value: number, label: string): void {
     expect(
         LEGAL_SPACING,
-        `${label}: значение ${value}px не входит в легальный набор {4,8,16}`,
+        `${label}: значение ${value}px не входит в легальный набор {0,4,8,16}`,
     ).toContain(value);
 }
 
@@ -158,7 +158,11 @@ for (const viewport of DESKTOP_VIEWPORTS) {
                 const alignItems = await page
                     .getByTestId(testId)
                     .evaluate((el) => getComputedStyle(el).alignItems);
-                expect(alignItems, `${testId}: align-items`).not.toBe('center');
+                // Именно растяжение, а не «что угодно кроме center»: прежний ассерт
+                // `not.toBe('center')` пропускал flex-start / baseline / end, то есть
+                // не сторожил обещанное заголовком. `normal` — дефолт флекс-контейнера,
+                // растягивает так же, как явный `stretch`, поэтому годятся оба.
+                expect(['stretch', 'normal'], `${testId}: align-items`).toContain(alignItems);
             }
         });
     });

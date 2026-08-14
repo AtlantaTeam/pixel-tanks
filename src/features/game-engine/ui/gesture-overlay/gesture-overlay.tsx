@@ -1,6 +1,7 @@
 'use client';
 
 import { clsx } from 'clsx';
+import { HUD_SURFACE } from '@/shared/config';
 import { POWER_MAX } from '@/shared/config';
 import { formatAngle } from '../../lib/format-angle';
 
@@ -110,7 +111,7 @@ export function GestureOverlay({ visual }: TGestureOverlayProps) {
             <div
                 className={clsx(
                     'absolute flex flex-col items-center gap-1 border-2 px-3 py-2 text-center',
-                    'bg-[rgba(8,12,8,0.80)] backdrop-blur-[4px] shadow-[0_0_0_1px_rgba(0,0,0,.9)]',
+                    HUD_SURFACE,
                     isMax ? 'border-danger' : 'border-accent',
                 )}
                 style={{
