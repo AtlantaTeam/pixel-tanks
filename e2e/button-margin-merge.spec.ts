@@ -17,6 +17,12 @@ import { test, expect, type Page } from '@playwright/test';
  * 2. computed `margin` таких элементов — `0px`, если вызывающий не задал отступ
  *    другой утилитой (`ml-auto` у «Поделиться реплеем» — задал, такие пропускаем
  *    по классу, а не по значению).
+ *
+ * Отдельно — `mx-0` (кнопки `pause-overlay`): tailwind-merge сливает только классы
+ * ОДНОЙ группы, а `m` и `mx` для него разные, поэтому `m-1` из строки не уходит и
+ * исход решает каскад сгенерированного CSS. Работает (Tailwind печатает `mx-*`
+ * после `m-*`), но ровно тем механизмом, который #554 признал ненадёжным, — значит
+ * должен быть замерен, а не подразумеваться (ревью #554).
  */
 
 /** Элементы, у которых в `class` есть утилита `m-0`. `ml-auto` и подобные —
@@ -24,16 +30,42 @@ import { test, expect, type Page } from '@playwright/test';
 async function collectMarginZeroNodes(page: Page) {
     return page.evaluate(() => {
         const OTHER_MARGIN_RE = /^-?m[trblxyse]-/;
+        // Базовая утилита без вариантов: `md:hover:mt-4` → `mt-4`. Сравнивать нужно
+        // хвост после последнего `:`, иначе осознанный отступ вызывающего под
+        // брейкпоинтом не распознаётся и барьер срабатывает ложно (ревью #554).
+        const baseUtility = (cls: string) => cls.split(':').at(-1) ?? cls;
+        // `el.className` на SVG — `SVGAnimatedString` (в строке даёт
+        // `[object SVGAnimatedString]`), такие узлы молча выпадали из выборки.
+        const classList = (el: Element) =>
+            (el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+
         return [...document.querySelectorAll('*')]
-            .map((el) => ({ el, classes: el.className?.toString?.().split(/\s+/) ?? [] }))
+            .map((el) => ({ el, classes: classList(el) }))
             .filter(({ classes }) => classes.includes('m-0'))
             .map(({ el, classes }) => ({
                 tag: el.tagName,
                 label: (el.getAttribute('aria-label') ?? el.textContent ?? '').slice(0, 24),
                 classes,
                 hasBaseMargin: classes.includes('m-1'),
-                hasOwnSideMargin: classes.some((c) => OTHER_MARGIN_RE.test(c)),
+                hasOwnSideMargin: classes.some((c) => OTHER_MARGIN_RE.test(baseUtility(c))),
                 margin: getComputedStyle(el).margin,
+            }));
+    });
+}
+
+/** Элементы с утилитой `mx-0`: слияния тут не происходит (разные группы утилит),
+ *  поэтому меряем результат — боковые margin обязаны быть нулевыми. */
+async function collectMarginXZeroNodes(page: Page) {
+    return page.evaluate(() => {
+        const classList = (el: Element) =>
+            (el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+
+        return [...document.querySelectorAll('*')]
+            .filter((el) => classList(el).includes('mx-0'))
+            .map((el) => ({
+                label: (el.getAttribute('aria-label') ?? el.textContent ?? '').slice(0, 24),
+                marginLeft: getComputedStyle(el).marginLeft,
+                marginRight: getComputedStyle(el).marginRight,
             }));
     });
 }
@@ -60,6 +92,23 @@ async function expectMergedMarginZero(page: Page, label: string) {
                 `${label}: у «${node.label}» computed margin ${node.margin} вместо 0px`,
             ).toBe('0px');
         }
+    }
+}
+
+async function expectMarginXZero(page: Page, label: string) {
+    const nodes = await collectMarginXZeroNodes(page);
+
+    // Гвард от vacuous pass — те же четыре кнопки паузы держат этот случай живым.
+    expect(
+        nodes.length,
+        `${label}: на странице должны быть элементы с утилитой mx-0`,
+    ).toBeGreaterThan(0);
+
+    for (const node of nodes) {
+        expect(
+            [node.marginLeft, node.marginRight],
+            `${label}: у «${node.label}» боковые margin ${node.marginLeft}/${node.marginRight} вместо 0px — базовый m-1 снова выигрывает у mx-0`,
+        ).toEqual(['0px', '0px']);
     }
 }
 
@@ -90,5 +139,15 @@ test.describe('Кнопки: className="m-0" гасит базовый отст�
         await expect(page.getByTestId('ds-faction-scope')).toBeVisible();
 
         await expectMergedMarginZero(page, 'витрина /design-system');
+    });
+
+    test('кнопки паузы с mx-0 не носят боковых 4px', async ({ page }) => {
+        // Секция «Пауза» витрины рендерит настоящий `PauseOverlay` (статичный срез),
+        // а его кнопки гасят базовый `m-1` боковой утилитой — случай, который
+        // tailwind-merge НЕ сливает и который держится каскадом (см. докблок).
+        await page.goto('/design-system');
+        await expect(page.getByTestId('ds-faction-scope')).toBeVisible();
+
+        await expectMarginXZero(page, 'витрина /design-system');
     });
 });
