@@ -19,6 +19,10 @@ const AIM_HINT_FACT =
  *
  * `pointer-events:none` — подсказка не перехватывает жест, его ловит канвас.
  *
+ * Верхний инсет — ровно `GESTURE_ZONE_INSET` + 10px на каждом брейкпоинте
+ * (`game-canvas.tsx`): 252 / md 138 / xl 108. Соглашение проверяет e2e
+ * `gesture-zone-hud-budget.spec.ts` — меняешь инсеты зоны, правь и эти.
+ *
  * Это ВИЗУАЛЬНАЯ плашка (`aria-hidden`: двухстрочная вёрстка, глиф-стиль — шум
  * для AT). Факт для скринридера несёт отдельный `AimHintAnnouncer`, который
  * смонтирован в дереве ВСЕГДА (см. его докблок) — эта плашка условная, поэтому
@@ -35,7 +39,7 @@ export function AimHint({ visible }: TAimHintProps) {
         <div
             data-testid="aim-hint"
             aria-hidden
-            className={`pointer-events-none absolute top-[252px] left-1/2 flex -translate-x-1/2 flex-col items-center gap-1 border-2 border-accent px-3 py-2 text-center md:top-[138px] lg:top-[88px] ${HUD_SURFACE}`}
+            className={`pointer-events-none absolute top-[252px] left-1/2 flex -translate-x-1/2 flex-col items-center gap-1 border-2 border-accent px-3 py-2 text-center md:top-[138px] xl:top-[108px] ${HUD_SURFACE}`}
         >
             <span className="font-ui text-[11px] font-bold tracking-[0.12em] text-accent uppercase [text-shadow:var(--glow-text)]">
                 Прицел — только направление
