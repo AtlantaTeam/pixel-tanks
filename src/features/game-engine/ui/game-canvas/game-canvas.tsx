@@ -6,7 +6,6 @@ import { PrecipitationLayer } from '../precipitation-layer';
 import { WindDustLayer } from '../wind-dust-layer';
 import { floor } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
-import { POWER_MAX } from '@/shared/config';
 import { WEAPON_KIND_ORDER, type TWeapon } from '@/shared/model';
 import { ChatBubble, type TBotReply } from '@/entities/bot-messages';
 import { getStoredTankSkinId, selectTankSkinForSeed } from '@/entities/tank-skins';
@@ -20,16 +19,15 @@ import { installGameDebugHook, uninstallGameDebugHook } from '../../lib/game-deb
 import {
     calculateGestureAim,
     clampBubbleAnchorY,
-    clampChipCenterX,
-    clampChipTop,
     isPointInGestureZone,
     isValidGestureZone,
     type TGestureZone,
 } from '../../lib/gesture-aim';
 import { attachGestureGuard } from '../../lib/gesture-guard';
 import { resolveKeyboardIntent } from '../../lib/keyboard-scheme';
-import { CHIP_WIDTH, GestureOverlay, type TGestureVisual } from '../gesture-overlay';
-import { DesktopHoverChip, type TDesktopHoverChipVisual } from '../desktop-hover-chip';
+import { markAimHintSeen, useAimHintSeen } from '../../lib/aim-hint';
+import { GestureOverlay, type TGestureVisual } from '../gesture-overlay';
+import { AimHint, AimHintAnnouncer } from '../aim-hint';
 
 type TDragState = {
     pointerId: number;
@@ -38,31 +36,20 @@ type TDragState = {
     /** Левый/верхний угол контейнера канваса — клиентские координаты → локальные. */
     containerLeft: number;
     containerTop: number;
-    /** Зона жеста в клиентских координатах, замеряется один раз на старте оттяжки. */
-    zone: TGestureZone | null;
 };
 
 /**
- * Габариты чипа предпросмотра для прижатия к зоне (`clampChipTop`/`clampChipCenterX`).
- * Приблизительные: чип центрируется над пальцем, значения держат его над палубой и
- * в пределах боковых границ зоны (нет горизонтального переполнения).
- */
-const CHIP_HEIGHT = 92;
-/** Отступ чипа над пальцем: радиус кольца (28) + запас, чтобы палец не закрывал чип. */
-const CHIP_GAP = 46;
-/**
  * Приблизительная высота чат-бабла бота (шапка «skull + имя» + 1–2 строки текста +
- * паддинги + хвост) — для клэмпа `clampBubbleAnchorY`, как `CHIP_HEIGHT` выше:
- * точная высота зависит от длины конкретной реплики, оценка держит бабл выше
- * верхнего HUD с запасом, а не впритык.
+ * паддинги + хвост) — для клэмпа `clampBubbleAnchorY`: точная высота зависит от
+ * длины конкретной реплики, оценка держит бабл выше верхнего HUD с запасом, а не
+ * впритык.
  */
 const BUBBLE_HEIGHT_ESTIMATE = 100;
 
 /**
  * Инсеты зоны жеста по брейкпоинтам (Tailwind arbitrary values) — единственный
  * источник правды геометрии зоны: от неё зависят гейт старта оттяжки
- * (`isPointInGestureZone`), клэмп чипа (`clampChipTop`/`clampChipCenterX`) и клэмп
- * бабла (`clampBubbleAnchorY`).
+ * (`isPointInGestureZone`) и клэмп бабла (`clampBubbleAnchorY`).
  *
  * Значения повторяют фактические высоты `TopHud` (верхний инсет) и палубы
  * `GameControls` (нижний) на каждом брейкпоинте: <768 — 242/196, ≥768 — 128/168,
@@ -70,9 +57,10 @@ const BUBBLE_HEIGHT_ESTIMATE = 100;
  * `xl:h-[124px]`). Общими с версткой HUD/деки токенами их не сделать: на
  * мобилке/планшете полосы content-sized — фиксированного числа, на которое можно
  * сослаться, у них нет. Поэтому — одна документированная константа и правило:
- * ⚠️ меняешь высоту `TopHud`/`GameControls` — правь эти инсеты, иначе зона тихо
- * разъедется (e2e ловит лишь горизонтальный overflow и видимость лока, но НЕ
- * вертикальное выравнивание зоны).
+ * ⚠️ меняешь высоту `TopHud`/`GameControls` — правь эти инсеты (и верхний инсет
+ * `AimHint`, привязанный к тем же брейкпоинтам), иначе зона тихо разъедется (e2e
+ * ловит лишь горизонтальный overflow и видимость лока, но НЕ вертикальное
+ * выравнивание зоны).
  */
 const GESTURE_ZONE_INSET =
     'top-[242px] right-[10px] bottom-[196px] left-[10px] md:top-[128px] md:bottom-[168px] lg:top-[78px] lg:bottom-[124px]';
@@ -148,11 +136,12 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     // botBubble): само событие происходит здесь же, в GameCanvas, кросс-дерева
     // (верхний HUD) сигналит только `lastHit` в сторе (см. `recordHit`).
     const [damageNumber, setDamageNumber] = useState<TDamageHit | null>(null);
-    // Визуал жеста (луч, кольцо, чип) — обновляется на pointermove, живёт в DOM-оверлее.
+    // Визуал жеста (луч, кольцо) — обновляется на pointermove, живёт в DOM-оверлее.
     const [gestureVisual, setGestureVisual] = useState<TGestureVisual | null>(null);
-    // Визуал наведения мышью на десктопе (#544): чип у ствола при hover мышью.
-    const [desktopHoverChipVisual, setDesktopHoverChipVisual] =
-        useState<TDesktopHoverChipVisual | null>(null);
+    // Разовая подсказка прицеливания (#565): показана один раз, факт «видел»
+    // переживает перезагрузку (localStorage). Раньше обучающие строки висели в чипе
+    // на каждом жесте каждого боя.
+    const aimHintSeen = useAimHintSeen();
 
     const angle = useGameStore((s) => s.angle);
     const power = useGameStore((s) => s.power);
@@ -195,6 +184,10 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
     // снаряд бота не долетит, см. `changeActiveTank`). Бой окончен — рамки нет,
     // финал закрывает GameOverDialog.
     const isBotTurn = selectIsBotTurn({ turn, phase });
+    // Разовая подсказка активна: не видена, не ход бота, бой не окончен. Один
+    // источник для визуальной плашки `AimHint` и всегда-смонтированного
+    // `AimHintAnnouncer` — визуал и анонс не должны разъехаться по условию.
+    const aimHintActive = !aimHintSeen && !isBotTurn && !isGameOver;
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -329,11 +322,11 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
         if (isGameOver) gameRef.current?.stop();
     }, [isGameOver]);
 
-    // Desktop hover chip скрывается при выстреле (#544): фаза полёта означает
-    // что снаряд в полёте и чип наведения мышью больше не нужен.
+    // Подпись у ствола (hover мышью, #565) гаснет при выстреле: снаряд в полёте —
+    // целиться нечем, значения угла уже ни на что не влияют.
     useEffect(() => {
         if (phase === 'flight') {
-            setDesktopHoverChipVisual(null);
+            gameRef.current?.setBarrelReadoutVisible(false);
         }
     }, [phase]);
 
@@ -437,6 +430,8 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                         !game.isMoveMode &&
                         !game.leftTank.dx
                     ) {
+                        // Клавиатурный выстрел тоже гасит разовую подсказку (#565).
+                        markAimHintSeen();
                         commitPlayerShot(game, selectedWeapon, recordFire, removeWeaponById);
                     }
                     break;
@@ -471,6 +466,9 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
             game.leftTank.dx
         )
             return;
+        // Первый реальный выстрел игрока гасит разовую подсказку (#565) — независимо
+        // от схемы ввода (тач-отпускание и десктоп-клик оба идут сюда). Идемпотентно.
+        markAimHintSeen();
         commitPlayerShot(game, selectedWeapon, recordFire, removeWeaponById);
     };
 
@@ -555,7 +553,6 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                         startY: e.clientY,
                         containerLeft: containerRect.left,
                         containerTop: containerRect.top,
-                        zone,
                     };
                     game.setAimPreviewVisible(true);
                     try {
@@ -581,25 +578,11 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     const originY = drag.startY - drag.containerTop;
                     const fingerX = e.clientX - drag.containerLeft;
                     const fingerY = e.clientY - drag.containerTop;
-                    let chipTop = fingerY - CHIP_GAP - CHIP_HEIGHT;
-                    let chipCenterX = fingerX;
-                    if (drag.zone) {
-                        const zoneLocal: TGestureZone = {
-                            top: drag.zone.top - drag.containerTop,
-                            bottom: drag.zone.bottom - drag.containerTop,
-                            left: drag.zone.left - drag.containerLeft,
-                            right: drag.zone.right - drag.containerLeft,
-                        };
-                        chipTop = clampChipTop(fingerY, zoneLocal, CHIP_HEIGHT, CHIP_GAP);
-                        chipCenterX = clampChipCenterX(fingerX, zoneLocal, CHIP_WIDTH);
-                    }
                     setGestureVisual({
                         originX,
                         originY,
                         fingerX,
                         fingerY,
-                        chipTop,
-                        chipCenterX,
                         angle: aim.angle,
                         power: aim.power,
                         isMax: aim.isMax,
@@ -613,6 +596,12 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                     suppressClickRef.current = true;
                     const game = gameRef.current;
                     game?.setAimPreviewVisible(false);
+                    // Гибрид (мышь+тач), как в onPointerCancel: предшествующий hover мог
+                    // оставить `showBarrelReadout=true`. Тап без оттяжки (`calculateDragAim`
+                    // вернёт null — ранний выход ниже) не проходит через phase→flight,
+                    // который гасит readout, поэтому сбрасываем его здесь явно — иначе
+                    // canvas-подпись зависнет до следующего mousemove/mouseleave/выстрела.
+                    game?.setBarrelReadoutVisible(false);
                     const aim = calculateDragAim(
                         { x: drag.startX, y: drag.startY },
                         { x: e.clientX, y: e.clientY },
@@ -633,7 +622,13 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 onPointerCancel={() => {
                     dragRef.current = null;
                     setGestureVisual(null);
-                    gameRef.current?.setAimPreviewVisible(false);
+                    const game = gameRef.current;
+                    game?.setAimPreviewVisible(false);
+                    // Гибрид (мышь+тач): до жеста мог быть hover с `showBarrelReadout=true`.
+                    // Отменённый жест (не завершён выстрелом) не проходит через phase→flight,
+                    // поэтому readout гасим здесь явно — иначе canvas-подпись висит до
+                    // следующего mousemove/mouseleave/выстрела.
+                    game?.setBarrelReadoutVisible(false);
                 }}
                 onMouseMove={(e) => {
                     const game = gameRef.current;
@@ -648,55 +643,18 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                         setAngle(curAngle);
                     }
 
-                    // Desktop hover chip (#544): чип наведения мышью у ствола танка,
-                    // только при наведении и не во время выстрела.
-                    if (game.isFireMode) {
-                        setDesktopHoverChipVisual(null);
-                        return;
-                    }
-
-                    const containerRect = e.currentTarget.getBoundingClientRect();
-                    const zoneRect = zoneRef.current?.getBoundingClientRect();
-                    if (!containerRect || !zoneRect) return;
-
-                    const containerLeft = containerRect.left;
-                    const containerTop = containerRect.top;
-
-                    // Позиция ствола танка в локальных координатах контейнера.
-                    const gunpointX = game.leftTank.gunpointX;
-                    const gunpointY = game.leftTank.gunpointY;
-
-                    // Чип позиционируется над стволом, на расстояние CHIP_GAP.
-                    let chipTop = gunpointY - CHIP_GAP - CHIP_HEIGHT;
-                    let chipCenterX = gunpointX;
-
-                    // Применяем клэмпы зоны жеста (тот же алгоритм, что на мобиле).
-                    const zoneLocal: TGestureZone = {
-                        top: zoneRect.top - containerTop,
-                        bottom: zoneRect.bottom - containerTop,
-                        left: zoneRect.left - containerLeft,
-                        right: zoneRect.right - containerLeft,
-                    };
-                    chipTop = clampChipTop(gunpointY, zoneLocal, CHIP_HEIGHT, CHIP_GAP);
-                    chipCenterX = clampChipCenterX(gunpointX, zoneLocal, CHIP_WIDTH);
-
-                    // Получаем силу и максимум из стора.
-                    const currentPower = power;
-                    const isMax = currentPower >= POWER_MAX;
-
-                    setDesktopHoverChipVisual({
-                        chipCenterX,
-                        chipTop,
-                        angle: curAngle,
-                        power: isMax ? POWER_MAX : currentPower,
-                        isMax,
-                    });
+                    // Подпись «угол·сила» у ствола при наведении мышью (#565): та же
+                    // canvas-подпись, что при жесте, только без дуги (движок рисует её
+                    // при `showBarrelReadout`). Прежде это был DOM-чип, висевший в небе
+                    // над стволом; теперь подпись прилипла к стволу. Во время выстрела
+                    // (снаряд в полёте) целиться нечем — подпись гасим.
+                    game.setBarrelReadoutVisible(!game.isFireMode);
                 }}
                 onWheel={(e) => gameRef.current?.changeTankPower(e.deltaY > 0 ? -1 : 1)}
                 onMouseLeave={() => {
                     const game = gameRef.current;
                     if (game?.isAngleMode) game.activateMode('idle');
-                    setDesktopHoverChipVisual(null);
+                    game?.setBarrelReadoutVisible(false);
                 }}
                 onClick={() => {
                     if (suppressClickRef.current) {
@@ -720,17 +678,23 @@ export const GameCanvas = forwardRef<TGameCanvasHandle, TGameCanvasProps>(functi
                 className="absolute inset-0"
             />
             {/* Зона жеста (handoff): между верхним оверлеем и палубой. Всегда в DOM —
-                замеряется на старте оттяжки (гейт старта, прижатие чипа). Инсеты по
-                брейкпоинтам — в `GESTURE_ZONE_INSET` (там же правило синхронизации с
-                высотами HUD/деки). */}
+                замеряется на старте оттяжки (гейт старта). Инсеты по брейкпоинтам —
+                в `GESTURE_ZONE_INSET` (там же правило синхронизации с высотами HUD/деки). */}
             <div
                 ref={zoneRef}
                 data-testid="gesture-zone"
                 aria-hidden
                 className={`pointer-events-none absolute ${GESTURE_ZONE_INSET}`}
             />
+            {/* Разовая подсказка прицеливания (#565) у верха зоны — показана один раз,
+                гаснет после первого выстрела и не воскресает (localStorage). Не
+                показываем на ходе бота и после конца боя. Факт для скринридера несёт
+                отдельный, всегда смонтированный `AimHintAnnouncer` (a11y, ревью #574):
+                live-region обязан быть в дереве ДО появления текста, поэтому он не
+                внутри условной плашки. */}
+            <AimHint visible={aimHintActive} />
+            <AimHintAnnouncer active={aimHintActive} />
             <GestureOverlay visual={gestureVisual} />
-            <DesktopHoverChip visual={desktopHoverChipVisual} />
             {/* Ход бота (handoff): маджента-рамка арены — без предсказания траектории,
                 игрок не должен заранее знать, попадёт ли соперник. */}
             {isBotTurn && (

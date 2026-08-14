@@ -3,8 +3,6 @@ import { POWER_MAX, POWER_MIN } from '@/shared/config';
 import {
     calculateGestureAim,
     clampBubbleAnchorY,
-    clampChipCenterX,
-    clampChipTop,
     isPointInGestureZone,
     isValidGestureZone,
     type TGestureZone,
@@ -80,46 +78,6 @@ describe('isPointInGestureZone', () => {
 
     it('точка за боковой границей — не в зоне', () => {
         expect(isPointInGestureZone({ x: 5, y: 250 }, zone)).toBe(false);
-    });
-});
-
-describe('clampChipTop', () => {
-    const zone: TGestureZone = { top: 100, bottom: 400, left: 10, right: 390 };
-
-    it('чип висит выше пальца, когда место есть', () => {
-        expect(clampChipTop(300, zone, 60, 40)).toBe(300 - 40 - 60);
-    });
-
-    it('прижимается к верхней границе зоны — не выше HUD', () => {
-        // Палец у самого верха зоны: желаемый top ушёл бы над зону.
-        expect(clampChipTop(110, zone, 60, 40)).toBe(zone.top);
-    });
-
-    it('никогда не уходит под палубу (нижнюю границу зоны)', () => {
-        // Палец за нижней границей (pointer capture): чип не ныряет под деку.
-        const top = clampChipTop(600, zone, 60, 40);
-        expect(top + 60).toBeLessThanOrEqual(zone.bottom);
-    });
-
-    it('при зоне уже чипа отдаёт верхнюю границу (чип не под палубой)', () => {
-        const narrow: TGestureZone = { top: 100, bottom: 130, left: 10, right: 390 };
-        expect(clampChipTop(600, narrow, 60, 40)).toBe(narrow.top);
-    });
-});
-
-describe('clampChipCenterX', () => {
-    const zone: TGestureZone = { top: 100, bottom: 400, left: 10, right: 390 };
-
-    it('следует за пальцем внутри зоны', () => {
-        expect(clampChipCenterX(200, zone, 180)).toBe(200);
-    });
-
-    it('не вылезает за правую границу зоны', () => {
-        expect(clampChipCenterX(380, zone, 180)).toBe(zone.right - 90);
-    });
-
-    it('не вылезает за левую границу зоны', () => {
-        expect(clampChipCenterX(20, zone, 180)).toBe(zone.left + 90);
     });
 });
 

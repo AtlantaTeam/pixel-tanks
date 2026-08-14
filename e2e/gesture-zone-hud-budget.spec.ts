@@ -63,6 +63,45 @@ test.describe('Высота HUD на планшете (768) в бюджете', 
     });
 });
 
+/**
+ * Барьер связи `AimHint` ↔ зоны жеста (ревью #574, nit): верхний инсет подсказки
+ * (`top-[252px] md:top-[138px] lg:top-[88px]` в `aim-hint.tsx`) держится за верхом
+ * `GESTURE_ZONE_INSET` только соглашением «+10px под верх зоны» — комментарий у
+ * зоны это правило описывает, но детерминированного барьера на +10px не было: при
+ * смене высот HUD подсказка тихо разъехалась бы с зоной. Здесь соглашение —
+ * проверяемый инвариант: верх подсказки на 10px ниже верха зоны на каждом
+ * брейкпоинте. Подсказка показывается разово на свежей сессии (флаг `aim-hint`
+ * ещё не выставлен), поэтому грузим страницу без взаимодействия.
+ */
+const AIM_HINT_ZONE_GAP = 10;
+const HINT_VIEWPORTS = [
+    { name: 'mobile-390', width: 390, height: 844 },
+    { name: 'tablet-768', width: 768, height: 1024 },
+    { name: 'desktop-1280', width: 1280, height: 800 },
+];
+
+for (const viewport of HINT_VIEWPORTS) {
+    test.describe(`Подсказка прицеливания привязана к зоне жеста — ${viewport.name}`, () => {
+        test.use({ viewport: { width: viewport.width, height: viewport.height } });
+
+        test('верх AimHint на +10px ниже верха зоны жеста', async ({ page }) => {
+            await page.goto('/game?seed=42');
+
+            const hintBox = await page.getByTestId('aim-hint').boundingBox();
+            const zoneBox = await page.getByTestId('gesture-zone').boundingBox();
+            expect(hintBox, 'разовая подсказка должна быть видна на свежей сессии').not.toBeNull();
+            expect(zoneBox).not.toBeNull();
+            if (hintBox && zoneBox) {
+                const gap = hintBox.y - zoneBox.y;
+                expect(
+                    Math.abs(gap - AIM_HINT_ZONE_GAP),
+                    `верх подсказки (${hintBox.y}px) должен быть на ~${AIM_HINT_ZONE_GAP}px ниже верха зоны (${zoneBox.y}px), а разошёлся на ${gap}px — подсказка отвязалась от зоны`,
+                ).toBeLessThanOrEqual(1.5);
+            }
+        });
+    });
+}
+
 /** Эмулирует держащийся тач-жест «оттяни» (pointerdown → pointermove, БЕЗ
  *  pointerup — превью остаётся на экране), как `holdDragGesture` в
  *  `aim-preview-viewports.spec.ts`, но со стартовой точкой в АБСОЛЮТНЫХ
@@ -128,9 +167,10 @@ async function expectPointHitsCanvas(page: Page, point: { x: number; y: number }
 // жеста, а не в панель. До фикса эта строка пикселей (чуть ниже объявленного
 // инсета зоны 128px) лежала под фактической ~253px панелью — pointerdown
 // глотался бы HUD-оверлеем/его дочерними элементами до канваса, а не
-// начинал прицеливание. Сигнал «жест начался» — чип «ОТПУСТИ — ВЫСТРЕЛ»
-// (тот же приём, что `aim-preview-viewports.spec.ts`): он появляется, только
-// если движок принял pointerdown и активировал режим прицеливания.
+// начинал прицеливание. Сигнал «жест начался» — оверлей жеста (луч+кольцо,
+// testid `gesture-overlay`; тот же приём, что `aim-preview-viewports.spec.ts`):
+// он появляется, только если движок принял pointerdown и активировал режим
+// прицеливания. Чип с текстом «ОТПУСТИ — ВЫСТРЕЛ» удалён (#565).
 test.describe('Оттяжка у верха арены на планшете (768) начинает прицеливание', () => {
     test.use({ viewport: { width: 768, height: 1024 }, hasTouch: true, isMobile: true });
 
@@ -155,6 +195,6 @@ test.describe('Оттяжка у верха арены на планшете (76
         await expectPointHitsCanvas(page, { x: startX, y: startY });
         await holdDragAt(page, { x: startX, y: startY }, { x: startX - 60, y: startY + 60 });
 
-        await expect(page.getByText('ОТПУСТИ — ВЫСТРЕЛ')).toBeVisible();
+        await expect(page.getByTestId('gesture-overlay')).toBeVisible();
     });
 });

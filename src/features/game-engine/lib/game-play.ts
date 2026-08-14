@@ -41,6 +41,7 @@ import {
     type TWeatherModifier,
 } from './weather-modifiers';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
+import { computeBarrelLabelAnchor } from './barrel-label-anchor';
 
 /**
  * Ёмкости пула хватает на одновременный залп земли и вспышку урона. Максимальный
@@ -71,9 +72,8 @@ const SEGMENT_OPACITY = 0.85;
 const ARC_TAIL_OPACITY_FACTOR = 0.12;
 /** Скорость бегущего пунктира дуги (px/мс). Гасится при prefers-reduced-motion. */
 const ARC_DASH_SPEED = 0.04;
-/** Толщина индикатора «угол·сила» у ствола и его отступ вверх от точки крепления. */
+/** Шрифт индикатора «угол·сила» у ствола. */
 const BARREL_LABEL_FONT = '700 13px "JetBrains Mono", ui-monospace, monospace';
-const BARREL_LABEL_OFFSET = 16;
 
 export type TTanksWeapons = {
     leftTankWeapons: TWeapon[];
@@ -240,6 +240,14 @@ export class GamePlay {
     isOver = false;
     /** Пунктирная линия прицела видна только во время оттяжки (тач-жест) */
     showAimPreview = false;
+    /**
+     * Подпись «угол·сила» у ствола БЕЗ дуги (issue #565): наведение мышью на
+     * десктопе. Прежде это был DOM-чип у ствола (`desktop-hover-chip`), теперь —
+     * та же canvas-подпись, что при жесте, только без дуги предпросмотра. Взаимно
+     * исключается с `showAimPreview`: жест (тач) рисует дугу+подпись, hover (мышь) —
+     * одну подпись; оба сразу не включаются (разные типы ввода).
+     */
+    showBarrelReadout = false;
     private isImagesLoaded = false;
     allWeapons: TTanksWeapons;
     callbacks: TGamePlayCallbacks;
@@ -430,6 +438,33 @@ export class GamePlay {
     };
 
     /**
+     * Показать/скрыть подпись «угол·сила» у ствола БЕЗ дуги (issue #565) — наведение
+     * мышью на десктопе. Форсируем перерисовку в обе стороны: подпись выходит за
+     * паддинг точечной перерисовки танка, поэтому и появление, и очистка требуют
+     * `fullRedraw` (как `setAimPreviewVisible`), иначе хвост подписи остаётся на
+     * песке до следующего полного кадра.
+     */
+    setBarrelReadoutVisible = (visible: boolean) => {
+        if (this.showBarrelReadout === visible) return;
+        this.showBarrelReadout = visible;
+        this.fullRedraw();
+    };
+
+    /**
+     * Подпись у ствола без дуги (issue #565): считает активный танк, `isMax` и цвет
+     * так же, как `drawAimPreview`, и рисует только подпись. Путь десктопного hover —
+     * дуга там не нужна (падение не предсказываем, а направление уже даёт линия
+     * прицела от мыши).
+     */
+    private drawBarrelReadoutOnly(ctx: CanvasRenderingContext2D) {
+        if (!this.leftTank || !this.rightTank) return;
+        const [activeTank] = this.getActiveAndTargetTanks(this.leftTank, this.rightTank);
+        const isMax = activeTank.power >= activeTank.powerMax;
+        const color = isMax ? ENGINE_COLORS.danger : ENGINE_COLORS.accent;
+        this.drawBarrelReadout(ctx, activeTank, isMax, color);
+    }
+
+    /**
      * Предпросмотр траектории при жесте-рогатке (issue #475): пунктирная **дуга** от
      * ствола, посчитанная тем же кодом, что и полёт снаряда (`fillTrajectoryPreview`
      * → `advanceProjectile`), с учётом ветра боя. Показываем НЕ полёт до попадания, а
@@ -501,9 +536,13 @@ export class GamePlay {
     /**
      * Компактный индикатор «угол·сила» у ствола (issue #475): значения рядом со
      * взглядом игрока, а не только в верхней панели. Тёмная обводка под текстом —
-     * читаемость на песке и небе. На максимуме силы — «МАКС» и цвет danger, как у
-     * чипа оверлея. Текст на канвасе (не в DOM), потому что он заякорен точно на
-     * стволе в canvas-координатах и живёт лишь во время жеста.
+     * читаемость на песке и небе. На максимуме силы — «МАКС» и цвет danger. Текст
+     * на канвасе (не в DOM), потому что он заякорен точно на стволе в
+     * canvas-координатах и живёт лишь во время прицеливания (жест или hover мышью).
+     *
+     * Якорь смещён ВДОЛЬ вектора выстрела (`gunpointAngle`, issue #565), а не строго
+     * вверх: подпись уходит по прицелу от пальца-рогатки и читается как ярлык ствола,
+     * а не «прямоугольник в небе» над танком.
      */
     private drawBarrelReadout(
         ctx: CanvasRenderingContext2D,
@@ -512,8 +551,12 @@ export class GamePlay {
         color: string,
     ) {
         const label = `${formatAngle(activeTank.gunpointAngle)}° · ${isMax ? 'МАКС' : activeTank.power}`;
-        const x = activeTank.gunpointX;
-        const y = activeTank.gunpointY - BARREL_LABEL_OFFSET;
+        const { x, y } = computeBarrelLabelAnchor(
+            activeTank.gunpointX,
+            activeTank.gunpointY,
+            activeTank.gunpointAngle,
+            activeTank.scale,
+        );
         ctx.save();
         ctx.font = BARREL_LABEL_FONT;
         ctx.textAlign = 'center';
@@ -940,9 +983,10 @@ export class GamePlay {
     };
 
     private tankAreaRedraw(tanks: Tank[]) {
-        // Линия прицела может выходить далеко за паддинг вокруг танка — точечная
-        // перерисовка её не очистит, поэтому во время оттяжки берём fullRedraw.
-        if (this.showAimPreview) {
+        // Линия прицела и подпись у ствола могут выходить далеко за паддинг вокруг
+        // танка — точечная перерисовка их не очистит, поэтому при активном
+        // предпросмотре (жест) ИЛИ подписи у ствола (hover мышью, #565) берём fullRedraw.
+        if (this.showAimPreview || this.showBarrelReadout) {
             this.fullRedraw();
             return;
         }
@@ -991,7 +1035,10 @@ export class GamePlay {
         this.drawGhostTrails(this.ctx);
         this.leftTank.draw(this.ctx, this.mousePos, this.ground);
         this.rightTank.draw(this.ctx, this.mousePos, this.ground);
+        // Дуга+подпись при жесте (тач) ИЛИ одна подпись при hover мышью (issue #565) —
+        // взаимно исключаются, оба сразу не включаются.
         if (this.showAimPreview) this.drawAimPreview(this.ctx);
+        else if (this.showBarrelReadout) this.drawBarrelReadoutOnly(this.ctx);
     }
 
     /**

@@ -64,39 +64,10 @@ export function isPointInGestureZone(point: TCoords, zone: TGestureZone): boolea
     );
 }
 
-/**
- * Верх чипа предпросмотра: чип висит выше пальца (`fingerY - gap - chipHeight`),
- * но прижимается к верхней границе зоны и НИКОГДА не уходит под палубу — нижнюю
- * границу зоны (handoff: «чип прижимается к верхней границе зоны и никогда не
- * уходит под палубу»). При выходе пальца за зону (pointer capture) чип остаётся
- * в пределах зоны.
- */
-export function clampChipTop(
-    fingerY: number,
-    zone: TGestureZone,
-    chipHeight: number,
-    gap: number,
-): number {
-    const min = zone.top;
-    const max = zone.bottom - chipHeight;
-    // Зона уже чипа (max < min): верхняя граница приоритетна, чтобы чип не нырял
-    // под палубу — лучше подрезать сверху, чем показать его под декой.
-    if (max < min) return min;
-    const desired = fingerY - gap - chipHeight;
-    return Math.max(min, Math.min(desired, max));
-}
-
-/**
- * Горизонтальный центр чипа: следует за пальцем, но не вылезает за боковые
- * границы зоны (нет горизонтального переполнения — правило адаптива проекта).
- */
-export function clampChipCenterX(fingerX: number, zone: TGestureZone, chipWidth: number): number {
-    const half = chipWidth / 2;
-    const min = zone.left + half;
-    const max = zone.right - half;
-    if (max < min) return (zone.left + zone.right) / 2;
-    return Math.max(min, Math.min(fingerX, max));
-}
+// Чип предпросмотра «угол · сила» удалён (issue #565): его числа уже дублировали
+// верхнюю панель и подпись у ствола (`game-play.drawBarrelReadout`), а на мобиле в
+// момент полной оттяжки чип ложился прямо на танк — окклюзия по построению, не
+// «неудачные числа». Вместе с чипом ушли клэмпы `clampChipTop`/`clampChipCenterX`.
 
 /**
  * Точка привязки чат-бабла бота (нижний край, растёт вверх — handoff «Чат-бабл

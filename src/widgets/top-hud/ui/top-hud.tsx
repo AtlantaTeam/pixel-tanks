@@ -15,7 +15,7 @@ import {
     type TPhase,
     type TSide,
 } from '@/features/game-engine';
-import { BOT_NAME, HUD_SURFACE, POWER_MAX } from '@/shared/config';
+import { BOT_NAME, HUD_SURFACE, POWER_MAX, POWER_MIN } from '@/shared/config';
 import { useAnimatedValue } from '@/shared/lib/animation';
 import { useMuteState } from '@/shared/lib/audio';
 import { useHoldRepeat } from '@/shared/lib/interaction';
@@ -117,6 +117,17 @@ function HpCard({
 
 /** Самая широкая из трёх подписей пилюли — резервирует её ширину (#449), см. ниже. */
 const TURN_PILL_SIZER = 'ХОД СОПЕРНИКА';
+
+/** Размерник ширины ячейки «Сила» (#567): на потолке значение — подпись «МАКС»
+ *  (4 знака), а не число. В моноширинном font-ui «МАКС» шире максимального числа
+ *  `POWER_MAX` (2 знака `20`), поэтому под сила-ячейку резервируем ширину именно
+ *  под «МАКС» — иначе на потолке силы бокс растёт под неё и двигает соседние
+ *  ячейки телеметрии (барьер геометрии #473/#474: `hud-geometry-stable`). */
+const POWER_VALUE_SIZER = 'МАКС';
+/** Подпись значения «Сила» под текущую силу: на потолке — «МАКС», иначе число. */
+function powerLabel(power: number): ReactNode {
+    return power === POWER_MAX ? 'МАКС' : power;
+}
 
 function TurnPill({
     turn,
@@ -255,12 +266,12 @@ function CellShell({
     label: string;
     /** Плотный паддинг мобильного HUD (#450) — уже, чем на планшете/десктопе. */
     compact?: boolean;
-    /** Без паддинга — только рамка + подложка (#528, десктопная пара «Снаряды»/
-     *  «Ходы»): на узком xl (1280) телеметрия — один нешринкающийся ряд
-     *  (`xl:shrink-0 xl:flex-nowrap`), и обычный паддинг двух новых карточек не
-     *  влезает в оставшийся бюджет ширины полосы (замер — 410px доступно против
-     *  431px с обычным `CellShell`). Планшет/1920 паддинг не жмёт, но тот же
-     *  компонент не должен «прыгать» составом между брейкпоинтами. */
+    /** Без паддинга на узком xl (#528, десктопная пара «Снаряды»/«Ходы»): на xl (1280)
+     *  телеметрия — один нешринкающийся ряд (`xl:shrink-0 xl:flex-nowrap`), и обычный
+     *  паддинг двух новых карточек не влезает в оставшийся бюджет ширины полосы
+     *  (замер — 410px доступно против 431px с обычным `CellShell`). На планшете/1920
+     *  паддинг не жмёт — компонент восстанавливает нормальный паддинг на более широких
+     *  ширинах (#566). */
     tight?: boolean;
     className?: string;
     children: ReactNode;
@@ -290,7 +301,13 @@ function CellShell({
                 // (px-0 py-0 экономит до 4px на каждой ячейке × 4 ячейки = 16px в ряду).
                 // Мобилка без shrink-0: на узком вьюпорте ячейки гибче к переносу,
                 // чем плотная раскладка которая не влезает совсем.
-                tight ? '' : compact ? 'px-0 py-0' : 'px-2 py-1 xl:px-1 xl:py-0',
+                // #566: `tight` убирает паддинг только на xl (1280) — на более широких
+                // ширинах (1440/1920) нормальный паддинг как у соседей (Угол/Сила/Ветер).
+                tight
+                    ? 'px-2 py-1 xl:px-0 xl:py-0'
+                    : compact
+                      ? 'px-0 py-0'
+                      : 'px-2 py-1 xl:px-1 xl:py-0',
                 className,
             )}
         >
@@ -513,6 +530,8 @@ function TrimCell({
     incLabel,
     className,
     glow,
+    decDisabled,
+    incDisabled,
 }: {
     label: string;
     value: ReactNode;
@@ -528,6 +547,10 @@ function TrimCell({
     className?: string;
     /** См. `CellValue.glow` (#548) — только угол/сила (класс 1). */
     glow?: boolean;
+    /** Дизеблить кнопку минуса независимо от frozen (напр., при минимальном значении). */
+    decDisabled?: boolean;
+    /** Дизеблить кнопку плюса независимо от frozen (напр., при максимальном значении). */
+    incDisabled?: boolean;
 }) {
     // Удержание кнопки авто-повторяет шаг (#264) — тап/клавиатура дают один
     // шаг, `useHoldRepeat` сам решает, глотать ли клик после автоповтора.
@@ -547,7 +570,7 @@ function TrimCell({
                     «тач-цель ≥44» этого не видел: бокс-то на месте. Поймали
                     `overlay-budget`/`hud-geometry-stable` через перехват клика. */}
                 <TrimButton
-                    disabled={frozen}
+                    disabled={frozen || (decDisabled ?? false)}
                     ariaLabel={decLabel}
                     holdProps={decHold}
                     className="max-[359px]:sr-only"
@@ -558,7 +581,7 @@ function TrimCell({
                     {value}
                 </FixedNumeric>
                 <TrimButton
-                    disabled={frozen}
+                    disabled={frozen || (incDisabled ?? false)}
                     ariaLabel={incLabel}
                     holdProps={incHold}
                     className="max-[359px]:sr-only"
@@ -1024,15 +1047,17 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     />
                     <TrimCell
                         label="Сила"
-                        value={power}
-                        sizer={POWER_MAX}
-                        valueClassName="text-warning"
+                        value={powerLabel(power)}
+                        sizer={POWER_VALUE_SIZER}
+                        valueClassName={power === POWER_MAX ? 'text-danger' : 'text-warning'}
                         frozen={trimFrozen}
                         onDec={() => increasePower(-1)}
                         onInc={() => increasePower(1)}
                         decLabel="Сила меньше"
                         incLabel="Сила больше"
                         glow
+                        decDisabled={power === POWER_MIN}
+                        incDisabled={power === POWER_MAX}
                         // Доп. отступ слева (#452): тач-цель кнопок ± шире визуального
                         // бокса (`TrimButton` — 32px видимых, 48px хит-зоны, свес по 8px
                         // с каждой стороны), и соседние ячейки «Угол»/«Сила» смыкаются
@@ -1239,9 +1264,9 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         />
                         <NumberCell
                             label="Сила"
-                            value={power}
-                            valueClassName="text-warning"
-                            sizer={POWER_MAX}
+                            value={powerLabel(power)}
+                            valueClassName={power === POWER_MAX ? 'text-danger' : 'text-warning'}
+                            sizer={POWER_VALUE_SIZER}
                             glow
                         />
                         <WindCell wind={wind} windRevealed={windRevealed} />
