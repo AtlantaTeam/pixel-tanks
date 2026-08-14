@@ -95,6 +95,17 @@ for (const width of PARITY_FRAMES) {
             expect(resources.length, 'ячейка ресурсов должна быть видима').toBeGreaterThan(0);
 
             const expected = await paddingX(neighbours[0]);
+            // Второй гвард от vacuous pass: с общим для ряда паддингом равенство
+            // выполняется и когда паддинга нет вовсе. На кадрах, где он положен
+            // (≥ STRIP_FITS_FROM), эталон обязан быть ненулевым — иначе тест
+            // молча сторожил бы «одинаково по нулям», а дефект #566 (ячейка
+            // впритык к рамке) вернулся бы незамеченным.
+            if (width >= STRIP_FITS_FROM) {
+                expect(
+                    expected.left,
+                    `на ${width} ячейки телеметрии обязаны нести паддинг, а не быть прижатыми к рамке`,
+                ).toBeGreaterThan(0);
+            }
             for (const neighbour of neighbours.slice(1)) {
                 expect(
                     await paddingX(neighbour),
