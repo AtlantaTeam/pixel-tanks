@@ -12,6 +12,7 @@ type TCapturedCallbacks = {
     onTurnChange?: (turn: 'player' | 'enemy') => void;
     onShotStart?: () => void;
     onShotEnd?: () => void;
+    onPowerChange?: (delta: number) => void;
     onTankHit: (params: {
         hittedIsLeft: boolean;
         leftActive: boolean;
@@ -58,6 +59,11 @@ vi.mock('../../lib/game-play', () => ({
         getActiveAndTargetTanks = () => [LEFT_TANK, BOT_TANK];
         setAimPreviewVisible = vi.fn();
         setBarrelReadoutVisible = vi.fn();
+        // Как настоящий GamePlay.changeTankPower — уводит дельту в колбэк, а не
+        // правит power сама (владелец значения — стор, см. onPowerChange).
+        changeTankPower = vi.fn((delta: number) => {
+            captured.current?.onPowerChange?.(delta);
+        });
         constructor(..._args: unknown[]) {
             captured.current = _args[2] as TCapturedCallbacks;
             gameInstance.current = this;
@@ -352,6 +358,46 @@ describe('GameCanvas', () => {
             });
 
             expect(setReadout).toHaveBeenCalledWith(false);
+        });
+    });
+
+    // Синхронность подписи у ствола с верхней панелью (#568): подпись рисуется из
+    // `leftTank.gunpointAngle`/`power` (drawBarrelReadout), а не из координат курсора —
+    // те же поля обновляет клавиатура через store→engine синк (см. тест выше,
+    // «запоминает seed…»). Проверяем это явно для клавиатурного ввода, БЕЗ единого
+    // движения мыши, чтобы зафиксировать регрессию #567/#568 (расхождение чипа и панели).
+    describe('синхронность с верхней панелью после клавиатурного ввода (#568)', () => {
+        it('стрелки угла и мощности обновляют leftTank.gunpointAngle/power синхронно со стором — без движения мыши', () => {
+            useGameStore.getState().resetGame();
+            useGameStore.setState({ angle: (6 * Math.PI) / 180, power: 15 });
+            // Сентинели вместо хардкод-дефолтов фикстуры (`0.5`/`12`, см. `vi.hoisted`
+            // выше): без этого тест мог бы случайно пройти на сломанном синке — просто
+            // потому что итоговое значение совпало с исходным дефолтом мока.
+            LEFT_TANK.gunpointAngle = NaN;
+            LEFT_TANK.power = NaN;
+            render(<GameCanvas seed={42} />);
+
+            try {
+                act(() => {
+                    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+                });
+                act(() => {
+                    fireEvent.keyDown(window, { key: 'ArrowUp' });
+                });
+                act(() => {
+                    fireEvent.keyDown(window, { key: 'ArrowUp' });
+                });
+
+                const state = useGameStore.getState();
+                // Значения, которые рисует подпись у ствола, обязаны совпасть со стором
+                // (тем же источником, что читает верхняя панель) — без отдельного mousemove.
+                expect(LEFT_TANK.gunpointAngle).toBe(state.angle);
+                expect(LEFT_TANK.power).toBe(state.power);
+                expect(state.power).toBe(17);
+            } finally {
+                LEFT_TANK.gunpointAngle = 0.5;
+                LEFT_TANK.power = 12;
+            }
         });
     });
 
