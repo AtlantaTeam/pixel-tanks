@@ -2,7 +2,7 @@ import { render, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_WIND, useGameStore } from '@/features/game-engine';
 import { EWeaponKind } from '@/shared/model';
-import { BOT_NAME, POWER_MAX } from '@/shared/config';
+import { BOT_NAME, POWER_MAX, POWER_MIN } from '@/shared/config';
 import { TopHud } from './top-hud';
 
 describe('TopHud', () => {
@@ -529,6 +529,86 @@ describe('TopHud', () => {
         for (const count of rowCounts) {
             expect(count).toBe(rowCounts[0]);
         }
+    });
+
+    // #567 — визуальный признак максимума/минимума силы в верхней панели
+
+    it('на максимуме силы кнопка «Сила больше» дизеблена (мобилка)', () => {
+        useGameStore.setState({ power: POWER_MAX, turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        expect(mobile.getByRole('button', { name: 'Сила больше' })).toBeDisabled();
+    });
+
+    it('на минимуме силы кнопка «Сила меньше» дизеблена (мобилка)', () => {
+        useGameStore.setState({ power: POWER_MIN, turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        expect(mobile.getByRole('button', { name: 'Сила меньше' })).toBeDisabled();
+    });
+
+    it('на промежуточном значении обе кнопки активны (мобилка)', () => {
+        useGameStore.setState({ power: 10, turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        expect(mobile.getByRole('button', { name: 'Сила меньше' })).not.toBeDisabled();
+        expect(mobile.getByRole('button', { name: 'Сила больше' })).not.toBeDisabled();
+    });
+
+    it('на максимуме силы ячейка показывает «МАКС» вместо числа (мобилка)', () => {
+        useGameStore.setState({ power: POWER_MAX, turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        expect(mobile.getByText('МАКС')).toBeInTheDocument();
+    });
+
+    it('на максимуме силы значение красится danger вместо warning (мобилка)', () => {
+        useGameStore.setState({ power: POWER_MAX, turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        const maxText = mobile.getByText('МАКС');
+        expect(maxText).toHaveClass('text-danger');
+    });
+
+    it('на максимуме силы ячейка показывает «МАКС» вместо числа (десктоп)', () => {
+        useGameStore.setState({ power: POWER_MAX, turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const desktop = within(getByTestId('top-hud-desktop'));
+
+        expect(desktop.getByText('МАКС')).toBeInTheDocument();
+    });
+
+    it('на максимуме силы значение красится danger вместо warning (десктоп)', () => {
+        useGameStore.setState({ power: POWER_MAX, turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const desktop = within(getByTestId('top-hud-desktop'));
+
+        const maxText = desktop.getByText('МАКС');
+        expect(maxText).toHaveClass('text-danger');
+    });
+
+    it('при промежуточном значении силы показывает число, не «МАКС» (мобилка)', () => {
+        useGameStore.setState({ power: 10, turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        expect(mobile.getByText('10')).toBeInTheDocument();
+        expect(mobile.queryByText('МАКС')).not.toBeInTheDocument();
+    });
+
+    it('при промежуточном значении силы число красится warning (мобилка)', () => {
+        useGameStore.setState({ power: 10, turn: 'player' });
+        const { getByTestId } = render(<TopHud />);
+        const mobile = within(getByTestId('top-hud-mobile'));
+
+        const value = mobile.getByText('10');
+        expect(value).toHaveClass('text-warning');
+        expect(value).not.toHaveClass('text-danger');
     });
 });
 

@@ -15,7 +15,7 @@ import {
     type TPhase,
     type TSide,
 } from '@/features/game-engine';
-import { BOT_NAME, HUD_SURFACE, POWER_MAX } from '@/shared/config';
+import { BOT_NAME, HUD_SURFACE, POWER_MAX, POWER_MIN } from '@/shared/config';
 import { useAnimatedValue } from '@/shared/lib/animation';
 import { useMuteState } from '@/shared/lib/audio';
 import { useHoldRepeat } from '@/shared/lib/interaction';
@@ -519,6 +519,8 @@ function TrimCell({
     incLabel,
     className,
     glow,
+    decDisabled,
+    incDisabled,
 }: {
     label: string;
     value: ReactNode;
@@ -534,6 +536,10 @@ function TrimCell({
     className?: string;
     /** См. `CellValue.glow` (#548) — только угол/сила (класс 1). */
     glow?: boolean;
+    /** Дизеблить кнопку минуса независимо от frozen (напр., при минимальном значении). */
+    decDisabled?: boolean;
+    /** Дизеблить кнопку плюса независимо от frozen (напр., при максимальном значении). */
+    incDisabled?: boolean;
 }) {
     // Удержание кнопки авто-повторяет шаг (#264) — тап/клавиатура дают один
     // шаг, `useHoldRepeat` сам решает, глотать ли клик после автоповтора.
@@ -553,7 +559,7 @@ function TrimCell({
                     «тач-цель ≥44» этого не видел: бокс-то на месте. Поймали
                     `overlay-budget`/`hud-geometry-stable` через перехват клика. */}
                 <TrimButton
-                    disabled={frozen}
+                    disabled={frozen || (decDisabled ?? false)}
                     ariaLabel={decLabel}
                     holdProps={decHold}
                     className="max-[359px]:sr-only"
@@ -564,7 +570,7 @@ function TrimCell({
                     {value}
                 </FixedNumeric>
                 <TrimButton
-                    disabled={frozen}
+                    disabled={frozen || (incDisabled ?? false)}
                     ariaLabel={incLabel}
                     holdProps={incHold}
                     className="max-[359px]:sr-only"
@@ -1027,18 +1033,22 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         decLabel="Угол меньше"
                         incLabel="Угол больше"
                         glow
+                        decDisabled={false}
+                        incDisabled={false}
                     />
                     <TrimCell
                         label="Сила"
-                        value={power}
+                        value={power === POWER_MAX ? 'МАКС' : power}
                         sizer={POWER_MAX}
-                        valueClassName="text-warning"
+                        valueClassName={power === POWER_MAX ? 'text-danger' : 'text-warning'}
                         frozen={trimFrozen}
                         onDec={() => increasePower(-1)}
                         onInc={() => increasePower(1)}
                         decLabel="Сила меньше"
                         incLabel="Сила больше"
                         glow
+                        decDisabled={power === POWER_MIN}
+                        incDisabled={power === POWER_MAX}
                         // Доп. отступ слева (#452): тач-цель кнопок ± шире визуального
                         // бокса (`TrimButton` — 32px видимых, 48px хит-зоны, свес по 8px
                         // с каждой стороны), и соседние ячейки «Угол»/«Сила» смыкаются
@@ -1245,8 +1255,8 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                         />
                         <NumberCell
                             label="Сила"
-                            value={power}
-                            valueClassName="text-warning"
+                            value={power === POWER_MAX ? 'МАКС' : power}
+                            valueClassName={power === POWER_MAX ? 'text-danger' : 'text-warning'}
                             sizer={POWER_MAX}
                             glow
                         />
