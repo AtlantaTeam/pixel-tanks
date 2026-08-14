@@ -8,7 +8,7 @@ export { TankWheelDemo } from './ui/tank-wheel-demo';
 export type { TTankWheelDemoProps } from './ui/tank-wheel-demo';
 export { WeaponFxDemo } from './ui/weapon-fx-demo';
 export type { TWeaponFxDemoProps } from './ui/weapon-fx-demo';
-export { WindFlagDemo } from './ui/wind-flag-demo';
+export { WindFlagDemo, WIND_FLAG_DEMO_FRAME } from './ui/wind-flag-demo';
 export type { TWindFlagDemoProps } from './ui/wind-flag-demo';
 export { SKY_PRESETS } from './lib/sky-preset';
 export type { TSkyPreset, TSkyPresetId } from './lib/sky-preset';

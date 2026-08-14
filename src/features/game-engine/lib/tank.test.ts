@@ -6,7 +6,7 @@ import { ENGINE_COLORS } from './engine-palette';
 import { Ground } from './ground';
 import { drawTankWheels, Tank, wheelRotationDelta, type TTankWheelSpec } from './tank';
 import {
-    WIND_FLAG_HEIGHT,
+    WIND_FLAG_LENGTH,
     WIND_FLAG_MIN_SCALE,
     WIND_FLAG_PENNANT,
     WIND_FLAG_POLE_WIDTH,
@@ -436,9 +436,12 @@ const luminance = (hex: string) => {
 };
 
 describe('Tank.draw — флажок ветра: вымпел, а не прямоугольник (#579)', () => {
-    const WIND_ROTATION = windFlagRotationRad(0.004);
+    /** Слабый ветер вправо — рабочий кейс большинства проверок формы. */
+    const WIND = 0.004;
+    const WIND_ROTATION = windFlagRotationRad(WIND);
 
-    const drawFlag = (scale = 1, rotation: number | null = WIND_ROTATION) => {
+    /** `wind === null` — флажка нет вовсе (чужой танк), иначе ставим его моделью. */
+    const drawFlag = (scale = 1, wind: number | null = WIND) => {
         const tank = new Tank(
             200,
             HEIGHT - 100,
@@ -450,15 +453,16 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
             undefined,
             scale,
         );
-        tank.windFlagRotationRad = rotation;
+        if (wind !== null) tank.setWindFlag(wind);
         const stub = new FlagCtxStub();
         tank.draw(stub as unknown as CanvasRenderingContext2D, null, flatGround());
         return { tank, ops: stub.ops };
     };
 
     /** Индекс поворота полотнища — граница между древком/корпусом и контуром вымпела. */
-    const flagRotateIndex = (ops: TDrawOp[]) =>
-        ops.findIndex((o) => o.op === 'rotate' && o.args[0] === WIND_ROTATION);
+    const rotateIndexOf = (ops: TDrawOp[], rotation: number) =>
+        ops.findIndex((o) => o.op === 'rotate' && o.args[0] === rotation);
+    const flagRotateIndex = (ops: TDrawOp[]) => rotateIndexOf(ops, WIND_ROTATION);
 
     it('без угла (чужой танк) флажок не рисуется вовсе', () => {
         const { ops } = drawFlag(1, null);
@@ -482,9 +486,11 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
     });
 
     it('полотнище зеркалится по направлению ветра — при обоих знаках висит под осью', () => {
+        // Через `setWindFlag`, а не заданием угла руками: сторона провисания выводится
+        // из ЗНАКА ветра (ревью #579), и тест обязан идти тем же путём, что бой.
         const verticesOf = (wind: number) => {
             const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON], bodyImg);
-            tank.windFlagRotationRad = windFlagRotationRad(wind);
+            tank.setWindFlag(wind);
             const stub = new FlagCtxStub();
             tank.draw(stub as unknown as CanvasRenderingContext2D, null, flatGround());
             return stub.ops.filter((o) => o.op === 'vertex').map((o) => o.args);
@@ -531,8 +537,8 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
         const fly = ops
             .filter((o) => o.op === 'vertex')
             .reduce((max, o) => Math.max(max, Math.abs(o.args[0])), 0);
-        // Честная пропорция дала бы WIND_FLAG_HEIGHT * 0.5; пол держит 0.8.
-        expect(fly).toBeCloseTo(WIND_FLAG_HEIGHT * WIND_FLAG_MIN_SCALE, 6);
+        // Честная пропорция дала бы WIND_FLAG_LENGTH * 0.5; пол держит 0.8.
+        expect(fly).toBeCloseTo(WIND_FLAG_LENGTH * WIND_FLAG_MIN_SCALE, 6);
     });
 
     it('на широкой арене флажок масштабируется миром, а не залипает на поле', () => {
@@ -541,7 +547,7 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
         const fly = ops
             .filter((o) => o.op === 'vertex')
             .reduce((max, o) => Math.max(max, Math.abs(o.args[0])), 0);
-        expect(fly).toBeCloseTo(WIND_FLAG_HEIGHT * scale, 6);
+        expect(fly).toBeCloseTo(WIND_FLAG_LENGTH * scale, 6);
     });
 
     it('древко рисуется поверх полотнища — не прячется под ним в штиль', () => {
@@ -553,22 +559,40 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
     });
 
     // Узкая арена — худший случай: там работает пол масштаба флажка, и мачта могла бы
-    // оказаться короче полотнища относительно корпуса.
+    // оказаться короче полотнища относительно корпуса. Ветер РОВНО нулевой (ревью
+    // #579): именно штиль — худшая поза, вымпел висит вдоль мачты во всю длину, и
+    // проверять её кейсом со слабым ветром было подменой. Нижний край берём из
+    // НАРИСОВАННЫХ вершин, повёрнутых записанным `ctx.rotate`, а не из констант —
+    // иначе ассерт сводится к `LENGTH < POLE_HEIGHT`, уже запиненному в `wind-flag.test.ts`.
     it.each([WORLD_SCALE_MIN, 1, 1.28, 1.5])(
-        'в покое (scale=%p) конец вымпела не достаёт до силуэта корпуса',
+        'в штиль (scale=%p) конец вымпела не достаёт до силуэта корпуса даже обводкой',
         (scale) => {
-            const { tank, ops } = drawFlag(scale);
+            const restRotation = windFlagRotationRad(0);
+            const { tank, ops } = drawFlag(scale, 0);
             // Вершина мачты — последний translate ПЕРЕД поворотом на угол ветра: до
             // него в журнале лежат translate'ы наклона корпуса и разворота ствола.
+            const rotateAt = rotateIndexOf(ops, restRotation);
+            expect(rotateAt).toBeGreaterThanOrEqual(0);
             const pivot = ops
-                .slice(0, flagRotateIndex(ops))
+                .slice(0, rotateAt)
                 .filter((o) => o.op === 'translate')
                 .at(-1);
             expect(pivot).toBeDefined();
-            // Нейтраль — поворот на 90°, полотнище уходит вниз ровно на свою длину.
-            const clothTipY =
-                Number(pivot?.args[1]) + WIND_FLAG_HEIGHT * Math.max(WIND_FLAG_MIN_SCALE, scale);
-            expect(clothTipY).toBeLessThan(tank.bodyRect().y);
+            const pivotY = Number(pivot?.args[1]);
+
+            const vertices = ops.filter((o) => o.op === 'vertex');
+            expect(vertices).toHaveLength(WIND_FLAG_PENNANT.length);
+            const sin = Math.sin(restRotation);
+            const cos = Math.cos(restRotation);
+            const clothTipY = Math.max(
+                ...vertices.map(({ args: [x, y] }) => pivotY + x * sin + y * cos),
+            );
+            // Обводка рисуется ПО ЦЕНТРУ контура — половина её ширины торчит наружу
+            // и съедает зазор до корпуса (ревью #579).
+            const outline = ops.find((o) => o.op === 'stroke')?.lineWidth ?? 0;
+            expect(outline).toBeGreaterThan(0);
+
+            expect(clothTipY + outline / 2).toBeLessThan(tank.bodyRect().y);
         },
     );
 });

@@ -1,4 +1,10 @@
-import { MAX_WIND, SkyBackground, WindFlagDemo } from '@/features/game-engine';
+import {
+    MAX_WIND,
+    SkyBackground,
+    WIND_FLAG_DEMO_FRAME,
+    WindFlagDemo,
+    type TSkyPresetId,
+} from '@/features/game-engine';
 
 /**
  * Витрина флажка ветра (#579). Две оси, обе обязательны для этой правки:
@@ -19,23 +25,24 @@ const FORCE_CARDS = [
     { id: 'right', name: 'Ветер вправо · максимум', wind: MAX_WIND },
 ];
 
-const SKY_CARDS = [
-    { id: 'day', name: 'День', preset: 'day' as const },
-    { id: 'sunset', name: 'Закат', preset: 'sunset' as const },
-    { id: 'night', name: 'Ночь', preset: 'night' as const },
+/** Пресеты — из публичного API движка (`TSkyPresetId`), а не выписанные руками
+ *  (ревью #579): появится четвёртый пресет — витрина узнает об этом от компилятора. */
+const SKY_CARDS: { id: string; name: string; preset: TSkyPresetId }[] = [
+    { id: 'day', name: 'День', preset: 'day' },
+    { id: 'sunset', name: 'Закат', preset: 'sunset' },
+    { id: 'night', name: 'Ночь', preset: 'night' },
 ];
 
-function FlagCard({
-    preset,
-    wind,
-    seed,
-}: {
-    preset: 'day' | 'sunset' | 'night';
-    wind: number;
-    seed: string;
-}) {
+/** Кадр демо — ровно логический кадр движка (`WIND_FLAG_DEMO_FRAME`), не резиновый:
+ *  `WindFlagDemo` рисует 1:1 с боем на арене 1280 (ревью #579), и растягивать кадр
+ *  нельзя — увеличенная картинка ломает сам критерий «мелкий вымпел читается».
+ *  Размер берём из константы движка, чтобы небо и канвас не разъехались. */
+function FlagCard({ preset, wind, seed }: { preset: TSkyPresetId; wind: number; seed: string }) {
     return (
-        <div className="pixel-border relative aspect-[180/116] w-full overflow-hidden">
+        <div
+            className="pixel-border relative mx-auto overflow-hidden"
+            style={{ width: WIND_FLAG_DEMO_FRAME.width, height: WIND_FLAG_DEMO_FRAME.height }}
+        >
             <SkyBackground seed={seed} preset={preset} reducedMotion className="absolute inset-0" />
             <WindFlagDemo wind={wind} className="absolute inset-0" />
         </div>

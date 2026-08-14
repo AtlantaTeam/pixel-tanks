@@ -9,6 +9,8 @@ import {
     WIND_FLAG_PENNANT,
     WIND_FLAG_POLE_HEIGHT,
     WIND_FLAG_POLE_WIDTH,
+    windFlagRotationRad,
+    windFlagSide,
 } from './wind-flag';
 import { WORLD_UNITS } from './world-scale';
 
@@ -134,6 +136,14 @@ export class Tank {
      * танк) — флажок не рисуется.
      */
     windFlagRotationRad: number | null = null;
+    /**
+     * Сторона провисания полотнища (`windFlagSide`, `wind-flag.ts`) — ставится
+     * ВМЕСТЕ с углом, из знака того же `wind`. Отдельным полем, а не выводом из
+     * угла (ревью #579): форма обязана следовать модели ветра явно, иначе рост
+     * наклона выше 90° молча перевернул бы зеркало. `1` — как в штиль и при ветре
+     * вправо.
+     */
+    windFlagSide: 1 | -1 = 1;
 
     constructor(
         x: number,
@@ -419,6 +429,16 @@ export class Tank {
     }
 
     /**
+     * Ставит флажок ветра по модели (#550, #579): угол наклона И сторону провисания
+     * из одного и того же `wind`. Одной точкой входа, чтобы поля не могли разойтись —
+     * угол от одного ветра, зеркало от другого (ревью #579).
+     */
+    setWindFlag(wind: number) {
+        this.windFlagRotationRad = windFlagRotationRad(wind);
+        this.windFlagSide = windFlagSide(wind);
+    }
+
+    /**
      * Якорь мачты (верх, у заднего края корпуса — не мешает стволу) в МИРОВЫХ
      * координатах: тот же приём, что `recalcPosition` уже применяет к
      * `gunpointX/Y` — локальная точка корпуса переносится наклонным трансформом
@@ -458,15 +478,17 @@ export class Tank {
         const { x: poleTopX, y: poleTopY } = this.windFlagAnchor();
         const flagScale = this.flagScale();
         const poleHeight = WIND_FLAG_POLE_HEIGHT * flagScale;
-        const poleWidth = Math.max(WIND_FLAG_POLE_WIDTH, WIND_FLAG_POLE_WIDTH * flagScale);
+        // «Мачта не тоньше канона»: то же, что Math.max(POLE_WIDTH, POLE_WIDTH * scale),
+        // но правило видно в записи, а не выводится сравнением двух произведений.
+        const poleWidth = WIND_FLAG_POLE_WIDTH * Math.max(1, flagScale);
         const outline = Math.max(1, flagScale);
         ctx.save();
 
         // Полотнище: контур вымпела из мировых единиц, повёрнутый вокруг вершины мачты.
-        // Зеркало по знаку ветра (`side`) держит полотнище ПОД осью наклона при обоих
-        // направлениях: односторонний вымпел без него задирался бы вверх на ветре
+        // Зеркало по знаку ветра (`windFlagSide`) держит полотнище ПОД осью наклона при
+        // обоих направлениях: односторонний вымпел без него задирался бы вверх на ветре
         // влево — и левый флаг перестал бы быть отражением правого.
-        const side = this.windFlagRotationRad > Math.PI / 2 ? -1 : 1;
+        const side = this.windFlagSide;
         ctx.translate(poleTopX + poleWidth / 2, poleTopY);
         ctx.rotate(this.windFlagRotationRad);
         ctx.beginPath();

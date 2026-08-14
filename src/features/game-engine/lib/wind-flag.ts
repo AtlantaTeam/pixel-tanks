@@ -11,16 +11,23 @@ import { MAX_WIND, windDirection, windMagnitude } from './wind';
 /**
  * Канонический размер флажка (CSS px, `scale === 1`) — Issue #550, пересмотрен в #579.
  *
- * `WIDTH` — толщина полотнища у мачты, `HEIGHT` — его длина от мачты до свободного
- * края (имена достались от прежнего `fillRect` и сохранены, чтобы не плодить синонимы).
+ * Имена — по осям контура полотнища, а не по осям экрана (ревью #579): `LENGTH` —
+ * длина от мачты до свободного края (протяжённость вдоль локального `x`),
+ * `THICKNESS` — толщина у мачты (разброс по локальному `y`). Прежние
+ * `WIND_FLAG_HEIGHT`/`WIND_FLAG_WIDTH` достались от `fillRect` и означали ровно
+ * противоположное осям, из-за чего `{ x: HEIGHT, y: WIDTH / 2 }` в контуре читалось
+ * как опечатка.
+ *
  * Мачта **выше длины полотнища**: в штиль вымпел виснет вдоль неё вниз ровно на свою
- * длину, и разница `POLE_HEIGHT - HEIGHT` — гарантированный зазор между концом
+ * длину, и разница `POLE_HEIGHT - LENGTH` — гарантированный зазор между концом
  * полотнища и верхом корпуса. Без него флаг лежал на башне и читался как приклеенный
- * к корпусу прямоугольник (замечание с прода 14.08.2026).
+ * к корпусу прямоугольник (замечание с прода 14.08.2026). Зазор — 3 единицы, а не 2:
+ * обводка полотнища (`max(1, flagScale)` px) рисуется ПО ЦЕНТРУ контура и съедает
+ * половину своей ширины из просвета (ревью #579 — на арене 1440 оставалось ≈2px).
  */
-export const WIND_FLAG_WIDTH = 8;
-export const WIND_FLAG_HEIGHT = 14;
-export const WIND_FLAG_POLE_HEIGHT = 16;
+export const WIND_FLAG_THICKNESS = 8;
+export const WIND_FLAG_LENGTH = 14;
+export const WIND_FLAG_POLE_HEIGHT = 17;
 /** Толщина мачты: не «волосок в один пиксель», иначе древка не видно и флага не читается. */
 export const WIND_FLAG_POLE_WIDTH = 2;
 
@@ -56,10 +63,10 @@ const NOTCH_DEPTH = 0.3;
  */
 export const WIND_FLAG_PENNANT: readonly { x: number; y: number }[] = [
     { x: 0, y: 0 },
-    { x: WIND_FLAG_HEIGHT, y: (WIND_FLAG_WIDTH * (1 - FLY_TAPER)) / 2 },
-    { x: WIND_FLAG_HEIGHT * (1 - NOTCH_DEPTH), y: WIND_FLAG_WIDTH / 2 },
-    { x: WIND_FLAG_HEIGHT, y: (WIND_FLAG_WIDTH * (1 + FLY_TAPER)) / 2 },
-    { x: 0, y: WIND_FLAG_WIDTH },
+    { x: WIND_FLAG_LENGTH, y: (WIND_FLAG_THICKNESS * (1 - FLY_TAPER)) / 2 },
+    { x: WIND_FLAG_LENGTH * (1 - NOTCH_DEPTH), y: WIND_FLAG_THICKNESS / 2 },
+    { x: WIND_FLAG_LENGTH, y: (WIND_FLAG_THICKNESS * (1 + FLY_TAPER)) / 2 },
+    { x: 0, y: WIND_FLAG_THICKNESS },
 ];
 
 /**
@@ -82,4 +89,19 @@ export function windFlagRotationRad(wind: number, maxWind = MAX_WIND): number {
     const restDeg = 90;
     const rotatedDeg = windDirection(wind) === 'right' ? restDeg - lean : restDeg + lean;
     return (rotatedDeg * Math.PI) / 180;
+}
+
+/**
+ * Сторона, в которую провисает односторонний вымпел: `1` — полотнище уходит от оси
+ * мачты вниз-вправо (ветер вправо, нейтраль), `-1` — зеркально (ветер влево).
+ * Иначе левый флаг задирался бы вверх против ветра, и левый перестал бы быть
+ * отражением правого.
+ *
+ * Выводится из ЗНАКА ветра теми же `windDirection`, что и угол, — а не из самого
+ * угла (ревью #579). Порог «угол > 90°» сегодня совпадает с направлением только
+ * потому, что наклон не превышает 60°: вырасти `LEAN_DEG_BY_MAGNITUDE` до 90°+ или
+ * сменись нейтраль — зеркало перевернулось бы молча, и форма разошлась бы с моделью.
+ */
+export function windFlagSide(wind: number): 1 | -1 {
+    return windDirection(wind) === 'right' ? 1 : -1;
 }
