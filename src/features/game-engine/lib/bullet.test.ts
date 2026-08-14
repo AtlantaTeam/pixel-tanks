@@ -383,3 +383,56 @@ describe('Bullet: типы оружия (issue #483)', () => {
         }
     });
 });
+
+describe('Bullet.draw — спрайт центрирован по x/y (issue #569)', () => {
+    it.each([
+        EWeaponKind.HighExplosive,
+        EWeaponKind.Heavy,
+        EWeaponKind.Cluster,
+        EWeaponKind.Digger,
+    ])('центр отрисованного квадрата совпадает с bullet.x/y (%s)', (kind) => {
+        const rects: { x: number; y: number; w: number; h: number }[] = [];
+        const drawCtx = {
+            clearRect: () => undefined,
+            fillRect: (x: number, y: number, w: number, h: number) => rects.push({ x, y, w, h }),
+            fillStyle: '',
+        } as unknown as CanvasRenderingContext2D;
+
+        const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(3));
+        const active = makeTank(100, -Math.PI / 4, 12);
+        const target = makeTank(600, Math.PI, 12);
+        const bullet = new Bullet(WIDTH, HEIGHT, ground, active, target, 0, WEAPON_SPECS[kind]);
+
+        bullet.move();
+        bullet.draw(drawCtx);
+
+        expect(rects).toHaveLength(1);
+        const [rect] = rects;
+        const centerX = rect.x + rect.w / 2;
+        const centerY = rect.y + rect.h / 2;
+        expect(centerX).toBeCloseTo(bullet.x, 10);
+        expect(centerY).toBeCloseTo(bullet.y, 10);
+    });
+
+    it('clearRect чистит ту же область, что рисовал предыдущий fillRect', () => {
+        const cleared: { x: number; y: number; w: number; h: number }[] = [];
+        const filled: { x: number; y: number; w: number; h: number }[] = [];
+        const drawCtx = {
+            clearRect: (x: number, y: number, w: number, h: number) => cleared.push({ x, y, w, h }),
+            fillRect: (x: number, y: number, w: number, h: number) => filled.push({ x, y, w, h }),
+            fillStyle: '',
+        } as unknown as CanvasRenderingContext2D;
+
+        const { bullet } = makeBullet(-Math.PI / 4, 15, 0.002);
+
+        bullet.move();
+        bullet.draw(drawCtx);
+        const firstFilled = filled[0];
+
+        bullet.move();
+        bullet.draw(drawCtx);
+        const secondCleared = cleared[1];
+
+        expect(secondCleared).toEqual(firstFilled);
+    });
+});
