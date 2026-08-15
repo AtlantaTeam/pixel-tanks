@@ -20,6 +20,13 @@
 export const API_LIMIT_RE =
     /(usage limit|session limit|rate.?limit|5-hour limit|hit your .{0,20}limit|limit (?:reached|exceeded)|limit will reset|resets? at)/i;
 
+// #594: сессия, упёршаяся в --max-turns, завершается ненулевым кодом с «Reached max turns
+// (N)». Это не отказ, а «не успела»: работа сделана частично и закоммичена. Отдельный
+// маркер нужен именно чтобы НЕ путать два случая — настоящее падение остаётся стопом
+// fail-closed, а исчерпание ходов вызывающий вправе продолжить новой сессией.
+// Формулировка ловится узко (max turns), чтобы не цеплять живую речь модели про «turns».
+export const TURN_LIMIT_RE = /(reached max turns|max turns (?:reached|exceeded))/i;
+
 // «resets 3am» / «reset at 7:30pm» → мс до сброса (локальное время; прошедшее
 // время суток = завтра). Не распарсилось → null, вызывающий возьмёт fallback.
 export function parseResetWaitMs(text: string): number | null {

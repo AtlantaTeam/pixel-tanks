@@ -26,6 +26,14 @@ export function positiveIntOrDefault(value: unknown, dflt: number): number {
     return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : dflt;
 }
 
+// #594: то же, что positiveIntOrDefault, но 0 — валидное значение, а не мусор. Нужен
+// счётчикам ПОВТОРОВ (в отличие от бюджетов): 0 повторов — осмысленная настройка «не
+// повторять, сразу стоп», и трактовать её как «возьми дефолт» значило бы молча включить
+// повторы тому, кто их явно выключил.
+export function nonNegativeIntOrDefault(value: unknown, dflt: number): number {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : dflt;
+}
+
 // #204-ревью: единый резолвер команды установки зависимостей. Дефолт `npm ci` жил в трёх
 // местах (state-lock installFn + лог-строка, orchestrator getInstallCmd) — при смене дефолта
 // их пришлось бы вспоминать все, а разъехавшись, лог сказал бы одно, а исполнилось другое.

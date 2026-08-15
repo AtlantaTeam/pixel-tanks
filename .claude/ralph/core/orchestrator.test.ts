@@ -3733,6 +3733,148 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(prompts).not.toContain('от прохожего');
     });
 
+    // #594: исчерпание бюджета ходов на шаге правок — «сессия не успела», а не отказ.
+    // Раньше оно останавливало сдачу так же, как настоящее падение, и ночной прогон вставал
+    // до человека — ровно то, ради чего AFK и делался.
+    // Ревью в этих сценариях пропускается (pickReviewModelFn: 'none') — интересен ТОЛЬКО
+    // шаг правок, иначе первый вызов runClaudeFn был бы ревью и нумерация попыток поехала.
+    it('#594: правки исчерпали ходы → продолжение новой сессией, сдача доходит до конца', () => {
+        const logs: string[] = [];
+        const state = mkState();
+        let calls = 0;
+        const runClaudeFn = vi.fn<RunClaudeFake>((_prompt, _opts, d) => {
+            calls++;
+            if (calls === 1) {
+                (d?.onOutput as ((o: string) => void) | undefined)?.(
+                    'Error: Reached max turns (200)',
+                );
+                return 1;
+            }
+            return 0;
+        });
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                findOpenPrFn: () => ({ number: 55, labels: [] }),
+                pickReviewModelFn: () => 'none',
+                runClaudeFn,
+                tryMergePhaseFn: () => 'merged',
+            }),
+        );
+        expect(runClaudeFn).toHaveBeenCalledTimes(2);
+        // Сдача СОСТОЯЛАСЬ — стопа не было.
+        expect(state.submitted).toBe(true);
+        expect(logs.join('\n')).toMatch(/исчерпал бюджет ходов/);
+        // Вторая сессия знает, что продолжает: иначе она разбирала бы с нуля уже
+        // закоммиченное первой и упёрлась бы в тот же потолок.
+        expect(String(runClaudeFn.mock.calls[1][0])).toMatch(/ПРОДОЛЖЕНИЕ прерванного разбора/);
+    });
+
+    it('#594 НЕГАТИВНЫЙ: настоящее падение шага правок → стоп сразу, без повторов', () => {
+        const logs: string[] = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn<RunClaudeFake>((_prompt, _opts, d) => {
+            (d?.onOutput as ((o: string) => void) | undefined)?.(
+                'TypeError: undefined is not a function',
+            );
+            return 1;
+        });
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                findOpenPrFn: () => ({ number: 55, labels: [] }),
+                pickReviewModelFn: () => 'none',
+                runClaudeFn,
+                tryMergePhaseFn: () => 'merged',
+            }),
+        );
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        expect(state.submitted).toBeFalsy();
+        expect(logs.join('\n')).toMatch(/Шаг правок по ревью упал \(код 1\)/);
+    });
+
+    it('#594 НЕГАТИВНЫЙ: ходы кончаются каждый раз → повторы не бесконечны, стоп fail-closed', () => {
+        const logs: string[] = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn<RunClaudeFake>((_prompt, _opts, d) => {
+            (d?.onOutput as ((o: string) => void) | undefined)?.('Error: Reached max turns (200)');
+            return 1;
+        });
+        runLoop(
+            validCfg({ review: { fixTurnRetries: 1 } }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                findOpenPrFn: () => ({ number: 55, labels: [] }),
+                pickReviewModelFn: () => 'none',
+                runClaudeFn,
+                tryMergePhaseFn: () => 'merged',
+            }),
+        );
+        // Первая попытка + один повтор из конфига — и стоп.
+        expect(runClaudeFn).toHaveBeenCalledTimes(2);
+        expect(state.submitted).toBeFalsy();
+        expect(logs.join('\n')).toMatch(/не уложился в бюджет ходов за 2 попыток/);
+    });
+
+    it('#594: fixTurnRetries: 0 → прежнее поведение, исчерпание ходов = стоп без повтора', () => {
+        const logs: string[] = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn<RunClaudeFake>((_prompt, _opts, d) => {
+            (d?.onOutput as ((o: string) => void) | undefined)?.('Error: Reached max turns (200)');
+            return 1;
+        });
+        runLoop(
+            validCfg({ review: { fixTurnRetries: 0 } }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                findOpenPrFn: () => ({ number: 55, labels: [] }),
+                pickReviewModelFn: () => 'none',
+                runClaudeFn,
+                tryMergePhaseFn: () => 'merged',
+            }),
+        );
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        expect(state.submitted).toBeFalsy();
+    });
+
+    // #45 × #594: намерения применяются после КАЖДОЙ попытки, и их провал — стоп ДО решения
+    // о повторе. Перестановка проверок местами молча запустила бы новую сессию поверх
+    // неприменённого батча — вердикт ревью потерялся бы, а фаза поехала к гейту без него.
+    it('#594: ходы исчерпаны, но намерения не применились → стоп сразу, повтор не запускается', () => {
+        const logs: string[] = [];
+        const state = mkState();
+        const runClaudeFn = vi.fn<RunClaudeFake>((_prompt, _opts, d) => {
+            (d?.onOutput as ((o: string) => void) | undefined)?.('Error: Reached max turns (200)');
+            return 1;
+        });
+        runLoop(
+            validCfg(),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                findOpenPrFn: () => ({ number: 55, labels: [] }),
+                pickReviewModelFn: () => 'none',
+                runClaudeFn,
+                applySessionRequestsFn: () => ({ applied: 0, failed: true }),
+                tryMergePhaseFn: () => 'merged',
+            }),
+        );
+        expect(runClaudeFn).toHaveBeenCalledTimes(1);
+        expect(state.submitted).toBeFalsy();
+        expect(logs.join('\n')).toMatch(/Намерения сессии \(правки по ревью\) не применились/);
+    });
+
     it('#217: гейт blocked → чини-сессия + повторное ревью раннером, снятие метки раннером, инкремент', () => {
         const logs: string[] = [];
         // lastReviewModel — модель, поставившая блок (её и подымет планка).
@@ -3772,6 +3914,66 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(removeBlockedLabelFn.mock.calls[0][0]).toBe('feature/m1');
         // Планка поднята до модели, поставившей блок.
         expect(state.reviewModelFloor).toBe('claude-opus-4-8');
+    });
+
+    it('#594: разбор blocked исчерпал ходы → продолжение, а не стоп до человека', () => {
+        const logs: string[] = [];
+        const state = mkState({ submitted: true, blockedHeals: 0, lastReviewModel: 'claude-rev' });
+        let calls = 0;
+        const runClaudeFn = vi.fn<RunClaudeFake>((_prompt, _opts, d) => {
+            calls++;
+            if (calls === 1) {
+                (d?.onOutput as ((o: string) => void) | undefined)?.(
+                    'Error: Reached max turns (200)',
+                );
+                return 1;
+            }
+            return 0;
+        });
+        runLoop(
+            validCfg({ blockedHealAttempts: 3 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                pickReviewModelFn: () => 'claude-rev',
+                runClaudeFn,
+            }),
+        );
+        // Три сессии: прерванная чини-сессия + её продолжение + повторное ревью раннером.
+        // Барьер #217 не ослаблен — вердикт по-прежнему выносит ревью, а не исполнитель.
+        expect(runClaudeFn).toHaveBeenCalledTimes(3);
+        expect(String(runClaudeFn.mock.calls[1][0])).toMatch(/ПРОДОЛЖЕНИЕ прерванного разбора/);
+        expect(state.blockedHeals).toBe(1);
+    });
+
+    it('#594 НЕГАТИВНЫЙ: разбор blocked не влезает в бюджет каждый раз → стоп с советом про размер, не «перезапусти»', () => {
+        const logs: string[] = [];
+        const state = mkState({ submitted: true, blockedHeals: 0, lastReviewModel: 'claude-rev' });
+        const runClaudeFn = vi.fn<RunClaudeFake>((_prompt, _opts, d) => {
+            (d?.onOutput as ((o: string) => void) | undefined)?.('Error: Reached max turns (200)');
+            return 1;
+        });
+        runLoop(
+            validCfg({ blockedHealAttempts: 3, review: { fixTurnRetries: 1 } }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'blocked',
+                pickReviewModelFn: () => 'claude-rev',
+                runClaudeFn,
+            }),
+        );
+        // Попытка + один повтор — и стоп ДО повторного ревью (третьей сессии нет).
+        expect(runClaudeFn).toHaveBeenCalledTimes(2);
+        // Совет человеку — про объём блокеров, а не «перезапусти loop»: рестарт прогнал бы
+        // тот же разбор с тем же потолком.
+        expect(logs.join('\n')).toMatch(/Разбор blocked не уложился в бюджет ходов за 2 попыток/);
+        expect(logs.join('\n')).not.toMatch(/Сессия разбора blocked упала/);
     });
 
     it('гейт blocked, бюджет исчерпан → стоп без чини-сессии, сброс счётчика, пуш человеку', () => {

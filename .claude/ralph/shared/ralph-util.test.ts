@@ -5,7 +5,13 @@
 // покрывают; orchestrator.test.ts держит лишь смоук ре-экспорта (тот же объект).
 import { describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';
-import { positiveIntOrDefault, redactSecrets, shq, sleep } from './ralph-util.ts';
+import {
+    nonNegativeIntOrDefault,
+    positiveIntOrDefault,
+    redactSecrets,
+    shq,
+    sleep,
+} from './ralph-util.ts';
 
 // Платформенное: тест опирается на POSIX-механизмы, которых на Windows нет
 // (/proc/<pid>/cmdline, пути соседнего worktree, /bin/sh). Раннер живёт на
@@ -79,6 +85,29 @@ describe('positiveIntOrDefault — бюджет ходов (#132)', () => {
         ['null', null],
     ])('%s → дефолт', (_name, value) => {
         expect(positiveIntOrDefault(value, 200)).toBe(200);
+    });
+});
+
+// #594: у счётчика ПОВТОРОВ ноль осмыслен («не повторять, сразу стоп»), в отличие от
+// бюджета ходов. Разница между двумя резолверами — ровно в этом, поэтому проверяется явно:
+// перепутанный резолвер молча включил бы повторы тому, кто их выключил.
+describe('nonNegativeIntOrDefault — счётчик повторов (#594)', () => {
+    it('нормальное значение проходит', () => {
+        expect(nonNegativeIntOrDefault(3, 2)).toBe(3);
+    });
+
+    it('ноль — валидная настройка «без повторов», а не мусор', () => {
+        expect(nonNegativeIntOrDefault(0, 2)).toBe(0);
+    });
+
+    it.each([
+        ['отрицательное', -1],
+        ['дробное', 1.5],
+        ['строка', '3'],
+        ['undefined', undefined],
+        ['null', null],
+    ])('%s → дефолт', (_name, value) => {
+        expect(nonNegativeIntOrDefault(value, 2)).toBe(2);
     });
 });
 
