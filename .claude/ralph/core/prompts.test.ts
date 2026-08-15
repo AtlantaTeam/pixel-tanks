@@ -101,6 +101,25 @@ describe('промпты сессий: подстановка параметро
         ).not.toMatch(/ПРОДОЛЖЕНИЕ прерванного разбора/);
     });
 
+    // #594: у разбора blocked префикс продолжения — ОТДЕЛЬНЫЙ литерал (свой текст про
+    // блокеры), опечатка в нём не ловится тестами buildFixByReviewPrompt выше.
+    it('resumed у разбора blocked → та же пометка продолжения и взгляд в историю ветки', () => {
+        const prompt = buildBlockedFixPrompt({
+            branch: BRANCH,
+            allowNames: 'owner',
+            gateCmdList: GATE,
+            resumed: true,
+        });
+        expect(prompt).toMatch(/ПРОДОЛЖЕНИЕ прерванного разбора/);
+        expect(prompt).toMatch(/git log/);
+    });
+
+    it('по умолчанию у разбора blocked пометки продолжения тоже нет', () => {
+        expect(
+            buildBlockedFixPrompt({ branch: BRANCH, allowNames: 'owner', gateCmdList: GATE }),
+        ).not.toMatch(/ПРОДОЛЖЕНИЕ прерванного разбора/);
+    });
+
     it('сессии, читающие комментарии, знают список доверенных авторов (C3)', () => {
         for (const prompt of [
             buildFixByReviewPrompt({ branch: BRANCH, allowNames: 'owner', gateCmdList: GATE }),

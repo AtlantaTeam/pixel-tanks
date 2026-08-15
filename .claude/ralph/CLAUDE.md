@@ -171,7 +171,9 @@ allowlist неподделываем из дерева PR) остаётся тр
 - `phases` (milestone + branch), `prompt` (шаблон с `{milestone}`/`{branch}`);
 - `modelRouting.labels` — роутинг кодер-модели по метке `complexity:*`;
 - `review.*` — модель ревью, эскалация по зонам риска диффа (`escalateOnPaths`),
-  бюджет ходов, лимит диффа;
+  бюджет ходов, лимит диффа; `fixTurnRetries` (#594) — сколько раз продолжить шаг
+  правок по ревью / разбора blocked новой сессией, если предыдущая исчерпала
+  `--max-turns` (дефолт 2; 0 — прежнее поведение, исчерпание ходов = стоп);
 - breaker'ы: `maxIterations`, `maxTurns`, `maxNoProgress`, `gateHealAttempts`,
   `blockedHealAttempts`; API-лимит: `apiLimitMaxWaits/GraceMin/FallbackWaitMin`;
 - `deadman.*` — пороги тишины; `tunnelCheck.*`; `authorAllowlist`; `permissionMode`;

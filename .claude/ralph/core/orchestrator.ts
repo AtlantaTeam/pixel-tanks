@@ -3656,6 +3656,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     }
                     return { code, output, intentsBroken: false };
                 };
+                // #594: счётчик повторов ОБЩИЙ для обоих шагов разбора (правки по ревью и
+                // blocked) — один ключ конфига, один расчёт. Два независимых чтения ключа
+                // однажды разъехались бы при правке одного из них.
+                const fixTurnRetries = nonNegativeIntOrDefault(
+                    cfg.review?.fixTurnRetries,
+                    FIX_TURN_RETRIES,
+                );
 
                 // M6: рестарт после красного гейта не дублирует PR/ревью/правки — сразу гейт.
                 if (state.submitted) {
@@ -3792,10 +3799,6 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         .join(', ');
                     // #45: обоснования пропусков приходят намерением pr-comment; #594:
                     // исчерпание ходов — не отказ, а «не успела» (см. runSessionWithTurnRetries).
-                    const fixRetries = nonNegativeIntOrDefault(
-                        cfg.review?.fixTurnRetries,
-                        FIX_TURN_RETRIES,
-                    );
                     const fix = runSessionWithTurnRetries(
                         (resumed) =>
                             buildFixByReviewPrompt({
@@ -3805,13 +3808,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                 commentsContext: trustedCommentsContext(phase.branch),
                                 resumed,
                             }),
-                        { what: 'правки по ревью', retries: fixRetries },
+                        { what: 'правки по ревью', retries: fixTurnRetries },
                     );
                     if (fix.intentsBroken) break;
                     if (fix.code !== 0) {
                         logFn(
                             TURN_LIMIT_RE.test(fix.output)
-                                ? `⛔ Шаг правок по ревью не уложился в бюджет ходов за ${fixRetries + 1} попыток — сдача фазы остановлена (fail-closed). Похоже, фаза великовата: разбери остаток руками или разрежь milestone.`
+                                ? `⛔ Шаг правок по ревью не уложился в бюджет ходов за ${fixTurnRetries + 1} попыток — сдача фазы остановлена (fail-closed). Похоже, фаза великовата: разбери остаток руками или разрежь milestone.`
                                 : `⛔ Шаг правок по ревью упал (код ${fix.code}) — сдача фазы остановлена (fail-closed).`,
                         );
                         break;
@@ -4179,18 +4182,17 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                 commentsContext: trustedCommentsContext(phase.branch),
                                 resumed,
                             }),
-                        {
-                            what: 'разбор blocked',
-                            retries: nonNegativeIntOrDefault(
-                                cfg.review?.fixTurnRetries,
-                                FIX_TURN_RETRIES,
-                            ),
-                        },
+                        { what: 'разбор blocked', retries: fixTurnRetries },
                     );
                     if (blocked.intentsBroken) break;
                     if (blocked.code !== 0) {
+                        // #594: два разных стопа — два разных совета человеку. «Упала» лечится
+                        // перезапуском, «не уложилась в бюджет» — нет: рестарт прогонит тот же
+                        // разбор с тем же потолком, дело в объёме блокеров, а не в сбое.
                         logFn(
-                            `⛔ Сессия разбора blocked упала (код ${blocked.code}) — стоп, перезапусти loop.`,
+                            TURN_LIMIT_RE.test(blocked.output)
+                                ? `⛔ Разбор blocked не уложился в бюджет ходов за ${fixTurnRetries + 1} попыток — стоп (fail-closed). Похоже, блокеров больше, чем влезает в бюджет: разбери руками или разрежь milestone.`
+                                : `⛔ Сессия разбора blocked упала (код ${blocked.code}) — стоп, перезапусти loop.`,
                         );
                         break;
                     }
