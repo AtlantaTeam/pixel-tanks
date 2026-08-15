@@ -9,4 +9,4 @@
  */
 export const GAME_ASSET_PATHS = {
     sand: '/game/sand.jpg',
-};
+} as const;

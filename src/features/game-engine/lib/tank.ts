@@ -130,20 +130,29 @@ export class Tank {
      */
     shadow: TTankShadow = null;
     /**
-     * Угол поворота флажка ветра на мачте (радианы, `windFlagRotationRad`) — «дешёвый
-     * носитель» ветра рядом с ареной (#550). Ставит `GamePlay` через `setWindFlag`
+     * Угол поворота флажка ветра на мачте (радианы, `windFlagRotationRad`) и сторона
+     * провисания полотнища (`windFlagSide`, `wind-flag.ts`) — «дешёвый носитель»
+     * ветра рядом с ареной (#550). Оба поля ставит `GamePlay` через `setWindFlag`
      * только на свой танк (`leftTank`), пересчитывая при каждой смене `this.wind`.
-     * `null` (дефолт, чужой танк) — флажок не рисуется.
+     * `null` угла (дефолт, чужой танк) — флажок не рисуется.
+     *
+     * Снаружи — только чтение (ревью #579): инвариант «угол и сторона из ОДНОГО
+     * ветра» держит единственная точка записи `setWindFlag`, а публичные
+     * записываемые поля позволяли обойти её (`tank.windFlagRotationRad = 0.3`) и
+     * развести форму с моделью — ровно то, о чём предупреждал докблок. Доступ
+     * дешевле комментария.
      */
-    windFlagRotationRad: number | null = null;
-    /**
-     * Сторона провисания полотнища (`windFlagSide`, `wind-flag.ts`) — ставится
-     * ВМЕСТЕ с углом, из знака того же `wind`. Отдельным полем, а не выводом из
-     * угла (ревью #579): форма обязана следовать модели ветра явно, иначе рост
-     * наклона выше 90° молча перевернул бы зеркало. `1` — как в штиль и при ветре
-     * вправо.
-     */
-    windFlagSide: 1 | -1 = 1;
+    private _windFlagRotationRad: number | null = null;
+    private _windFlagSide: 1 | -1 = 1;
+
+    get windFlagRotationRad(): number | null {
+        return this._windFlagRotationRad;
+    }
+
+    /** `1` — как в штиль и при ветре вправо, `-1` — зеркально (ветер влево). */
+    get windFlagSide(): 1 | -1 {
+        return this._windFlagSide;
+    }
 
     constructor(
         x: number,
@@ -434,23 +443,31 @@ export class Tank {
      * угол от одного ветра, зеркало от другого (ревью #579).
      */
     setWindFlag(wind: number) {
-        this.windFlagRotationRad = windFlagRotationRad(wind);
-        this.windFlagSide = windFlagSide(wind);
+        this._windFlagRotationRad = windFlagRotationRad(wind);
+        this._windFlagSide = windFlagSide(wind);
     }
 
     /**
-     * Якорь мачты (верх, у заднего края корпуса — не мешает стволу) в МИРОВЫХ
-     * координатах: тот же приём, что `recalcPosition` уже применяет к
-     * `gunpointX/Y` — локальная точка корпуса переносится наклонным трансформом
-     * склона (`this.currentTransformer`, `transformPoint`) без ctx.getTransform()
-     * (комментарий `rotate-figure.ts`: он вернул бы dpr-загрязнённую матрицу).
-     * Без трансформера (танк в воздухе/тесты без сида) — точка как есть.
+     * ОСНОВАНИЕ мачты — точка крепления на крыше корпуса (у заднего края, чтобы
+     * не мешать стволу) в МИРОВЫХ координатах: тот же приём, что `recalcPosition`
+     * уже применяет к `gunpointX/Y` — локальная точка корпуса переносится наклонным
+     * трансформом склона (`this.currentTransformer`, `transformPoint`) без
+     * ctx.getTransform() (комментарий `rotate-figure.ts`: он вернул бы
+     * dpr-загрязнённую матрицу). Без трансформера (танк в воздухе/тесты без
+     * сида) — точка как есть.
+     *
+     * Якорим именно основание, а не вершину мачты (ревью #579). Раньше сквозь
+     * наклонный трансформ прогонялась ВЕРШИНА (`y - tankHeight - poleHeight`), а
+     * мачта рисовалась от неё вертикально вниз — то есть низ древка оказывался в
+     * `R(вершина) + (0, poleHeight)` вместо `R(вершина + (0, poleHeight))`.
+     * Расхождение `poleHeight * (sinθ, 1−cosθ)` росло с наклоном корпуса θ: после
+     * подъёма мачты 5 → 17 единиц (#579) на десктопе это ≈5.6px вбок при θ=15° и
+     * ≈9.2px при θ=25° — при ширине самого древка 2.6px флаг «висел в воздухе»
+     * рядом с танком. Теперь основание сидит на крыше при любом наклоне, а
+     * полотнище по-прежнему поворачивается ТОЛЬКО на `windFlagRotationRad`.
      */
-    private windFlagAnchor(): TCoords {
-        const local = {
-            x: this.x + this.tankWidth * 0.35,
-            y: this.y - this.tankHeight - WIND_FLAG_POLE_HEIGHT * this.flagScale(),
-        };
+    private windFlagBase(): TCoords {
+        const local = { x: this.x + this.tankWidth * 0.35, y: this.y - this.tankHeight };
         return this.currentTransformer ? transformPoint(local, this.currentTransformer) : local;
     }
 
@@ -475,9 +492,12 @@ export class Tank {
      */
     private drawWindFlag(ctx: CanvasRenderingContext2D) {
         if (this.windFlagRotationRad === null) return;
-        const { x: poleTopX, y: poleTopY } = this.windFlagAnchor();
         const flagScale = this.flagScale();
         const poleHeight = WIND_FLAG_POLE_HEIGHT * flagScale;
+        // Мачта тянется ВВЕРХ от основания на крыше корпуса (ревью #579): так низ
+        // древка сидит на корпусе и на склоне тоже — см. докблок `windFlagBase`.
+        const { x: poleTopX, y: poleBaseY } = this.windFlagBase();
+        const poleTopY = poleBaseY - poleHeight;
         // «Мачта не тоньше канона»: то же, что Math.max(POLE_WIDTH, POLE_WIDTH * scale),
         // но правило видно в записи, а не выводится сравнением двух произведений.
         const poleWidth = WIND_FLAG_POLE_WIDTH * Math.max(1, flagScale);
@@ -492,12 +512,15 @@ export class Tank {
         ctx.translate(poleTopX + poleWidth / 2, poleTopY);
         ctx.rotate(this.windFlagRotationRad);
         ctx.beginPath();
-        WIND_FLAG_PENNANT.forEach((point, i) => {
-            const x = point.x * flagScale;
-            const y = point.y * flagScale * side;
+        // Обычный `for`, а не `forEach`: колбэк — это замыкание, создаваемое на
+        // КАЖДЫЙ кадр каждого танка с флажком, а `canvas.md` запрещает аллокации
+        // в кадре (ревью #579). Рядом `drawTankWheels` ходит тем же способом.
+        for (let i = 0; i < WIND_FLAG_PENNANT.length; i++) {
+            const x = WIND_FLAG_PENNANT[i].x * flagScale;
+            const y = WIND_FLAG_PENNANT[i].y * flagScale * side;
             if (i === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
-        });
+        }
         ctx.closePath();
         ctx.fillStyle = ENGINE_COLORS.warning;
         ctx.fill();

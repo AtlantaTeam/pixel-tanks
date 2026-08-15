@@ -52,7 +52,9 @@ export function buildWindFlagScene({ wind, skinId, images = {}, sandImg }: TWind
 
     const ground = new Ground(width, height, createSeededRandom(1), sandImg);
     // Плоская полоса: наклон корпуса не должен спорить с наклоном полотнища.
-    ground.heights = new Array<number>(width).fill(groundHeight);
+    // Через `flatten`, а не присваиванием `heights` (ревью #579): метод помечает
+    // offscreen-слой грязным, прямая мутация поля шла мимо инвалидации.
+    ground.flatten(groundHeight);
 
     const tank = new Tank(
         Math.round((width - WORLD_UNITS.tankWidth * scale) / 2),

@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TTankWheelSpec as TSkinWheelSpec } from '@/entities/tank-skins';
+import { transformPoint } from '@/shared/lib/canvas';
 import { createSeededRandom } from '@/shared/lib/random';
 import { EWeaponKind, type TWeapon } from '@/shared/model';
 import { ENGINE_COLORS } from './engine-palette';
@@ -83,7 +84,16 @@ const makeRecordingCtx = () => {
 /** Плоский рельеф, чтобы наклон корпуса не влиял на позицию тела. */
 const flatGround = () => {
     const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(1));
-    ground.heights = new Array<number>(WIDTH).fill(100);
+    ground.flatten(100);
+    return ground;
+};
+
+/** Ровный склон с заданным подъёмом на столбец — корпус получает наклонный
+ *  трансформ (`slopeTank`), в котором и жила регрессия якоря флажка (ревью #579). */
+const slopedGround = (rise = 0.35) => {
+    const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(1));
+    ground.flatten(100);
+    for (let x = 0; x < WIDTH; x++) ground.heights[x] = Math.round(100 + x * rise);
     return ground;
 };
 
@@ -595,4 +605,58 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
             expect(clothTipY + outline / 2).toBeLessThan(tank.bodyRect().y);
         },
     );
+
+    // Склон — главный нетривиальный случай для флажка: он живёт в МИРОВЫХ
+    // координатах, вне наклонного трансформа корпуса (ревью #579). Прочие
+    // сценарии этой сюиты стоят на `flatGround`, где наклона нет вовсе, и
+    // регрессия «основание мачты уехало от крыши» прошла мимо них.
+    it('на склоне основание мачты сидит на крыше корпуса, а не висит рядом', () => {
+        const scale = 1.28;
+        const tank = new Tank(
+            200,
+            HEIGHT - 100,
+            WIDTH,
+            HEIGHT,
+            0,
+            [WEAPON],
+            bodyImg,
+            undefined,
+            scale,
+        );
+        tank.setWindFlag(WIND);
+        const stub = new FlagCtxStub();
+        tank.draw(stub as unknown as CanvasRenderingContext2D, null, slopedGround());
+
+        const transformer = tank.currentTransformer;
+        expect(transformer, 'наклонный трансформ корпуса должен быть выставлен').toBeDefined();
+        if (!transformer) return;
+        // Гвард от вырождения в плоский случай: без наклона (b === 0) тест сторожил бы
+        // ровно то же, что и остальные — рельеф обязан реально наклонять корпус.
+        expect(Math.abs(transformer.b), 'рельеф обязан быть склоном, а не полкой').toBeGreaterThan(
+            0.05,
+        );
+
+        // Точка крепления на крыше корпуса, прогнанная наклоном склона, — там и
+        // обязан оказаться НИЗ древка. Прежний код прогонял через трансформ ВЕРШИНУ
+        // мачты и тянул прямоугольник вниз, из-за чего низ уезжал на
+        // poleHeight * (sinθ, 1−cosθ).
+        const roof = transformPoint(
+            { x: tank.x + tank.tankWidth * 0.35, y: tank.y - tank.tankHeight },
+            transformer,
+        );
+        const poleRects = stub.ops.filter((o) => o.op === 'fillRect');
+        expect(poleRects.length, 'древко рисуется двумя прямоугольниками').toBeGreaterThan(0);
+        // Ядро древка — последний прямоугольник (тёмный контур рисуется до него).
+        const core = poleRects.at(-1);
+        expect(core).toBeDefined();
+        const [coreX, coreY, , coreHeight] = core?.args ?? [];
+
+        expect(coreX, `низ древка (x=${coreX}) оторвался от крыши корпуса (x=${roof.x})`).toBe(
+            roof.x,
+        );
+        expect(
+            coreY + coreHeight,
+            `низ древка (y=${coreY + coreHeight}) оторвался от крыши корпуса (y=${roof.y})`,
+        ).toBeCloseTo(roof.y, 6);
+    });
 });
