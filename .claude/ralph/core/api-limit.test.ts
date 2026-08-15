@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import ralph from '../ralph.js';
 import {
     API_LIMIT_RE,
+    TURN_LIMIT_RE,
     parseResetWaitMs,
     minutesOrDefault,
     apiLimitWaitMs,
@@ -35,6 +36,29 @@ describe('API_LIMIT_RE — детекция маркера лимита в вы�
         'no problems detected',
     ])('НЕ ложно-срабатывает на обычном выводе: %s', (text) => {
         expect(API_LIMIT_RE.test(text)).toBe(false);
+    });
+});
+
+// #594: исчерпание бюджета ходов — НЕ отказ сессии, а «не успела». Отличать его от
+// настоящего падения обязательно: настоящее падение обязано оставаться fail-closed стопом,
+// а «не успела» — продолжаться новой сессией, иначе AFK вырождается в HITL.
+describe('TURN_LIMIT_RE — детекция исчерпания бюджета ходов', () => {
+    it.each([
+        'Error: Reached max turns (200)',
+        'reached max turns',
+        'Max turns exceeded',
+        'max turns reached',
+    ])('распознаёт маркер исчерпания ходов: %s', (text) => {
+        expect(TURN_LIMIT_RE.test(text)).toBe(true);
+    });
+
+    it.each([
+        "You've hit your session limit · resets 1:20pm",
+        'TypeError: undefined is not a function',
+        'All tests passed',
+        'turns out the fix was simple',
+    ])('НЕ путает с API-лимитом и обычным падением: %s', (text) => {
+        expect(TURN_LIMIT_RE.test(text)).toBe(false);
     });
 });
 

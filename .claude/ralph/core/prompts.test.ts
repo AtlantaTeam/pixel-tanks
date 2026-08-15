@@ -81,6 +81,26 @@ describe('промпты сессий: подстановка параметро
         ).toContain(GATE);
     });
 
+    // #594: повтор шага правок после исчерпания ходов. Пометка нужна не для вежливости:
+    // без неё вторая сессия тратит тот же бюджет на уже закоммиченное первой и упирается
+    // в потолок снова — повтор становится холостым.
+    it('resumed → сессия знает, что продолжает прерванный разбор, и смотрит историю ветки', () => {
+        const prompt = buildFixByReviewPrompt({
+            branch: BRANCH,
+            allowNames: 'owner',
+            gateCmdList: GATE,
+            resumed: true,
+        });
+        expect(prompt).toMatch(/ПРОДОЛЖЕНИЕ прерванного разбора/);
+        expect(prompt).toMatch(/git log/);
+    });
+
+    it('по умолчанию пометки продолжения нет — первая сессия разбирает с нуля', () => {
+        expect(
+            buildFixByReviewPrompt({ branch: BRANCH, allowNames: 'owner', gateCmdList: GATE }),
+        ).not.toMatch(/ПРОДОЛЖЕНИЕ прерванного разбора/);
+    });
+
     it('сессии, читающие комментарии, знают список доверенных авторов (C3)', () => {
         for (const prompt of [
             buildFixByReviewPrompt({ branch: BRANCH, allowNames: 'owner', gateCmdList: GATE }),
