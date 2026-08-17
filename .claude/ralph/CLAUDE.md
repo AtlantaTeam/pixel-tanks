@@ -212,7 +212,7 @@ allowlist неподделываем из дерева PR) остаётся тр
 Проектная специфика вынесена в конфиг (#204, фаза 4 «Конфиг-граница»): состав гейта,
 команда установки, доска, имя worktree, health-URL — всё в `ralph.config.json` (см. выше),
 код ядра проектных строк не содержит (паттерн `pixel-tanks|pixeltanks|AtlantaTeam|game-next`
-по 20 файлам ядра **и** `scripts/*.mjs` пуст вне комментариев — сверка в
+по 21 файлу ядра **и** `scripts/*.mjs` пуст вне комментариев — сверка в
 `tests/core-purity.test.ts`).
 Промпт-контракт разделён: общий — `ralph.md`, проектный (UI-скилл, тема, стек) —
 `ralph.project.md`. Чек-лист переноса — `docs/ralph-mini-framework/porting-checklist.md`.
