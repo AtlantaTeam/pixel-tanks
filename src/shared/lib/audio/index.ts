@@ -2,6 +2,7 @@ export { AudioEngine, getAudioEngine } from './audio-engine';
 export { AudioUnlock } from './audio-unlock';
 export { SceneMusic } from './scene-music';
 export { SoundPrompt } from './sound-prompt';
+export { SOUND_HINT_STORAGE_KEY, markSoundHintSeen, useSoundHintSeen } from './sound-hint';
 export { useAudioUnlock } from './use-audio-unlock';
 export { useMuteState } from './use-mute-state';
 export { useSceneMusic } from './use-scene-music';

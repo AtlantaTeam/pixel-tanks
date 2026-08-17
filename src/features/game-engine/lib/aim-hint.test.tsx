@@ -1,8 +1,6 @@
 import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { markAimHintSeen, useAimHintSeen } from './aim-hint';
-
-const AIM_HINT_STORAGE_KEY = 'pt-aim-hint-seen';
+import { AIM_HINT_STORAGE_KEY, markAimHintSeen, useAimHintSeen } from './aim-hint';
 
 function Probe({ onRender }: { onRender: (seen: boolean) => void }) {
     onRender(useAimHintSeen());

@@ -17,6 +17,7 @@
         "test:watch": "vitest",
         "test:coverage": "vitest run --coverage",
         "test:e2e": "playwright test",
+        "test:visual": "node scripts/visual-baseline.mjs",
         "security:audit": "node scripts/security-audit.mjs",
         "test:count": "node scripts/test-count.mjs",
         "test:ratchet": "node scripts/test-ratchet.mjs",
@@ -50,7 +51,7 @@
     },
     "devDependencies": {
         "@feature-sliced/steiger-plugin": "^0.5.7",
-        "@playwright/test": "^1.61.1",
+        "@playwright/test": "1.62.1",
         "@tailwindcss/postcss": "^4",
         "@testing-library/jest-dom": "^6.9.1",
         "@testing-library/react": "^16.3.2",

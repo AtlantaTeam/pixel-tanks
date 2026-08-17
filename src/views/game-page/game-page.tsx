@@ -9,7 +9,12 @@ import {
 } from '@/features/game-engine';
 import { SceneMusic } from '@/shared/lib/audio';
 import { themeAttrs } from '@/shared/lib/theme';
-import { AmmoEmptyToast, GameControls, WindShiftBanner } from '@/widgets/game-controls';
+import {
+    AmmoEmptyToast,
+    GameControls,
+    SoundHintToast,
+    WindShiftBanner,
+} from '@/widgets/game-controls';
 import { GameOverDialog } from '@/widgets/game-over-dialog';
 import { PauseOverlay } from '@/widgets/pause-overlay';
 import { TopHud } from '@/widgets/top-hud';
@@ -49,6 +54,10 @@ export function GamePage({ seed }: TGamePageProps = {}) {
             {/* Плашка смены ветра бурей (#547): свой слой поверх арены, как
                 `AmmoEmptyToast` — показывается в момент смены и сама гаснет. */}
             <WindShiftBanner />
+            {/* Подсказка «нажми — играет музыка» (#584): новый AudioContext на
+                этом экране снова suspended до жеста — тот же промпт, что на
+                главной, разово (флаг общий на все экраны). */}
+            <SoundHintToast />
             <GameControls gameApiRef={gameApiRef} />
             <GameOverDialog seed={seed} />
             <PauseOverlay
