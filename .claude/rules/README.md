@@ -19,6 +19,7 @@
 | `payload.md`                | `src/payload/**`, `src/app/(payload)/**`                  | Payload CMS: Local API, access, hooks, типы           |
 | `tests.md`                  | `**/*.{spec,test}.{ts,tsx,js,jsx}`                        | Поведение вместо реализации, негативные сценарии      |
 | `design-system-showcase.md` | `src/shared/ui/**`, `src/views/design-system/**`          | Витрина `/design-system` = Storybook всех компонентов |
+| `scene-visual-baseline.md`  | `src/features/game-engine/**`, `e2e-visual/**`, арт       | Правка отрисовки сцены обновляет эталоны тем же PR    |
 | `ralph-typescript.md`       | `.claude/ralph/**`                                        | Код раннера — TS по умолчанию; `.js` только для entry |
 
 Добавил правило — впиши строку сюда, чтобы папка оставалась самодокументируемой.

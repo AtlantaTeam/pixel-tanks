@@ -41,6 +41,31 @@ describe('loadSandImage', () => {
         await expect(first).resolves.toBe(created[0]);
     });
 
+    it('не отдаёт текстуру, пока она не декодирована', async () => {
+        // `load` — «байты пришли», а не «кадр готов»: `drawImage` сразу по load
+        // может нарисовать пусто, а песок уходит в паттерн террейна.
+        vi.resetModules();
+        const { loadSandImage: freshLoad } = await import('./game-assets');
+        const pending = freshLoad();
+        const img = created.at(-1) as (typeof created)[number] & {
+            decode: () => Promise<void>;
+        };
+        let finishDecode: (() => void) | undefined;
+        img.decode = () =>
+            new Promise<void>((resolve) => {
+                finishDecode = resolve;
+            });
+        const settled = vi.fn();
+        void pending.then(settled);
+
+        img.onload?.();
+        await Promise.resolve();
+        expect(settled).not.toHaveBeenCalled();
+
+        finishDecode?.();
+        await expect(pending).resolves.toBe(img);
+    });
+
     it('битая текстура не роняет сцену — промис резолвится и на ошибке', async () => {
         // Кадр без песка рисуется заливкой `Ground`; висящий промис остановил бы отрисовку.
         vi.resetModules();

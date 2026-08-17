@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
+import { floor, getDevicePixelRatio, toDevicePixels, whenDecoded } from '@/shared/lib/canvas';
 import { getAudioEngine } from '@/shared/lib/audio';
 import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
@@ -300,7 +300,9 @@ export class GamePlay {
     private resizeRafId: number | undefined;
     // Пул частиц взрыва: комья земли (промах) и вспышка урона (попадание в танк).
     // Живёт весь бой, объекты переиспользуются — аллокаций в кадре нет.
-    private readonly particles: ParticlePool;
+    // Публичный (как `ownGhostTrail`/`bullet`): состояние взрыва читают отладка и
+    // e2e эталонных кадров сцены (`game-debug.ts`, #585) — только чтением.
+    readonly particles: ParticlePool;
     // Screen shake (тряска сцены) и slow-mo (замедление времени) — «сочность»
     // удара. Оба чистые, детерминированы seed'ом движка. Смещение применяется
     // в fullRedraw, масштаб времени — в throttle игрового цикла.
@@ -583,8 +585,11 @@ export class GamePlay {
             return;
         }
         const sandImg = new Image();
+        // Ждём decode, а не только `load` (`whenDecoded`): `initPaint` рисует
+        // террейн ровно один раз по этому промису, и недекодированная текстура
+        // осталась бы пустой заливкой до первого ресайза.
         const sandLoaded = new Promise<void>((resolve) => {
-            sandImg.onload = () => resolve();
+            sandImg.onload = () => void whenDecoded(sandImg).then(() => resolve());
             sandImg.onerror = () => resolve();
         });
         sandImg.src = GAME_ASSET_PATHS.sand;

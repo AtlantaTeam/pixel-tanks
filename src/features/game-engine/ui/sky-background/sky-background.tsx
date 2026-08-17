@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
+import { floor, getDevicePixelRatio, toDevicePixels, whenDecoded } from '@/shared/lib/canvas';
 import { prefersReducedMotion } from '../../lib/prefers-reduced-motion';
 import { SkyScene, type TSkyImages } from '../../lib/sky-scene';
 import type { TSkyPresetId } from '../../lib/sky-preset';
@@ -36,17 +36,27 @@ const ensureSkyImagesLoaded = () => {
     const entries = Object.entries(SKY_ASSET_PATHS) as [keyof TSkyImages, string][];
     for (const [key, src] of entries) {
         const img = new Image();
+        // Спрайт попадает в `skyImages` только ПОСЛЕ decode (см. `whenDecoded`):
+        // `drawImage` сразу по `load` может нарисовать пусто, а тон силуэта гор
+        // кешируется в offscreen — пустой кадр залипал бы на весь бой. Объект
+        // `skyImages` тот же, что отдан в `SkyScene`: сцена читает спрайт из него
+        // на каждой отрисовке, поэтому поздняя публикация доходит без пересоздания.
         const settle = () => {
             loadedCount += 1;
             loadListeners.forEach((cb) => cb());
         };
-        img.onload = settle;
+        img.onload = () => {
+            void whenDecoded(img).then(() => {
+                skyImages[key] = img;
+                settle();
+            });
+        };
         // 404/битый декод: тоже двигаем счётчик, иначе allSkyImagesLoaded() навсегда
         // false и rAF-петля неба при reduced-motion крутилась бы вечно (sky-perf.md).
-        // Битый Image имеет width 0 → paintMountains/drawClouds его тихо пропустят.
+        // В `skyImages` такой спрайт не публикуем вовсе — paintMountains/drawClouds
+        // тихо пропустят отсутствующий ключ, как раньше пропускали width 0.
         img.onerror = settle;
         img.src = src;
-        skyImages[key] = img;
     }
 };
 

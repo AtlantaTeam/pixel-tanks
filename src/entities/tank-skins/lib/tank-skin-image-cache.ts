@@ -1,3 +1,4 @@
+import { whenDecoded } from '@/shared/lib/canvas';
 import { getTankSkinById } from '../tank-skins.data';
 import type { TTankSkinId } from '../t-tank-skin';
 
@@ -26,7 +27,10 @@ function loadImage(svgMarkup: string): Promise<HTMLImageElement> {
         // onerror тоже разрешает промис (не reject): битый скин не должен вешать
         // весь бой на бесконечном ожидании Promise.all в GamePlay.loadImages —
         // танк отрисуется пустым прямоугольником (Tank.draw гардит tankBodyImg).
-        img.onload = () => resolve(img);
+        // Резолв после decode (`whenDecoded`): по одному `load` `drawImage` может
+        // нарисовать пусто, а кадр танка перерисовывается не каждый тик — в idle
+        // движок не рисует вовсе, и пустой корпус висел бы до следующего события.
+        img.onload = () => void whenDecoded(img).then(resolve);
         img.onerror = () => resolve(img);
     });
     img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgMarkup)}`;
