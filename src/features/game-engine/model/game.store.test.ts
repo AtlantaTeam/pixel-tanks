@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { EWeaponKind } from '@/shared/model';
 import { EMPTY_ARENA_INSETS } from '../lib/arena-insets';
+import { formatAngle } from '../lib/format-angle';
 import { POWER_MAX, POWER_MIN } from '../lib/power';
 import {
     deriveOutcome,
@@ -722,6 +723,47 @@ describe('game.store — startGame стартует чистую запись р
         expect(state.battleSeed).toBeNull();
         expect(state.battleField).toBeNull();
         expect(state.battleInsets).toBeNull();
+    });
+});
+
+describe('game.store — стартовый угол ствола (#457)', () => {
+    beforeEach(() => {
+        useGameStore.getState().resetGame();
+    });
+
+    // Стор стартует с тем же углом, с каким движок строит танк игрока
+    // (`new Tank(..., 0, ...)` в `GamePlay.start`) — иначе HUD показывал бы одно,
+    // а ствол смотрел бы в другое место. Ноль здесь — не «пустое значение», а
+    // фактическая горизонталь, поэтому и в градусах он обязан читаться как 0°.
+    it('дефолт стора — 0 радиан, что HUD показывает как 0°', () => {
+        expect(useGameStore.getInitialState().angle).toBe(0);
+        expect(formatAngle(useGameStore.getInitialState().angle)).toBe(0);
+    });
+
+    it('в начале боя (startGame) угол остаётся стартовой горизонталью', () => {
+        useGameStore.getState().startGame();
+
+        expect(useGameStore.getState().angle).toBe(0);
+        expect(formatAngle(useGameStore.getState().angle)).toBe(0);
+    });
+
+    it('после хода игрока HUD показывает наведённый угол, а не стартовый', () => {
+        useGameStore.getState().startGame();
+
+        // Прицел вверх на 90° — угол задаётся жестом/стрелками через setAngle.
+        useGameStore.getState().setAngle(-Math.PI / 2);
+        useGameStore.getState().fire();
+
+        expect(formatAngle(useGameStore.getState().angle)).toBe(90);
+    });
+
+    it('после рестарта (resetGame) угол возвращается к 0°', () => {
+        useGameStore.getState().setAngle(-Math.PI / 2);
+
+        useGameStore.getState().resetGame();
+
+        expect(useGameStore.getState().angle).toBe(0);
+        expect(formatAngle(useGameStore.getState().angle)).toBe(0);
     });
 });
 

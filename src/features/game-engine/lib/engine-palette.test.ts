@@ -50,4 +50,26 @@ describe('ENGINE_COLORS', () => {
         expect(cssEnemy).toBeDefined();
         expect(ENGINE_COLORS.enemy).toBe(cssEnemy);
     });
+
+    it('зеркалит --color-warning из globals.css (полотнище флажка ветра, #579)', () => {
+        const cssWarning = readCssToken('--color-warning');
+        expect(cssWarning).toBeDefined();
+        expect(ENGINE_COLORS.warning).toBe(cssWarning);
+    });
+
+    it('зеркалит --color-warning-ink из globals.css (обводка флажка ветра, #579)', () => {
+        const cssWarningInk = readCssToken('--color-warning-ink');
+        expect(cssWarningInk).toBeDefined();
+        expect(ENGINE_COLORS.warningInk).toBe(cssWarningInk);
+    });
+
+    it('зеркалит --color-text-muted из globals.css (ядро мачты флажка, #579)', () => {
+        const cssTextMuted = readCssToken('--color-text-muted');
+        expect(cssTextMuted).toBeDefined();
+        expect(ENGINE_COLORS.textMuted).toBe(cssTextMuted);
+    });
+
+    it('полотнище флажка ветра не совпадает с accent интерфейса (#579)', () => {
+        expect(ENGINE_COLORS.warning).not.toBe(ENGINE_COLORS.accent);
+    });
 });

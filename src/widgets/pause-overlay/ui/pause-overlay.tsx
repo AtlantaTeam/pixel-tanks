@@ -158,18 +158,24 @@ export function PauseOverlay({
                     </div>
                 </div>
 
+                {/* `m-0`, а не `mx-0` (ревью #554): кнопкам панели нужен нулевой отступ
+                    со всех сторон — ритм колонки держит `gap-2.5`, а базовый `m-1`
+                    кнопки добавлял к нему ещё 4px сверху и снизу. Боковая утилита
+                    вдобавок не сливалась с `m-1` (tailwind-merge считает `m` и `mx`
+                    разными группами), и исход решал порядок правил в сгенерированном
+                    CSS — ровно тот механизм, который #554 признал ненадёжным. */}
                 <div className="flex flex-col gap-2.5 px-5 pb-5">
-                    <Button onClick={onResume} className="mx-0 w-full">
+                    <Button onClick={onResume} className="m-0 w-full">
                         Продолжить
                     </Button>
                     <div className="flex gap-2.5">
-                        <Button variant="ghost" onClick={onRestart} className="mx-0 flex-1">
+                        <Button variant="ghost" onClick={onRestart} className="m-0 flex-1">
                             Начать заново
                         </Button>
                         <Button
                             variant="ghost"
                             onClick={onExitToMenu}
-                            className="mx-0 flex-1 hover:border-danger! hover:text-danger"
+                            className="m-0 flex-1 hover:border-danger! hover:text-danger"
                         >
                             Выйти в меню
                         </Button>
@@ -181,7 +187,7 @@ export function PauseOverlay({
                         мьют/настройки. */}
                     <Link
                         href="/design-system"
-                        className={buttonClasses('ghost', 'sm', 'mx-0 w-full gap-2')}
+                        className={buttonClasses('ghost', 'sm', 'm-0 w-full gap-2')}
                     >
                         <Icon name="eye" size={14} />
                         Витрина компонентов

@@ -17,11 +17,11 @@ import {
     type TArenaInsets,
     type TArenaZone,
 } from './arena-insets';
+import { GAME_ASSET_PATHS } from './game-assets';
 import { Ground } from './ground';
 import { Tank, TANK_SHADOW_COLOR } from './tank';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
-import { windFlagRotationRad } from './wind-flag';
 import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
 import { formatAngle } from './format-angle';
 import { ParticlePool, damageFlashBurst, groundBurst, groundColumnBurst } from './particle-pool';
@@ -185,10 +185,6 @@ export type TGamePlayOptions = {
      * По умолчанию `true` — живой бой всегда с погодой.
      */
     weather?: boolean;
-};
-
-const GAME_ASSET_PATHS = {
-    sand: '/game/sand.jpg',
 };
 
 export class GamePlay {
@@ -805,7 +801,7 @@ export class GamePlay {
         this.leftTank.isActive = true;
         // Флажок ветра (#550) — только на своём танке (leftTank), сразу с боевым
         // ветром: он уже посчитан выше (applyWindModifier(generateWind(...))).
-        this.leftTank.windFlagRotationRad = windFlagRotationRad(this.wind);
+        this.leftTank.setWindFlag(this.wind);
         // Игрок всегда ходит первым (см. §GDD) — HUD узнаёт об этом здесь же,
         // не дожидаясь первой передачи хода через changeActiveTank.
         this.callbacks.onTurnChange?.('player');
@@ -1191,7 +1187,7 @@ export class GamePlay {
         // Флажок ветра (#550) следует за сменой — иначе после бури он бы показывал
         // старое направление, разойдясь с ячейкой «Ветер» и HUD-плашкой смены.
         if (this.leftTank) {
-            this.leftTank.windFlagRotationRad = windFlagRotationRad(this.wind);
+            this.leftTank.setWindFlag(this.wind);
         }
     }
 

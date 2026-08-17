@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes } from 'react';
-import { clsx } from 'clsx';
+import { twMerge } from '@/shared/lib/tw-merge';
 
 export type TButtonVariant = 'primary' | 'accent' | 'ghost' | 'danger' | 'outline';
 export type TButtonSize = 'sm' | 'md' | 'icon';
@@ -45,13 +45,41 @@ const SIZE_CLASSES: Record<TButtonSize, string> = {
 const DISABLED_CLASSES =
     'disabled:cursor-not-allowed disabled:border-transparent disabled:bg-muted disabled:text-text-dim disabled:shadow-none';
 
-/** Классы кнопки отдельно от компонента — для Link и других не-button элементов */
+/** Классы кнопки отдельно от компонента — для Link и других не-button элементов.
+ *
+ *  Склейка — `tailwind-merge`, а НЕ `clsx` (#554). `clsx` конкатенирует строки, и
+ *  при равной специфичности исход решает порядок в СГЕНЕРИРОВАННОМ Tailwind-стиле,
+ *  а не порядок в атрибуте `class`. Поэтому `className="m-0"` не перебивал базовый
+ *  `m-1`: у 13 кнопок (звук/пауза в HUD, кадры витрины) оставался живой
+ *  `margin: 4px`, ломавший ритм рядов. `twMerge` выкидывает конфликтующий класс
+ *  из самой строки — побеждает тот, что пришёл от вызывающего, независимо от
+ *  каскада. Обходной `!m-0` (#538) после этого не нужен: important лечил симптом,
+ *  и tailwind-merge его всё равно не сливает (классы с разным набором
+ *  модификаторов он считает неконфликтующими).
+ *
+ *  Границы инструмента, чтобы не считать случай закрытым шире, чем он закрыт
+ *  (ревью #554): сливаются только классы ОДНОЙ группы утилит. `m-1` + `mx-0` —
+ *  разные группы (`m` и `mx`), из строки ничего не выкидывается, и исход там
+ *  по-прежнему решает каскад (Tailwind печатает `mx-*` после `m-*`) — то есть
+ *  ровно тот механизм, который #554 признал ненадёжным. Поэтому вызывающих на
+ *  боковой утилите не осталось: кнопки `pause-overlay` переведены на `m-0`, и
+ *  весь код ходит через детерминированный случай «та же группа». Понадобится
+ *  когда-нибудь погасить ТОЛЬКО боковые — это осознанная опора на каскад,
+ *  которую нужно замерять e2e, а не подразумевать.
+ *
+ *  `twMerge` берём НЕ голый из пакета, а настроенный под тему
+ *  (`shared/lib/tw-merge`): кастомные размеры шрифта (`text-hud`, `text-caption`,
+ *  …) пакет иначе считает цветом текста и `className="text-hud"` съел бы цвет
+ *  варианта.
+ *
+ *  Базовый `m-1` при этом остаётся: кнопка без `className` ведёт себя как раньше,
+ *  а не теряет отступ (иначе правка расползлась бы на все экраны разом). */
 export function buttonClasses(
     variant: TButtonVariant = 'primary',
     size: TButtonSize = 'md',
     className?: string,
 ) {
-    return clsx(
+    return twMerge(
         'm-1 inline-flex cursor-pointer items-center justify-center font-ui tracking-[0.06em] uppercase',
         'transition-[filter] active:translate-y-0.5',
         // Видимый фокус — поварианто в VARIANT_CLASSES (edge+ring там, где есть

@@ -4,7 +4,14 @@ import { ENGINE_COLORS } from './engine-palette';
 import { Ground } from './ground';
 import { POWER_MAX, POWER_MIN } from './power';
 import type { TLightDirection } from './scene-light';
-import { WIND_FLAG_HEIGHT, WIND_FLAG_POLE_HEIGHT, WIND_FLAG_WIDTH } from './wind-flag';
+import {
+    WIND_FLAG_MIN_SCALE,
+    WIND_FLAG_PENNANT,
+    WIND_FLAG_POLE_HEIGHT,
+    WIND_FLAG_POLE_WIDTH,
+    windFlagRotationRad,
+    windFlagSide,
+} from './wind-flag';
 import { WORLD_UNITS } from './world-scale';
 
 /**
@@ -123,12 +130,29 @@ export class Tank {
      */
     shadow: TTankShadow = null;
     /**
-     * Угол поворота флажка ветра на мачте (радианы, `windFlagRotationRad`) — «дешёвый
-     * носитель» ветра рядом с ареной (#550). Ставит `GamePlay` только на свой танк
-     * (`leftTank`), пересчитывая при каждой смене `this.wind`. `null` (дефолт, чужой
-     * танк) — флажок не рисуется.
+     * Угол поворота флажка ветра на мачте (радианы, `windFlagRotationRad`) и сторона
+     * провисания полотнища (`windFlagSide`, `wind-flag.ts`) — «дешёвый носитель»
+     * ветра рядом с ареной (#550). Оба поля ставит `GamePlay` через `setWindFlag`
+     * только на свой танк (`leftTank`), пересчитывая при каждой смене `this.wind`.
+     * `null` угла (дефолт, чужой танк) — флажок не рисуется.
+     *
+     * Снаружи — только чтение (ревью #579): инвариант «угол и сторона из ОДНОГО
+     * ветра» держит единственная точка записи `setWindFlag`, а публичные
+     * записываемые поля позволяли обойти её (`tank.windFlagRotationRad = 0.3`) и
+     * развести форму с моделью — ровно то, о чём предупреждал докблок. Доступ
+     * дешевле комментария.
      */
-    windFlagRotationRad: number | null = null;
+    private _windFlagRotationRad: number | null = null;
+    private _windFlagSide: 1 | -1 = 1;
+
+    get windFlagRotationRad(): number | null {
+        return this._windFlagRotationRad;
+    }
+
+    /** `1` — как в штиль и при ветре вправо, `-1` — зеркально (ветер влево). */
+    get windFlagSide(): 1 | -1 {
+        return this._windFlagSide;
+    }
 
     constructor(
         x: number,
@@ -414,40 +438,110 @@ export class Tank {
     }
 
     /**
-     * Якорь мачты (верх, у заднего края корпуса — не мешает стволу) в МИРОВЫХ
-     * координатах: тот же приём, что `recalcPosition` уже применяет к
-     * `gunpointX/Y` — локальная точка корпуса переносится наклонным трансформом
-     * склона (`this.currentTransformer`, `transformPoint`) без ctx.getTransform()
-     * (комментарий `rotate-figure.ts`: он вернул бы dpr-загрязнённую матрицу).
-     * Без трансформера (танк в воздухе/тесты без сида) — точка как есть.
+     * Ставит флажок ветра по модели (#550, #579): угол наклона И сторону провисания
+     * из одного и того же `wind`. Одной точкой входа, чтобы поля не могли разойтись —
+     * угол от одного ветра, зеркало от другого (ревью #579).
      */
-    private windFlagAnchor(): TCoords {
-        const local = {
-            x: this.x + this.tankWidth * 0.35,
-            y: this.y - this.tankHeight - WIND_FLAG_POLE_HEIGHT * this.scale,
-        };
+    setWindFlag(wind: number) {
+        this._windFlagRotationRad = windFlagRotationRad(wind);
+        this._windFlagSide = windFlagSide(wind);
+    }
+
+    /**
+     * ОСНОВАНИЕ мачты — точка крепления на крыше корпуса (у заднего края, чтобы
+     * не мешать стволу) в МИРОВЫХ координатах: тот же приём, что `recalcPosition`
+     * уже применяет к `gunpointX/Y` — локальная точка корпуса переносится наклонным
+     * трансформом склона (`this.currentTransformer`, `transformPoint`) без
+     * ctx.getTransform() (комментарий `rotate-figure.ts`: он вернул бы
+     * dpr-загрязнённую матрицу). Без трансформера (танк в воздухе/тесты без
+     * сида) — точка как есть.
+     *
+     * Якорим именно основание, а не вершину мачты (ревью #579). Раньше сквозь
+     * наклонный трансформ прогонялась ВЕРШИНА (`y - tankHeight - poleHeight`), а
+     * мачта рисовалась от неё вертикально вниз — то есть низ древка оказывался в
+     * `R(вершина) + (0, poleHeight)` вместо `R(вершина + (0, poleHeight))`.
+     * Расхождение `poleHeight * (sinθ, 1−cosθ)` росло с наклоном корпуса θ: после
+     * подъёма мачты 5 → 17 единиц (#579) на десктопе это ≈5.6px вбок при θ=15° и
+     * ≈9.2px при θ=25° — при ширине самого древка 2.6px флаг «висел в воздухе»
+     * рядом с танком. Теперь основание сидит на крыше при любом наклоне, а
+     * полотнище по-прежнему поворачивается ТОЛЬКО на `windFlagRotationRad`.
+     */
+    private windFlagBase(): TCoords {
+        const local = { x: this.x + this.tankWidth * 0.35, y: this.y - this.tankHeight };
         return this.currentTransformer ? transformPoint(local, this.currentTransformer) : local;
     }
 
     /**
-     * Флажок ветра на мачте (#550): рисуется в мировых координатах (как ствол —
-     * `gunpointX/Y`), не под наклонным трансформом склона — иначе тилт танка на
-     * дюне складывался бы с наклоном от ветра и направление читалось бы неверно.
-     * Наклон вокруг вершины мачты — чисто `windFlagRotationRad`.
+     * Масштаб флажка ветра: масштаб мира, но не ниже `WIND_FLAG_MIN_SCALE` (#579).
+     * Флажок — знак, а не деталь корпуса: на узкой арене честная пропорция ужимала
+     * вымпел до нечитаемого пятна.
+     */
+    private flagScale(): number {
+        return Math.max(WIND_FLAG_MIN_SCALE, this.scale);
+    }
+
+    /**
+     * Флажок ветра на мачте (#550, форма пересмотрена в #579): рисуется в мировых
+     * координатах (как ствол — `gunpointX/Y`), не под наклонным трансформом склона —
+     * иначе тилт танка на дюне складывался бы с наклоном от ветра и направление
+     * читалось бы неверно. Наклон вокруг вершины мачты — чисто `windFlagRotationRad`.
+     *
+     * Порядок отрисовки — полотнище, потом древко ПОВЕРХ него: в штиль вымпел виснет
+     * вдоль мачты и, нарисованный последним, закрыл бы её целиком — а без различимого
+     * древка флаг читается как пятно на башне (замечание #579).
      */
     private drawWindFlag(ctx: CanvasRenderingContext2D) {
         if (this.windFlagRotationRad === null) return;
-        const { x: poleTopX, y: poleTopY } = this.windFlagAnchor();
-        const poleHeight = WIND_FLAG_POLE_HEIGHT * this.scale;
-        const flagLength = WIND_FLAG_HEIGHT * this.scale;
-        const flagThickness = WIND_FLAG_WIDTH * this.scale;
+        const flagScale = this.flagScale();
+        const poleHeight = WIND_FLAG_POLE_HEIGHT * flagScale;
+        // Мачта тянется ВВЕРХ от основания на крыше корпуса (ревью #579): так низ
+        // древка сидит на корпусе и на склоне тоже — см. докблок `windFlagBase`.
+        const { x: poleTopX, y: poleBaseY } = this.windFlagBase();
+        const poleTopY = poleBaseY - poleHeight;
+        // «Мачта не тоньше канона»: то же, что Math.max(POLE_WIDTH, POLE_WIDTH * scale),
+        // но правило видно в записи, а не выводится сравнением двух произведений.
+        const poleWidth = WIND_FLAG_POLE_WIDTH * Math.max(1, flagScale);
+        const outline = Math.max(1, flagScale);
         ctx.save();
-        ctx.fillStyle = ENGINE_COLORS.borderStrong;
-        ctx.fillRect(poleTopX, poleTopY, Math.max(1, this.scale), poleHeight);
-        ctx.translate(poleTopX, poleTopY);
+
+        // Полотнище: контур вымпела из мировых единиц, повёрнутый вокруг вершины мачты.
+        // Зеркало по знаку ветра (`windFlagSide`) держит полотнище ПОД осью наклона при
+        // обоих направлениях: односторонний вымпел без него задирался бы вверх на ветре
+        // влево — и левый флаг перестал бы быть отражением правого.
+        const side = this.windFlagSide;
+        ctx.translate(poleTopX + poleWidth / 2, poleTopY);
         ctx.rotate(this.windFlagRotationRad);
-        ctx.fillStyle = ENGINE_COLORS.accent;
-        ctx.fillRect(0, -flagThickness / 2, flagLength, flagThickness);
+        ctx.beginPath();
+        // Обычный `for`, а не `forEach`: колбэк — это замыкание, создаваемое на
+        // КАЖДЫЙ кадр каждого танка с флажком, а `canvas.md` запрещает аллокации
+        // в кадре (ревью #579). Рядом `drawTankWheels` ходит тем же способом.
+        for (let i = 0; i < WIND_FLAG_PENNANT.length; i++) {
+            const x = WIND_FLAG_PENNANT[i].x * flagScale;
+            const y = WIND_FLAG_PENNANT[i].y * flagScale * side;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = ENGINE_COLORS.warning;
+        ctx.fill();
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = outline;
+        ctx.strokeStyle = ENGINE_COLORS.warningInk;
+        ctx.stroke();
+        ctx.restore();
+
+        // Древко: тёмный контур + светлое ядро — читается и на светлом дневном небе,
+        // и на тёмном ночном, и поверх зелени корпуса.
+        ctx.save();
+        ctx.fillStyle = ENGINE_COLORS.warningInk;
+        ctx.fillRect(
+            poleTopX - outline,
+            poleTopY - outline,
+            poleWidth + outline * 2,
+            poleHeight + outline * 2,
+        );
+        ctx.fillStyle = ENGINE_COLORS.textMuted;
+        ctx.fillRect(poleTopX, poleTopY, poleWidth, poleHeight);
         ctx.restore();
     }
 
