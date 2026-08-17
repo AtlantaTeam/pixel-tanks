@@ -19,6 +19,12 @@ import { TOAST_BOTTOM_PX } from './ammo-empty-toast';
 export function SoundHintToast() {
     return (
         <div
+            // Подписан, как остальные оверлеи арены (`game-hud`, `top-hud`,
+            // `aim-hint`, `gesture-zone`): по этим якорям барьеры бюджетов
+            // (`overlay-budget.spec.ts`, `arena-safe-zone-viewports.spec.ts`)
+            // и эталонные кадры сцены находят слой. Безымянный оверлей для них
+            // не существует — а этот садится ровно в свободную арену (ревью #585).
+            data-testid="sound-hint-toast"
             className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-2.5"
             style={{ bottom: `calc(${TOAST_BOTTOM_PX}px + env(safe-area-inset-bottom, 0px))` }}
         >

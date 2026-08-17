@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { useGameStore } from '@/features/game-engine';
+import { SOUND_HINT_STORAGE_KEY } from '@/shared/lib/audio';
 import { GamePage } from './game-page';
 
 describe('GamePage', () => {
@@ -21,7 +22,7 @@ describe('GamePage', () => {
     });
 
     it('не показывает подсказку звука повторно, если её уже видели на другом экране', () => {
-        localStorage.setItem('pt-sound-hint-seen', '1');
+        localStorage.setItem(SOUND_HINT_STORAGE_KEY, '1');
         const { container } = render(<GamePage seed="42" />);
 
         expect(container.querySelector('p.opacity-0')).toContainElement(screen.getByText(/нажми/i));

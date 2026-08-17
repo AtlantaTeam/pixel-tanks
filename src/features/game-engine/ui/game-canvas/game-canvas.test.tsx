@@ -2,6 +2,7 @@ import { createRef } from 'react';
 import { act, fireEvent, render } from '@testing-library/react';
 import { vi } from 'vitest';
 import { EBotReplyCategory, type TBotReply } from '@/entities/bot-messages';
+import { AIM_HINT_STORAGE_KEY } from '../../lib/aim-hint';
 import { useGameStore } from '../../model/game.store';
 import { GameCanvas, type TGameCanvasHandle } from './game-canvas';
 
@@ -415,7 +416,7 @@ describe('GameCanvas', () => {
         });
 
         it('не показывает подсказку, если флаг уже сохранён (переживает перезагрузку)', () => {
-            localStorage.setItem('pt-aim-hint-seen', '1');
+            localStorage.setItem(AIM_HINT_STORAGE_KEY, '1');
             useGameStore.getState().resetGame();
             const { queryByTestId } = render(<GameCanvas seed={42} />);
 
@@ -433,7 +434,7 @@ describe('GameCanvas', () => {
                 fireEvent.click(canvas);
             });
 
-            expect(localStorage.getItem('pt-aim-hint-seen')).toBe('1');
+            expect(localStorage.getItem(AIM_HINT_STORAGE_KEY)).toBe('1');
             expect(queryByTestId('aim-hint')).not.toBeInTheDocument();
         });
 

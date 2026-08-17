@@ -19,7 +19,16 @@ describe('buildGameDebugSnapshot', () => {
             rightTank: { bodyRect: () => enemyRect },
         });
 
-        expect(snapshot).toMatchObject({ player: playerRect, enemy: enemyRect });
+        // Форма снапшота контрактная — он уходит в `window` прод-сборки, поэтому
+        // сверяем целиком (`toEqual`): `toMatchObject` пропустил бы и опечатку в
+        // имени поля, и случайно просочившийся объект движка.
+        expect(snapshot).toEqual({
+            player: playerRect,
+            enemy: enemyRect,
+            bulletInFlight: false,
+            particlesAlive: false,
+            groundFalling: false,
+        });
     });
 
     it('отдаёт null для танка, которого ещё нет (initPaint не завершён)', () => {
@@ -46,7 +55,7 @@ describe('buildGameDebugSnapshot', () => {
 
     it('взрыв виден по живым частицам, осыпание — по падающей земле', () => {
         const snapshot = buildGameDebugSnapshot({
-            particles: { hasAlive: () => true },
+            hasAliveParticles: true,
             ground: { isFalling: true },
         });
 
@@ -56,7 +65,7 @@ describe('buildGameDebugSnapshot', () => {
 
     it('без частиц и осыпания отдаёт false, а не undefined', () => {
         const snapshot = buildGameDebugSnapshot({
-            particles: { hasAlive: () => false },
+            hasAliveParticles: false,
             ground: { isFalling: false },
         });
 
@@ -74,9 +83,12 @@ describe('install/uninstallGameDebugHook', () => {
         const playerRect = rect(1, 2, 3, 4);
         installGameDebugHook(() => ({ leftTank: { bodyRect: () => playerRect } }));
 
-        expect(window.__gameDebug?.getSnapshot()).toMatchObject({
+        expect(window.__gameDebug?.getSnapshot()).toEqual({
             player: playerRect,
             enemy: null,
+            bulletInFlight: false,
+            particlesAlive: false,
+            groundFalling: false,
         });
     });
 

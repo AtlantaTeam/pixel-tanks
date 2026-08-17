@@ -1,6 +1,6 @@
 'use client';
 
-import { useSyncExternalStore } from 'react';
+import { createPersistentFlag } from '@/shared/lib/storage';
 
 /**
  * Разовая подсказка прицеливания (issue #565): раньше обучающие строки
@@ -9,58 +9,22 @@ import { useSyncExternalStore } from 'react';
  * «уже видел» переживает перезагрузку — хранится в localStorage тем же паттерном,
  * что выбор скина (`tank-skin-preference.ts`) и mute (`use-mute-state.ts`): фичи
  * профиля ещё нет, предпочтение живёт на устройстве.
+ *
+ * Механика хранения — общая фабрика `createPersistentFlag` (`shared/lib/storage`,
+ * ревью #585): у флага подсказки звука (`sound-hint.ts`) она ровно та же, и до
+ * выноса это были две построчные копии.
  */
-const AIM_HINT_STORAGE_KEY = 'pt-aim-hint-seen';
-const listeners = new Set<() => void>();
+const aimHintFlag = createPersistentFlag('pt-aim-hint-seen');
 
-function readAimHintSeen(): boolean {
-    // SSR/тесты без localStorage: считаем «ещё не видел» — подсказка появится на
-    // клиенте после гидратации, а не уронит рендер.
-    if (typeof localStorage === 'undefined') return false;
-    try {
-        return localStorage.getItem(AIM_HINT_STORAGE_KEY) === '1';
-    } catch {
-        // Приватный режим/заблокированный storage — не роняем экран из-за подсказки.
-        return false;
-    }
-}
-
-// Сервер не знает состояние клиента — до гидратации подсказку не показываем, иначе
-// разметка сервера и клиента разойдутся (как readServerSkinId/readServerMuted).
-function readServerAimHintSeen(): boolean {
-    return true;
-}
-
-function subscribe(onStoreChange: () => void): () => void {
-    listeners.add(onStoreChange);
-    // 'storage' прилетает из других вкладок — если подсказку закрыли там, гасим её
-    // и здесь, чтобы не показать «один раз» дважды в двух вкладках.
-    const onStorage = (e: StorageEvent) => {
-        if (e.key === AIM_HINT_STORAGE_KEY) onStoreChange();
-    };
-    window.addEventListener('storage', onStorage);
-    return () => {
-        listeners.delete(onStoreChange);
-        window.removeEventListener('storage', onStorage);
-    };
-}
+/** Ключ хранилища — наружу, чтобы тесты не дублировали строку литералом. */
+export const AIM_HINT_STORAGE_KEY = aimHintFlag.key;
 
 /**
  * Пометить подсказку показанной (идемпотентно): следующий бой и перезагрузка её
  * больше не покажут. Модульная функция со стабильной ссылкой — вызывается из
  * обработчиков канваса без попадания в deps эффектов.
  */
-export function markAimHintSeen(): void {
-    if (typeof localStorage === 'undefined') return;
-    try {
-        localStorage.setItem(AIM_HINT_STORAGE_KEY, '1');
-    } catch {
-        // Storage недоступен — подсказку просто покажем ещё раз, это не критично.
-    }
-    for (const listener of listeners) listener();
-}
+export const markAimHintSeen = aimHintFlag.mark;
 
 /** Реактивный флаг «подсказку уже видели» для рендера оверлея. */
-export function useAimHintSeen(): boolean {
-    return useSyncExternalStore(subscribe, readAimHintSeen, readServerAimHintSeen);
-}
+export const useAimHintSeen = aimHintFlag.useFlag;

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SOUND_HINT_STORAGE_KEY } from '@/shared/lib/audio';
 import { SoundHintToast } from './sound-hint-toast';
 
 describe('SoundHintToast (issue #584 — подсказка звука на боевом экране)', () => {
@@ -21,7 +22,7 @@ describe('SoundHintToast (issue #584 — подсказка звука на бо
     });
 
     it('уже увиденная подсказка (флаг с другого экрана) не оживает заново', () => {
-        localStorage.setItem('pt-sound-hint-seen', '1');
+        localStorage.setItem(SOUND_HINT_STORAGE_KEY, '1');
         const { container } = render(<SoundHintToast />);
 
         expect(container.querySelector('p')).toHaveClass('opacity-0');

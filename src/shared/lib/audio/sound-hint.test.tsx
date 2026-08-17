@@ -1,8 +1,6 @@
 import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { markSoundHintSeen, useSoundHintSeen } from './sound-hint';
-
-const SOUND_HINT_STORAGE_KEY = 'pt-sound-hint-seen';
+import { SOUND_HINT_STORAGE_KEY, markSoundHintSeen, useSoundHintSeen } from './sound-hint';
 
 function Probe({ onRender }: { onRender: (seen: boolean) => void }) {
     onRender(useSoundHintSeen());

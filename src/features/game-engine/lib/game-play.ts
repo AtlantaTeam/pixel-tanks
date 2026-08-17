@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import { floor, getDevicePixelRatio, toDevicePixels, whenDecoded } from '@/shared/lib/canvas';
+import { floor, getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
 import { getAudioEngine } from '@/shared/lib/audio';
 import type { TSeededRandom } from '@/shared/lib/random';
 import type { TCoords, TWeapon } from '@/shared/model';
@@ -17,7 +17,7 @@ import {
     type TArenaInsets,
     type TArenaZone,
 } from './arena-insets';
-import { GAME_ASSET_PATHS } from './game-assets';
+import { loadSandImage } from './game-assets';
 import { Ground } from './ground';
 import { Tank, TANK_SHADOW_COLOR } from './tank';
 import { Bullet } from './bullet';
@@ -300,9 +300,7 @@ export class GamePlay {
     private resizeRafId: number | undefined;
     // Пул частиц взрыва: комья земли (промах) и вспышка урона (попадание в танк).
     // Живёт весь бой, объекты переиспользуются — аллокаций в кадре нет.
-    // Публичный (как `ownGhostTrail`/`bullet`): состояние взрыва читают отладка и
-    // e2e эталонных кадров сцены (`game-debug.ts`, #585) — только чтением.
-    readonly particles: ParticlePool;
+    private readonly particles: ParticlePool;
     // Screen shake (тряска сцены) и slow-mo (замедление времени) — «сочность»
     // удара. Оба чистые, детерминированы seed'ом движка. Смещение применяется
     // в fullRedraw, масштаб времени — в throttle игрового цикла.
@@ -584,16 +582,16 @@ export class GamePlay {
             this.animate();
             return;
         }
-        const sandImg = new Image();
-        // Ждём decode, а не только `load` (`whenDecoded`): `initPaint` рисует
-        // террейн ровно один раз по этому промису, и недекодированная текстура
-        // осталась бы пустой заливкой до первого ресайза.
-        const sandLoaded = new Promise<void>((resolve) => {
-            sandImg.onload = () => void whenDecoded(sandImg).then(() => resolve());
-            sandImg.onerror = () => resolve();
+        // Песок берём общим загрузчиком `loadSandImage` (`game-assets.ts`), а не
+        // своим `new Image()` (ревью #585): там уже и ожидание `decode` (`load` —
+        // это «байты пришли», а террейн рисуется по этому промису ровно один раз,
+        // недекодированная текстура осталась бы пустой заливкой до ресайза), и
+        // резолв на `error`, и модульный кеш промиса — повторный заход в бой не
+        // грузит и не декодирует текстуру заново. Две копии этой семантики жили бы
+        // ровно до первой правки одной из них.
+        const sandLoaded = loadSandImage().then((img) => {
+            GamePlay.images.sand = img;
         });
-        sandImg.src = GAME_ASSET_PATHS.sand;
-        GamePlay.images.sand = sandImg;
 
         // Скины (issue #481) грузятся/кэшируются отдельно от `GamePlay.images`
         // (см. `tank-skin-image-cache.ts`) — кэш общий на всё приложение по
@@ -847,6 +845,18 @@ export class GamePlay {
         this.fullRedraw();
         this.observeResize();
     };
+
+    /**
+     * Живы ли частицы взрыва — ровно один булев факт наружу (ревью #585).
+     *
+     * Пул остаётся приватным: read-only контракт debug-хука (`game-debug.ts`) и
+     * эталонных кадров сцены держится тем, что мутирующих методов пула (спавн,
+     * сброс) снаружи попросту не видно, а не добросовестностью вызывающего —
+     * `readonly` на поле защищал бы только ссылку.
+     */
+    get hasAliveParticles(): boolean {
+        return this.particles.hasAlive();
+    }
 
     getActiveAndTargetTanks = (t1: Tank, t2: Tank) => (t1.isActive ? [t1, t2] : [t2, t1]);
 

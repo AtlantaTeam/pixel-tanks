@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { SOUND_HINT_STORAGE_KEY } from './sound-hint';
 import { SoundPrompt } from './sound-prompt';
 
 describe('SoundPrompt', () => {
@@ -49,7 +50,7 @@ describe('SoundPrompt', () => {
     it('#584: подсказка на новом экране не появляется заново, если уже видели её раньше', () => {
         // Переход `/` → `/game` — новый маунт `SoundPrompt`; без персистентного
         // флага он показал бы подсказку заново на каждом бою (см. `sound-hint.ts`).
-        localStorage.setItem('pt-sound-hint-seen', '1');
+        localStorage.setItem(SOUND_HINT_STORAGE_KEY, '1');
 
         const { container } = render(<SoundPrompt />);
 
@@ -68,8 +69,22 @@ describe('SoundPrompt', () => {
         expect(nextContainer.firstElementChild).toHaveClass('opacity-0');
     });
 
-    it('несёт заметку про бесшумный переключатель iPhone текстом, не только визуально', () => {
+    it('несёт заметку про бесшумный переключатель iPhone для скринридера, а не только в aria-hidden плашке', () => {
+        // Визуальная плашка целиком `aria-hidden` (и строка про переключатель ещё и
+        // скрыта на не-тач устройствах), поэтому без отдельного узла для AT факта
+        // не было бы вовсе — тот же разъезд, что чинит `AimHintAnnouncer` (#574).
+        const { container } = render(<SoundPrompt />);
+
+        const note = screen.getByTestId('sound-prompt-note');
+        expect(note).toHaveTextContent(/бесшумный переключатель/i);
+        expect(note.closest('[aria-hidden]')).toBeNull();
+        expect(container.querySelector('p')).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('после разблокировки звука заметка для скринридера уходит вместе с подсказкой', () => {
         render(<SoundPrompt />);
-        expect(screen.getByText(/iphone/i)).toBeInTheDocument();
+        fireEvent.pointerDown(window);
+
+        expect(screen.queryByTestId('sound-prompt-note')).toBeNull();
     });
 });

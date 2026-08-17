@@ -44,7 +44,10 @@ type TGameDebugSource = {
     rightTank?: { bodyRect(): TGameDebugRect };
     bullet?: { detonated: boolean };
     ground?: { isFalling: boolean };
-    particles?: { hasAlive(): boolean };
+    /** Узкий геттер движка вместо всего пула частиц (ревью #585): снапшоту нужен
+     *  один булев факт, а публичный `ParticlePool` открыл бы отсюда и спавн, и
+     *  сброс — read-only контракт хука держим формой источника, а не уговором. */
+    hasAliveParticles?: boolean;
 };
 
 declare global {
@@ -58,7 +61,7 @@ export function buildGameDebugSnapshot(game: TGameDebugSource): TGameDebugSnapsh
         player: game.leftTank ? game.leftTank.bodyRect() : null,
         enemy: game.rightTank ? game.rightTank.bodyRect() : null,
         bulletInFlight: Boolean(game.bullet && !game.bullet.detonated),
-        particlesAlive: Boolean(game.particles?.hasAlive()),
+        particlesAlive: Boolean(game.hasAliveParticles),
         groundFalling: Boolean(game.ground?.isFalling),
     };
 }
