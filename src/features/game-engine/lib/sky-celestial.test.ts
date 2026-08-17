@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
+import { MOUNTAIN_HORIZON_FRAC } from './cloud-field';
 import {
     buildStarField,
+    CELESTIAL_HORIZON_MARGIN_FRAC,
+    maxCelestialYFrac,
     pickCelestialGeometry,
     STAR_COUNT_MAX,
     STAR_COUNT_MIN,
@@ -56,6 +59,59 @@ describe('pickCelestialGeometry — детерминизм и сектор не�
             const night = pickCelestialGeometry(seed, 'night');
             expect(day.yFrac).toBeLessThan(sunset.yFrac);
             expect(night.yFrac).toBeLessThan(sunset.yFrac);
+        }
+    });
+
+    it('нижний край диска не опускается ниже линии гор ни на одном сиде', () => {
+        for (let seed = 0; seed < 400; seed++) {
+            for (const presetId of ['day', 'sunset', 'night'] as const) {
+                const cel = pickCelestialGeometry(seed, presetId);
+                // radiusFrac — доля min(width, height), то есть в долях ВЫСОТЫ диск
+                // не больше radiusFrac: сумма — консервативная оценка низа диска.
+                expect(cel.yFrac + cel.radiusFrac).toBeLessThanOrEqual(MOUNTAIN_HORIZON_FRAC);
+            }
+        }
+    });
+
+    it('строковые сиды (ежедневный вызов, реплей) держат тот же инвариант', () => {
+        for (let i = 0; i < 200; i++) {
+            const cel = pickCelestialGeometry(`daily-2026-08-${i}`, 'sunset');
+            expect(cel.yFrac + cel.radiusFrac).toBeLessThanOrEqual(MOUNTAIN_HORIZON_FRAC);
+        }
+    });
+
+    it('потолок высоты выведен из горизонта и радиуса, а не задан константой', () => {
+        // Закат: диск крупный, упирается в горизонт — потолок считается от него.
+        expect(maxCelestialYFrac('sunset', 0.095)).toBeCloseTo(
+            MOUNTAIN_HORIZON_FRAC - 0.095 - CELESTIAL_HORIZON_MARGIN_FRAC,
+            10,
+        );
+        // День: собственный сектор неба ниже выведенного потолка — он и остаётся.
+        expect(maxCelestialYFrac('day', 0.06)).toBeCloseTo(0.4, 10);
+    });
+
+    it('потолок никогда не проваливается ниже нижней границы сектора', () => {
+        // Патологический радиус (гипотетическая правка диапазона) не переворачивает
+        // сектор: yMax не уходит под yMin, иначе диапазон стал бы отрицательным.
+        expect(maxCelestialYFrac('sunset', 0.5)).toBeGreaterThanOrEqual(0.4);
+    });
+
+    it('разнообразие высот закатного солнца не схлопнулось в одну линию', () => {
+        const heights = Array.from({ length: 300 }, (_, seed) =>
+            pickCelestialGeometry(seed, 'sunset'),
+        ).map((cel) => cel.yFrac);
+        const spread = Math.max(...heights) - Math.min(...heights);
+        expect(spread).toBeGreaterThan(0.09);
+        // Высоты заполняют сектор равномерно, а не сбиваются к потолку: клэмп после
+        // выбора обоих значений подпёр бы верхнюю четверть сидов в узкую полоску.
+        const low = Math.min(...heights);
+        const bucketSize = spread / 4;
+        const buckets = [0, 0, 0, 0];
+        for (const y of heights) {
+            buckets[Math.min(3, Math.floor((y - low) / bucketSize))]++;
+        }
+        for (const count of buckets) {
+            expect(count / heights.length).toBeGreaterThan(0.15);
         }
     });
 

@@ -1,4 +1,5 @@
 import { createSeededRandom } from '@/shared/lib/random';
+import { MOUNTAIN_HORIZON_FRAC } from './cloud-field';
 import type { TSkyPresetId } from './sky-preset';
 
 /**
@@ -34,6 +35,12 @@ export type TStarInstance = {
  * начинается на 0.62 высоты, `sky-scene.ts`, — солнце уходит за них частично), ночь —
  * луна выше горизонта.
  *
+ * Верхняя граница здесь — только художественный потолок сектора. Фактический потолок
+ * считает `maxCelestialYFrac` из линии гор и радиуса диска: горы — ПОЛОСА
+ * `[0.46 … 0.62]`, а не заливка до низа канваса, поэтому всё, что провалилось ниже
+ * `MOUNTAIN_HORIZON_FRAC`, силуэт не перекрывает и оно висит отдельным куском под
+ * хребтом (#583).
+ *
  * Нижняя граница 0.26 — НЕ художественный выбор, а зазор под верхний HUD: канвас
  * неба растянут на весь экран (`inset:0`), а HUD — оверлей ПОВЕРХ него, а не сосед
  * по layout (`arena-insets.ts`), и движок неба этих инсетов не читает (в отличие
@@ -61,21 +68,67 @@ const X_MIN = 0.14;
 const X_MAX = 0.86;
 
 /**
+ * Запас между низом диска и линией гор. Нужен, потому что горы рисуются по
+ * округлённой до пикселя полосе (`Math.round(height * MOUNTAIN_HORIZON_FRAC)`), а
+ * контур ридж-линии ещё и сдвинут на 1 px, — впритык к горизонту диск мог бы
+ * показать кромку в один пиксель на части высот канваса.
+ */
+export const CELESTIAL_HORIZON_MARGIN_FRAC = 0.01;
+
+/**
+ * Потолок высоты светила: ниже него нижний край диска вылезает из-под силуэта гор
+ * (#583). Выводится из линии гор и фактического радиуса, а не задаётся константой
+ * рядом с комментарием про горизонт, — иначе правило живёт в комментарии, а не в
+ * арифметике, и правка любого из диапазонов молча его ломает.
+ *
+ * `radiusFrac` — доля `min(width, height)`, а `yFrac` — доля высоты, поэтому в долях
+ * высоты диск НЕ больше `radiusFrac` (равенство — на альбомном канвасе, где
+ * `min = height`). Значит вычитание радиуса из горизонта — консервативная граница,
+ * верная на любой пропорции экрана.
+ *
+ * `Math.min` с художественным потолком сектора: у дня и ночи диск мелкий и упирается
+ * в собственный сектор раньше горизонта, — их вид не меняется. `Math.max` с нижней
+ * границей страхует от перевёрнутого диапазона, если диапазон радиусов однажды
+ * вырастет.
+ */
+export function maxCelestialYFrac(presetId: TSkyPresetId, radiusFrac: number): number {
+    const [yMin, yMax] = CELESTIAL_Y_RANGE[presetId];
+    const horizonLimit = MOUNTAIN_HORIZON_FRAC - radiusFrac - CELESTIAL_HORIZON_MARGIN_FRAC;
+    return Math.max(yMin, Math.min(yMax, horizonLimit));
+}
+
+/**
  * Детерминированно кладёт светило в разумный сектор неба по сиду боя — бои
  * различаются, но солнце не оказывается за краем экрана или под линией гор.
+ *
+ * Высота выбирается ПОСЛЕ радиуса — из потолка, который от этого радиуса зависит.
+ * Альтернатива (клэмпить готовый `yFrac`) сплющила бы верхнюю часть сидов в одну и ту
+ * же высоту, и закатное небо стало бы однообразным.
+ *
+ * Порядок ВЫБОРКИ из RNG при этом прежний (x, y, радиус, поворот): значения тянутся
+ * сырыми долями `[0, 1)`, а в диапазоны раскладываются уже после. Это держит пресеты
+ * `day`/`night` попиксельно теми же, что и до #583, — у них горизонт не связывает.
  */
 export function pickCelestialGeometry(
     seed: number | string,
     presetId: TSkyPresetId,
 ): TCelestialGeometry {
     const random = createSeededRandom(`${seed}::celestial`);
-    const [yMin, yMax] = CELESTIAL_Y_RANGE[presetId];
+    const xRoll = random();
+    const yRoll = random();
+    const radiusRoll = random();
+    const rotation = random() * Math.PI * 2;
+
+    const [yMin] = CELESTIAL_Y_RANGE[presetId];
     const [rMin, rMax] = CELESTIAL_RADIUS_RANGE[presetId];
+    const radiusFrac = rMin + radiusRoll * (rMax - rMin);
+    const yMax = maxCelestialYFrac(presetId, radiusFrac);
+
     return {
-        xFrac: X_MIN + random() * (X_MAX - X_MIN),
-        yFrac: yMin + random() * (yMax - yMin),
-        radiusFrac: rMin + random() * (rMax - rMin),
-        rotation: random() * Math.PI * 2,
+        xFrac: X_MIN + xRoll * (X_MAX - X_MIN),
+        yFrac: yMin + yRoll * (yMax - yMin),
+        radiusFrac,
+        rotation,
     };
 }
 
