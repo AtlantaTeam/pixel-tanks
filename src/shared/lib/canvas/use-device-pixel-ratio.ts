@@ -1,3 +1,5 @@
+'use client';
+
 import { useEffect, useState } from 'react';
 import { getDevicePixelRatio } from './dpr';
 
@@ -14,6 +16,10 @@ import { getDevicePixelRatio } from './dpr';
  *
  * Живёт рядом с `getDevicePixelRatio`/`toDevicePixels` (`shared/lib/canvas`), с которыми
  * всегда используется в паре, а не внутри компонента-потребителя (ревью #579).
+ *
+ * `'use client'` в файле обязателен: публичный API слайса (`index.ts`) реэкспортирует
+ * его вместе с чистыми функциями, а тот тянут и серверные модули (`tank.ts` через
+ * `transformPoint`) — без директивы страница падает на «useState в Server Component».
  */
 export function useDevicePixelRatio(): number {
     const [dpr, setDpr] = useState(getDevicePixelRatio);

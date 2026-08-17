@@ -18,22 +18,29 @@ import { test, expect, type Page } from '@playwright/test';
  *    другой утилитой (`ml-auto` у «Поделиться реплеем» — задал, такие пропускаем
  *    по классу, а не по значению).
  *
- * Отдельно — `mx-0` (кнопки `pause-overlay`): tailwind-merge сливает только классы
- * ОДНОЙ группы, а `m` и `mx` для него разные, поэтому `m-1` из строки не уходит и
- * исход решает каскад сгенерированного CSS. Работает (Tailwind печатает `mx-*`
- * после `m-*`), но ровно тем механизмом, который #554 признал ненадёжным, — значит
- * должен быть замерен, а не подразумеваться (ревью #554).
+ * Случая `mx-0` в разметке больше нет (ревью #554): четырём кнопкам `pause-overlay`
+ * боковая утилита не требовалась по существу, и они переведены на `m-0` — полностью
+ * детерминированное слияние вместо опоры на порядок правил в сгенерированном CSS.
+ * Отдельный тест на `mx-0` вместе с ними и снят: сторожить ненадёжный механизм
+ * дороже, чем перестать на него опираться.
  */
 
 /** Элементы, у которых в `class` есть утилита `m-0`. `ml-auto` и подобные —
  *  осознанный отступ вызывающего, для них проверяем только факт слияния. */
 async function collectMarginZeroNodes(page: Page) {
     return page.evaluate(() => {
-        const OTHER_MARGIN_RE = /^-?m[trblxyse]-/;
+        const SIDE_MARGIN_RE = /^-?m[trblxyse]-/;
+        // Общий отступ (`m-2`) считается своим, только когда пришёл под вариантом:
+        // `m-0 md:m-2` tailwind-merge не сливает (разный набор модификаторов), и
+        // барьер потребовал бы computed `0px` там, где 8px заданы осознанно
+        // (ревью #554). Без варианта общий `m-*` рядом с `m-0` невозможен — он бы
+        // слился, и это как раз то, что проверяет ассерт `hasBaseMargin`.
+        const ALL_MARGIN_RE = /^-?m-/;
         // Базовая утилита без вариантов: `md:hover:mt-4` → `mt-4`. Сравнивать нужно
         // хвост после последнего `:`, иначе осознанный отступ вызывающего под
         // брейкпоинтом не распознаётся и барьер срабатывает ложно (ревью #554).
         const baseUtility = (cls: string) => cls.split(':').at(-1) ?? cls;
+        const hasVariant = (cls: string) => cls.includes(':');
         // `el.className` на SVG — `SVGAnimatedString` (в строке даёт
         // `[object SVGAnimatedString]`), такие узлы молча выпадали из выборки.
         const classList = (el: Element) =>
@@ -47,25 +54,12 @@ async function collectMarginZeroNodes(page: Page) {
                 label: (el.getAttribute('aria-label') ?? el.textContent ?? '').slice(0, 24),
                 classes,
                 hasBaseMargin: classes.includes('m-1'),
-                hasOwnSideMargin: classes.some((c) => OTHER_MARGIN_RE.test(baseUtility(c))),
+                hasOwnMargin: classes.some(
+                    (c) =>
+                        SIDE_MARGIN_RE.test(baseUtility(c)) ||
+                        (hasVariant(c) && ALL_MARGIN_RE.test(baseUtility(c))),
+                ),
                 margin: getComputedStyle(el).margin,
-            }));
-    });
-}
-
-/** Элементы с утилитой `mx-0`: слияния тут не происходит (разные группы утилит),
- *  поэтому меряем результат — боковые margin обязаны быть нулевыми. */
-async function collectMarginXZeroNodes(page: Page) {
-    return page.evaluate(() => {
-        const classList = (el: Element) =>
-            (el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
-
-        return [...document.querySelectorAll('*')]
-            .filter((el) => classList(el).includes('mx-0'))
-            .map((el) => ({
-                label: (el.getAttribute('aria-label') ?? el.textContent ?? '').slice(0, 24),
-                marginLeft: getComputedStyle(el).marginLeft,
-                marginRight: getComputedStyle(el).marginRight,
             }));
     });
 }
@@ -86,29 +80,12 @@ async function expectMergedMarginZero(page: Page, label: string) {
             `${label}: у «${node.label}» в class остался базовый m-1 рядом с m-0 — классы снова конкатенируются, а не сливаются`,
         ).toBe(false);
 
-        if (!node.hasOwnSideMargin) {
+        if (!node.hasOwnMargin) {
             expect(
                 node.margin,
                 `${label}: у «${node.label}» computed margin ${node.margin} вместо 0px`,
             ).toBe('0px');
         }
-    }
-}
-
-async function expectMarginXZero(page: Page, label: string) {
-    const nodes = await collectMarginXZeroNodes(page);
-
-    // Гвард от vacuous pass — те же четыре кнопки паузы держат этот случай живым.
-    expect(
-        nodes.length,
-        `${label}: на странице должны быть элементы с утилитой mx-0`,
-    ).toBeGreaterThan(0);
-
-    for (const node of nodes) {
-        expect(
-            [node.marginLeft, node.marginRight],
-            `${label}: у «${node.label}» боковые margin ${node.marginLeft}/${node.marginRight} вместо 0px — базовый m-1 снова выигрывает у mx-0`,
-        ).toEqual(['0px', '0px']);
     }
 }
 
@@ -119,15 +96,24 @@ test.describe('Кнопки: className="m-0" гасит базовый отст�
         await page.goto('/game?seed=42');
         await expect(page.getByTestId('top-hud')).toBeVisible();
 
-        // Точечно — те самые кнопки, замером которых баг и нашли (#528).
-        for (const label of ['Выключить звук', 'Пауза']) {
-            const button = page.locator(
-                `[data-testid="top-hud"] button[aria-label="${label}"]:visible`,
-            );
+        // Точечно — те самые кнопки, замером которых баг и нашли (#528). Подпись
+        // кнопки звука переключаемая, поэтому берём ОБА варианта (ревью #554): завязка
+        // на «Выключить звук» держалась на том, что игра стартует с включённым звуком,
+        // и красила бы барьер при первом же старте с приглушённым (или унаследованном
+        // `audio-mute=true` в storageState) — по причине, к отступам не относящейся.
+        const BUTTONS: [string, string[]][] = [
+            ['звук', ['Выключить звук', 'Включить звук']],
+            ['пауза', ['Пауза']],
+        ];
+        for (const [name, labels] of BUTTONS) {
+            const selector = labels
+                .map((label) => `[data-testid="top-hud"] button[aria-label="${label}"]:visible`)
+                .join(', ');
+            const button = page.locator(selector);
             await expect(button.first()).toBeVisible();
             expect(
                 await button.first().evaluate((el) => getComputedStyle(el).margin),
-                `кнопка «${label}»: computed margin должен быть 0px`,
+                `кнопка «${name}»: computed margin должен быть 0px`,
             ).toBe('0px');
         }
 
@@ -139,15 +125,5 @@ test.describe('Кнопки: className="m-0" гасит базовый отст�
         await expect(page.getByTestId('ds-faction-scope')).toBeVisible();
 
         await expectMergedMarginZero(page, 'витрина /design-system');
-    });
-
-    test('кнопки паузы с mx-0 не носят боковых 4px', async ({ page }) => {
-        // Секция «Пауза» витрины рендерит настоящий `PauseOverlay` (статичный срез),
-        // а его кнопки гасят базовый `m-1` боковой утилитой — случай, который
-        // tailwind-merge НЕ сливает и который держится каскадом (см. докблок).
-        await page.goto('/design-system');
-        await expect(page.getByTestId('ds-faction-scope')).toBeVisible();
-
-        await expectMarginXZero(page, 'витрина /design-system');
     });
 });
