@@ -22,25 +22,30 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
  *    не переполняется, а выдавливается из полосы целиком, рапортуя зелёное
  *    `scrollWidth === clientWidth`. Поэтому теперь мерим и полосу
  *    `top-hud-desktop`, и правый край ряда относительно вьюпорта.
+ *
+ * Кадр = один `describe` с одним переходом на `/game?seed=42` (ревью #566): раньше
+ * пересекающиеся списки кадров давали 18 загрузок страницы на одно правило паддинга.
+ * Проверки внутри кадра разведены `test.step` — в отчёте видно, какая упала.
  */
 
 /** Кадры, где паддинг ячеек ряда сверяется между собой. 768 — планшет: там
  *  паддинг совпадал и до правки, держим как защиту от «починили xl, уронили md».
  *  1200 — узкий xl: там ряд идёт плотным ВЕСЬ, и равенство обязано держаться
  *  и в плотном режиме. */
-const PARITY_FRAMES = [768, 1200, 1280, 1440, 1920];
+const PARITY_FRAMES = new Set([768, 1200, 1280, 1440, 1920]);
 
 /** Полный пакет кадров проекта (CLAUDE.md «Адаптив») + 320 (самый узкий телефон,
  *  #537), 1200 (начало `xl` при наших брейкпоинтах) и 1440 (типовой десктоп, на
  *  котором дефект и заметили). */
 const FRAMES = [320, 390, 768, 1200, 1232, 1280, 1440, 1920];
 
-/** С этой ширины ячейкам возвращается паддинг (`min-[1280px]:px-1` в `CellShell`) —
- *  и с неё же полоса HUD обязана укладываться целиком. Ниже (1200–1279) у полосы
- *  остаётся ОТДЕЛЬНЫЙ, не связанный с паддингом дефект: левый кластер (HP + пилюля
- *  + бейджи + иконки) не ужимается и переполняет полосу на ≈7–24px даже при нулевом
- *  паддинге ячеек. Он заведён карточкой из разбора ревью #566 — сторожить его этим
- *  барьером сейчас значило бы держать красный e2e на чужом дефекте. */
+/** С этой ширины ячейкам возвращается паддинг (`xl-wide:px-1` в `CellShell`,
+ *  `--breakpoint-xl-wide` в globals.css) — и с неё же полоса HUD обязана
+ *  укладываться целиком. Ниже (1200–1279) у полосы остаётся ОТДЕЛЬНЫЙ, не связанный
+ *  с паддингом дефект: левый кластер (HP + пилюля + бейджи + иконки) не ужимается и
+ *  переполняет полосу на ≈7–24px даже при нулевом паддинге ячеек. Он заведён
+ *  карточкой #592 — сторожить его этим барьером сейчас значило бы держать красный
+ *  e2e на чужом дефекте; снятие порога записано в её критерий готовности. */
 const STRIP_FITS_FROM = 1280;
 
 /** Горизонтальные паддинги элемента, округлённые до целых пикселей. */
@@ -77,108 +82,125 @@ function telemetryRow(page: Page, width: number): Locator {
     );
 }
 
-for (const width of PARITY_FRAMES) {
-    test.describe(`Паддинг ячейки ресурсов (#566) — ${width}`, () => {
+// Один describe и одна загрузка страницы на кадр (ревью #566): списки кадров
+// пересекались, и на одно правило паддинга приходилось 18 переходов `/game?seed=42`
+// — гейт мерджа гоняет это на каждый PR. Проверки внутри кадра разведены
+// `test.step`, поэтому в отчёте видно, какая именно упала.
+for (const width of FRAMES) {
+    test.describe(`Полоса телеметрии (#566) — ${width}`, () => {
         test.use({ viewport: { width, height: 900 } });
 
-        test('совпадает с паддингом соседних ячеек телеметрии', async ({ page }) => {
+        test('паддинг ячеек общий, ряд и полоса укладываются', async ({ page }) => {
             await page.goto('/game?seed=42');
-            await expect(page.getByTestId('top-hud-telemetry-desktop')).toBeVisible();
 
-            const neighbours = await visibleChildren(page.getByTestId('top-hud-telemetry-numbers'));
-            const resources = await visibleChildren(
-                page.getByTestId('top-hud-telemetry-resources'),
-            );
-            // Гвард от vacuous pass: сменится разметка ряда — списки станут пустыми,
-            // и цикл сверки был бы зелёным впустую.
-            expect(neighbours.length, 'соседние ячейки телеметрии должны быть видимы').toBe(3);
-            expect(resources.length, 'ячейка ресурсов должна быть видима').toBeGreaterThan(0);
-
-            const expected = await paddingX(neighbours[0]);
-            // Второй гвард от vacuous pass: с общим для ряда паддингом равенство
-            // выполняется и когда паддинга нет вовсе. На кадрах, где он положен
-            // (≥ STRIP_FITS_FROM), эталон обязан быть ненулевым — иначе тест
-            // молча сторожил бы «одинаково по нулям», а дефект #566 (ячейка
-            // впритык к рамке) вернулся бы незамеченным.
+            if (PARITY_FRAMES.has(width)) {
+                await test.step('паддинг ячейки ресурсов совпадает с соседями', () =>
+                    expectPaddingParity(page, width));
+            }
+            await test.step('ряд не переполнен и не выходит за вьюпорт', () =>
+                expectRowFits(page, width));
+            // Полоса, а не ряд: метрика ряда слепа к тому, что он выдавлен из полосы
+            // целиком (ревью #566). Ниже STRIP_FITS_FROM полосу сторожит не этот
+            // барьер — см. комментарий у константы.
             if (width >= STRIP_FITS_FROM) {
-                expect(
-                    expected.left,
-                    `на ${width} ячейки телеметрии обязаны нести паддинг, а не быть прижатыми к рамке`,
-                ).toBeGreaterThan(0);
-            }
-            for (const neighbour of neighbours.slice(1)) {
-                expect(
-                    await paddingX(neighbour),
-                    'соседи между собой обязаны быть одинаковы — иначе эталон неоднозначен',
-                ).toEqual(expected);
-            }
-
-            for (const cell of resources) {
-                const label = (await cell.textContent())?.trim() ?? '';
-                expect(
-                    await paddingX(cell),
-                    `ячейка ресурсов «${label}» прижата к рамке против соседей`,
-                ).toEqual(expected);
+                await test.step('полоса HUD укладывается в свою ширину', () =>
+                    expectStripFits(page));
             }
         });
     });
 }
 
-for (const width of FRAMES) {
-    test.describe(`Ряд телеметрии укладывается (#566) — ${width}`, () => {
-        test.use({ viewport: { width, height: 900 } });
+async function expectPaddingParity(page: Page, width: number) {
+    await expect(page.getByTestId('top-hud-telemetry-desktop')).toBeVisible();
 
-        test('ряд не переполнен и не выходит за вьюпорт', async ({ page }) => {
-            await page.goto('/game?seed=42');
-            const row = telemetryRow(page, width);
-            await expect(row).toBeVisible();
+    const neighbours = await visibleChildren(page.getByTestId('top-hud-telemetry-numbers'));
+    const resources = await visibleChildren(page.getByTestId('top-hud-telemetry-resources'));
+    // Гвард от vacuous pass: сменится разметка ряда — списки станут пустыми,
+    // и цикл сверки был бы зелёным впустую.
+    expect(neighbours.length, 'соседние ячейки телеметрии должны быть видимы').toBe(3);
+    expect(resources.length, 'ячейка ресурсов должна быть видима').toBeGreaterThan(0);
 
-            const metrics = await row.evaluate((el) => ({
-                scrollWidth: el.scrollWidth,
-                clientWidth: el.clientWidth,
-                right: el.getBoundingClientRect().right,
-            }));
-            // Ненулевая ширина — гвард от «ряд скрыт, значит всё влезло».
-            expect(metrics.clientWidth, 'ряд телеметрии должен быть развёрнут').toBeGreaterThan(0);
-            expect(
-                metrics.scrollWidth,
-                `ряд телеметрии переполнен: ${metrics.scrollWidth} > ${metrics.clientWidth}`,
-            ).toBe(metrics.clientWidth);
-            // Именно этот ассерт ловит вклад паддинга на узком xl: сам ряд там
-            // `shrink-0`, внутренним переполнением он не рапортует ничего — зато
-            // выезжает правым краем за вьюпорт (замер на 1200: 1229px правого края
-            // с паддингом против 1197px без).
-            expect(
-                Math.ceil(metrics.right),
-                `правый край ряда (${Math.ceil(metrics.right)}px) за вьюпортом ${width}px`,
-            ).toBeLessThanOrEqual(width);
+    const expected = await paddingX(neighbours[0]);
+    // Второй гвард от vacuous pass: с общим для ряда паддингом равенство
+    // выполняется и когда паддинга нет вовсе. На кадрах, где он положен
+    // (≥ STRIP_FITS_FROM), эталон обязан быть ненулевым — иначе тест
+    // молча сторожил бы «одинаково по нулям», а дефект #566 (ячейка
+    // впритык к рамке) вернулся бы незамеченным.
+    if (width >= STRIP_FITS_FROM) {
+        expect(
+            expected.left,
+            `на ${width} ячейки телеметрии обязаны нести паддинг, а не быть прижатыми к рамке`,
+        ).toBeGreaterThan(0);
+    }
+    for (const neighbour of neighbours.slice(1)) {
+        expect(
+            await paddingX(neighbour),
+            'соседи между собой обязаны быть одинаковы — иначе эталон неоднозначен',
+        ).toEqual(expected);
+    }
 
-            const doc = await page.evaluate(() => ({
-                scrollWidth: document.documentElement.scrollWidth,
-                clientWidth: document.documentElement.clientWidth,
-            }));
-            expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth);
-        });
+    for (const cell of resources) {
+        const label = (await cell.textContent())?.trim() ?? '';
+        expect(
+            await paddingX(cell),
+            `ячейка ресурсов «${label}» прижата к рамке против соседей`,
+        ).toEqual(expected);
+    }
+}
 
-        // Полоса, а не ряд: метрика ряда слепа к тому, что он выдавлен из полосы
-        // целиком (ревью #566). Ниже STRIP_FITS_FROM полосу сторожит не этот
-        // барьер — см. комментарий у константы.
-        if (width >= STRIP_FITS_FROM) {
-            test('полоса HUD укладывается в свою ширину', async ({ page }) => {
-                await page.goto('/game?seed=42');
-                const strip = page.getByTestId('top-hud-desktop');
-                await expect(strip).toBeVisible();
+async function expectRowFits(page: Page, width: number) {
+    const row = telemetryRow(page, width);
+    await expect(row).toBeVisible();
 
-                const metrics = await strip.evaluate((el) => ({
-                    scrollWidth: el.scrollWidth,
-                    clientWidth: el.clientWidth,
-                }));
-                expect(metrics.clientWidth, 'полоса HUD должна быть развёрнута').toBeGreaterThan(0);
-                expect(
-                    metrics.scrollWidth,
-                    `полоса HUD переполнена: ${metrics.scrollWidth} > ${metrics.clientWidth}`,
-                ).toBe(metrics.clientWidth);
-            });
-        }
+    const metrics = await row.evaluate((el) => ({
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+        right: el.getBoundingClientRect().right,
+    }));
+    // Ненулевая ширина — гвард от «ряд скрыт, значит всё влезло».
+    expect(metrics.clientWidth, 'ряд телеметрии должен быть развёрнут').toBeGreaterThan(0);
+    expect(
+        metrics.scrollWidth,
+        `ряд телеметрии переполнен: ${metrics.scrollWidth} > ${metrics.clientWidth}`,
+    ).toBe(metrics.clientWidth);
+    // Именно этот ассерт ловит вклад паддинга на узком xl: сам ряд там
+    // `shrink-0`, внутренним переполнением он не рапортует ничего — зато
+    // выезжает правым краем за вьюпорт (замер на 1200: 1229px правого края
+    // с паддингом против 1197px без).
+    expect(
+        Math.ceil(metrics.right),
+        `правый край ряда (${Math.ceil(metrics.right)}px) за вьюпортом ${width}px`,
+    ).toBeLessThanOrEqual(width);
+
+    // Что это сторожит на самом деле (ревью #566): НЕ переполнение HUD — корень
+    // страницы (`main` в `game-page.tsx`) несёт `overflow-hidden`, любое переполнение
+    // клипается им и до документа не доходит (замер: на 1200, где полоса переполнена
+    // на 7px, и документ, и сам `main` рапортуют «влезло»). Ассерт остаётся сторожем
+    // самого клипа: снимут `overflow-hidden` — страница начнёт скроллиться вбок, и он
+    // покраснеет. Поэтому меряем и клип явно, а не только его следствие.
+    const doc = await page.evaluate(() => {
+        const main = document.querySelector('main');
+        return {
+            scrollWidth: document.documentElement.scrollWidth,
+            clientWidth: document.documentElement.clientWidth,
+            mainOverflowX: main ? getComputedStyle(main).overflowX : null,
+        };
     });
+    expect(doc.mainOverflowX, 'корень страницы боя обязан клипать горизонталь').toBe('hidden');
+    expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth);
+}
+
+async function expectStripFits(page: Page) {
+    const strip = page.getByTestId('top-hud-desktop');
+    await expect(strip).toBeVisible();
+
+    const metrics = await strip.evaluate((el) => ({
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+    }));
+    expect(metrics.clientWidth, 'полоса HUD должна быть развёрнута').toBeGreaterThan(0);
+    expect(
+        metrics.scrollWidth,
+        `полоса HUD переполнена: ${metrics.scrollWidth} > ${metrics.clientWidth}`,
+    ).toBe(metrics.clientWidth);
 }
