@@ -1010,17 +1010,20 @@ export class GamePlay {
         });
     }
 
+    /**
+     * Точечная перерисовка полосы под взрывом. Границы — ОДНА пара координат на всё
+     * (`bullet.explosionRedrawRange`, issue #582): до этого очистка, рельеф и габарит
+     * спрайта считались тремя разными выражениями, и на песке оставались обрывки
+     * лучей (очистка не знала про запас силуэта) и вертикальные ленты другого тона
+     * (`ground.draw` рисовал шире, чем чистил `clearRect`, — ровно на радиус справа).
+     */
     private explosionAreaRedraw(bullet: Bullet) {
-        const padding = 5;
         if (this.ctx && this.ground) {
-            const clearX = bullet.x - bullet.explosionRadius - padding;
-            const clearWidth = bullet.explosionRadius * 2 + padding * 2;
+            const { from, to } = bullet.explosionRedrawRange;
+            const clearX = from;
+            const clearWidth = to - from;
             this.ctx.clearRect(clearX, 0, clearWidth, this.innerHeight);
-            this.ground.draw(
-                this.ctx,
-                bullet.x - bullet.explosionRadius - padding,
-                bullet.x + bullet.explosionRadius * 2 + padding,
-            );
+            this.ground.draw(this.ctx, from, to);
             // Точечная перерисовка чистит лишь узкую вертикальную полосу — призрачная
             // трасса (issue #543), если проходит через неё, обязана быть перерисована
             // здесь же (клип по этой полосе), иначе останется дыра до следующего

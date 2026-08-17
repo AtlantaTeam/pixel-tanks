@@ -1,6 +1,7 @@
 import { floor } from '@/shared/lib/canvas';
 import { EWeaponKind } from '@/shared/model';
 import { advanceProjectile, BULLET_GRAVITY } from './bullet-physics';
+import { explosionRedrawRange, type TExplosionRedrawRange } from './explosion-area';
 import { Ground } from './ground';
 import { Tank } from './tank';
 import { WORLD_UNITS } from './world-scale';
@@ -134,6 +135,23 @@ export class Bullet {
     /** Центр текущего очага по Y (очаги смещены только по X; глубина кратера — отдельно). */
     get explosionCenterY(): number {
         return this.y;
+    }
+
+    /**
+     * Полоса сцены, которую занимает взрыв этого снаряда (issue #582): её чистит и
+     * перерисовывает `GamePlay.explosionAreaRedraw` — одним диапазоном на всё.
+     *
+     * Считается от `x` (точка попадания) и базового радиуса, а не от текущего
+     * `explosionRadius`: полоса обязана стоять на месте весь взрыв, включая три
+     * очага кластера со смещением до ±0.8 базового радиуса и сбросом радиуса в ноль
+     * на каждой смене очага.
+     */
+    get explosionRedrawRange(): TExplosionRedrawRange {
+        return explosionRedrawRange({
+            hitX: this.x,
+            baseRadius: this.baseExplosionRadius,
+            spec: this.spec,
+        });
     }
 
     /** Максимальный радиус текущего очага (доля базового радиуса взрыва).

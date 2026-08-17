@@ -2,6 +2,8 @@ import {
     buildExplosionSprite,
     EXPLOSION_ALPHA_LEVELS,
     EXPLOSION_PIXEL_SCALE,
+    explosionSpriteHalfWidth,
+    explosionSpriteMetrics,
     type TExplosionSilhouette,
 } from './explosion-sprite';
 
@@ -144,5 +146,65 @@ describe('buildExplosionSprite — пиксельная техника (issue #5
                 }
             }
         });
+    });
+});
+
+/**
+ * Габарит спрайта отдельно от самого спрайта (issue #582). До этой задачи про запас
+ * силуэта (`marginFor`) знал только `buildExplosionSprite`, а зона очистки взрыва
+ * считалась от `explosionRadius` — и кончики лучей фугаса (35% радиуса) оставались
+ * на песке. Тесты сторожат САМУ СВЯЗЬ: габарит выведен из тех же чисел, что решётка.
+ */
+describe('explosionSpriteMetrics / explosionSpriteHalfWidth (issue #582)', () => {
+    it('метрики совпадают с построенным спрайтом на всех силуэтах и радиусах', () => {
+        for (const s of SILHOUETTES) {
+            for (const radius of [1, 7, 33.75, 45, 75, 106]) {
+                const sprite = buildExplosionSprite(s, radius);
+                const metrics = explosionSpriteMetrics(s, radius);
+                expect(metrics.size).toBe(sprite.size);
+                expect(metrics.gridRadius).toBe(sprite.gridRadius);
+                expect(metrics.scale).toBe(sprite.scale);
+                expect(metrics.half).toBe((sprite.size - 1) / 2);
+            }
+        }
+    });
+
+    it('полугабарит покрывает всю решётку со снапом начала к целому пикселю', () => {
+        for (const s of SILHOUETTES) {
+            for (const radius of [4, 20, 50, 75]) {
+                const sprite = buildExplosionSprite(s, radius);
+                const half = (sprite.size - 1) / 2;
+                const width = explosionSpriteHalfWidth(s, radius);
+                // Так же, как рисует `paintExplosionFocus`, но при дробном центре —
+                // именно на нём снап `floor` и уводит спрайт влево.
+                for (const cx of [100, 100.5, 100.9]) {
+                    const originX = Math.floor(cx - half * sprite.scale);
+                    expect(originX).toBeGreaterThanOrEqual(cx - width);
+                    expect(originX + sprite.size * sprite.scale).toBeLessThanOrEqual(cx + width);
+                }
+            }
+        }
+    });
+
+    it('запас силуэта учтён: у фугаса габарит больше радиуса вспышки', () => {
+        // Лучи фугаса — 35% радиуса; зона в 5 px вокруг радиуса их не покрывала.
+        expect(explosionSpriteHalfWidth('burst', 75)).toBeGreaterThan(75 + 5);
+        // У кластера запаса нет вовсе — габарит близок к радиусу, но не меньше него.
+        expect(explosionSpriteHalfWidth('cluster', 75)).toBeGreaterThanOrEqual(75);
+    });
+
+    it('габарит не меньше радиуса ни на одном силуэте и радиусе', () => {
+        for (const s of SILHOUETTES) {
+            for (let radius = 1; radius <= 120; radius += 1) {
+                expect(explosionSpriteHalfWidth(s, radius)).toBeGreaterThanOrEqual(radius);
+            }
+        }
+    });
+
+    it('пустой взрыв — нулевой габарит (чистить нечего)', () => {
+        for (const s of SILHOUETTES) {
+            expect(explosionSpriteHalfWidth(s, 0)).toBe(0);
+            expect(explosionSpriteHalfWidth(s, -3)).toBe(0);
+        }
     });
 });

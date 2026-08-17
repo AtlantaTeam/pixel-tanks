@@ -687,3 +687,151 @@ describe('GamePlay — зона очистки покрывает габарит
         }
     });
 });
+
+/**
+ * Грязь после взрыва (issue #582): очистка, рельеф и габарит спрайта считались в
+ * `explosionAreaRedraw` тремя разными выражениями. Тесты ниже сторожат СВЯЗЬ —
+ * `clearRect` и `ground.draw` берут одну пару координат, и вся вспышка (включая
+ * кончики лучей и смещённые очаги кластера) рисуется внутри очищенной полосы.
+ */
+describe('GamePlay — зона очистки покрывает габарит взрыва (#582)', () => {
+    /** ctx-заглушка: журнал `clearRect` (зона) и `fillRect` (пиксели вспышки). */
+    class ExplosionCtxStub {
+        fillStyle = '';
+        globalAlpha = 1;
+        imageSmoothingEnabled = true;
+        clearRects: number[][] = [];
+        fillRects: number[][] = [];
+
+        clearRect(x: number, y: number, w: number, h: number) {
+            this.clearRects.push([x, y, w, h]);
+        }
+        fillRect(x: number, y: number, w: number, h: number) {
+            this.fillRects.push([x, y, w, h]);
+        }
+        save() {}
+        restore() {}
+        beginPath() {}
+        closePath() {}
+        rect() {}
+        clip() {}
+        moveTo() {}
+        lineTo() {}
+        arc() {}
+        fill() {}
+        stroke() {}
+        drawImage() {}
+        setTransform() {}
+        translate() {}
+        rotate() {}
+        createRadialGradient() {
+            return { addColorStop: () => undefined };
+        }
+    }
+
+    /** Один кадр точечной перерисовки взрыва: то, что зовёт кадровый цикл. */
+    const redrawExplosion = (gamePlay: GamePlay, bullet: Bullet) =>
+        (gamePlay as unknown as { explosionAreaRedraw(bullet: Bullet): void }).explosionAreaRedraw(
+            bullet,
+        );
+
+    /** Настраивает бой с уже детонировавшим снарядом нужного типа. */
+    const setupExplosion = (kind: EWeaponKind) => {
+        const { gamePlay, ground, leftTank, rightTank } = makeGamePlay();
+        const stub = new ExplosionCtxStub();
+        gamePlay.ctx = stub as unknown as CanvasRenderingContext2D;
+        const bullet = new Bullet(
+            WIDTH,
+            HEIGHT,
+            ground,
+            leftTank,
+            rightTank,
+            0,
+            WEAPON_SPECS[kind],
+        );
+        // Точка попадания — середина арены: полоса взрыва целиком внутри канваса,
+        // и клампы `blitLayer` не прячут расхождение краёв.
+        bullet.x = WIDTH / 2;
+        bullet.y = HEIGHT / 2;
+        bullet.detonated = true;
+        gamePlay.bullet = bullet;
+        return { gamePlay, ground, bullet, stub };
+    };
+
+    it.each([
+        [EWeaponKind.HighExplosive],
+        [EWeaponKind.Heavy],
+        [EWeaponKind.Cluster],
+        [EWeaponKind.Digger],
+    ])('%s: clearRect и ground.draw берут ОДИН диапазон', (kind) => {
+        const { gamePlay, ground, bullet, stub } = setupExplosion(kind);
+        // Взрыв уже раскрылся: на нулевом радиусе прежняя (битая) пара выражений
+        // случайно совпадала, и тест сторожил бы совпадение, а не связь.
+        for (let frame = 0; frame < 5; frame += 1) {
+            bullet.drawExplosion(stub as unknown as CanvasRenderingContext2D);
+        }
+        expect(bullet.explosionRadius).toBeGreaterThan(0);
+        const drawSpy = vi.spyOn(ground, 'draw');
+
+        redrawExplosion(gamePlay, bullet);
+
+        expect(stub.clearRects).toHaveLength(1);
+        const [clearX, , clearWidth] = stub.clearRects[0];
+        expect(clearWidth).toBeGreaterThan(0);
+        expect(drawSpy).toHaveBeenCalledTimes(1);
+        const [, from, to] = drawSpy.mock.calls[0];
+        expect(from).toBe(clearX);
+        // Именно здесь жил дефект: `ground.draw` получал ширину как координату
+        // правого края и рисовал песок на радиус правее очищенного.
+        expect(to).toBe(clearX + clearWidth);
+    });
+
+    it.each([
+        [EWeaponKind.HighExplosive],
+        [EWeaponKind.Heavy],
+        [EWeaponKind.Cluster],
+        [EWeaponKind.Digger],
+    ])('%s: каждый пиксель вспышки нарисован внутри очищенной полосы', (kind) => {
+        const { gamePlay, bullet, stub } = setupExplosion(kind);
+
+        let painted = 0;
+        // Кадр за кадром весь взрыв: очистка полосы, затем отрисовка очага — тот же
+        // порядок, что в кадровом цикле (`explosionAreaRedraw` → `moveBullet`).
+        for (let frame = 0; frame < 400 && !bullet.isFinished; frame += 1) {
+            stub.clearRects.length = 0;
+            stub.fillRects.length = 0;
+            redrawExplosion(gamePlay, bullet);
+            bullet.drawExplosion(stub as unknown as CanvasRenderingContext2D);
+
+            const [clearX, , clearWidth] = stub.clearRects[0];
+            for (const [x, , w] of stub.fillRects) {
+                painted += 1;
+                expect(
+                    x >= clearX && x + w <= clearX + clearWidth,
+                    `пиксель [${x}, ${x + w}] вне очищенной полосы [${clearX}, ${clearX + clearWidth}]`,
+                ).toBe(true);
+            }
+        }
+
+        // Гвард от вырождения: взрыв обязан был что-то нарисовать.
+        expect(painted).toBeGreaterThan(100);
+        expect(bullet.isFinished).toBe(true);
+    });
+
+    it('кластер: полоса стоит на месте все три очага, а не прыгает за смещённым', () => {
+        const { gamePlay, bullet, stub } = setupExplosion(EWeaponKind.Cluster);
+
+        const bands = new Set<string>();
+        for (let frame = 0; frame < 400 && !bullet.isFinished; frame += 1) {
+            stub.clearRects.length = 0;
+            redrawExplosion(gamePlay, bullet);
+            bullet.drawExplosion(stub as unknown as CanvasRenderingContext2D);
+            const [clearX, , clearWidth] = stub.clearRects[0];
+            bands.add(`${clearX}:${clearWidth}`);
+        }
+
+        // Гвард: очаги действительно отыграны все три.
+        expect(bullet.focusIndex).toBe(WEAPON_SPECS[EWeaponKind.Cluster].foci.length);
+        expect(bands.size, `полоса меняла границы: ${[...bands].join(', ')}`).toBe(1);
+    });
+});
