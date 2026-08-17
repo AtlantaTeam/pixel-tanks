@@ -1,0 +1,141 @@
+import { describe, expect, it } from 'vitest';
+import {
+    TANK_DECOR_REDRAW_PADDING,
+    TANK_SHADOW_OFFSET_X_FRAC,
+    TANK_SHADOW_RADIUS_X_FRAC,
+    tankRedrawPaddingX,
+    tankShadowGeometry,
+    tankShadowOverhangX,
+} from './tank-shadow';
+
+/** Канон мира: `WORLD_UNITS.tankWidth` = 60 при `scale === 1`. */
+const TANK_WIDTH = 60;
+
+describe('tankShadowGeometry — геометрия эллипса тени', () => {
+    it('светило справа (dx<0) смещает тень влево от центра корпуса', () => {
+        const { centerX } = tankShadowGeometry({
+            centerX: 100,
+            tankWidth: TANK_WIDTH,
+            scale: 1,
+            lightDx: -0.6,
+        });
+        expect(centerX).toBeLessThan(100);
+    });
+
+    it('светило слева (dx>0) смещает тень вправо от центра корпуса', () => {
+        const { centerX } = tankShadowGeometry({
+            centerX: 100,
+            tankWidth: TANK_WIDTH,
+            scale: 1,
+            lightDx: 0.6,
+        });
+        expect(centerX).toBeGreaterThan(100);
+    });
+
+    it('светило в зените (dx=0) держит тень ровно под корпусом', () => {
+        const { centerX } = tankShadowGeometry({
+            centerX: 100,
+            tankWidth: TANK_WIDTH,
+            scale: 1,
+            lightDx: 0,
+        });
+        expect(centerX).toBe(100);
+    });
+
+    it('полуширина — доля ширины корпуса, полувысота не меньше канонных 2 px', () => {
+        const big = tankShadowGeometry({
+            centerX: 0,
+            tankWidth: 90,
+            scale: 1.5,
+            lightDx: 0,
+        });
+        expect(big.radiusX).toBeCloseTo(90 * TANK_SHADOW_RADIUS_X_FRAC, 6);
+        expect(big.radiusY).toBeCloseTo(3, 6);
+
+        const small = tankShadowGeometry({
+            centerX: 0,
+            tankWidth: 30,
+            scale: 0.5,
+            lightDx: 0,
+        });
+        // На минимальном масштабе тень не вырождается в линию: пол 2 px.
+        expect(small.radiusY).toBe(2);
+    });
+
+    it('высота светила (dy) на геометрию НЕ влияет — регресс #571 не возвращается', () => {
+        // #571 привязал полуширину к dy, и на закате (dy→0) тень вырождалась в
+        // чёрную полосу шириной с треть экрана. Подпись функции высоты светила
+        // не знает вовсе — это структурный барьер, а не подобранное число.
+        const params = { centerX: 100, tankWidth: TANK_WIDTH, scale: 1, lightDx: -0.9 };
+        expect(tankShadowGeometry(params)).toEqual(tankShadowGeometry({ ...params }));
+        expect(tankShadowGeometry(params).radiusX).toBeLessThanOrEqual(TANK_WIDTH);
+    });
+
+    it('габарит тени не выходит за разумные пределы корпуса при любом наклоне света', () => {
+        // Критерий #580: на любом пресете неба (свет от вертикали до горизонта)
+        // тень остаётся тенью корпуса, а не полосой.
+        for (const lightDx of [-1, -0.5, 0, 0.5, 1]) {
+            const { centerX, radiusX } = tankShadowGeometry({
+                centerX: TANK_WIDTH / 2,
+                tankWidth: TANK_WIDTH,
+                scale: 1,
+                lightDx,
+            });
+            const left = centerX - radiusX;
+            const right = centerX + radiusX;
+            expect(right - left).toBeLessThanOrEqual(TANK_WIDTH * 1.5);
+            expect(left).toBeGreaterThanOrEqual(-TANK_WIDTH);
+            expect(right).toBeLessThanOrEqual(TANK_WIDTH * 2);
+        }
+    });
+});
+
+describe('tankShadowOverhangX — вылет тени за габарит корпуса', () => {
+    it('считается по худшему направлению света, а не по текущему', () => {
+        const overhang = tankShadowOverhangX(TANK_WIDTH, 1);
+        const expected = TANK_WIDTH * (TANK_SHADOW_RADIUS_X_FRAC + TANK_SHADOW_OFFSET_X_FRAC - 0.5);
+        expect(overhang).toBeCloseTo(expected, 6);
+    });
+
+    it('растёт вместе с корпусом (масштаб мира)', () => {
+        expect(tankShadowOverhangX(90, 1.5)).toBeGreaterThan(tankShadowOverhangX(30, 0.5));
+    });
+
+    it('никогда не отрицателен — тень внутри корпуса даёт нулевой вылет', () => {
+        expect(tankShadowOverhangX(0, 1)).toBe(0);
+    });
+});
+
+describe('tankRedrawPaddingX — зона очистки следует за габаритом тени (#580)', () => {
+    /**
+     * Ядро задачи: до #580 зона очистки была магической константой `padding = 50`,
+     * жившей независимо от радиусов тени, — отсюда след за танком и накопление
+     * альфы у взрывов. Тест держит связь: зона обязана покрывать вылет тени
+     * ЛЮБОГО размера, а не только сегодняшнего.
+     */
+    it('покрывает вылет тени на всём диапазоне масштаба мира', () => {
+        for (const scale of [0.5, 0.75, 1, 1.25, 1.5]) {
+            const tankWidth = 60 * scale;
+            expect(tankRedrawPaddingX(tankWidth, scale)).toBeGreaterThanOrEqual(
+                tankShadowOverhangX(tankWidth, scale),
+            );
+        }
+    });
+
+    it('покрывает вылет и у гипотетически огромной тени — связь, а не совпадение чисел', () => {
+        // Корпус шириной 1000 px даёт вылет 280 px — вчетверо больше исторического
+        // паддинга декора. Зона обязана поехать за тенью, а не остаться на 50.
+        const huge = tankRedrawPaddingX(1000, 1);
+        expect(huge).toBeGreaterThanOrEqual(tankShadowOverhangX(1000, 1));
+        expect(huge).toBeGreaterThan(TANK_DECOR_REDRAW_PADDING);
+    });
+
+    it('не опускается ниже исторического запаса на ствол и мачту флажка', () => {
+        expect(tankRedrawPaddingX(30, 0.5)).toBeGreaterThanOrEqual(TANK_DECOR_REDRAW_PADDING);
+    });
+
+    it('целое число пикселей — зона очистки не дробится на субпиксели', () => {
+        expect(Number.isInteger(tankRedrawPaddingX(90, 1.5))).toBe(true);
+        expect(Number.isInteger(tankRedrawPaddingX(1000, 1))).toBe(true);
+    });
+});

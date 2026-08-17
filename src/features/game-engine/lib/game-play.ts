@@ -20,6 +20,7 @@ import {
 import { loadSandImage } from './game-assets';
 import { Ground } from './ground';
 import { Tank, TANK_SHADOW_COLOR } from './tank';
+import { tankRedrawPaddingX } from './tank-shadow';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
 import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
@@ -1087,9 +1088,18 @@ export class GamePlay {
         ctx.restore();
     }
 
+    /**
+     * Стирает и перерисовывает узкую вертикальную полосу вокруг каждого танка.
+     * Ширина полосы — НЕ константа (#580): `tankRedrawPaddingX` берёт максимум из
+     * запаса на декор корпуса (ствол, мачта флажка) и фактического вылета тени,
+     * посчитанного той же геометрией, которой тень рисуется (`tank-shadow.ts`).
+     * Пока зона была литералом `50`, увеличение тени в #571 оставляло за танком
+     * след и копило альфу под ним кадр за кадром во время осыпания земли: тень
+     * рисовалась заново поверх неочищенной предыдущей.
+     */
     private redrawGroundUnderTanks(tanks: Tank[]) {
         tanks.forEach((tank) => {
-            const padding = 50;
+            const padding = tankRedrawPaddingX(tank.tankWidth, tank.scale);
             if (this.ctx && this.ground) {
                 const x = tank.x - padding;
                 const width = tank.tankWidth + padding * 2;

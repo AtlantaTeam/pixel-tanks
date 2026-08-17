@@ -557,3 +557,133 @@ describe('GamePlay — флажок ветра следует за ветром 
         expectFlagMatchesWind(game);
     });
 });
+
+/**
+ * Регресс #571, разобранный в #580: тень выросла, а зона частичной перерисовки
+ * осталась литералом `padding = 50`. Наружу это вышло тремя симптомами одной
+ * причины — след за движущимся танком, накопление альфы под танком во время
+ * осыпания земли после взрыва и полоса на закате. Тесты ниже сторожат САМУ
+ * СВЯЗЬ: тень рисуется и стирается одной и той же геометрией, поэтому вырасти
+ * мимо зоны очистки она больше не может.
+ */
+describe('GamePlay — зона очистки покрывает габарит тени танка (#580)', () => {
+    /** ctx-заглушка: журнал `clearRect` (зона очистки) и `ellipse` (тень). */
+    class RedrawCtxStub {
+        fillStyle = '';
+        strokeStyle = '';
+        lineWidth = 0;
+        lineJoin = 'miter';
+        clearRects: number[][] = [];
+        ellipses: number[][] = [];
+
+        clearRect(x: number, y: number, w: number, h: number) {
+            this.clearRects.push([x, y, w, h]);
+        }
+        ellipse(x: number, y: number, rx: number, ry: number) {
+            this.ellipses.push([x, y, rx, ry]);
+        }
+        save() {}
+        restore() {}
+        setTransform() {}
+        beginPath() {}
+        closePath() {}
+        rect() {}
+        clip() {}
+        moveTo() {}
+        lineTo() {}
+        arc() {}
+        translate() {}
+        rotate() {}
+        getTransform() {
+            return new DOMMatrix();
+        }
+        drawImage() {}
+        fillRect() {}
+        fill() {}
+        stroke() {}
+        createPattern() {
+            return null;
+        }
+        createRadialGradient() {
+            return { addColorStop: () => undefined };
+        }
+    }
+
+    /** Свет у горизонта (закат) — худший случай смещения тени по горизонтали. */
+    const SUNSET_LIGHT = { dx: -1, dy: 0.05 };
+
+    /** Один кадр точечной перерисовки танков: то, что зовёт кадровый цикл. */
+    const redrawTanks = (gamePlay: GamePlay) => {
+        (gamePlay as unknown as { tankAreaRedraw(tanks: Tank[]): void }).tankAreaRedraw([
+            gamePlay.leftTank!,
+            gamePlay.rightTank!,
+        ]);
+    };
+
+    const setupWithShadows = (lightDx: number) => {
+        const { gamePlay, leftTank, rightTank } = makeGamePlay();
+        const stub = new RedrawCtxStub();
+        gamePlay.ctx = stub as unknown as CanvasRenderingContext2D;
+        const shadow = {
+            direction: { dx: lightDx, dy: SUNSET_LIGHT.dy },
+            color: 'rgba(12, 10, 8, 0.32)',
+        };
+        leftTank.shadow = shadow;
+        rightTank.shadow = shadow;
+        return { gamePlay, stub };
+    };
+
+    /** Полностью ли горизонтальный отрезок тени накрыт одной из очищенных полос. */
+    const coveredByClear = (stub: RedrawCtxStub, left: number, right: number) =>
+        stub.clearRects.some(([x, , w]) => x <= left && x + w >= right);
+
+    it.each([
+        ['светило слева (тень уезжает вправо)', 1],
+        ['светило справа (тень уезжает влево)', -1],
+    ])('%s: эллипс тени целиком внутри очищенной полосы', (_name, lightDx) => {
+        const { gamePlay, stub } = setupWithShadows(lightDx);
+
+        redrawTanks(gamePlay);
+
+        // Гвард от вырождения: нет теней — тест сторожил бы пустоту.
+        expect(stub.ellipses.length, 'оба танка обязаны нарисовать тень').toBe(2);
+        for (const [x, , radiusX] of stub.ellipses) {
+            expect(
+                coveredByClear(stub, x - radiusX, x + radiusX),
+                `тень [${x - radiusX}, ${x + radiusX}] не покрыта ни одной очищенной полосой`,
+            ).toBe(true);
+        }
+    });
+
+    it('связь держится и на раздутой тени — зона едет за габаритом, а не стоит на 50', () => {
+        const { gamePlay, stub } = setupWithShadows(-1);
+        // Корпус вчетверо шире канона: вылет тени (0.28 ширины) перерастает
+        // исторический запас на декор. Если зона очистки вернётся к литералу,
+        // тень вылезет за полосу — и тест покраснеет раньше, чем сцена.
+        gamePlay.leftTank!.tankWidth = 400;
+        gamePlay.rightTank!.tankWidth = 400;
+
+        redrawTanks(gamePlay);
+
+        expect(stub.ellipses).toHaveLength(2);
+        for (const [x, , radiusX] of stub.ellipses) {
+            expect(coveredByClear(stub, x - radiusX, x + radiusX)).toBe(true);
+        }
+    });
+
+    it('осыпание земли после взрыва не копит альфу: каждый кадр тень стирается целиком', () => {
+        const { gamePlay, stub } = setupWithShadows(-1);
+
+        // Десять кадров подряд, как во время `ground.isFalling`: тень рисуется
+        // заново каждый кадр, и каждый раз поверх ОЧИЩЕННОГО места.
+        for (let frame = 0; frame < 10; frame += 1) {
+            stub.clearRects.length = 0;
+            stub.ellipses.length = 0;
+            redrawTanks(gamePlay);
+            expect(stub.ellipses).toHaveLength(2);
+            for (const [x, , radiusX] of stub.ellipses) {
+                expect(coveredByClear(stub, x - radiusX, x + radiusX)).toBe(true);
+            }
+        }
+    });
+});

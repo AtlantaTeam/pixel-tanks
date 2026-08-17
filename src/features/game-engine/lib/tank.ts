@@ -4,6 +4,7 @@ import { ENGINE_COLORS } from './engine-palette';
 import { Ground } from './ground';
 import { POWER_MAX, POWER_MIN } from './power';
 import type { TLightDirection } from './scene-light';
+import { tankShadowGeometry } from './tank-shadow';
 import {
     WIND_FLAG_MIN_SCALE,
     WIND_FLAG_PENNANT,
@@ -416,23 +417,28 @@ export class Tank {
      * поэтому лежит на склоне в мировых координатах, а не «висит» с корпусом. Эллипс
      * центрируется по поверхности под серединой танка — даёт гарантированные пиксели
      * контакта корпуса с рельефом (критерий #545), которых у «висящего» танка не было.
+     *
+     * Полуоси и смещение — из `tankShadowGeometry` (#580): ту же функцию зовёт
+     * `GamePlay` при расчёте зоны частичной перерисовки, поэтому габарит тени и
+     * зона очистки не могут разойтись (регресс #571 — след за танком и накопление
+     * альфы у взрывов — рос ровно из этого расхождения).
      */
     private drawShadow(ctx: CanvasRenderingContext2D, ground: Ground) {
         if (!this.shadow) return;
         const lastX = ground.heights.length - 1;
         if (lastX < 0) return;
-        const centerX = Math.min(lastX, Math.max(0, floor(this.x + this.tankWidth / 2)));
-        const surfaceY = this.innerHeight - ground.heights[centerX];
-        const radiusX = this.tankWidth * 0.5;
-        // Тонкий эллипс (~2 px в каноне, масштабируется миром) — тень, не «клякса».
-        const radiusY = Math.max(2, 2 * this.scale);
-        // Смещение по свету: в сторону, обратную светилу. Модуль — доля ширины танка,
-        // тень «выползает» из-под корпуса, не отрываясь от него.
-        const offsetX = this.shadow.direction.dx * this.tankWidth * 0.28;
+        const hullCenterX = Math.min(lastX, Math.max(0, floor(this.x + this.tankWidth / 2)));
+        const surfaceY = this.innerHeight - ground.heights[hullCenterX];
+        const { centerX, radiusX, radiusY } = tankShadowGeometry({
+            centerX: hullCenterX,
+            tankWidth: this.tankWidth,
+            scale: this.scale,
+            lightDx: this.shadow.direction.dx,
+        });
         ctx.save();
         ctx.beginPath();
         ctx.fillStyle = this.shadow.color;
-        ctx.ellipse(centerX + offsetX, surfaceY, radiusX, radiusY, 0, 0, Math.PI * 2);
+        ctx.ellipse(centerX, surfaceY, radiusX, radiusY, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
     }
