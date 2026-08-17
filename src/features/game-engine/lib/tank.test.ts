@@ -65,20 +65,96 @@ beforeAll(() => {
     }
 });
 
-/** ctx-заглушка, записывающая аргументы drawImage корпуса (первый вызов). */
+/** Запись одной операции рисования вместе с цветом/толщиной на момент вызова. */
+type TDrawOp = {
+    op:
+        | 'fillRect'
+        | 'fill'
+        | 'stroke'
+        | 'translate'
+        | 'rotate'
+        | 'vertex'
+        | 'drawImage'
+        | 'ellipse';
+    args: number[];
+    color: string;
+    lineWidth: number;
+};
+
+/**
+ * ЕДИНСТВЕННАЯ ctx-заглушка файла (ревью #579): пишет упорядоченный журнал операций
+ * с цветом на момент вызова и попутно ведёт готовые выборки под старые сценарии —
+ * `drawImageCalls` (корпус) и `ellipseCalls` (тень). Порядок важен флажку: по нему
+ * проверяется, что древко рисуется ПОВЕРХ полотнища, а вершины контура идут после
+ * поворота на угол ветра.
+ *
+ * Заглушка одна, потому что моков ctx было три с почти общей ответственностью, и
+ * каждый новый вызов в `Tank.draw` приходилось дописывать в каждый — иначе часть
+ * тестов падала на `is not a function`.
+ */
+class DrawCtxStub {
+    fillStyle = '';
+    strokeStyle = '';
+    lineWidth = 0;
+    lineJoin = 'miter';
+    ops: TDrawOp[] = [];
+    /** Аргументы `drawImage` (x, y, w, h) — корпус, ствол, катки, в порядке вызова. */
+    drawImageCalls: number[][] = [];
+    /** Аргументы `ellipse` — тень корпуса от светила (#545). */
+    ellipseCalls: number[][] = [];
+
+    private push(op: TDrawOp['op'], args: number[]) {
+        this.ops.push({
+            op,
+            args,
+            color: op === 'stroke' ? this.strokeStyle : this.fillStyle,
+            lineWidth: this.lineWidth,
+        });
+    }
+
+    save() {}
+    restore() {}
+    setTransform() {}
+    beginPath() {}
+    closePath() {}
+    drawImage(_img: unknown, x: number, y: number, w: number, h: number) {
+        this.drawImageCalls.push([x, y, w, h]);
+        this.push('drawImage', [x, y, w, h]);
+    }
+    ellipse(x: number, y: number, rx: number, ry: number, rot: number, s: number, e: number) {
+        this.ellipseCalls.push([x, y, rx, ry, rot, s, e]);
+        this.push('ellipse', [x, y, rx, ry, rot, s, e]);
+    }
+    translate(x: number, y: number) {
+        this.push('translate', [x, y]);
+    }
+    rotate(angle: number) {
+        this.push('rotate', [angle]);
+    }
+    moveTo(x: number, y: number) {
+        this.push('vertex', [x, y]);
+    }
+    lineTo(x: number, y: number) {
+        this.push('vertex', [x, y]);
+    }
+    fillRect(x: number, y: number, w: number, h: number) {
+        this.push('fillRect', [x, y, w, h]);
+    }
+    fill() {
+        this.push('fill', []);
+    }
+    stroke() {
+        this.push('stroke', []);
+    }
+}
+
+/** ctx-заглушка + живая выборка аргументов `drawImage` корпуса. */
 const makeRecordingCtx = () => {
-    const drawImageCalls: number[][] = [];
-    const ctx = {
-        save: () => undefined,
-        restore: () => undefined,
-        translate: () => undefined,
-        rotate: () => undefined,
-        setTransform: () => undefined,
-        drawImage: (_img: unknown, x: number, y: number, w: number, h: number) => {
-            drawImageCalls.push([x, y, w, h]);
-        },
-    } as unknown as CanvasRenderingContext2D;
-    return { ctx, drawImageCalls };
+    const stub = new DrawCtxStub();
+    return {
+        ctx: stub as unknown as CanvasRenderingContext2D,
+        drawImageCalls: stub.drawImageCalls,
+    };
 };
 
 /** Плоский рельеф, чтобы наклон корпуса не влиял на позицию тела. */
@@ -89,11 +165,13 @@ const flatGround = () => {
 };
 
 /** Ровный склон с заданным подъёмом на столбец — корпус получает наклонный
- *  трансформ (`slopeTank`), в котором и жила регрессия якоря флажка (ревью #579). */
+ *  трансформ (`slopeTank`), в котором и жила регрессия якоря флажка (ревью #579).
+ *  Уклон задаётся тем же `flatten` (второй аргумент), а не прямой мутацией
+ *  `ground.heights`: образец в тесте живёт дольше причины, и следующий автор
+ *  скопировал бы обход инвалидации offscreen-слоя туда, где слой уже отрисован. */
 const slopedGround = (rise = 0.35) => {
     const ground = new Ground(WIDTH, HEIGHT, createSeededRandom(1));
-    ground.flatten(100);
-    for (let x = 0; x < WIDTH; x++) ground.heights[x] = Math.round(100 + x * rise);
+    ground.flatten(100, rise);
     return ground;
 };
 
@@ -315,30 +393,10 @@ describe('Tank — вращение катков (issue #496)', () => {
     });
 });
 
-/**
- * ctx-заглушка, записывающая вызовы `ellipse` (центр тени) поверх методов
- * `makeRecordingCtx` — draw() после тени идёт обычным путём корпуса.
- */
+/** Та же заглушка, вид сбоку: живая выборка вызовов `ellipse` (центр тени). */
 const makeShadowCtx = () => {
-    const ellipseCalls: number[][] = [];
-    const base = makeRecordingCtx().ctx as unknown as Record<string, unknown>;
-    const ctx = {
-        ...base,
-        beginPath: () => undefined,
-        fill: () => undefined,
-        ellipse: (
-            x: number,
-            y: number,
-            rx: number,
-            ry: number,
-            rot: number,
-            s: number,
-            e: number,
-        ) => {
-            ellipseCalls.push([x, y, rx, ry, rot, s, e]);
-        },
-    } as unknown as CanvasRenderingContext2D;
-    return { ctx, ellipseCalls };
+    const stub = new DrawCtxStub();
+    return { ctx: stub as unknown as CanvasRenderingContext2D, ellipseCalls: stub.ellipseCalls };
 };
 
 describe('Tank.draw — тень от светила (#545)', () => {
@@ -380,65 +438,6 @@ describe('Tank.draw — тень от светила (#545)', () => {
     });
 });
 
-/** Запись одной операции рисования вместе с цветом/толщиной на момент вызова. */
-type TDrawOp = {
-    op: 'fillRect' | 'fill' | 'stroke' | 'translate' | 'rotate' | 'vertex';
-    args: number[];
-    color: string;
-    lineWidth: number;
-};
-
-/**
- * ctx-заглушка для флажка ветра (#579): пишет упорядоченный журнал операций с
- * цветом на момент вызова. Порядок важен — по нему проверяется, что древко
- * рисуется ПОВЕРХ полотнища, а вершины контура идут после поворота на угол ветра.
- */
-class FlagCtxStub {
-    fillStyle = '';
-    strokeStyle = '';
-    lineWidth = 0;
-    lineJoin = 'miter';
-    ops: TDrawOp[] = [];
-
-    private push(op: TDrawOp['op'], args: number[]) {
-        this.ops.push({
-            op,
-            args,
-            color: op === 'stroke' ? this.strokeStyle : this.fillStyle,
-            lineWidth: this.lineWidth,
-        });
-    }
-
-    save() {}
-    restore() {}
-    setTransform() {}
-    beginPath() {}
-    closePath() {}
-    drawImage() {}
-    ellipse() {}
-    translate(x: number, y: number) {
-        this.push('translate', [x, y]);
-    }
-    rotate(angle: number) {
-        this.push('rotate', [angle]);
-    }
-    moveTo(x: number, y: number) {
-        this.push('vertex', [x, y]);
-    }
-    lineTo(x: number, y: number) {
-        this.push('vertex', [x, y]);
-    }
-    fillRect(x: number, y: number, w: number, h: number) {
-        this.push('fillRect', [x, y, w, h]);
-    }
-    fill() {
-        this.push('fill', []);
-    }
-    stroke() {
-        this.push('stroke', []);
-    }
-}
-
 /** Относительная яркость hex-цвета (0..1) — грубая, для сравнения «темнее/светлее». */
 const luminance = (hex: string) => {
     const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
@@ -464,7 +463,7 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
             scale,
         );
         if (wind !== null) tank.setWindFlag(wind);
-        const stub = new FlagCtxStub();
+        const stub = new DrawCtxStub();
         tank.draw(stub as unknown as CanvasRenderingContext2D, null, flatGround());
         return { tank, ops: stub.ops };
     };
@@ -501,7 +500,7 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
         const verticesOf = (wind: number) => {
             const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON], bodyImg);
             tank.setWindFlag(wind);
-            const stub = new FlagCtxStub();
+            const stub = new DrawCtxStub();
             tank.draw(stub as unknown as CanvasRenderingContext2D, null, flatGround());
             return stub.ops.filter((o) => o.op === 'vertex').map((o) => o.args);
         };
@@ -624,7 +623,7 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
             scale,
         );
         tank.setWindFlag(WIND);
-        const stub = new FlagCtxStub();
+        const stub = new DrawCtxStub();
         tank.draw(stub as unknown as CanvasRenderingContext2D, null, slopedGround());
 
         const transformer = tank.currentTransformer;

@@ -62,10 +62,12 @@ const NOTCH_DEPTH = 0.3;
  * отличается от прямоугольника, которым флажок был раньше. Константа, а не функция:
  * `Tank.draw` зовётся каждый кадр, и правило `canvas.md` запрещает аллокации в кадре.
  *
- * Заморожен целиком — `as const` плюс `readonly` на самих точках (ревью #579):
+ * Заморожен целиком аннотацией `readonly Readonly<TCoords>[]` (ревью #579):
  * `readonly` только на массиве оставлял вершины изменяемыми (`PENNANT[0].x = 99`
- * проходил тайпчек), а канон формы читает рендер каждый кадр. Точка — общий
- * `TCoords` из `shared/model`, а не инлайн-дубль структурной формы.
+ * проходил тайпчек), а канон формы читает рендер каждый кадр. `Readonly` на самой
+ * точке это и закрывает — `as const` рядом с такой аннотацией уже ничего не
+ * добавляет. Точка — общий `TCoords` из `shared/model`, а не инлайн-дубль
+ * структурной формы.
  */
 export const WIND_FLAG_PENNANT: readonly Readonly<TCoords>[] = [
     { x: 0, y: 0 },
@@ -73,7 +75,7 @@ export const WIND_FLAG_PENNANT: readonly Readonly<TCoords>[] = [
     { x: WIND_FLAG_LENGTH * (1 - NOTCH_DEPTH), y: WIND_FLAG_THICKNESS / 2 },
     { x: WIND_FLAG_LENGTH, y: (WIND_FLAG_THICKNESS * (1 + FLY_TAPER)) / 2 },
     { x: 0, y: WIND_FLAG_THICKNESS },
-] as const;
+];
 
 /**
  * Наклон флажка (градусы) от нейтрали по силе ветра (0..3 пипа шкалы HUD,
