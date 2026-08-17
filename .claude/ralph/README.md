@@ -39,7 +39,8 @@ ralph.js (тонкий entry: проверка Node ≥24, CLI-флаги)
         → core/review.ts           (ревью PR: роутинг модели, эскалация)
         → core/deploy-check.ts     (пост-мердж верификация релиза)
         → core/exec.ts             (примитивы sh/shArgv/ghJson/log, через них идёт всё исполнение)
-        → core/worktree.ts, core/state-lock.ts, core/api-limit.ts, core/tunnel-check.ts
+        → core/worktree.ts (→ core/workspace-trust.ts: доверие дереву в конфиге Claude),
+          core/state-lock.ts, core/api-limit.ts, core/tunnel-check.ts
         → adapters/adapters-impl.ts → RalphAdapters (5 швов, см. ниже)
         → shared/ralph-util.ts, shared/side-effect-guard.ts (чистые утилиты + предохранитель #138)
     → runtime/monitor.js + monitor-panel.mts (read-only панель, отдельный процесс)

@@ -20,6 +20,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
+import { ensureWorkspaceTrusted } from './workspace-trust.ts';
+import type { TrustOutcome } from './workspace-trust.ts';
 
 type ShFn = (cmd: string) => string;
 type ShArgvFn = (file: string, args: string[]) => string;
@@ -59,6 +61,18 @@ const RALPH_WORKTREE_SUFFIX = '-ralph';
 
 function defaultWorktreeDirnameFor(repoRoot: string): string {
     return path.basename(repoRoot) + RALPH_WORKTREE_SUFFIX;
+}
+
+// #576: стоп на не сработавшем доверии. Подробную причину уже назвал workspace-trust
+// (битый JSON / нет прав / диск только на чтение) — здесь фиксируется ПОСЛЕДСТВИЕ, чтобы
+// оно было выражено в самом ensureRunnerWorktree, а не подразумевалось из того, что
+// чей-то fail сделает process.exit.
+function untrustedMessage(worktreePath: string): string {
+    return (
+        `Дерево раннера ${worktreePath} не внесено в доверенные Claude — кодер-сессия ` +
+        `в нём молча потеряла бы все permissions.allow из .claude/settings.json ` +
+        `(fail-closed; причина — строкой выше).`
+    );
 }
 
 export function createWorktreeManager(env: WorktreeEnv) {
@@ -201,6 +215,20 @@ export function createWorktreeManager(env: WorktreeEnv) {
      * `npm ci` сразу после создания: `git worktree add` линкует только git-отслеживаемые
      * файлы, `node_modules` (в .gitignore) в новом дереве нет — без установки первый же
      * чек гейта упал бы на отсутствующих зависимостях.
+     *
+     * #576: дерево ещё и ВНОСИТСЯ В ДОВЕРЕННЫЕ (trustFn) — тем же действием, что создание.
+     * Без этого кодер-сессия молча теряла все `permissions.allow` из `.claude/settings.json`
+     * («this workspace has not been trusted») и работала на дефолтной политике. Доверие
+     * ставится в ОБЕИХ ветках, а не только при создании: дерево, поднятое до этой правки
+     * (или на машине, где конфиг Claude пересоздали), иначе так и осталось бы недоверенным
+     * до следующего пересоздания worktree. Идемпотентно — уже доверенное дерево не приводит
+     * к записи файла (подробности и эмпирика ключа — в workspace-trust.ts).
+     *
+     * Исход доверия ПРОВЕРЯЕТСЯ на месте (`=== 'failed'`), а не отбрасывается в расчёте на
+     * то, что failFn внутри trustFn бросит: тип `FailFn` возвращает `unknown` и `never` не
+     * обещает, так что на не-бросающей реализации (мок, обёртка) инвариант «сбой доверия =
+     * стоп» молча стал бы fail-open. Стоп выражен здесь же, как у всех прочих отказов
+     * функции — `return failFn(...)`.
      */
     function ensureRunnerWorktree(
         worktreePath: string,
@@ -239,6 +267,10 @@ export function createWorktreeManager(env: WorktreeEnv) {
                 return execSync(getInstallCmd(), { cwd: dir, stdio: 'inherit', env: gateEnv });
             },
             markFn = writeLockMarker,
+            // #576: доверие дереву. Дефолт замкнут на logFn/failFn ЭТОГО вызова (порядок
+            // деструктуризации это позволяет) — отказ доверия попадает в тот же лог и тот
+            // же fail-closed стоп, что и остальные сбои создания дерева.
+            trustFn = (p: string) => ensureWorkspaceTrusted(p, { logFn, failFn }),
             repoRoot = process.cwd(),
         }: {
             shFn?: ShFn;
@@ -251,6 +283,7 @@ export function createWorktreeManager(env: WorktreeEnv) {
             buildGateEnvFn?: () => NodeJS.ProcessEnv;
             installFn?: (dir: string, gateEnv: NodeJS.ProcessEnv) => unknown;
             markFn?: (dir?: string) => void;
+            trustFn?: (p: string) => TrustOutcome;
             repoRoot?: string;
         } = {},
         // Возврат `unknown`, а не `string`: успех отдаёт worktreePath (string), но ветки
@@ -288,6 +321,7 @@ export function createWorktreeManager(env: WorktreeEnv) {
             }
             logFn(`🌳 Worktree раннера уже поднят: ${worktreePath}`);
             refreshFn(worktreePath, { shFn, runArgvFn, logFn });
+            if (trustFn(worktreePath) === 'failed') return failFn(untrustedMessage(worktreePath));
             return worktreePath;
         }
         if (existsFn(worktreePath)) {
@@ -314,6 +348,10 @@ export function createWorktreeManager(env: WorktreeEnv) {
         } catch (e: unknown) {
             return failFn(`git worktree add ${worktreePath} упал: ${(e as Error).message}`);
         }
+        // #576: доверие — сразу за созданием, ДО дорогого npm ci: недоверенное дерево
+        // означает сессию без permissions.allow, и узнать об этом лучше за секунду, а не
+        // за минуту установки зависимостей.
+        if (trustFn(worktreePath) === 'failed') return failFn(untrustedMessage(worktreePath));
         logFn('📦 npm ci в новом worktree (git worktree add не копирует node_modules)...');
         // Санацию env считаем ОТДЕЛЬНЫМ шагом с собственной атрибуцией (как в checksGreen):
         // битый allowlist → санировать нельзя → fail-closed, но это не «npm ci упал» (он даже

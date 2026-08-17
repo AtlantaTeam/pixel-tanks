@@ -7696,7 +7696,9 @@ describe('applySessionRequests: намерения сессии применяе
             pushEventFn: () => {},
         });
         // Замечание НЕ потеряно: место переехало в текст, раз якорем его не выразить.
-        expect(calls).toEqual(['pr-comment:55:null:e2e/a.spec.ts:119 — ⚪ [nit] протух']);
+        // ХВОСТОМ, а не префиксом: метка severity обязана остаться первым символом тела —
+        // иначе review-findings.mjs считает находку unmarked (см. докблок ступеней).
+        expect(calls).toEqual(['pr-comment:55:null:⚪ [nit] протух\n\n— место: e2e/a.spec.ts:119']);
         expect(res.failed).toBe(false);
         expect(res.applied).toBe(1);
         // Деградация громкая: молча подменённый способ доставки — «тихий дефолт».
@@ -7726,6 +7728,137 @@ describe('applySessionRequests: намерения сессии применяе
             pushEventFn: () => {},
         });
         expect(res.failed).toBe(true);
+    });
+
+    // #575: между инлайном и сводкой есть ступень, которой не было. GitHub отвергает
+    // якорь строки, если строка вне изменённых ХАНКОВ, — а замечания о ПРОПУЩЕННОМ
+    // («тут забыли погасить флаг», «комментарий рядом протух») по природе своей целятся
+    // в неизменённый код. Файл при этом в диффе есть, и место сохранимо комментарием
+    // уровня файла. Наблюдалось на PR #574: два замечания подряд ушли в сводку.
+    it('#575 строка вне ханка, файл в диффе → комментарий ФАЙЛА, а не сводка', () => {
+        const { ts, calls } = prTaskSource({
+            commentOnPullRequest: (
+                n: number,
+                input: { body: string; anchor?: { path: string; line?: number } },
+            ) => {
+                // Форж отвергает ровно якорь СТРОКИ (422), файловый принимает.
+                if (typeof input.anchor?.line === 'number') {
+                    throw new Error('gh: Validation Failed (HTTP 422)');
+                }
+                calls.push(
+                    `pr-comment:${String(n)}:${input.anchor ? `file:${input.anchor.path}` : 'null'}:${input.body}`,
+                );
+            },
+        });
+        const logFn = vi.fn();
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () =>
+                line({
+                    kind: 'pr-comment',
+                    comment: '⚪ [nit] комментарий устарел после этого PR',
+                    path: 'src/shared/config/hud.ts',
+                    line: 5,
+                }),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn,
+            pushEventFn: () => {},
+        });
+        expect(res.failed).toBe(false);
+        // Привязка к месту сохранена: комментарий уровня файла, строка — в тексте.
+        // Метка severity осталась ПЕРВЫМ символом тела (иначе находка уходит в unmarked
+        // журнала #168/#169), место — хвостом.
+        expect(calls).toEqual([
+            'pr-comment:55:file:src/shared/config/hud.ts:' +
+                '⚪ [nit] комментарий устарел после этого PR\n\n— место: src/shared/config/hud.ts:5',
+        ]);
+        const logged = logFn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).toMatch(/комментарием файла/i);
+        // Ступени различимы в логе: это НЕ «файла нет в диффе».
+        expect(logged).not.toMatch(/сводк/i);
+    });
+
+    // #575-ревью: ступень 2 пробуется на ЛЮБОЙ отказ ступени 1, а 422 «строка вне ханка» от
+    // «форж лёг» ядро не отличает. Значит и лог не имеет права выдавать диагноз за факт:
+    // печатать «строка вне изменённых ханков» при упавшем gh — ровно тот дефект (человек
+    // читает неверную причину), который #575 чинит.
+    it('#575 отказ ступени 1 НЕ по 422 (форж недоступен) → лог не выдумывает причину', () => {
+        const { ts, calls } = prTaskSource({
+            commentOnPullRequest: (n: number, input: { body: string; anchor?: unknown }) => {
+                // Ни строка, ни файл: голова PR недоступна, оба якорных вызова падают
+                // с одной и той же сетевой ошибкой.
+                if (input.anchor) throw new Error('gh: could not resolve head sha (timeout)');
+                calls.push(`pr-comment:${String(n)}:null:${input.body}`);
+            },
+        });
+        const logFn = vi.fn();
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () =>
+                line({
+                    kind: 'pr-comment',
+                    comment: '🟡 [minor] тут гонка',
+                    path: 'src/a.ts',
+                    line: 7,
+                }),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn,
+            pushEventFn: () => {},
+        });
+        expect(res.failed).toBe(false);
+        const logged = logFn.mock.calls.map((c) => String(c[0])).join('\n');
+        // Наблюдаемое — есть: обе ступени и сообщения форжа как есть.
+        expect(logged).toContain('src/a.ts:7');
+        expect(logged).toContain('could not resolve head sha (timeout)');
+        // Диагноза, которого никто не проверял, — нет.
+        expect(logged).not.toMatch(/вне изменённых ханков/i);
+        expect(logged).not.toMatch(/нет в диффе/i);
+    });
+
+    // #575, ступень 3: дно отката не сдвинулось. Файла в диффе нет вовсе — форж отвергает
+    // и файловый якорь, и замечание по-прежнему ложится сводкой.
+    it('#575 файловый якорь тоже не прошёл → сводка, и в логе обе ступени с их ошибками', () => {
+        const { ts, calls } = prTaskSource({
+            commentOnPullRequest: (n: number, input: { body: string; anchor?: unknown }) => {
+                if (input.anchor) throw new Error('gh: Validation Failed (HTTP 422)');
+                calls.push(`pr-comment:${String(n)}:null:${input.body}`);
+            },
+        });
+        const logFn = vi.fn();
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () =>
+                line({
+                    kind: 'pr-comment',
+                    comment: '⚪ [nit] протух',
+                    path: 'e2e/a.spec.ts',
+                    line: 119,
+                }),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn,
+            pushEventFn: () => {},
+        });
+        expect(res.failed).toBe(false);
+        expect(calls).toEqual(['pr-comment:55:null:⚪ [nit] протух\n\n— место: e2e/a.spec.ts:119']);
+        const logged = logFn.mock.calls.map((c) => String(c[0])).join('\n');
+        // Обе ступени названы наблюдаемо, с сообщением форжа — и ступень 3 отличима
+        // от ступени 2 тем, что замечание легло СВОДКОЙ.
+        expect(logged).toMatch(/инлайн-якорь/i);
+        expect(logged).toMatch(/комментарий файла/i);
+        expect(logged).toContain('HTTP 422');
+        expect(logged).toMatch(/сводк/i);
     });
 
     // Деградация — только для замечаний. `pr-block` несёт ВЕРДИКТ ревью: не легло —
@@ -8153,6 +8286,37 @@ describe('commentOnPr: комментарий к строке требует sha
         expect(flat).toContain(`commit_id=${'a'.repeat(40)}`);
         expect(flat).toContain('path=src/a.ts');
         expect(flat).toContain('line=7');
+    });
+
+    // #575: якорь без строки — комментарий уровня ФАЙЛА. У GitHub это тот же эндпоинт с
+    // `subject_type=file`; `line`/`side` в нём быть не должно — с ними форж ждёт строку
+    // в ханке и снова ответит 422.
+    it('#575 якорь без строки → subject_type=file, без line и side', () => {
+        const argv: string[][] = [];
+        ralph.commentOnPr(
+            42,
+            // Тело НАРОЧНО содержит `line=` — замечание ревью про код такое пишет запросто.
+            // Негативные проверки ниже идут по ЭЛЕМЕНТАМ argv, а не по склейке: склейка
+            // покраснела бы на тексте комментария, то есть не на том, что проверяет.
+            { body: '⚪ [nit] в вызове осталось line=7 — убрать', anchor: { path: 'src/a.ts' } },
+            {
+                runArgvFn: (_f: string, a: string[]) => {
+                    argv.push(a);
+                    return '';
+                },
+                ghJsonFn: () => ({ headRefOid: 'a'.repeat(40) }),
+            },
+        );
+        const a = argv[0];
+        expect(a).toContain(`repos/{owner}/{repo}/pulls/42/comments`);
+        expect(a).toContain(`commit_id=${'a'.repeat(40)}`);
+        expect(a).toContain('path=src/a.ts');
+        expect(a).toContain('subject_type=file');
+        expect(a).not.toContain('side=RIGHT');
+        // `line=` кладётся ТОЛЬКО флагом `-F` (число, а не строка) — его отсутствие и есть
+        // проверка, что параметра строки нет вовсе.
+        expect(a).not.toContain('-F');
+        expect(a.filter((x) => x.startsWith('line='))).toEqual([]);
     });
 
     it('без якоря — обычный комментарий треда, sha не запрашивается', () => {

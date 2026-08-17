@@ -430,6 +430,17 @@ export function createSourcecraftTaskSource(deps: SourcecraftTaskSourceDeps): Ta
         // которой живёт правка (проверено живым ответом площадки на комментарий к строке).
         commentOnPullRequest(prNumber: number, input: NewReviewComment): void {
             const anchor = input.anchor;
+            // #575: у ядра между инлайном и сводкой есть ступень «комментарий уровня файла»
+            // (якорь без строки). В `ShortAnchor` площадки позиция обязательна, файлового
+            // комментария как вида здесь нет — и это ОТКАЗ, а не повод положить сводкой
+            // самим: сводку кладёт ядро и пишет об этом в лог. Молчаливая подмена дала бы
+            // в логе «замечание легло комментарием файла» при фактической сводке.
+            if (anchor && anchor.line === undefined) {
+                throw new Error(
+                    `Комментарий уровня файла (${anchor.path}) площадка не поддерживает: ` +
+                        'у якоря обязательна позиция в диффе.',
+                );
+            }
             const created = api('POST', `${base}/pulls/${String(prNumber)}/comments`, {
                 body: input.body,
                 publish: true,

@@ -246,14 +246,78 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         const shFn = () => `worktree ${WT}\nHEAD abc\n`;
         const existsFn = () => true;
         const refreshFn = vi.fn();
+        const trustFn = vi.fn(() => 'already' as const);
         const result = ensureRunnerWorktree(WT, {
             shFn,
             existsFn: existsFn as never,
             refreshFn: refreshFn as never,
+            trustFn,
             repoRoot: REPO,
         });
         expect(result).toBe(WT);
         expect(refreshFn).toHaveBeenCalledTimes(1);
+    });
+
+    // #576: доверие ставится и на ПЕРЕИСПОЛЬЗОВАНИИ дерева, не только на создании — иначе
+    // дерево, поднятое до этой правки, так и осталось бы недоверенным, а кодер-сессия в нём
+    // молча теряла бы permissions.allow.
+    it('#576: уже поднятое дерево тоже вносится в доверенные', () => {
+        const { ensureRunnerWorktree } = createWorktreeManager(makeEnv());
+        const trustFn = vi.fn(() => 'written' as const);
+        ensureRunnerWorktree(WT, {
+            shFn: () => `worktree ${WT}\nHEAD abc\n`,
+            existsFn: (() => true) as never,
+            refreshFn: (() => true) as never,
+            trustFn,
+            repoRoot: REPO,
+        });
+        expect(trustFn).toHaveBeenCalledWith(WT);
+    });
+
+    // Симметрия к негативу ветки создания (ниже): именно ветка ПЕРЕИСПОЛЬЗОВАНИЯ
+    // отрабатывает на каждом старте боевой петли, и только в ней сразу за trustFn идёт
+    // `return worktreePath`. Перестань отказ доверия прорастать наружу здесь — раннер
+    // молча продолжил бы в недоверенном дереве, а тесты остались бы зелёными.
+    it('#576: доверие не удалось на ПОДНЯТОМ дереве → fail-closed, путь не возвращаем', () => {
+        const { ensureRunnerWorktree } = createWorktreeManager(makeEnv());
+        const failFn = vi.fn((msg: string) => {
+            throw new Error(msg);
+        });
+        expect(() =>
+            ensureRunnerWorktree(WT, {
+                shFn: () => `worktree ${WT}\nHEAD abc\n`,
+                existsFn: (() => true) as never,
+                refreshFn: (() => true) as never,
+                trustFn: () => 'failed' as const,
+                failFn,
+                repoRoot: REPO,
+            }),
+        ).toThrow(/не внесено в доверенные/);
+    });
+
+    // Исход `'failed'` останавливает петлю САМ, не полагаясь на то, что failFn внутри
+    // workspace-trust бросил: не-бросающая реализация fail (мок, обёртка) иначе превратила
+    // бы fail-closed в fail-open молча — раннер поехал бы ставить зависимости в дерево,
+    // сессия в котором осталась без permissions.allow.
+    it("#576: исход 'failed' без броска — стоп всё равно, npm ci не зовём", () => {
+        const { ensureRunnerWorktree } = createWorktreeManager(makeEnv());
+        const installFn = vi.fn();
+        // Мок НЕ бросает и НЕ выходит — ровно та реализация, на которой прежний код
+        // (голый вызов trustFn) поехал бы дальше как ни в чём не бывало.
+        const failFn = vi.fn((msg: string) => msg);
+        const result = ensureRunnerWorktree(WT, {
+            shFn: () => '',
+            existsFn: (() => false) as never,
+            runArgvFn: () => '',
+            addFn: () => {},
+            trustFn: () => 'failed' as const,
+            installFn,
+            failFn,
+            repoRoot: REPO,
+        });
+        expect(installFn).not.toHaveBeenCalled();
+        expect(result).not.toBe(WT);
+        expect(String(failFn.mock.calls[0][0])).toMatch(/permissions\.allow/);
     });
 
     it('зарегистрирован, но папки нет → fail-closed (ручной rm -rf)', () => {
@@ -280,13 +344,18 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         ).toThrow(/посторонней папкой/);
     });
 
-    it('свежее создание: fetch → add → npm ci (санированный env) → маркер lock', () => {
+    it('свежее создание: fetch → add → доверие → npm ci (санированный env) → маркер lock', () => {
         const { ensureRunnerWorktree } = createWorktreeManager(makeEnv());
         const shFn = () => 'worktree /root/pixel-tanks\nHEAD abc\n';
         const existsFn = () => false;
         const runArgvFn = vi.fn(() => '');
-        const addFn = vi.fn();
-        const installFn = vi.fn();
+        const order: string[] = [];
+        const addFn = vi.fn(() => void order.push('add'));
+        const trustFn = vi.fn(() => {
+            order.push('trust');
+            return 'written' as const;
+        });
+        const installFn = vi.fn(() => void order.push('install'));
         const markFn = vi.fn();
         const buildGateEnvFn = () => ({ PATH: '/sanitized' });
         const result = ensureRunnerWorktree(WT, {
@@ -294,6 +363,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
             existsFn: existsFn as never,
             runArgvFn: runArgvFn as never,
             addFn,
+            trustFn,
             installFn,
             markFn,
             buildGateEnvFn,
@@ -302,8 +372,30 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
         expect(result).toBe(WT);
         expect(runArgvFn).toHaveBeenCalledWith('git', ['fetch', 'origin', 'main']);
         expect(addFn).toHaveBeenCalledWith(WT);
+        expect(trustFn).toHaveBeenCalledWith(WT);
         expect(installFn).toHaveBeenCalledWith(WT, { PATH: '/sanitized' });
         expect(markFn).toHaveBeenCalledWith(WT);
+        // #576: доверие — тем же действием, что создание, и ДО дорогого npm ci.
+        expect(order).toEqual(['add', 'trust', 'install']);
+    });
+
+    it('#576: доверие не удалось → fail-closed, npm ci не зовём', () => {
+        const { ensureRunnerWorktree } = createWorktreeManager(makeEnv());
+        const installFn = vi.fn();
+        expect(() =>
+            ensureRunnerWorktree(WT, {
+                shFn: () => '',
+                existsFn: (() => false) as never,
+                runArgvFn: () => '',
+                addFn: () => {},
+                trustFn: () => {
+                    throw new Error('конфиг Claude не читается');
+                },
+                installFn,
+                repoRoot: REPO,
+            }),
+        ).toThrow(/конфиг Claude не читается/);
+        expect(installFn).not.toHaveBeenCalled();
     });
 
     it('git worktree add упал → fail-closed, npm ci не зовём', () => {
@@ -345,6 +437,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
                 existsFn: existsFn as never,
                 runArgvFn: () => '',
                 addFn: () => {},
+                trustFn: () => 'written' as const,
                 installFn,
                 buildGateEnvFn: () => {
                     throw new Error('allowlist битый');
@@ -373,6 +466,7 @@ describe('ensureRunnerWorktree — выделенный git worktree ранне�
                 existsFn: existsFn as never,
                 runArgvFn: () => '',
                 addFn: () => {},
+                trustFn: () => 'written' as const,
                 installFn,
                 markFn,
                 failFn,
