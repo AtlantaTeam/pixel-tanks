@@ -28,6 +28,19 @@ import { test, expect, type Page } from '@playwright/test';
  *    не бежит, CSS-анимации HUD не попадают в кадр в случайной фазе.
  * 5. **Арт публикуется после `decode()`** (`whenDecoded`, `shared/lib/canvas`):
  *    иначе тон силуэта гор кешировался пустым и горы пропадали в ~трети загрузок.
+ * 6. **Готовность проверяется, а не предполагается** (ревью #585): перед первым
+ *    кадром спека ждёт `data-sky-ready` от слоя неба и `player !== null` от
+ *    движка. Раньше здесь стоял `networkidle`, который про `decode` (он идёт уже
+ *    после сети) не знает вовсе, — недетерминизм гасила бы ретрай-петля
+ *    `toHaveScreenshot`, то есть ровно то, что запрещает `retries: 0`.
+ *
+ * ## Что в кадре
+ *
+ * СЦЕНА, а не экран: кадр обрезан по канвасу арены, HUD/палуба/подсказки закрыты
+ * маской (`MASKED_OVERLAYS`). Иначе барьер сторожил бы ещё и хром боевого экрана —
+ * слои, которые он своими не заявляет и чьи файлы не покрыты globs правила
+ * `scene-visual-baseline.md`: правка текста палубы краснила бы двенадцать тяжёлых
+ * эталонов без подсказки на причину (ревью #585).
  *
  * Кадры снимаются только в образе `node:24` — `npm run test:visual`
  * (`scripts/visual-baseline.mjs`). Запуск этой спеки на хосте даст чужую
@@ -59,35 +72,49 @@ const MAX_FRAMES = 500;
  *  живой частицей — это ещё точка удара, а не вспышка. */
 const EXPLOSION_BLOOM_FRAMES = 24;
 
-/** Сколько симуляции крутим после того, как частицы догорели: кадр «после взрыва» —
- *  воронка и осевшая земля, там и живут дефекты частичной перерисовки (#582). */
-const AFTER_EXPLOSION_MS = 800;
+/** Нажатий «стрелка влево» — поднимают ствол к −45°, лоб летит вправо к врагу.
+ *  Общее для всех пресетов: рельеф у сидов разный, но стартовый угол один. */
+const AIM_LEFT_PRESSES = 45;
+
+/** Нажатий «стрелка вниз» — сбавляют мощность, чтобы снаряд лёг в рельеф в кадре,
+ *  а не улетел за правый край (там взрыва не будет вовсе). */
+const AIM_DOWN_PRESSES = 4;
+
+/**
+ * Оверлеи, которые закрываем маской: барьер сторожит СЦЕНУ (то, что рисует канвас),
+ * а кадр — прямоугольник страницы, и HUD с палубой попадают в него поверх арены
+ * (ревью #585). Без маски правка текста палубы или подложки HUD краснила бы все
+ * двенадцать тяжёлых эталонов, причём агенту, который её делает, правило
+ * `scene-visual-baseline.md` даже не загрузилось бы: его globs — движок и арт.
+ *
+ * `arena-turn-ring` в список НЕ входит намеренно: это `inset-0` во всю арену,
+ * маска по нему стёрла бы кадр целиком. Рамка хода — часть вида сцены и остаётся
+ * под надзором.
+ */
+const MASKED_OVERLAYS = ['top-hud', 'game-hud', 'aim-hint', 'sound-hint-toast'] as const;
 
 type TSceneDebug = {
+    player: { x: number; y: number; width: number; height: number } | null;
     bulletInFlight: boolean;
     particlesAlive: boolean;
     groundFalling: boolean;
 };
 
 /**
- * Пресет = сид, дающий нужный пресет неба, и прицел, при котором выстрел долетает
- * до земли в кадре. Сиды выбраны перебором по `pickSkyPreset` (`sky-preset.ts`):
- * пресет неба — функция сида, отдельного параметра для него в бою нет.
+ * Пресет = сид, дающий нужный пресет неба. Сиды выбраны перебором по
+ * `pickSkyPreset` (`sky-preset.ts`): пресет неба — функция сида, отдельного
+ * параметра для него в бою нет. Что выбор действительно тот, проверяет
+ * `expectSkyPreset` перед первым кадром, а не докблок.
  */
 type TScenePreset = {
     id: 'day' | 'sunset' | 'night';
     seed: string;
-    /** Нажатий «стрелка влево» — поднимают ствол к −45°, лоб летит вправо к врагу. */
-    aimLeft: number;
-    /** Нажатий «стрелка вниз» — сбавляют мощность, чтобы снаряд лёг в рельеф в кадре,
-     *  а не улетел за правый край (там взрыва не будет вовсе). */
-    aimDown: number;
 };
 
 const PRESETS: readonly TScenePreset[] = [
-    { id: 'day', seed: 'vrt-day-2', aimLeft: 45, aimDown: 4 },
-    { id: 'sunset', seed: 'vrt-sunset-1', aimLeft: 45, aimDown: 4 },
-    { id: 'night', seed: 'vrt-night-9', aimLeft: 45, aimDown: 4 },
+    { id: 'day', seed: 'vrt-day-2' },
+    { id: 'sunset', seed: 'vrt-sunset-1' },
+    { id: 'night', seed: 'vrt-night-9' },
 ];
 
 /** Снимок состояния движка. Хук read-only и висит всегда, в том числе в прод-сборке. */
@@ -127,16 +154,50 @@ async function openBattle(page: Page, seed: string): Promise<void> {
     await expect(page.getByTestId('game-hud')).toBeVisible();
     // Боезапас роздан — иначе ранние нажатия уходят в no-op.
     await expect(page.getByTestId('game-hud')).toHaveAttribute('data-weapons-remaining', /[1-9]/);
-    // Весь арт сцены (небо, горы, облака, песок, спрайты танков) уже в браузере.
-    await page.waitForLoadState('networkidle');
-    await page.evaluate(() => document.fonts.ready);
+    // Небо: весь арт долетел И декодирован. Не `networkidle` (он про сеть, а
+    // `whenDecoded` резолвится уже ПОСЛЕ неё, да и сам приём помечен discouraged) —
+    // признак публикует сам слой неба, когда спрайты готовы к отрисовке.
+    await expect(page.getByTestId('sky-canvas')).toHaveAttribute('data-sky-ready', 'true');
+    // Движок: танки существуют только после `initPaint`, то есть после декода песка
+    // и спрайтов скинов. До этого кадр «старт» показал бы пустой рельеф, и спасала
+    // бы только ретрай-петля `toHaveScreenshot` — маскировка недетерминизма ровно
+    // там, где конфиг её запрещает (`retries: 0`).
+    await expect.poll(async () => (await sceneDebug(page)).player !== null).toBe(true);
+    // `document.fonts.ready` резолвится несериализуемым `FontFaceSet` — гасим
+    // значение, чтобы не зависеть от того, как его переварит сериализатор.
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+}
+
+/**
+ * Проверяет, что сид действительно дал ожидаемый пресет неба. Обязательны все три
+ * (регресс тени #571 виден ТОЛЬКО на закате), а связь сид→пресет — внутренняя
+ * деталь `pickSkyPreset`: без этой проверки правка хеша молча превратила бы
+ * «ночной» бой в дневной, человек на пересъёмке увидел бы новый вид кадров, но не
+ * то, что пресетов стало два (ревью #585).
+ */
+async function expectSkyPreset(page: Page, preset: TScenePreset): Promise<void> {
+    await expect(page.getByTestId('sky-canvas')).toHaveAttribute('data-sky-preset', preset.id);
 }
 
 /** Прицеливается и стреляет клавиатурой — тем же путём ввода, что у игрока. */
-async function aimAndFire(page: Page, preset: TScenePreset): Promise<void> {
-    for (let i = 0; i < preset.aimLeft; i++) await page.keyboard.press('ArrowLeft');
-    for (let i = 0; i < preset.aimDown; i++) await page.keyboard.press('ArrowDown');
+async function aimAndFire(page: Page): Promise<void> {
+    for (let i = 0; i < AIM_LEFT_PRESSES; i++) await page.keyboard.press('ArrowLeft');
+    for (let i = 0; i < AIM_DOWN_PRESSES; i++) await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Space');
+}
+
+/**
+ * Снимает кадр СЦЕНЫ: обрез по канвасу арены и маска на оверлеях (`MASKED_OVERLAYS`).
+ * Кадр всего вьюпорта сторожил бы заодно HUD, палубу и тосты — слои, которые барьер
+ * не заявляет своими и чьи файлы не попадают под globs его правила.
+ */
+async function expectSceneShot(page: Page, name: string): Promise<void> {
+    const clip = await page.getByTestId('game-canvas').boundingBox();
+    if (!clip) throw new Error('канвас арены не найден — снимать нечего');
+    await expect(page).toHaveScreenshot(name, {
+        clip,
+        mask: MASKED_OVERLAYS.map((testId) => page.getByTestId(testId)),
+    });
 }
 
 for (const preset of PRESETS) {
@@ -144,28 +205,31 @@ for (const preset of PRESETS) {
         test.setTimeout(180_000);
 
         await openBattle(page, preset.seed);
+        await expectSkyPreset(page, preset);
 
         await page.clock.runFor(SETTLE_MS);
-        await expect(page).toHaveScreenshot(`scene-${preset.id}-01-start.png`);
+        await expectSceneShot(page, `scene-${preset.id}-01-start.png`);
 
-        await aimAndFire(page, preset);
+        await aimAndFire(page);
 
         // Полёт: снаряд в воздухе — ждём, пока движок его заведёт, и даём трассе
         // отрисоваться, чтобы в кадр попал не только снаряд, но и хвост следа.
         await stepUntil(page, 'снаряд в полёте', (d) => d.bulletInFlight);
         await page.clock.runFor(20 * FRAME_MS);
         expect((await sceneDebug(page)).bulletInFlight).toBe(true);
-        await expect(page).toHaveScreenshot(`scene-${preset.id}-02-flight.png`);
+        await expectSceneShot(page, `scene-${preset.id}-02-flight.png`);
 
         // Взрыв: первый кадр с живыми частицами. Не долетел до земли — красный тест,
         // а не тихий кадр пустого неба под именем «explosion».
         await stepUntil(page, 'взрыв', (d) => d.particlesAlive);
         await page.clock.runFor(EXPLOSION_BLOOM_FRAMES * FRAME_MS);
-        await expect(page).toHaveScreenshot(`scene-${preset.id}-03-explosion.png`);
+        await expectSceneShot(page, `scene-${preset.id}-03-explosion.png`);
 
-        // После взрыва: частицы догорели, земля осыпалась в воронку.
+        // После взрыва: частицы догорели, земля осела в воронку. Оба условия — по
+        // состоянию движка: глухая пауза в миллисекундах привязала бы кадр к
+        // длительности осыпания в конкретном рельефе (ревью #585).
         await stepUntil(page, 'частицы догорели', (d) => !d.particlesAlive);
-        await page.clock.runFor(AFTER_EXPLOSION_MS);
-        await expect(page).toHaveScreenshot(`scene-${preset.id}-04-after.png`);
+        await stepUntil(page, 'земля осела', (d) => !d.groundFalling);
+        await expectSceneShot(page, `scene-${preset.id}-04-after.png`);
     });
 }

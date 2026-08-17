@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
 import { floor, getDevicePixelRatio, toDevicePixels, whenDecoded } from '@/shared/lib/canvas';
 import { prefersReducedMotion } from '../../lib/prefers-reduced-motion';
 import { SkyScene, type TSkyImages } from '../../lib/sky-scene';
-import type { TSkyPresetId } from '../../lib/sky-preset';
+import { pickSkyPreset, type TSkyPresetId } from '../../lib/sky-preset';
 
 /**
  * Пути арта неба (файлы в `public/art/`, коммитятся человеком — #478). Облака —
@@ -128,6 +128,19 @@ export const SkyBackground = ({
         let lastTs = 0;
         let disposed = false;
 
+        /**
+         * Признак «весь арт неба долетел и декодирован» прямо в DOM (ревью #585) —
+         * тем же приёмом, что `data-engine-mode` на игровом канвасе: e2e эталонных
+         * кадров обязан снимать сцену по состоянию, а не по `networkidle` (тот
+         * ничего не знает про `decode`, идущий уже после сети). Пишем императивно,
+         * без состояния React: атрибут — точка наблюдения для тестов, перерисовку
+         * компонента он не должен вызывать.
+         */
+        const publishReady = () => {
+            if (disposed) return;
+            canvas.dataset.skyReady = allSkyImagesLoaded() ? 'true' : 'false';
+        };
+
         const fit = () => {
             const dpr = getDevicePixelRatio();
             const rect = canvas.getBoundingClientRect();
@@ -163,10 +176,12 @@ export const SkyBackground = ({
             if (disposed) return;
             scene.markStaticDirty();
             scene.draw(ctx);
+            publishReady();
         };
         loadListeners.add(redraw);
 
         fit();
+        publishReady();
         rafId = requestAnimationFrame(frame);
 
         const observer =
@@ -187,10 +202,19 @@ export const SkyBackground = ({
         };
     }, [seed, preset, reducedMotion]);
 
+    // Пресет неба — производная сида (`pickSkyPreset`), отдельного параметра боя
+    // для него нет. Наружу его видно не было вовсе, поэтому обязательность трёх
+    // пресетов у эталонных кадров сцены держалась на слове: тронь хеш выбора — и
+    // «ночной» бой тихо стал бы дневным, а покрытие схлопнулось бы незаметно
+    // (ревью #585). Резолвим теми же функциями, что и сцена.
+    const presetId = preset ?? pickSkyPreset(seed ?? 'default').id;
+
     return (
         <canvas
             ref={canvasRef}
             aria-hidden
+            data-testid="sky-canvas"
+            data-sky-preset={presetId}
             className={`pointer-events-none block h-full w-full ${className ?? ''}`}
         />
     );
