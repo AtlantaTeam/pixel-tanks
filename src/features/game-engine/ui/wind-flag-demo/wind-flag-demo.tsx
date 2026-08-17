@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
 import { DEFAULT_TANK_SKIN_ID, loadTankSkinImages, type TTankSkinId } from '@/entities/tank-skins';
 import { GAME_ASSET_PATHS } from '../../lib/game-assets';
@@ -31,12 +31,35 @@ export type TWindFlagDemoProps = {
  * янтарного полотнища с тёмной обводкой проверяется на всех трёх пресетах — дневном
  * светлом, закатном оранжевом и ночном тёмном (критерий #579).
  */
+/**
+ * `devicePixelRatio`, который переживает СМЕНУ dpr — перенос окна на монитор с
+ * другой плотностью или зум страницы (ревью #579). Кадр демо фиксированного
+ * размера, поэтому `ResizeObserver` (приём `TankWheelDemo`) тут не сработал бы:
+ * CSS-размер канваса не меняется, меняется только плотность. Ловим её тем же
+ * `matchMedia`, что и остальные медиа-запросы движка; запрос пересоздаётся на
+ * каждом новом значении, поэтому эффект зависит от самого `dpr`.
+ */
+function useDevicePixelRatio(): number {
+    const [dpr, setDpr] = useState(getDevicePixelRatio);
+
+    useEffect(() => {
+        if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+        const mql = window.matchMedia(`(resolution: ${dpr}dppx)`);
+        const onChange = () => setDpr(getDevicePixelRatio());
+        mql.addEventListener('change', onChange);
+        return () => mql.removeEventListener('change', onChange);
+    }, [dpr]);
+
+    return dpr;
+}
+
 export function WindFlagDemo({
     wind,
     skinId = DEFAULT_TANK_SKIN_ID,
     className,
 }: TWindFlagDemoProps) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const dpr = useDevicePixelRatio();
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -47,7 +70,7 @@ export function WindFlagDemo({
 
         // Бэкинг-стор под dpr (правило `canvas.md`): CSS-размер канваса равен
         // логическому кадру, поэтому трансформ — чистый dpr, без доп. увеличения.
-        const dpr = getDevicePixelRatio();
+        // dpr приходит из `useDevicePixelRatio` — смена плотности перерисовывает кадр.
         canvas.width = toDevicePixels(width, dpr);
         canvas.height = toDevicePixels(height, dpr);
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -71,7 +94,7 @@ export function WindFlagDemo({
         return () => {
             cancelled = true;
         };
-    }, [wind, skinId]);
+    }, [wind, skinId, dpr]);
 
     return (
         <canvas

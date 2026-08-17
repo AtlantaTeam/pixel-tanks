@@ -25,13 +25,17 @@ const FORCE_CARDS = [
     { id: 'right', name: 'Ветер вправо · максимум', wind: MAX_WIND },
 ];
 
-/** Пресеты — из публичного API движка (`TSkyPresetId`), а не выписанные руками
- *  (ревью #579): появится четвёртый пресет — витрина узнает об этом от компилятора. */
-const SKY_CARDS: { id: string; name: string; preset: TSkyPresetId }[] = [
-    { id: 'day', name: 'День', preset: 'day' },
-    { id: 'sunset', name: 'Закат', preset: 'sunset' },
-    { id: 'night', name: 'Ночь', preset: 'night' },
-];
+/** Пресеты неба — `Record` по `TSkyPresetId` из публичного API движка, а не список
+ *  из трёх элементов (ревью #579). Экзостивность тут не украшение: секция заявлена
+ *  барьером читаемости флажка на ВСЕХ пресетах, и руками выписанный массив молча
+ *  не показал бы четвёртый. С `Record` пропущенный ключ — ошибка компиляции. */
+const SKY_CARD_NAMES: Record<TSkyPresetId, string> = {
+    day: 'День',
+    sunset: 'Закат',
+    night: 'Ночь',
+};
+
+const SKY_CARDS = Object.entries(SKY_CARD_NAMES) as [TSkyPresetId, string][];
 
 /** Кадр демо — ровно логический кадр движка (`WIND_FLAG_DEMO_FRAME`), не резиновый:
  *  `WindFlagDemo` рисует 1:1 с боем на арене 1280 (ревью #579), и растягивать кадр
@@ -78,15 +82,15 @@ export function WindFlagSection() {
                     Читаемость на пресетах неба
                 </h3>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                    {SKY_CARDS.map((card) => (
-                        <figure key={card.id} className="flex flex-col gap-2">
+                    {SKY_CARDS.map(([preset, name]) => (
+                        <figure key={preset} className="flex flex-col gap-2">
                             <FlagCard
-                                preset={card.preset}
+                                preset={preset}
                                 wind={MAX_WIND * 0.7}
-                                seed={`showcase-flag-sky-${card.id}`}
+                                seed={`showcase-flag-sky-${preset}`}
                             />
                             <figcaption className="text-caption font-ui text-text-muted">
-                                {card.name}
+                                {name}
                             </figcaption>
                         </figure>
                     ))}

@@ -8,9 +8,10 @@ import { extendTailwindMerge } from 'tailwind-merge';
  * относит к ЦВЕТУ текста — и `twMerge('text-text text-xs', 'text-hud')` вернул
  * бы `'text-xs text-hud'`: цвет варианта молча выброшен, размер оставлен, ровно
  * наоборот задуманному (ревью #554). Синхронность списка с `@theme` сторожит
- * тест `tw-merge.test.ts`.
+ * тест `tw-merge.test.ts` — ради него список и экспортируется; в публичный API
+ * слайса (`index.ts`) он намеренно не выведен.
  */
-const THEME_FONT_SIZES = [
+export const THEME_FONT_SIZES = [
     'display',
     'h1',
     'h2',
@@ -39,5 +40,3 @@ export const twMerge = extendTailwindMerge({
         },
     },
 });
-
-export { THEME_FONT_SIZES };

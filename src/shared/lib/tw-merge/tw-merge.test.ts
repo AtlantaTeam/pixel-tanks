@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { twMerge } from './tw-merge';
-import { THEME_FONT_SIZES } from './tw-merge';
+import { THEME_FONT_SIZES, twMerge } from './tw-merge';
 
 /** Имена кастомных размеров шрифта, объявленных в `@theme` globals.css. */
 function readThemeFontSizes(): string[] {
