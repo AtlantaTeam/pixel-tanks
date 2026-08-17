@@ -7,6 +7,9 @@ import { Ground } from './ground';
 import { Tank } from './tank';
 import { Bullet } from './bullet';
 import { WEAPON_SPECS } from './weapon-specs';
+import { pickPrecipPreset } from './precipitation';
+import { STORM_WIND_SHIFT_AFTER_SHOTS } from './weather-modifiers';
+import { windFlagRotationRad, windFlagSide } from './wind-flag';
 
 /**
  * Issue #263: разрешение попадания (звук, очки, подскок танка) стояло вне
@@ -474,5 +477,83 @@ describe('GamePlay — ветер с поправкой погоды', () => {
         // Ровно то, ради чего заведена версия формата v5: запись прошлой эпохи
         // воспроизводится с тем ветром, что был при записи, а не с сегодняшним.
         expect(windOf({ seed: SNOW_SEED, weather: false })).toBe(windOf({}));
+    });
+});
+
+/**
+ * Инвариант #550: флажок на башне своего танка показывает ТОТ ЖЕ ветер, что ячейка
+ * «Ветер» в HUD. Держат его два вызова `setWindFlag` в движке — при старте боя и при
+ * смене ветра бурей (#547), — и до этого теста ни один из них не был покрыт: все
+ * сценарии флажка звали `tank.setWindFlag` руками, минуя `GamePlay`. Убери обе строки
+ * из движка — сюита осталась бы зелёной, а в бою после бури флажок показывал бы старое
+ * направление (ревью #550/#579). Идём поэтому боевым путём, а не через танк.
+ */
+describe('GamePlay — флажок ветра следует за ветром боя (#550)', () => {
+    /** Первый сид с бурей: только у неё ветер меняется в середине боя (#547). */
+    const stormSeed = (): number => {
+        for (let seed = 1; seed < 5000; seed++) {
+            if (pickPrecipPreset(seed).id === 'sandstorm') return seed;
+        }
+        throw new Error('Не найден сид с бурей');
+    };
+
+    const makeSeededGame = (seed: number) =>
+        new GamePlay(
+            { current: null },
+            { leftTankWeapons: [WEAPON], rightTankWeapons: [WEAPON] },
+            {
+                onTankHit: vi.fn(),
+                onGameOverCheck: vi.fn(),
+                onMovesChange: vi.fn(),
+                onPowerChange: vi.fn(),
+                onBotReply: vi.fn(),
+                onTurnChange: vi.fn(),
+                onShotStart: vi.fn(),
+                onShotEnd: vi.fn(),
+            },
+            createSeededRandom(1),
+            createSeededRandom(2),
+            { fixedLogicalSize: { width: WIDTH, height: HEIGHT }, seed },
+        );
+
+    /** Флажок танка, каким его обязан видеть HUD при этом ветре. */
+    const expectFlagMatchesWind = (game: GamePlay) => {
+        expect(game.leftTank?.windFlagRotationRad).toBeCloseTo(windFlagRotationRad(game.wind), 12);
+        expect(game.leftTank?.windFlagSide).toBe(windFlagSide(game.wind));
+    };
+
+    /** Один доигранный до конца выстрел: попадание решено промахом, взрыв досчитан. */
+    const completeShot = (game: GamePlay) => {
+        const bullet = new Bullet(WIDTH, HEIGHT, game.ground!, game.leftTank!, game.rightTank!, 0);
+        bullet.isTankHit = false;
+        bullet.isHit = () => true;
+        game.bullet = bullet;
+        // explosionMaxRadius = 50 кадров, как в тестах разрешения попадания выше.
+        for (let frame = 0; frame < 51 && game.bullet; frame += 1) {
+            game.moveBullet(ctxStub);
+        }
+    };
+
+    it('в начале боя флажок выставлен по боевому ветру, а не по нулю', () => {
+        const game = makeSeededGame(stormSeed());
+        game.initPaint();
+
+        expect(game.wind).not.toBe(0);
+        expectFlagMatchesWind(game);
+    });
+
+    it('после смены ветра бурей флажок разворачивается вместе с ячейкой «Ветер»', () => {
+        vi.spyOn(getAudioEngine(), 'playSfx').mockImplementation(() => Promise.resolve());
+        const game = makeSeededGame(stormSeed());
+        game.initPaint();
+        const windBefore = game.wind;
+        const flagBefore = game.leftTank?.windFlagRotationRad;
+
+        for (let shot = 0; shot < STORM_WIND_SHIFT_AFTER_SHOTS; shot += 1) completeShot(game);
+
+        // Гвард от вырождения: не сменился ветер — тест сторожил бы «флажок не тронули».
+        expect(game.wind, 'буря обязана сменить ветер после трёх выстрелов').not.toBe(windBefore);
+        expect(game.leftTank?.windFlagRotationRad).not.toBe(flagBefore);
+        expectFlagMatchesWind(game);
     });
 });

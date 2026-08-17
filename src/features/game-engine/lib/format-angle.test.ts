@@ -37,6 +37,14 @@ describe('formatAngle', () => {
         expect(formatAngle(NaN)).toBe(0);
     });
 
+    it('бесконечность тоже даёт 0°, а не «Infinity°»', () => {
+        // Тот же класс входа и та же цепочка (`Infinity % 360` → NaN → `| 0` → 0):
+        // раз тест поставлен сторожить конкретную реализацию, пусть сторожит её
+        // целиком, а не один сентинел (ревью #457).
+        expect(formatAngle(Infinity)).toBe(0);
+        expect(formatAngle(-Infinity)).toBe(0);
+    });
+
     it('не выходит за диапазон [0, 360) на обороте в обе стороны', () => {
         for (let deg = -720; deg <= 720; deg += 1) {
             const shown = formatAngle((deg * Math.PI) / 180);

@@ -107,12 +107,10 @@ test.describe('Высота HUD на планшете (768) в бюджете', 
  * ещё не выставлен), поэтому грузим страницу без взаимодействия.
  */
 const AIM_HINT_ZONE_GAP = 10;
-const HINT_VIEWPORTS = [
-    { name: 'mobile-390', width: 390, height: 844 },
-    { name: 'tablet-768', width: 768, height: 1024 },
-    { name: 'lg-1024', width: 1024, height: 800 },
-    { name: 'desktop-1280', width: 1280, height: 800 },
-];
+/** Тот же пакет кадров, что у `VIEWPORTS` выше (ревью #557): классы подсказки и зоны
+ *  на 1920 те же, что на 1280 (`xl:`), но держать в одном файле два разных набора
+ *  кадров — способ снова получить брейкпоинт наполовину под барьером. */
+const HINT_VIEWPORTS = VIEWPORTS;
 
 for (const viewport of HINT_VIEWPORTS) {
     test.describe(`Подсказка прицеливания привязана к зоне жеста — ${viewport.name}`, () => {
