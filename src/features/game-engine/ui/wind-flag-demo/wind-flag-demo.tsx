@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { getDevicePixelRatio, toDevicePixels } from '@/shared/lib/canvas';
+import { useEffect, useRef } from 'react';
+import { toDevicePixels, useDevicePixelRatio } from '@/shared/lib/canvas';
 import { DEFAULT_TANK_SKIN_ID, loadTankSkinImages, type TTankSkinId } from '@/entities/tank-skins';
-import { GAME_ASSET_PATHS } from '../../lib/game-assets';
+import { loadSandImage } from '../../lib/game-assets';
 import { buildWindFlagScene, WIND_FLAG_DEMO_FRAME } from './build-wind-flag-scene';
 
 export type TWindFlagDemoProps = {
@@ -27,32 +27,14 @@ export type TWindFlagDemoProps = {
  * вдвое крупнее боевой — то есть ровно тот дефект, ради которого правка и делалась,
  * на витрине был не виден. Теперь пиксель витрины = пиксель боя на арене 1280.
  *
+ * Плотность экрана берётся общим `useDevicePixelRatio` (`shared/lib/canvas`) и
+ * переживает смену dpr: раз кадр заявлен мишенью визуальной регрессии, мыло от
+ * бэкинг-стора чужой плотности здесь дороже, чем в обычной карточке.
+ *
  * Небо под канвасом рисует секция витрины (`SkyBackground` слоем ниже): читаемость
  * янтарного полотнища с тёмной обводкой проверяется на всех трёх пресетах — дневном
  * светлом, закатном оранжевом и ночном тёмном (критерий #579).
  */
-/**
- * `devicePixelRatio`, который переживает СМЕНУ dpr — перенос окна на монитор с
- * другой плотностью или зум страницы (ревью #579). Кадр демо фиксированного
- * размера, поэтому `ResizeObserver` (приём `TankWheelDemo`) тут не сработал бы:
- * CSS-размер канваса не меняется, меняется только плотность. Ловим её тем же
- * `matchMedia`, что и остальные медиа-запросы движка; запрос пересоздаётся на
- * каждом новом значении, поэтому эффект зависит от самого `dpr`.
- */
-function useDevicePixelRatio(): number {
-    const [dpr, setDpr] = useState(getDevicePixelRatio);
-
-    useEffect(() => {
-        if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-        const mql = window.matchMedia(`(resolution: ${dpr}dppx)`);
-        const onChange = () => setDpr(getDevicePixelRatio());
-        mql.addEventListener('change', onChange);
-        return () => mql.removeEventListener('change', onChange);
-    }, [dpr]);
-
-    return dpr;
-}
-
 export function WindFlagDemo({
     wind,
     skinId = DEFAULT_TANK_SKIN_ID,
@@ -75,21 +57,19 @@ export function WindFlagDemo({
         canvas.height = toDevicePixels(height, dpr);
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-        const sandImg = new Image();
-        const sandLoaded = new Promise<void>((resolve) => {
-            sandImg.onload = () => resolve();
-            sandImg.onerror = () => resolve();
-        });
-        sandImg.src = GAME_ASSET_PATHS.sand;
+        // Песок — общий кешированный `Image` модуля (`loadSandImage`), а не свой на
+        // каждый кадр секции: семь карточек витрины давали семь объектов и семь
+        // декодирований одной текстуры (ревью #579).
+        void Promise.all([loadTankSkinImages(skinId), loadSandImage()]).then(
+            ([images, sandImg]) => {
+                if (cancelled) return;
+                const { ground, tank } = buildWindFlagScene({ wind, skinId, images, sandImg });
 
-        void Promise.all([loadTankSkinImages(skinId), sandLoaded]).then(([images]) => {
-            if (cancelled) return;
-            const { ground, tank } = buildWindFlagScene({ wind, skinId, images, sandImg });
-
-            ctx.clearRect(0, 0, width, height);
-            ground.draw(ctx);
-            tank.draw(ctx, null, ground);
-        });
+                ctx.clearRect(0, 0, width, height);
+                ground.draw(ctx);
+                tank.draw(ctx, null, ground);
+            },
+        );
 
         return () => {
             cancelled = true;

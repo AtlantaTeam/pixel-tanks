@@ -10,3 +10,26 @@
 export const GAME_ASSET_PATHS = {
     sand: '/game/sand.jpg',
 } as const;
+
+let sandImagePromise: Promise<HTMLImageElement> | null = null;
+
+/**
+ * Текстура песка одним общим `Image` на модуль (ревью #579) — тем же приёмом, что
+ * кеширует скины `loadTankSkinImages`.
+ *
+ * Создавать `new Image()` внутри эффекта компонента было дорого не запросами (их
+ * схлопывает HTTP-кеш), а объектами и декодированием: секция витрины рисует семь
+ * кадров, и каждый заводил свой `Image` — заново при любой смене ветра, скина или dpr.
+ *
+ * Промис резолвится и на `error`: битая текстура — не повод не нарисовать сцену,
+ * `Ground` рисует по ней заливкой (как и до кеша).
+ */
+export function loadSandImage(): Promise<HTMLImageElement> {
+    sandImagePromise ??= new Promise<HTMLImageElement>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(img);
+        img.src = GAME_ASSET_PATHS.sand;
+    });
+    return sandImagePromise;
+}
