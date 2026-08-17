@@ -86,6 +86,18 @@ describe('canonicalWorkspaceRoot — ключ доверия для линков
         );
     });
 
+    // `git init --separate-git-dir` / `core.worktree`: общий каталог зовётся не `.git`
+    // (например /gitdirs/app.git), и рабочего дерева РЯДОМ с ним нет. Отдать здесь
+    // dirname(common) значило бы внести в доверенные каталог, который никакой сессии не
+    // соответствует, — «внесено» в логе при по-прежнему отброшенных разрешениях.
+    itPosix('общий каталог не .git (separate-git-dir) → сам путь, а не угаданный корень', () => {
+        const readFileFn = fakeGitFs({
+            '/root/app-ralph/.git': 'gitdir: /gitdirs/app.git/worktrees/app-ralph\n',
+            '/gitdirs/app.git/worktrees/app-ralph/commondir': '../..\n',
+        });
+        expect(canonicalWorkspaceRoot('/root/app-ralph', { readFileFn })).toBe('/root/app-ralph');
+    });
+
     itPosix('относительный gitdir резолвится от самого worktree', () => {
         const readFileFn = fakeGitFs({
             '/root/app-ralph/.git': 'gitdir: ../app/.git/worktrees/app-ralph\n',
@@ -184,6 +196,19 @@ describe('withTrustedWorkspaces — чистое преобразование г
         expect(() => withTrustedWorkspaces(null, ['/root/app'])).toThrow(/не JSON-объект/);
     });
 
+    // Документированное поведение докблока: конфиг битый ровно в СВОЕЙ записи (обрезанный
+    // либо правленный руками ~/.claude.json) — чиним заменой своего ключа, не бросая.
+    // Без этого теста поведение можно было бы случайно поменять на бросок, не покраснив.
+    itPosix('своя запись не объект → заменяем её, чужие ключи не трогаем', () => {
+        const raw = { projects: { '/root/app': 'строка', '/root/other': { keep: 1 } } };
+        const { config, added } = withTrustedWorkspaces(raw, ['/root/app']);
+        expect((config.projects as Record<string, unknown>)['/root/app']).toEqual({
+            [TRUST_FLAG]: true,
+        });
+        expect((config.projects as Record<string, unknown>)['/root/other']).toEqual({ keep: 1 });
+        expect(added).toEqual(['/root/app']);
+    });
+
     itPosix('projects не объект → бросает', () => {
         expect(() => withTrustedWorkspaces({ projects: [] }, ['/root/app'])).toThrow(/projects/);
     });
@@ -219,7 +244,7 @@ describe('ensureWorkspaceTrusted — запись доверия и режим �
                 throw new Error(m);
             },
         });
-        expect(changed).toBe(true);
+        expect(changed).toBe('written');
         const [p, data] = writeFileFn.mock.calls[0] as [string, string];
         expect(p).toBe('/root/.claude.json');
         expect(JSON.parse(data).projects).toEqual({
@@ -248,7 +273,9 @@ describe('ensureWorkspaceTrusted — запись доверия и режим �
                 throw new Error(m);
             },
         });
-        expect(changed).toBe(false);
+        // Исход РАЗЛИЧИМ: «уже доверено» — не то же самое, что «не смогли» (прежний общий
+        // `false` делал fail-closed невыразимым у вызывающего).
+        expect(changed).toBe('already');
         expect(writeFileFn).not.toHaveBeenCalled();
         expect(logFn.mock.calls.join(' ')).toMatch(/уже доверен/);
     });
@@ -308,6 +335,23 @@ describe('ensureWorkspaceTrusted — запись доверия и режим �
                 failFn,
             }),
         ).toThrow(/не записан|EROFS/);
+    });
+
+    // Контракт исхода: даже если failFn НЕ бросает (мок, обёртка вокруг боевого fail),
+    // функция обязана вернуть 'failed' — по нему вызывающий (ensureRunnerWorktree)
+    // останавливается сам, а не надеется на чужой process.exit.
+    itPosix("сбой при не-бросающем failFn → исход 'failed', а не 'already'", () => {
+        const failFn = vi.fn(() => undefined);
+        const outcome = ensureWorkspaceTrusted('/root/app-ralph', {
+            configPath: '/root/.claude.json',
+            readFileFn: () => '{ это не json',
+            writeFileFn: vi.fn(),
+            targetsFn,
+            logFn: () => {},
+            failFn,
+        });
+        expect(outcome).toBe('failed');
+        expect(failFn).toHaveBeenCalledTimes(1);
     });
 
     // Боевой дефольт writeFileFn обязан быть под предохранителем #138: забытый в тесте

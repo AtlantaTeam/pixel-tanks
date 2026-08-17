@@ -52,6 +52,11 @@ type WriteFileFn = (p: string, data: string) => void;
 type LogFn = (msg: string) => void;
 type FailFn = (msg: string) => unknown;
 
+// Исход попытки довериться. Три значения, а не boolean: «уже доверено» и «не смогли» —
+// разные вещи для вызывающего, и слипшись в одно `false` они делали fail-closed
+// невыразимым в коде (подробности — в докблоке ensureWorkspaceTrusted).
+export type TrustOutcome = 'written' | 'already' | 'failed';
+
 // Имя флага — контракт Claude CLI, не наша выдумка: ровно его называет сам CLI в
 // сообщении «set projects[…].hasTrustDialogAccepted: true».
 export const TRUST_FLAG = 'hasTrustDialogAccepted';
@@ -101,7 +106,14 @@ export function canonicalWorkspaceRoot(
     // Линкованный worktree узнаётся по раскладке: его gitdir лежит в <common>/worktrees/<имя>.
     // Иначе это submodule (<common>/modules/<имя>) — там канонизировать нечего.
     if (path.resolve(path.dirname(gitdir)) !== path.join(common, 'worktrees')) return self;
-    return path.basename(common) === '.git' ? path.dirname(common) : common;
+    // Общий каталог зовётся не `.git` — это `git init --separate-git-dir` / `core.worktree`,
+    // где commondir указывает, например, на `/gitdirs/app.git`, и рабочего дерева РЯДОМ с
+    // ним нет вовсе. Вернуть `common` здесь значило бы внести в доверенные путь, который
+    // никакой сессии не соответствует: лог сказал бы «внесено», а разрешения по-прежнему
+    // отбрасывались бы — тихий отказ с зелёным логом, ровно тот, что модуль и закрывает.
+    // Раскладку не угадываем (принцип докблока выше) → сам путь.
+    if (path.basename(common) !== '.git') return self;
+    return path.dirname(common);
 }
 
 /**
@@ -171,9 +183,25 @@ function writeConfigFile(p: string, data: string): void {
         'Подмени writeFileFn в опциях ensureWorkspaceTrusted — это запись глобального ' +
             'конфига Claude ВНЕ репозитория.',
     );
-    const tmp = `${p}.ralph-trust.tmp`;
-    fs.writeFileSync(tmp, data, { mode: 0o600 });
-    fs.renameSync(tmp, p);
+    // Имя временного файла — с pid: на машине штатно живут два прогона (боевой prod и
+    // playground/--dry-run кодер-сессии, RUNBOOK) с общим `$HOME` и общим `~/.claude.json`.
+    // Фиксированное имя дало бы гонку, в которой один процесс пишет в файл, уже
+    // переименованный вторым, — и атомарность, ради которой temp+rename и заведён,
+    // теряется именно тогда, когда она нужна.
+    const tmp = `${p}.${String(process.pid)}.ralph-trust.tmp`;
+    try {
+        fs.writeFileSync(tmp, data, { mode: 0o600 });
+        fs.renameSync(tmp, p);
+    } catch (e: unknown) {
+        // Мусор в домашнем каталоге живёт вечно и никем не подметается: чистим за собой.
+        // Уборка — best-effort, отказ несёт исходная ошибка, а не сбой rm.
+        try {
+            fs.unlinkSync(tmp);
+        } catch {
+            /* нечего чистить либо и это не вышло — исходную ошибку не подменяем */
+        }
+        throw e;
+    }
 }
 
 /**
@@ -181,8 +209,16 @@ function writeConfigFile(p: string, data: string): void {
  * приводит к записи файла вовсе — конфиг машины принадлежит человеку, и переписывать его
  * без нужды (тем более пока рядом может идти его собственная сессия) незачем.
  *
- * Возвращает true, если запись состоялась. Любой сбой — failFn (в бою это стоп раннера
- * с сообщением в ralph.log): доверие либо есть, либо о его отсутствии известно.
+ * Любой сбой — failFn (в бою это стоп раннера с сообщением в ralph.log): доверие либо
+ * есть, либо о его отсутствии известно.
+ *
+ * Возвращает ИСХОД, а не boolean: `'written' | 'already' | 'failed'`. Прежний boolean
+ * склеивал «уже доверено» и «не смогли» в одно `false`, и весь fail-closed держался
+ * исключительно на том, что боевой `fail` из exec.ts делает `process.exit`. Тип
+ * `FailFn = (msg: string) => unknown` этого не обещает — первая же не-бросающая
+ * реализация (мок в тесте, обёртка) молча превратила бы инвариант в fail-open. Теперь
+ * вызывающий (`ensureRunnerWorktree`) различает исходы САМ и на `'failed'` останавливается
+ * своим failFn, не полагаясь на чужое поведение.
  */
 export function ensureWorkspaceTrusted(
     worktreePath: string,
@@ -201,7 +237,7 @@ export function ensureWorkspaceTrusted(
         logFn: LogFn;
         failFn: FailFn;
     },
-): boolean {
+): TrustOutcome {
     const targets = targetsFn(worktreePath);
     let raw: string | null = null;
     try {
@@ -215,7 +251,7 @@ export function ensureWorkspaceTrusted(
                     `без него дерево раннера не довериться, и кодер-сессия молча потеряет ` +
                     `permissions.allow из .claude/settings.json (fail-closed).`,
             );
-            return false;
+            return 'failed';
         }
         logFn(`🔐 ${configPath} ещё нет — создаю с доверием дереву раннера.`);
     }
@@ -229,7 +265,7 @@ export function ensureWorkspaceTrusted(
                     `${(e as Error).message}. Чинить руками — переписывать битый файл раннер ` +
                     `не станет (снесло бы аккаунт и настройки человека).`,
             );
-            return false;
+            return 'failed';
         }
     }
     let next: { config: Record<string, unknown>; added: string[] };
@@ -237,11 +273,11 @@ export function ensureWorkspaceTrusted(
         next = withTrustedWorkspaces(parsed, targets);
     } catch (e: unknown) {
         failFn(`Не могу внести дерево раннера в доверенные: ${(e as Error).message}.`);
-        return false;
+        return 'failed';
     }
     if (next.added.length === 0) {
         logFn(`🔐 Дерево раннера уже доверено (${targets.join(', ')}) — permissions.allow в силе.`);
-        return false;
+        return 'already';
     }
     try {
         writeFileFn(configPath, `${JSON.stringify(next.config, null, 2)}\n`);
@@ -250,8 +286,8 @@ export function ensureWorkspaceTrusted(
             `Флаг доверия дереву раннера не записан в ${configPath}: ${(e as Error).message} — ` +
                 `кодер-сессия работала бы без permissions.allow (fail-closed).`,
         );
-        return false;
+        return 'failed';
     }
     logFn(`🔐 Дерево раннера внесено в доверенные (${next.added.join(', ')}) → ${configPath}`);
-    return true;
+    return 'written';
 }
