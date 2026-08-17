@@ -27,6 +27,7 @@ describe('buildGameDebugSnapshot', () => {
             enemy: enemyRect,
             bulletInFlight: false,
             particlesAlive: false,
+            explosionActive: false,
             groundFalling: false,
         });
     });
@@ -39,6 +40,7 @@ describe('buildGameDebugSnapshot', () => {
             enemy: null,
             bulletInFlight: false,
             particlesAlive: false,
+            explosionActive: false,
             groundFalling: false,
         });
     });
@@ -51,6 +53,22 @@ describe('buildGameDebugSnapshot', () => {
 
     it('сдетонировавший снаряд полётом уже не считается', () => {
         expect(buildGameDebugSnapshot({ bullet: { detonated: true } }).bulletInFlight).toBe(false);
+    });
+
+    it('сдетонировавший, но живой снаряд — это растущий очаг взрыва', () => {
+        // Кадр «после взрыва» ждёт конца очага: частицы догорают раньше вспышки,
+        // и без этого флага в кадр попадала бы она, а не воронка.
+        expect(buildGameDebugSnapshot({ bullet: { detonated: true } }).explosionActive).toBe(true);
+    });
+
+    it('снаряд в полёте очагом взрыва ещё не считается', () => {
+        expect(buildGameDebugSnapshot({ bullet: { detonated: false } }).explosionActive).toBe(
+            false,
+        );
+    });
+
+    it('без снаряда очага нет — false, а не undefined', () => {
+        expect(buildGameDebugSnapshot({}).explosionActive).toBe(false);
     });
 
     it('взрыв виден по живым частицам, осыпание — по падающей земле', () => {
@@ -88,6 +106,7 @@ describe('install/uninstallGameDebugHook', () => {
             enemy: null,
             bulletInFlight: false,
             particlesAlive: false,
+            explosionActive: false,
             groundFalling: false,
         });
     });

@@ -17,6 +17,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,10 +53,27 @@ export function readProjectName(root = REPO_ROOT) {
     return slug;
 }
 
-/** Тег образа несёт версию playwright: обновили пакет — собирается новый образ,
- *  а не молча используется старый браузер. */
-export function imageTag(version, project = readProjectName()) {
-    return `${project}-visual:node24-pw${version}`;
+/**
+ * Отпечаток самого Dockerfile — вторая половина тега.
+ *
+ * Без него правка образа (сменили базу, добавили шрифты, переложили браузер) при
+ * неизменном `@playwright/test` не собирала бы ничего: `hasImage` находил старый тег
+ * и молча переиспользовал среду, которой в репозитории уже нет. Это тот же класс
+ * «зелёный барьер на непроверенном», от которого предостерегает `--skip-build`.
+ */
+export function readDockerfileFingerprint(root = REPO_ROOT) {
+    const contents = readFileSync(resolve(root, DOCKERFILE));
+    return createHash('sha256').update(contents).digest('hex').slice(0, 8);
+}
+
+/** Тег образа несёт версию playwright И отпечаток Dockerfile: обновили пакет или
+ *  правили образ — собирается новый, а не молча используется старый браузер. */
+export function imageTag(
+    version,
+    fingerprint = readDockerfileFingerprint(),
+    project = readProjectName(),
+) {
+    return `${project}-visual:node24-pw${version}-${fingerprint}`;
 }
 
 /**
@@ -63,7 +81,7 @@ export function imageTag(version, project = readProjectName()) {
  * сеть контейнера обязана быть host (внутри поднимается свой `next start`),
  * а дерево репозитория обязано быть примонтировано на запись (эталоны пишутся в него).
  */
-export function dockerRunArgs({ tag, root, command }) {
+export function dockerRunArgs({ tag, root, command, user = currentUser() }) {
     return [
         'run',
         '--rm',
@@ -71,6 +89,19 @@ export function dockerRunArgs({ tag, root, command }) {
         'host',
         '--ipc',
         'host', // без этого Chromium в контейнере падает на нехватке /dev/shm
+        // Контейнер пишет в примонтированное дерево (`.next`, `test-results`,
+        // пересnятые эталоны) — от uid запустившего, а не от root: иначе после
+        // прогона хостовый `npm run dev` падал бы на EACCES, а `git checkout`
+        // этих файлов требовал sudo (ревью #585). Работает в паре с
+        // `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` в образе: браузер в
+        // `/root/.cache` непривилегированному uid не виден.
+        ...(user ? ['--user', user] : []),
+        // HOME по умолчанию `/root` — непривилегированному uid туда не записать,
+        // а npm/npx требуют писать в кеш. Отдаём им `/tmp` внутри контейнера.
+        '--env',
+        'HOME=/tmp',
+        '--env',
+        'npm_config_cache=/tmp/.npm',
         '--volume',
         `${root}:/app`,
         '--workdir',
@@ -82,6 +113,12 @@ export function dockerRunArgs({ tag, root, command }) {
         '-lc',
         command,
     ];
+}
+
+/** `uid:gid` текущего процесса или null там, где их нет (Windows). */
+export function currentUser() {
+    if (typeof process.getuid !== 'function' || typeof process.getgid !== 'function') return null;
+    return `${process.getuid()}:${process.getgid()}`;
 }
 
 /** Команда внутри контейнера: сборка (если не отключена) + прогон визуального конфига. */
@@ -100,49 +137,78 @@ function run(cmd, args, opts = {}) {
     return res.status ?? 1;
 }
 
-function hasImage(tag) {
-    const res = spawnSync('docker', ['image', 'inspect', tag], { stdio: 'ignore' });
-    return res.status === 0;
+/** Аргументы `docker build` — вынесено, чтобы тег и `PLAYWRIGHT_VERSION` не
+ *  расходились между сборкой и запуском. */
+export function dockerBuildArgs({ tag, version }) {
+    return [
+        'build',
+        '--build-arg',
+        `PLAYWRIGHT_VERSION=${version}`,
+        '--tag',
+        tag,
+        '--file',
+        DOCKERFILE,
+        '.',
+    ];
 }
 
-function main(argv) {
+/**
+ * Вся логика прогона одним чистым сценарием поверх инжектируемых операций —
+ * ровно ради теста fail-closed веток (ревью #585).
+ *
+ * Fail-closed — главное свойство этого скрипта, но раньше под тестом были только
+ * хелперы: «нет docker → код 1, а не пропуск проверки» и «образ не собрался →
+ * ненулевой код» не проверялось ничем, хотя однажды `return 1` превратится в
+ * `return 0` и это никто не заметит.
+ *
+ * `ops` — швы наружу: наличие docker, наличие образа, сборка, запуск, вывод.
+ */
+export function runVisualBaseline(argv, ops) {
     const update = argv.includes('--update') || argv.includes('--update-snapshots');
     const skipBuild = argv.includes('--skip-build');
 
-    if (spawnSync('docker', ['--version'], { stdio: 'ignore' }).status !== 0) {
-        console.error(
+    if (!ops.hasDocker()) {
+        ops.error(
             '✗ docker недоступен. Эталонные кадры снимаются только в образе node:24 — без docker проверку не подменяем хостом.',
         );
         return 1;
     }
 
-    const version = readPlaywrightVersion();
-    const tag = imageTag(version);
+    const version = ops.readVersion();
+    const tag = ops.imageTag(version);
 
-    if (!hasImage(tag)) {
-        console.log(`▶ собираю образ ${tag} (единственный шаг, которому нужна сеть)`);
-        const built = run('docker', [
-            'build',
-            '--build-arg',
-            `PLAYWRIGHT_VERSION=${version}`,
-            '--tag',
-            tag,
-            '--file',
-            DOCKERFILE,
-            '.',
-        ]);
+    if (!ops.hasImage(tag)) {
+        ops.log(`▶ собираю образ ${tag} (единственный шаг, которому нужна сеть)`);
+        const built = ops.build({ tag, version });
         if (built !== 0) {
-            console.error('✗ образ не собрался — прогон не подменяем хостовым браузером');
+            // Возвращаем код сборки: непостроенный образ — это отказ проверки, а
+            // не её успешное отсутствие.
+            ops.error('✗ образ не собрался — прогон не подменяем хостовым браузером');
             return built;
         }
     }
 
     const command = containerCommand({ update, skipBuild });
-    console.log(`▶ ${tag}: ${command}`);
-    return run('docker', dockerRunArgs({ tag, root: REPO_ROOT, command }));
+    ops.log(`▶ ${tag}: ${command}`);
+    return ops.run({ tag, command });
+}
+
+/** Боевые реализации швов: настоящие docker и файловая система. */
+function defaultOps() {
+    return {
+        hasDocker: () => spawnSync('docker', ['--version'], { stdio: 'ignore' }).status === 0,
+        hasImage: (tag) =>
+            spawnSync('docker', ['image', 'inspect', tag], { stdio: 'ignore' }).status === 0,
+        readVersion: () => readPlaywrightVersion(),
+        imageTag: (version) => imageTag(version),
+        build: ({ tag, version }) => run('docker', dockerBuildArgs({ tag, version })),
+        run: ({ tag, command }) => run('docker', dockerRunArgs({ tag, root: REPO_ROOT, command })),
+        log: (message) => console.log(message),
+        error: (message) => console.error(message),
+    };
 }
 
 // Модуль импортируется тестом — запускаемся только как процесс.
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-    process.exit(main(process.argv.slice(2)));
+    process.exit(runVisualBaseline(process.argv.slice(2), defaultOps()));
 }

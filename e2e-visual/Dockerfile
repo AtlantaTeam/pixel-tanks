@@ -18,8 +18,17 @@ FROM node:24-bookworm
 # doesn't exist». Пин версии здесь же делает образ воспроизводимым.
 ARG PLAYWRIGHT_VERSION
 
+# Браузер кладём в общий `/ms-playwright`, а не в `/root/.cache` по умолчанию:
+# контейнер запускается от uid хостового пользователя (`--user` в
+# `scripts/visual-baseline.mjs`), чтобы `.next`, `test-results` и пересnятые
+# эталоны не оставались в рабочем дереве root-owned. Непривилегированному uid
+# `/root/.cache` не виден — «Executable doesn't exist» посреди прогона, поэтому
+# эти две правки живут только парой (ревью #585).
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 RUN test -n "$PLAYWRIGHT_VERSION" \
     && npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright \
     && rm -rf /root/.npm
 
 # Репозиторий монтируется сюда при запуске (`docker run -v`), в образ не копируется:

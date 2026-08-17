@@ -33,6 +33,13 @@ export type TGameDebugSnapshot = {
     bulletInFlight: boolean;
     /** Взрыв в кадре: живы частицы (комья земли / вспышка урона). */
     particlesAlive: boolean;
+    /**
+     * Очаг взрыва ещё растёт: снаряд сдетонировал, но объект жив и рисует вспышку
+     * (`bullet.ts`). Частицы к этому моменту могут уже догореть, поэтому кадр
+     * «после взрыва» ждёт именно этот флаг — иначе в него попадала бы вспышка,
+     * а не воронка (ревью #585).
+     */
+    explosionActive: boolean;
     /** Земля осыпается в воронку после взрыва. */
     groundFalling: boolean;
 };
@@ -62,6 +69,7 @@ export function buildGameDebugSnapshot(game: TGameDebugSource): TGameDebugSnapsh
         enemy: game.rightTank ? game.rightTank.bodyRect() : null,
         bulletInFlight: Boolean(game.bullet && !game.bullet.detonated),
         particlesAlive: Boolean(game.hasAliveParticles),
+        explosionActive: Boolean(game.bullet?.detonated),
         groundFalling: Boolean(game.ground?.isFalling),
     };
 }
