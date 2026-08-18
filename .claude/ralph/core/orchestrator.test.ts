@@ -347,9 +347,13 @@ describe('spawnClaude — фактический вызов spawn-функции
 
     it('ненулевой exit-код процесса пробрасывается как code', () => {
         spawnFn.mockReturnValue({ status: 2, stdout: '', stderr: 'boom', signal: null });
+        // #611: обычное падение сессии (status ненулевой, res.error нет) классифицируется
+        // как failureKind:'session-failed' — прежнее поведение (code/output) не меняется,
+        // структурный признак лишь называет класс отказа явно.
         expect(spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn)).toEqual({
             code: 2,
             output: '\nboom',
+            failureKind: 'session-failed',
         });
     });
 
@@ -379,7 +383,7 @@ describe('spawnClaude — фактический вызов spawn-функции
     // long") распознаётся отдельно от обычного падения сессии, и лог называет причину
     // прямо — раньше это тонуло в generic «code 1, ноль строк вывода», которое раннер
     // трактовал как «ревью не дало вердикта».
-    it('#607: спавн-ошибка E2BIG логируется отдельной строкой, называющей причину', () => {
+    it('#607/#611: спавн-ошибка E2BIG логируется отдельной строкой и несёт failureKind:arg-too-long', () => {
         const err = Object.assign(new Error('spawnSync claude E2BIG'), { code: 'E2BIG' });
         spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
         const logSpy = vi.spyOn(console, 'log');
@@ -387,6 +391,8 @@ describe('spawnClaude — фактический вызов spawn-функции
         const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
 
         expect(result.code).toBe(1);
+        expect(result.failureKind).toBe('arg-too-long');
+        expect(result.systemErrorCode).toBe('E2BIG');
         const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
         expect(logged).toMatch(/E2BIG/);
         expect(logged).not.toMatch(/не дало вердикта/);
@@ -413,6 +419,66 @@ describe('spawnClaude — фактический вызов spawn-функции
         expect(result.code).toBe(1);
         const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
         expect(logged).not.toMatch(/E2BIG|Argument list too long/);
+    });
+
+    // #611: корень трёх ночных отказов — spawnSync.error терялся целиком (только status/
+    // signal/stdout/stderr читались, res.error никогда). ENOENT/E2BIG/EACCES/ENOBUFS были
+    // неотличимы от честного `{code:1, output:'\n'}`. Классификация — НА ГРАНИЦЕ spawn (где
+    // res.error ещё доступен), не по тексту вывода.
+    it('#611: {status:null, error:{code:ENOENT}} → failureKind:runtime-unavailable, systemErrorCode:ENOENT', () => {
+        const err = Object.assign(new Error('spawnSync claude ENOENT'), { code: 'ENOENT' });
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+        const logSpy = vi.spyOn(console, 'log');
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.code).toBe(1);
+        expect(result.failureKind).toBe('runtime-unavailable');
+        expect(result.systemErrorCode).toBe('ENOENT');
+        const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).toMatch(/рантайм недоступен/);
+    });
+
+    it('#611: {status:null, error:{code:E2BIG}} → failureKind:arg-too-long, systemErrorCode:E2BIG', () => {
+        const err = Object.assign(new Error('spawnSync claude E2BIG'), { code: 'E2BIG' });
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.failureKind).toBe('arg-too-long');
+        expect(result.systemErrorCode).toBe('E2BIG');
+    });
+
+    it('#611: обычное падение сессии (status:1, есть вывод, res.error нет) → failureKind:session-failed', () => {
+        spawnFn.mockReturnValue({
+            status: 1,
+            stdout: '',
+            stderr: 'Error: тест не прошёл, ожидали 3 получили 4',
+            signal: null,
+        });
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.code).toBe(1);
+        expect(result.failureKind).toBe('session-failed');
+        expect(result.systemErrorCode).toBeUndefined();
+    });
+
+    it('#611: иная ошибка запуска (EACCES, нет прав) → failureKind:spawn-failed, systemErrorCode:EACCES', () => {
+        const err = Object.assign(new Error('spawnSync claude EACCES'), { code: 'EACCES' });
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.code).toBe(1);
+        expect(result.failureKind).toBe('spawn-failed');
+        expect(result.systemErrorCode).toBe('EACCES');
+    });
+
+    it('#611: успех (status:0) не несёт failureKind вовсе', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+        expect(result.failureKind).toBeUndefined();
     });
 });
 
@@ -886,9 +952,12 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
 
         it('ненулевой exit-код процесса пробрасывается как code; вывод — stdout+stderr', () => {
             spawnFn.mockReturnValue({ status: 2, stdout: '', stderr: 'boom', signal: null });
+            // #611: тот же класс, что у spawnClaude — обычное падение сессии без res.error
+            // классифицируется как failureKind:'session-failed'.
             expect(ralph.spawnCodex(['exec'], 1000, spawnFn)).toEqual({
                 code: 2,
                 output: '\nboom',
+                failureKind: 'session-failed',
             });
         });
 
@@ -905,6 +974,55 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             spawnFn.mockClear();
             ralph.spawnCodex(['exec'], 1000, spawnFn);
             expect('env' in spawnFn.mock.calls[0][2]).toBe(false);
+        });
+
+        // #611, критерий готовности «оба spawn-пути классифицируют одинаково»: codex-argv
+        // тоже несёт промпт позиционным элементом (buildCodexArgs) и подвержен тому же
+        // классу отказов запуска, что claude-путь до #607 — до этой правки spawnCodex не
+        // читал res.error вовсе.
+        it('#611: {status:null, error:{code:ENOENT}} → failureKind:runtime-unavailable, systemErrorCode:ENOENT', () => {
+            const err = Object.assign(new Error('spawnSync codex ENOENT'), { code: 'ENOENT' });
+            spawnFn.mockReturnValue({
+                status: null,
+                stdout: '',
+                stderr: '',
+                signal: null,
+                error: err,
+            });
+            const logSpy = vi.spyOn(console, 'log');
+
+            const result = ralph.spawnCodex(['exec'], 1000, spawnFn);
+
+            expect(result.code).toBe(1);
+            expect(result.failureKind).toBe('runtime-unavailable');
+            expect(result.systemErrorCode).toBe('ENOENT');
+            const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+            expect(logged).toMatch(/рантайм недоступен/);
+        });
+
+        it('#611: {status:null, error:{code:E2BIG}} → failureKind:arg-too-long, повторов быть не должно (стоп)', () => {
+            const err = Object.assign(new Error('spawnSync codex E2BIG'), { code: 'E2BIG' });
+            spawnFn.mockReturnValue({
+                status: null,
+                stdout: '',
+                stderr: '',
+                signal: null,
+                error: err,
+            });
+            const logSpy = vi.spyOn(console, 'log');
+
+            const result = ralph.spawnCodex(['exec'], 1000, spawnFn);
+
+            expect(result.code).toBe(1);
+            expect(result.failureKind).toBe('arg-too-long');
+            expect(result.systemErrorCode).toBe('E2BIG');
+            const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+            expect(logged).toMatch(/E2BIG/);
+        });
+
+        it('#611: успех (status:0) не несёт failureKind вовсе', () => {
+            spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+            expect(ralph.spawnCodex(['exec'], 1000, spawnFn).failureKind).toBeUndefined();
         });
     });
 
@@ -1839,6 +1957,98 @@ describe('runClaude — #606: транзиентная недоступност�
         // рантайм-недоступность.
         expect(pushEventFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn.mock.calls[0][0]).toMatch(/API-лимит/);
+    });
+});
+
+// #611: корень трёх ночных отказов — spawnSync.error терялся целиком, ENOENT/E2BIG были
+// неотличимы от честного падения сессии (code:1, output:'\n'). Здесь runClaude принимает
+// решение о повторе/стопе ПО СТРУКТУРНОМУ failureKind, а не по тексту output — так что
+// классификация не зависит от того, упоминает ли конкретное сообщение об ошибке слово
+// "ENOENT" дословно.
+describe('runClaude — #611: решение о повторе по структурному failureKind, не по тексту', () => {
+    const { runClaude } = ralph;
+
+    it('failureKind:runtime-unavailable без текстовых маркеров в output → повтор с backoff', () => {
+        // output намеренно НЕ содержит "ENOENT"/"No such file" — только структурный
+        // признак от spawnClaude/spawnCodex говорит раннеру, что это транзиент.
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValueOnce({ code: 1, output: '', failureKind: 'runtime-unavailable' })
+            .mockReturnValueOnce({ code: 0, output: 'ok' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { runtimeUnavailableRetryDelayMs: 1000 },
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(2);
+        expect(sleepFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('failureKind:arg-too-long → НИ ОДНОГО повтора, честный стоп с исходным кодом', () => {
+        // Даже если output случайно содержит слова, похожие на "рантайм недоступен" —
+        // структурный failureKind сильнее и решает раньше текстовой проверки.
+        const runClaudeOnceFn = vi.fn().mockReturnValue({
+            code: 1,
+            output: 'No such file or directory упомянуто в выводе модели',
+            failureKind: 'arg-too-long',
+        });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {},
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('failureKind:session-failed (обычный крах) → стоп без повторов, поведение прежнее', () => {
+        const runClaudeOnceFn = vi.fn().mockReturnValue({
+            code: 1,
+            output: 'Error: тест не прошёл',
+            failureKind: 'session-failed',
+        });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {},
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
     });
 });
 
