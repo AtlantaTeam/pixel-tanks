@@ -4,7 +4,7 @@ import { ENGINE_COLORS } from './engine-palette';
 import { Ground } from './ground';
 import { POWER_MAX, POWER_MIN } from './power';
 import type { TLightDirection } from './scene-light';
-import { tankShadowGeometry } from './tank-shadow';
+import { tankRedrawPaddingX, tankShadowGeometry } from './tank-shadow';
 import {
     WIND_FLAG_MIN_SCALE,
     WIND_FLAG_PENNANT,
@@ -88,6 +88,8 @@ export class Tank {
     private gunpointDeltaY: number;
     tankWidth: number;
     tankHeight: number;
+    private redrawPaddingCache = 0;
+    private redrawPaddingCacheWidth = NaN;
     private gunpointWidth: number;
     private gunpointHeight: number;
     gunpointAngle: number;
@@ -206,6 +208,24 @@ export class Tank {
         this.gunpointHeight = WORLD_UNITS.gunpointHeight * scale;
         this.gunpointX = this.x + this.gunpointDeltaX;
         this.gunpointY = this.y - this.gunpointDeltaY;
+    }
+
+    /**
+     * Горизонтальный запас зоны очистки под этот корпус (`tankRedrawPaddingX`).
+     *
+     * Считается не в кадре: `GamePlay.tankAreaRedraw` бежит и в idle, а внутри
+     * функции крутится цикл по двум направлениям света с созданием объекта геометрии
+     * на каждом — четыре аллокации в кадре на танк, чего `canvas.md` не разрешает
+     * (ревью #601). Кеш ключом на ШИРИНЕ КОРПУСА, а не сброс в `setScale`: ширина —
+     * публичное поле, и кеш, сброшенный «где-то рядом», держался бы на порядке
+     * присваиваний в чужом коде. Сверка одного числа дешевле пересчёта.
+     */
+    get redrawPaddingX(): number {
+        if (this.redrawPaddingCacheWidth !== this.tankWidth) {
+            this.redrawPaddingCacheWidth = this.tankWidth;
+            this.redrawPaddingCache = tankRedrawPaddingX(this.tankWidth);
+        }
+        return this.redrawPaddingCache;
     }
 
     /**

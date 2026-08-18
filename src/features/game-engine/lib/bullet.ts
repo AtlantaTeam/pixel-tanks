@@ -31,8 +31,10 @@ export class Bullet {
     explosionRadius: number;
     /** Базовый радиус взрыва (`WORLD_UNITS.explosionMaxRadius · scale`) — очаги считаются в его долях. */
     private baseExplosionRadius: number;
-    /** Посчитанная один раз полоса взрыва (см. `explosionRedrawRange`). */
+    /** Посчитанная полоса взрыва и вход, на котором она посчитана (см. геттер). */
     private redrawRangeCache?: TExplosionRedrawRange;
+    private redrawRangeCacheX = NaN;
+    private redrawRangeCacheRadius = NaN;
     /**
      * Тип оружия (issue #483): числа взрыва (стопы градиента, рост, кратер, очаги)
      * читаются из спеки. Дефолт — фугас (замороженный дефолт движка), поэтому
@@ -115,8 +117,6 @@ export class Bullet {
         this.radius = WORLD_UNITS.bulletRadius * scale;
         this.mass = this.radius;
         this.baseExplosionRadius = WORLD_UNITS.explosionMaxRadius * scale;
-        // Полоса взрыва выведена из базового радиуса — пересчитать при следующем чтении.
-        this.redrawRangeCache = undefined;
     }
 
     /** Центр текущего очага по X: точка попадания плюс смещение очага (кластер).
@@ -146,25 +146,30 @@ export class Bullet {
      * перерисовывает `GamePlay.explosionAreaRedraw` — одним диапазоном на всё.
      * Почему полоса одна и почему статична — в шапке `explosion-area.ts`.
      *
-     * После детонации результат неизменен (`x` заморожен в `move()`, спека и базовый
-     * радиус не меняются), поэтому считается ОДИН раз и кешируется: геттер зовётся
-     * каждый кадр взрыва, а внутри он аллоцирует объект и прогоняет габарит по всем
-     * очагам — `canvas.md` просит не аллоцировать в кадре. Кеш сбрасывает `setScale`
-     * (ресайз меняет базовый радиус). До детонации кеша нет вовсе: там `x` ещё
-     * меняется, а путь не кадровый.
+     * Геттер зовётся каждый кадр взрыва, а внутри аллоцирует объект и прогоняет
+     * габарит по всем очагам — `canvas.md` просит не аллоцировать в кадре. Поэтому
+     * результат кешируется, а ключ кеша — САМ ВХОД (`x` и базовый радиус; спека у
+     * снаряда неизменна). Ключ, а не флаг `detonated`: `x` двигает не только `move()`,
+     * его прямо присваивает `GamePlay.rescaleBullet` при ресайзе, и кеш, сброшенный
+     * «где-то рядом» (в `setScale` строкой ниже), держался бы на порядке двух строк в
+     * другом файле — невидимое условие, которое не сторожит ни тест, ни тип
+     * (ревью #601). Сверка двух чисел дешевле пересчёта и не зависит ни от чего.
      */
     get explosionRedrawRange(): TExplosionRedrawRange {
-        if (!this.detonated) return this.computeExplosionRedrawRange();
-        this.redrawRangeCache ??= this.computeExplosionRedrawRange();
+        if (
+            !this.redrawRangeCache ||
+            this.redrawRangeCacheX !== this.x ||
+            this.redrawRangeCacheRadius !== this.baseExplosionRadius
+        ) {
+            this.redrawRangeCacheX = this.x;
+            this.redrawRangeCacheRadius = this.baseExplosionRadius;
+            this.redrawRangeCache = explosionRedrawRange({
+                hitX: this.x,
+                baseRadius: this.baseExplosionRadius,
+                spec: this.spec,
+            });
+        }
         return this.redrawRangeCache;
-    }
-
-    private computeExplosionRedrawRange(): TExplosionRedrawRange {
-        return explosionRedrawRange({
-            hitX: this.x,
-            baseRadius: this.baseExplosionRadius,
-            spec: this.spec,
-        });
     }
 
     /** Максимальный радиус текущего очага (доля базового радиуса взрыва).

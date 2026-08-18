@@ -20,7 +20,7 @@ import {
 import { loadSandImage } from './game-assets';
 import { Ground } from './ground';
 import { Tank } from './tank';
-import { TANK_SHADOW_COLOR, tankRedrawPaddingX } from './tank-shadow';
+import { TANK_SHADOW_COLOR } from './tank-shadow';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
 import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
@@ -1149,10 +1149,11 @@ export class GamePlay {
     private redrawGroundUnderTanks(tanks: Tank[]) {
         tanks.forEach((tank) => {
             if (this.ctx && this.ground) {
-                // Считается ПОСЛЕ гварда: внутри крутится цикл по двум направлениям
-                // света с созданием геометрии на каждом — в кадрах, где рисовать
-                // нечем, эта работа не нужна (ревью #601).
-                const padding = tankRedrawPaddingX(tank.tankWidth);
+                // Готовое число у танка, а не расчёт в кадре: `tankRedrawPaddingX`
+                // прогоняет геометрию тени по двум направлениям света, а эта ветка
+                // бежит и в idle (ревью #601). Зависит паддинг только от ширины
+                // корпуса, поэтому пересчитывается на ресайзе, в `Tank.setScale`.
+                const padding = tank.redrawPaddingX;
                 const x = tank.x - padding;
                 const width = tank.tankWidth + padding * 2;
                 this.ctx.clearRect(x, 0, width, this.innerHeight);
