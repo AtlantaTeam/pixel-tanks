@@ -79,6 +79,22 @@ export class Ground {
      */
     private cratered: boolean[];
     isFalling = false;
+    /**
+     * Крайние столбцы, которые осыпаются прямо сейчас (`[fallingFrom … fallingTo]`,
+     * включительно; `-1`, когда осадки нет). Заполняются тем же проходом
+     * `renderLayer`, который и двигает высоты, — не отдельной формулой, которая
+     * могла бы от него отстать.
+     *
+     * Нужны точечной перерисовке (#601): `renderLayer` перестраивает слой ЦЕЛИКОМ,
+     * а `blitLayer` копирует на сцену только запрошенный диапазон. Пока кадр не
+     * просит эту полосу, шаг осадки происходит в слое, но на экран не попадает —
+     * воронка визуально замирает и прыгает на первом `fullRedraw`.
+     *
+     * Два числа, а не объект-диапазон: их читают каждый кадр, а `canvas.md` просит
+     * не аллоцировать в кадре.
+     */
+    fallingFrom = -1;
+    fallingTo = -1;
     // Статичный террейн — offscreen-слой (.claude/rules/canvas.md: «статичные
     // слои — отдельный offscreen canvas, перерисовывать только при изменении»).
     // draw() при чистом слое просто блитит закешированный битмап, не перестраивая
@@ -270,6 +286,8 @@ export class Ground {
         const ctx = this.ensureLayerCtx();
         if (!ctx) return;
         this.isFalling = false;
+        this.fallingFrom = -1;
+        this.fallingTo = -1;
         ctx.clearRect(0, 0, this.innerWidth, this.innerHeight);
         ctx.strokeStyle = this.color;
         ctx.lineWidth = 2;
@@ -278,6 +296,8 @@ export class Ground {
         for (let x = 0; x < this.innerWidth; x += 1) {
             if (typeof this.explosionHeights[x] === 'object') {
                 this.isFalling = true;
+                if (this.fallingFrom < 0) this.fallingFrom = x;
+                this.fallingTo = x;
                 const { bulletY, delta } = this.explosionHeights[x] as TExplosion;
                 const bottomY = this.innerHeight - bulletY - delta / 2;
                 if (delta) {

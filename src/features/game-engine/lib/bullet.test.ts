@@ -225,6 +225,57 @@ describe('Bullet.setScale — перемасштабирование при ре
     });
 });
 
+describe('Bullet.explosionRedrawRange — полоса взрыва считается один раз (ревью #601)', () => {
+    it('после детонации полоса не пересчитывается: тот же объект на всех кадрах взрыва', () => {
+        const { bullet } = makeBullet(-Math.PI / 4, 10, 0);
+        bullet.detonated = true;
+
+        const first = bullet.explosionRedrawRange;
+
+        // Геттер зовётся каждый кадр взрыва (`explosionAreaRedraw`), а внутри
+        // аллоцирует объект и прогоняет габарит по всем очагам — `canvas.md` просит
+        // в кадре не аллоцировать. Ссылочное равенство и есть проверка кеша.
+        expect(bullet.explosionRedrawRange).toBe(first);
+    });
+
+    it('ресайз во время взрыва сбрасывает кеш — полоса едет за новым радиусом', () => {
+        const { bullet } = makeBullet(-Math.PI / 4, 10, 0);
+        bullet.detonated = true;
+        const before = bullet.explosionRedrawRange;
+
+        bullet.setScale(1.5);
+        const after = bullet.explosionRedrawRange;
+
+        expect(after).not.toBe(before);
+        expect(after.to - after.from).toBeGreaterThan(before.to - before.from);
+    });
+
+    it('поехал `x` — поехала полоса: кеш ключом на входе, а не на флаге детонации', () => {
+        const { bullet } = makeBullet(-Math.PI / 4, 10, 0);
+        bullet.x = 400;
+        const at400 = bullet.explosionRedrawRange;
+
+        bullet.x = 500;
+
+        expect(bullet.explosionRedrawRange.from).toBe(at400.from + 100);
+    });
+
+    it('координату двигают ПОСЛЕ детонации (ресайз) — полоса всё равно догоняет', () => {
+        // `GamePlay.rescaleBullet` присваивает `bullet.x` напрямую, и `move()` этот
+        // случай не покрывает: снаряд уже заморожен. Пока кеш сбрасывался в `setScale`,
+        // корректность держалась на том, что `rescaleBullet` зовёт его ПОСЛЕДНИМ —
+        // невидимое условие в другом файле (ревью #601). Ключ на входе снимает его.
+        const { bullet } = makeBullet(-Math.PI / 4, 10, 0);
+        bullet.x = 400;
+        bullet.detonated = true;
+        const at400 = bullet.explosionRedrawRange;
+
+        bullet.x = 700;
+
+        expect(bullet.explosionRedrawRange.from).toBe(at400.from + 300);
+    });
+});
+
 describe('Bullet: типы оружия (issue #483)', () => {
     // Взрыв рисует пиксельный силуэт целыми квадратами (#542) — минимальный ctx с
     // fillRect и полями состояния, которые трогает `paintExplosionFocus`.

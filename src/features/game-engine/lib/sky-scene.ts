@@ -6,13 +6,8 @@ import {
     type TCelestialGeometry,
     type TStarInstance,
 } from './sky-celestial';
-import {
-    buildCloudField,
-    cloudSpriteWidth,
-    MOUNTAIN_HORIZON_FRAC,
-    windFactor,
-    type TCloudInstance,
-} from './cloud-field';
+import { buildCloudField, cloudSpriteWidth, windFactor, type TCloudInstance } from './cloud-field';
+import { MOUNTAIN_BAND_HEIGHT_FRAC, MOUNTAIN_HORIZON_FRAC } from './sky-horizon';
 import { computeLightDirection, edgeHighlightColor } from './scene-light';
 import { wrapOffset } from './sky-parallax';
 import {
@@ -402,10 +397,10 @@ export class SkyScene {
         if (!image || !image.width || !image.height) return;
         const tinted = this.ensureTintedMountain(image);
         const source = tinted ?? image;
-        // Силуэт дальних гор во всю ширину, низом у горизонта (~62% высоты неба).
-        // Высота — доля высоты неба (арт 1024×130 ≈ 8:1, растяжение по вертикали
-        // читается как атмосферная дымка, гор в бою всё равно касаются взглядом мельком).
-        const bandHeight = Math.round(height * 0.16);
+        // Силуэт дальних гор во всю ширину, низом у горизонта. Обе доли — из
+        // `sky-horizon.ts`: на них же стоят потолок светила и клэмп низа облака,
+        // и литерал здесь молча делал бы их докблоки неверными (ревью #601).
+        const bandHeight = Math.round(height * MOUNTAIN_BAND_HEIGHT_FRAC);
         const bottom = Math.round(height * MOUNTAIN_HORIZON_FRAC);
         const top = bottom - bandHeight;
         // Контур 1 px по обращённому к светилу склону (#545, §6): силуэт в тоне каймы

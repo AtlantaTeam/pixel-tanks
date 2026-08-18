@@ -12,11 +12,11 @@ import {
     CLOUD_SPEED_MIN,
     CLOUD_SQUASH_MIN,
     cloudSpriteWidth,
-    MOUNTAIN_HORIZON_FRAC,
     windFactor,
     Y_MAX,
     Y_MIN,
 } from './cloud-field';
+import { MOUNTAIN_HORIZON_FRAC } from './sky-horizon';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
 import { MAX_WIND } from './wind';
 

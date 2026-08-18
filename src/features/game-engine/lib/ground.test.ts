@@ -263,6 +263,61 @@ describe('Ground: offscreen-кэш террейна (.claude/rules/canvas.md)', 
         expect(layerCtxMock.beginPath).toHaveBeenCalledTimes(2);
     });
 
+    it('fallingFrom/To накрывают воронку, пока она осыпается, и гаснут после (#601)', () => {
+        const ground = new Ground(100, 100, createSeededRandom(1));
+        const destCtx = makeDestCtx();
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+
+        // До взрыва осадки нет — диапазон пуст, точечной перерисовке чистить нечего.
+        expect(ground.fallingFrom).toBe(-1);
+        expect(ground.fallingTo).toBe(-1);
+
+        ground.fall(50, 10, 5);
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+
+        // Воронка занимает [45 … 55] — диапазон обязан накрыть её целиком, иначе
+        // край воронки осыпается в слое, но не попадает на сцену.
+        expect(ground.isFalling).toBe(true);
+        expect(ground.fallingFrom).toBeLessThanOrEqual(45);
+        expect(ground.fallingTo).toBeGreaterThanOrEqual(55);
+
+        // Осадка сходит на нет за конечное число кадров, и вместе с ней — диапазон.
+        for (let frame = 0; frame < 200 && ground.isFalling; frame += 1) {
+            ground.beginFrame();
+            ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+        }
+        expect(ground.isFalling, 'воронка не осыпалась за 200 кадров').toBe(false);
+        expect(ground.fallingFrom).toBe(-1);
+        expect(ground.fallingTo).toBe(-1);
+    });
+
+    it('диапазон осадки только сужается — кадр вправе брать его от прошлого кадра', () => {
+        // На этом свойстве стоит порядок вызовов в `GamePlay.animate`: полоса берётся
+        // ДО `ground.draw` этого кадра (иначе очистка стёрла бы уже нарисованные танки),
+        // то есть диапазон прошлого кадра обязан быть надмножеством текущего.
+        const ground = new Ground(100, 100, createSeededRandom(1));
+        const destCtx = makeDestCtx();
+        ground.fall(50, 10, 8);
+        ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+
+        let prevFrom = ground.fallingFrom;
+        let prevTo = ground.fallingTo;
+        let steps = 0;
+        while (ground.isFalling && steps < 200) {
+            ground.beginFrame();
+            ground.draw(destCtx as unknown as CanvasRenderingContext2D);
+            steps += 1;
+            if (!ground.isFalling) break;
+            expect(ground.fallingFrom).toBeGreaterThanOrEqual(prevFrom);
+            expect(ground.fallingTo).toBeLessThanOrEqual(prevTo);
+            prevFrom = ground.fallingFrom;
+            prevTo = ground.fallingTo;
+        }
+        // Гвард от вырождения: осадка обязана занять несколько кадров, иначе цикл
+        // выше не проверил ни одного перехода.
+        expect(steps).toBeGreaterThan(1);
+    });
+
     it('beginFrame() помечает слой грязным, только пока isFalling', () => {
         const ground = new Ground(100, 100, createSeededRandom(1));
         const destCtx = makeDestCtx();

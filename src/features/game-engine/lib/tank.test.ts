@@ -6,6 +6,7 @@ import { EWeaponKind, type TWeapon } from '@/shared/model';
 import { ENGINE_COLORS } from './engine-palette';
 import { Ground } from './ground';
 import { drawTankWheels, Tank, wheelRotationDelta, type TTankWheelSpec } from './tank';
+import { TANK_DECOR_REDRAW_PADDING, tankRedrawPaddingX } from './tank-shadow';
 import {
     WIND_FLAG_LENGTH,
     WIND_FLAG_MIN_SCALE,
@@ -200,6 +201,29 @@ describe('Tank — масштаб мира (issue #455)', () => {
         );
         expect(tank.tankWidth).toBeCloseTo(WORLD_UNITS.tankWidth * scale, 6);
         expect(tank.tankHeight).toBeCloseTo(WORLD_UNITS.tankHeight * scale, 6);
+    });
+
+    it('redrawPaddingX — тот же паддинг, что считает tankRedrawPaddingX, но без работы в кадре', () => {
+        // Число обязано СОВПАДАТЬ с функцией, а не быть похожим: разъедутся — зона
+        // очистки снова отстанет от тени (#580).
+        const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON]);
+        expect(tank.redrawPaddingX).toBe(tankRedrawPaddingX(tank.tankWidth));
+    });
+
+    it('redrawPaddingX едет за шириной корпуса, кто бы её ни поменял', () => {
+        const tank = new Tank(200, HEIGHT - 100, WIDTH, HEIGHT, 0, [WEAPON]);
+
+        tank.setScale(WORLD_SCALE_MIN);
+        expect(tank.redrawPaddingX).toBe(tankRedrawPaddingX(tank.tankWidth));
+
+        // Ширина — публичное поле: кеш обязан следовать за ней и в обход `setScale`,
+        // иначе корректность держалась бы на порядке присваиваний в чужом коде.
+        // Корпус заведомо огромный: там паддинг перестаёт упираться в исторический
+        // запас на декор, то есть проверяется живая зависимость, а не совпадение
+        // двух констант.
+        tank.tankWidth = 1200;
+        expect(tank.redrawPaddingX).toBe(tankRedrawPaddingX(1200));
+        expect(tank.redrawPaddingX).toBeGreaterThan(TANK_DECOR_REDRAW_PADDING);
     });
 
     it('bodyRect масштабируется коэффициентом: тело поднято на tankHeight', () => {

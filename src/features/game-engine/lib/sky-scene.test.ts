@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cloudSpriteWidth, CLOUD_SCALE_MAX, MOUNTAIN_HORIZON_FRAC } from './cloud-field';
+import { cloudSpriteWidth, CLOUD_SCALE_MAX } from './cloud-field';
+import { MOUNTAIN_BAND_TOP_FRAC, MOUNTAIN_HORIZON_FRAC } from './sky-horizon';
 import { SkyScene, type TSkyImages } from './sky-scene';
 
 /**
@@ -610,6 +611,42 @@ describe('SkyScene — светило и звёзды (#519)', () => {
             scene.draw(ctx as unknown as CanvasRenderingContext2D);
             expect(ctx.arc).toHaveBeenCalled();
         }
+    });
+});
+
+describe('SkyScene — полоса гор стоит там, где обещает sky-horizon.ts', () => {
+    it('силуэт занимает [MOUNTAIN_BAND_TOP_FRAC … MOUNTAIN_HORIZON_FRAC] высоты', () => {
+        // На этот диапазон ссылаются потолок светила (`maxCelestialYFrac`) и клэмп
+        // низа облака. Пока высота полосы была литералом внутри `paintMountains`,
+        // её правка молча делала обе ссылки неверными (ревью #601).
+        const offscreenCtx = createFakeCtx();
+        const scene = new SkyScene({
+            seed: 3,
+            reducedMotion: false,
+            preset: 'day',
+            images: allImages(),
+            createCanvas: () =>
+                ({
+                    width: 0,
+                    height: 0,
+                    getContext: () => offscreenCtx,
+                }) as unknown as HTMLCanvasElement,
+        });
+        const height = 600;
+        scene.resize(800, height);
+        scene.draw(createFakeCtx() as unknown as CanvasRenderingContext2D);
+
+        // Силуэт рисуется во всю ширину сцены — по этому и отличаем его от облаков.
+        // Берём ПОСЛЕДНИЙ такой блит: перед основным силуэтом идёт контур каймы,
+        // сдвинутый на пиксель вверх (#545), и по нему полосу мерить нельзя.
+        const bands = offscreenCtx.drawImage.mock.calls.filter(
+            (call: unknown[]) => call.length === 5 && call[3] === 800,
+        );
+        const band = bands.at(-1);
+        expect(band, 'силуэт гор не блитился').toBeDefined();
+        const [, , top, , bandHeight] = band as [unknown, number, number, number, number];
+        expect(top).toBe(Math.round(height * MOUNTAIN_BAND_TOP_FRAC));
+        expect(top + bandHeight).toBe(Math.round(height * MOUNTAIN_HORIZON_FRAC));
     });
 });
 

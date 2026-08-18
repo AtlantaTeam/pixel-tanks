@@ -19,7 +19,8 @@ import {
 } from './arena-insets';
 import { loadSandImage } from './game-assets';
 import { Ground } from './ground';
-import { Tank, TANK_SHADOW_COLOR } from './tank';
+import { Tank } from './tank';
+import { TANK_SHADOW_COLOR } from './tank-shadow';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
 import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
@@ -52,6 +53,13 @@ export const PARTICLE_CAPACITY = 96;
 
 /** Запас очистки при сдвиге сцены во время тряски, CSS-пиксели. */
 const SHAKE_CLEAR_PAD = 4;
+/**
+ * Запас полосы рельефа на толщину обводки контура: `Ground.renderLayer` рисует
+ * силуэт линией шириной 2, то есть крайний столбец полосы красит и половину
+ * соседнего. Без запаса на кромке осыпающейся воронки оставалась бы линия
+ * прошлого кадра.
+ */
+const GROUND_STROKE_MARGIN = 1;
 /** Базовый интервал шага симуляции (~66 к/с). Slow-mo растягивает его. */
 const BASE_FRAME_INTERVAL_MS = 15;
 
@@ -938,11 +946,27 @@ export class GamePlay {
             (this.isFireMode && (!this.bullet || this.bullet.detonated)) ||
             this.ground.isFalling
         ) {
-            if (this.bullet) {
+            if (!this.bullet) {
+                this.fullRedraw();
+            } else if (this.bullet.detonated) {
                 this.explosionAreaRedraw(this.bullet);
                 this.tankAreaRedraw([this.leftTank, this.rightTank]);
             } else {
-                this.fullRedraw();
+                // Земля ещё осыпается от ПРОШЛОЙ воронки (осадка идёт по пикселю за
+                // кадр и тянется сотнями кадров, а `fire()` её не ждёт), но снаряд уже
+                // летит и не взрывался. Полоса взрыва к нему не относится: она считается
+                // по ПИКОВОМУ радиусу спеки (у фугаса при scale 1.5 это ±110 px) и
+                // чистилась бы каждый кадр вокруг не детонировавшего снаряда — лишняя
+                // работа и смысловой сдвиг (ревью #601). Свой прошлый прямоугольник
+                // снаряд стирает сам (`Bullet.draw`).
+                //
+                // Но саму осадку показать обязаны: `renderLayer` двигает высоты в
+                // offscreen-слое независимо от запрошенного диапазона, а на сцену
+                // попадает только то, что кто-то заблитил. Без полосы осыпающихся
+                // столбцов воронка визуально замирала бы на весь полёт следующего
+                // снаряда и прыгала на первом `fullRedraw` (ревью #601).
+                this.groundFallRedraw();
+                this.tankAreaRedraw([this.leftTank, this.rightTank]);
             }
         } else if (!this.bullet) {
             this.tankAreaRedraw([this.leftTank, this.rightTank]);
@@ -1009,24 +1033,56 @@ export class GamePlay {
         });
     }
 
+    /**
+     * Точечная перерисовка полосы под взрывом. Границы — ОДНА пара координат на всё
+     * (`bullet.explosionRedrawRange`, issue #582); чем это лечится и почему полоса
+     * статична — в шапке `explosion-area.ts`, здесь не пересказываем.
+     */
     private explosionAreaRedraw(bullet: Bullet) {
-        const padding = 5;
+        const { from, to } = bullet.explosionRedrawRange;
+        this.groundBandRedraw(from, to);
+    }
+
+    /**
+     * Перерисовывает полосу рельефа, которая осыпается прямо сейчас
+     * (`Ground.fallingFrom/To`, ревью #601). Диапазон берётся у земли — его метит
+     * тот же проход `renderLayer`, который двигает высоты, — а не считается второй
+     * формулой по координатам прошлой воронки.
+     *
+     * Зовётся ДО перерисовки танков, поэтому читает диапазон ПРОШЛОГО кадра: чистить
+     * полосу после того, как танки уже нарисованы, значило бы стереть их. Это верно
+     * потому, что набор осыпающихся столбцов только сужается (столбец уходит из него
+     * навсегда, когда досыпался) — прошлый диапазон надмножество текущего, и это
+     * свойство держит тест в `ground.test.ts`.
+     *
+     * Полоса на пиксель шире с каждой стороны: контур рельефа обводится линией
+     * шириной 2 (`lineWidth = 2` в `renderLayer`), то есть крайний столбец красит
+     * и половину соседнего.
+     */
+    private groundFallRedraw() {
+        if (!this.ground) return;
+        const { fallingFrom, fallingTo } = this.ground;
+        if (fallingFrom < 0 || fallingTo < fallingFrom) return;
+        this.groundBandRedraw(fallingFrom - GROUND_STROKE_MARGIN, fallingTo + GROUND_STROKE_MARGIN);
+    }
+
+    /**
+     * Общий примитив точечной перерисовки: стереть вертикальную полосу, положить в
+     * неё рельеф и починить призрачную трассу. Одно место на все точечные ветки
+     * кадра — расхождение очистки и блита рельефа (симптом #582) невозможно
+     * структурно, а не «поправлено на 5 пикселей».
+     */
+    private groundBandRedraw(from: number, to: number) {
         if (this.ctx && this.ground) {
-            const clearX = bullet.x - bullet.explosionRadius - padding;
-            const clearWidth = bullet.explosionRadius * 2 + padding * 2;
-            this.ctx.clearRect(clearX, 0, clearWidth, this.innerHeight);
-            this.ground.draw(
-                this.ctx,
-                bullet.x - bullet.explosionRadius - padding,
-                bullet.x + bullet.explosionRadius * 2 + padding,
-            );
+            this.ctx.clearRect(from, 0, to - from, this.innerHeight);
+            this.ground.draw(this.ctx, from, to);
             // Точечная перерисовка чистит лишь узкую вертикальную полосу — призрачная
             // трасса (issue #543), если проходит через неё, обязана быть перерисована
             // здесь же (клип по этой полосе), иначе останется дыра до следующего
             // fullRedraw. Клип же не даёт «пересветить» альфу нетронутых сегментов
             // трассы вне этой полосы (compositing без клипа удваивал бы альфу на
             // каждый кадр роста взрыва).
-            this.clippedGhostTrailRedraw(this.ctx, clearX, 0, clearWidth, this.innerHeight);
+            this.clippedGhostTrailRedraw(this.ctx, from, 0, to - from, this.innerHeight);
         }
     }
 
@@ -1087,10 +1143,23 @@ export class GamePlay {
         ctx.restore();
     }
 
+    /**
+     * Стирает и перерисовывает узкую вертикальную полосу вокруг каждого танка.
+     * Ширина полосы — НЕ константа (#580): `tankRedrawPaddingX` берёт максимум из
+     * запаса на декор корпуса (ствол, мачта флажка) и фактического вылета тени,
+     * посчитанного той же геометрией, которой тень рисуется (`tank-shadow.ts`).
+     * Пока зона была литералом `50`, увеличение тени в #571 оставляло за танком
+     * след и копило альфу под ним кадр за кадром во время осыпания земли: тень
+     * рисовалась заново поверх неочищенной предыдущей.
+     */
     private redrawGroundUnderTanks(tanks: Tank[]) {
         tanks.forEach((tank) => {
-            const padding = 50;
             if (this.ctx && this.ground) {
+                // Готовое число у танка, а не расчёт в кадре: `tankRedrawPaddingX`
+                // прогоняет геометрию тени по двум направлениям света, а эта ветка
+                // бежит и в idle (ревью #601). Танк держит его закешированным по
+                // ширине корпуса — то есть пересчитывает только на ресайзе.
+                const padding = tank.redrawPaddingX;
                 const x = tank.x - padding;
                 const width = tank.tankWidth + padding * 2;
                 this.ctx.clearRect(x, 0, width, this.innerHeight);
@@ -1140,7 +1209,15 @@ export class GamePlay {
                 this.bullet.y,
             );
         }
-        if (this.bullet.isHit(ctx)) {
+        // Детонировавший снаряд по определению «попал» — спрашивать землю второй раз
+        // незачем, и именно этот повторный вопрос подвешивал бой (ревью #601):
+        // `isHit` проверяет землю через `this.radius`, а `drawExplosion` его обнуляет,
+        // так что со второго кадра взрыва гейт закрывался. Пока `move()` работал после
+        // детонации, снаряд «дотапливался» гравитацией и гейт снова открывался; после
+        // заморозки снаряда открыть его стало нечему — вспышка застывала, воронки не
+        // было, `bullet` не сбрасывался и ход не передавался. Заодно уходит лишний
+        // `isPointInPath` по обоим танкам на каждом кадре взрыва.
+        if (this.bullet.detonated || this.bullet.isHit(ctx)) {
             // Разовая раздача попадания (урон, звук, подскок, slow-mo) — по явному
             // флагу детонации, ОДИН раз: многоочаговый кластер иначе раздал бы урон
             // и звук трижды (ловушка #483).
