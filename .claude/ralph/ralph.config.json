@@ -113,8 +113,8 @@
                 "branch": "feature/ralph-backlog"
             },
             {
-                "milestone": "Наблюдаемость ralph · Фаза 7: Research-вопросы",
-                "branch": "feature/ralph-observability"
+                "milestone": "Экран боя · Визуальные дефекты",
+                "branch": "feature/battle-visual-defects"
             }
         ]
     },
