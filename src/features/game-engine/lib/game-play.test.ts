@@ -365,54 +365,73 @@ describe('GamePlay.moveBullet — любой выстрел доигрывает
     const WINDS = [-0.05, -0.007, 0, 0.007, 0.05];
     const MAX_FRAMES = 4000;
 
-    it('перебор оружий, углов, сил и ветров — снаряд всегда сбрасывается и ход уходит', () => {
-        const hangs: string[] = [];
-        let shots = 0;
+    /**
+     * Дефолтные 5 000 мс этому перебору не хватает — не из-за зависания, а из-за
+     * объёма: 480 выстрелов × ~130 кадров = ~63 000 честных кадров движка с
+     * отрисовкой в заглушку. Голым прогоном это ~0,9 с, но `npm run test:coverage`
+     * инструментирует код (v8) и гонит файлы параллельно в воркерах — там же тело
+     * теста занимало ~4,6 с, то есть впритык к дефолту, и на загруженной машине
+     * гейта оно этот дефолт перешагивало (падение чека coverage на этой ветке).
+     * Лечим потолком времени, а не усечением перебора: перебор — и есть барьер,
+     * ужать его значит выключить проверку. 60 с — запас ×10 к худшему замеру.
+     */
+    const SWEEP_TIMEOUT_MS = 60_000;
 
-        for (const kind of Object.values(EWeaponKind)) {
-            for (const angleDeg of ANGLES_DEG) {
-                for (const power of POWERS) {
-                    for (const wind of WINDS) {
-                        shots += 1;
-                        const { gamePlay, ground, leftTank, rightTank } = makeGamePlay();
-                        const stub = new CtxStub();
-                        gamePlay.ctx = asCtx(stub);
-                        leftTank.gunpointAngle = (angleDeg * Math.PI) / 180;
-                        leftTank.power = power;
-                        const bullet = new Bullet(
-                            WIDTH,
-                            HEIGHT,
-                            ground,
-                            leftTank,
-                            rightTank,
-                            wind,
-                            WEAPON_SPECS[kind],
-                        );
-                        gamePlay.bullet = bullet;
+    it(
+        'перебор оружий, углов, сил и ветров — снаряд всегда сбрасывается и ход уходит',
+        () => {
+            const hangs: string[] = [];
+            let shots = 0;
 
-                        let frames = 0;
-                        while (gamePlay.bullet && frames < MAX_FRAMES) {
-                            gamePlay.moveBullet(asCtx(stub));
-                            frames += 1;
-                        }
-                        if (gamePlay.bullet) {
-                            hangs.push(
-                                `${kind} угол=${angleDeg} сила=${power} ветер=${wind} ` +
-                                    `детонировал=${bullet.detonated} очаг=${bullet.focusIndex}`,
+            for (const kind of Object.values(EWeaponKind)) {
+                for (const angleDeg of ANGLES_DEG) {
+                    for (const power of POWERS) {
+                        for (const wind of WINDS) {
+                            shots += 1;
+                            const { gamePlay, ground, leftTank, rightTank } = makeGamePlay();
+                            const stub = new CtxStub();
+                            gamePlay.ctx = asCtx(stub);
+                            leftTank.gunpointAngle = (angleDeg * Math.PI) / 180;
+                            leftTank.power = power;
+                            const bullet = new Bullet(
+                                WIDTH,
+                                HEIGHT,
+                                ground,
+                                leftTank,
+                                rightTank,
+                                wind,
+                                WEAPON_SPECS[kind],
                             );
+                            gamePlay.bullet = bullet;
+
+                            let frames = 0;
+                            while (gamePlay.bullet && frames < MAX_FRAMES) {
+                                gamePlay.moveBullet(asCtx(stub));
+                                frames += 1;
+                            }
+                            if (gamePlay.bullet) {
+                                hangs.push(
+                                    `${kind} угол=${angleDeg} сила=${power} ветер=${wind} ` +
+                                        `детонировал=${bullet.detonated} очаг=${bullet.focusIndex}`,
+                                );
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Гвард от вырождения: перебор обязан быть непустым, иначе «зависаний нет»
-        // означало бы «выстрелов не было».
-        expect(shots).toBe(
-            Object.values(EWeaponKind).length * ANGLES_DEG.length * POWERS.length * WINDS.length,
-        );
-        expect(hangs, 'выстрелы не доиграны — бой подвис').toEqual([]);
-    });
+            // Гвард от вырождения: перебор обязан быть непустым, иначе «зависаний нет»
+            // означало бы «выстрелов не было».
+            expect(shots).toBe(
+                Object.values(EWeaponKind).length *
+                    ANGLES_DEG.length *
+                    POWERS.length *
+                    WINDS.length,
+            );
+            expect(hangs, 'выстрелы не доиграны — бой подвис').toEqual([]);
+        },
+        SWEEP_TIMEOUT_MS,
+    );
 });
 
 /**
