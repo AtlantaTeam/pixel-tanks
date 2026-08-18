@@ -76,6 +76,13 @@ import {
     apiLimitWaitMs,
     apiLimitMessage,
 } from './api-limit.ts';
+import {
+    isRuntimeUnavailable,
+    runtimeUnavailableWaitMs,
+    runtimeUnavailableMessage,
+    runtimeUnavailableExhaustedMessage,
+    DEFAULT_RUNTIME_UNAVAILABLE_MAX_WAIT_MS,
+} from './runtime-availability.ts';
 // #369 (фаза 5): сборка адаптеров — текущие реализации пяти швов (форж/гейт/нотификатор/
 // деплой/рантайм) оформлены как интерфейсы adapters.ts и выбираются через конфиг. Ядро
 // ниже зависит ТОЛЬКО от типов-интерфейсов (RalphAdapters); конкретные модули (gate.ts,
@@ -216,6 +223,10 @@ export type RalphConfig = {
     waitOnApiLimit?: boolean;
     apiLimitGraceMin?: number;
     apiLimitFallbackWaitMin?: number;
+    // #606: бюджет и шаг backoff повторов при транзиентной недоступности рантайма (CLI
+    // автообновляется — код 127/ENOENT). Дефолты — runtime-availability.ts.
+    runtimeUnavailableMaxWaitMs?: number;
+    runtimeUnavailableRetryDelayMs?: number;
     claudeTimeoutMs?: number;
     haltBeforeDeploy?: boolean;
     runnerWorktreePath?: string;
@@ -659,8 +670,45 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // вызов (не на каждый attempt: иначе тот же кросс-провайдерный запуск повторялся
         // бы вместе с обычными повторами и жёг чужой лимит/бюджет без пользы).
         let fallbackTried = false;
+        // #606: рантайм временно недоступен (CLI автообновляется — симлинк бинаря на
+        // секунды-минуты пересоздаётся) — накопленное время УЖЕ потраченных пауз, не
+        // Date.now(): арифметика на своих же waitMs детерминирована и не требует часов
+        // в тестах (тот же приём, что счётчик attempt у API-лимита, только по сумме
+        // времени, а не числу попыток — обновление CLI не гарантирует фиксированное
+        // число ретраев).
+        let runtimeUnavailAttempt = 0;
+        let runtimeUnavailElapsedMs = 0;
         for (let attempt = 0; ; attempt++) {
             const { code, output } = runClaudeOnceFn(prompt, opts);
+            if (isRuntimeUnavailable(code, output)) {
+                const maxWaitMs = positiveIntOrDefault(
+                    cfg.runtimeUnavailableMaxWaitMs,
+                    DEFAULT_RUNTIME_UNAVAILABLE_MAX_WAIT_MS,
+                );
+                const remainingMs = maxWaitMs - runtimeUnavailElapsedMs;
+                if (remainingMs <= 0) {
+                    // Честный fail-closed стоп, но с пушем, который НАЗЫВАЕТ причину:
+                    // критерий готовности #606 требует не путать «рантайм недоступен» с
+                    // «сессия/ревью не дало вердикта» — вызывающий (шаги сдачи фазы)
+                    // логирует свой прежний generic-текст следом, этот пуш идёт первым и
+                    // остаётся в истории уведомлений как точная причина.
+                    pushEventFn(
+                        runtimeUnavailableExhaustedMessage(maxWaitMs, runtimeUnavailAttempt),
+                        cfg,
+                    );
+                    onOutput(output);
+                    return code;
+                }
+                runtimeUnavailAttempt++;
+                const waitMs = Math.min(
+                    runtimeUnavailableWaitMs(runtimeUnavailAttempt, cfg),
+                    remainingMs,
+                );
+                runtimeUnavailElapsedMs += waitMs;
+                log(runtimeUnavailableMessage(runtimeUnavailAttempt, waitMs, code));
+                sleepFn(waitMs);
+                continue;
+            }
             const limitHit = code !== 0 && API_LIMIT_RE.test(output);
             if (!limitHit) {
                 onOutput(output);

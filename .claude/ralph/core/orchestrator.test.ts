@@ -1615,6 +1615,140 @@ describe('runClaude — 4-е событие (#88): API-лимит пушит у�
     });
 });
 
+// #606: рантайм временно недоступен (CLI автообновляется, симлинк /usr/bin/claude
+// пересоздаётся) — код 127 / ENOENT / "No such file or directory" в выводе трактуется как
+// транзиент, а не отказ по существу: повтор с backoff в пределах бюджета времени, а не
+// немедленный fail-closed стоп, как раньше.
+describe('runClaude — #606: транзиентная недоступность рантайма повторяется с backoff', () => {
+    const { runClaude } = ralph;
+
+    it('код 127 → повтор с backoff, успех на N-й попытке засчитывается', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValueOnce({
+                code: 127,
+                output: '/usr/local/bin/claude: line 70: /usr/bin/claude: No such file or directory',
+            })
+            .mockReturnValueOnce({ code: 127, output: 'No such file or directory' })
+            .mockReturnValueOnce({ code: 0, output: 'ok' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            { model: 'sonnet' },
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { runtimeUnavailableRetryDelayMs: 1000 },
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(3);
+        expect(sleepFn).toHaveBeenCalledTimes(2);
+        expect(sleepFn.mock.calls[0][0]).toBe(1000); // попытка 1: база × 1
+        expect(sleepFn.mock.calls[1][0]).toBe(2000); // попытка 2: база × 2
+        // Короткие промежуточные повторы не пушатся — пуш зовётся только на честном
+        // исчерпании бюджета (см. следующий тест).
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('ненулевой код с обычным выводом модели → стоп без повторов, как раньше', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValue({ code: 1, output: 'Error: тест не прошёл' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {},
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('предел по времени исчерпан → честный fail-closed стоп с пушем, называющим причину', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValue({ code: 127, output: 'No such file or directory' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {
+                    // Бюджет крошечный и делится нацело базой backoff — детерминированное
+                    // число попыток без хрупкой арифметики по реальным дефолтам (5 мин/10с).
+                    runtimeUnavailableMaxWaitMs: 3000,
+                    runtimeUnavailableRetryDelayMs: 1000,
+                },
+            },
+        );
+
+        expect(code).toBe(127);
+        // Попытка 1 ждёт 1000мс (elapsed 1000), попытка 2 ждёт min(2000, 2000)=2000
+        // (elapsed 3000 == бюджет) → на попытке 3 remainingMs <= 0 → стоп.
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(3);
+        expect(sleepFn).toHaveBeenCalledTimes(2);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        const [msg, cfgArg] = pushEventFn.mock.calls[0];
+        expect(msg).toMatch(/рантайм недоступен/);
+        expect(msg).not.toMatch(/вердикт/);
+        expect(cfgArg).toEqual({
+            runtimeUnavailableMaxWaitMs: 3000,
+            runtimeUnavailableRetryDelayMs: 1000,
+        });
+    });
+
+    it('API-лимит и рантайм-недоступность не путаются: маркер лимита не ретраится этой веткой', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValueOnce({ code: 1, output: "You've hit your session limit · resets 11am" })
+            .mockReturnValueOnce({ code: 0, output: 'ok' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { apiLimitMaxWaits: 3, apiLimitGraceMin: 0 },
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(2);
+        // Пуш пришёл через штатную ветку API-лимита (текст "API-лимит"), не через
+        // рантайм-недоступность.
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/API-лимит/);
+    });
+});
+
 describe('preflight — валидация конфига/среды и подготовка контекста (#99)', () => {
     // preflight принимает cfg и зависимости с побочками (sh/fail/log/загрузка state/
     // свип milestones/проверка мерджа) параметрами — как ensureTunnel. Инжектируем их,
