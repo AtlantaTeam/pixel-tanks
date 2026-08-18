@@ -32,18 +32,73 @@ beforeAll(() => {
     }
 });
 
-// drawExplosion рисует градиент и дугу, draw() — прямоугольник снаряда:
-// содержимое не проверяем, важно только что вызовы не падают.
-const ctxStub = {
-    createRadialGradient: () => ({ addColorStop: () => undefined }),
-    beginPath: () => undefined,
-    arc: () => undefined,
-    fill: () => undefined,
-    closePath: () => undefined,
-    clearRect: () => undefined,
-    fillRect: () => undefined,
-    fillStyle: '',
-} as unknown as CanvasRenderingContext2D;
+/**
+ * Единственная ctx-заглушка файла: no-op на всё, что зовёт отрисовка, плюс журналы
+ * тех вызовов, которые читают тесты точечной перерисовки — `clearRect` (зона
+ * очистки), `fillRect` (пиксели вспышки и снаряда), `ellipse` (тень танка).
+ *
+ * Одна на файл намеренно: раньше их было три почти одинаковых, и любой новый вызов
+ * канваса в движке пришлось бы дописывать в каждую (ревью #601). Проба контура
+ * (`isPointInPath`) всегда отрицательная — попадание по танку сценарии задают явно
+ * (`isTankHit`), а не через геометрию заглушки.
+ */
+class CtxStub {
+    fillStyle = '';
+    strokeStyle = '';
+    lineWidth = 0;
+    lineJoin = 'miter';
+    globalAlpha = 1;
+    imageSmoothingEnabled = true;
+    /** Журнал `clearRect`: [x, y, width, height]. */
+    clearRects: number[][] = [];
+    /** Журнал `fillRect`: [x, y, width, height]. */
+    fillRects: number[][] = [];
+    /** Журнал `ellipse`: [x, y, radiusX, radiusY]. */
+    ellipses: number[][] = [];
+
+    clearRect(x: number, y: number, w: number, h: number) {
+        this.clearRects.push([x, y, w, h]);
+    }
+    fillRect(x: number, y: number, w: number, h: number) {
+        this.fillRects.push([x, y, w, h]);
+    }
+    ellipse(x: number, y: number, rx: number, ry: number) {
+        this.ellipses.push([x, y, rx, ry]);
+    }
+    isPointInPath() {
+        return false;
+    }
+    save() {}
+    restore() {}
+    setTransform() {}
+    beginPath() {}
+    closePath() {}
+    rect() {}
+    clip() {}
+    moveTo() {}
+    lineTo() {}
+    arc() {}
+    translate() {}
+    rotate() {}
+    fill() {}
+    stroke() {}
+    drawImage() {}
+    setLineDash() {}
+    getTransform() {
+        return new DOMMatrix();
+    }
+    createPattern() {
+        return null;
+    }
+    createRadialGradient() {
+        return { addColorStop: () => undefined };
+    }
+}
+
+/** Заглушка в типе канваса — каст в одном месте, а не на каждом вызове. */
+const asCtx = (stub: CtxStub) => stub as unknown as CanvasRenderingContext2D;
+
+const ctxStub = asCtx(new CtxStub());
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -203,6 +258,89 @@ describe('GamePlay.moveBullet — многоочаговый кластер (л�
         expect(playSfx.mock.calls.filter((c) => c[0] === 'miss')).toHaveLength(1);
         // Три очага — три кратера.
         expect(fall).toHaveBeenCalledTimes(3);
+    });
+});
+
+/**
+ * Взрыв обязан доигрываться до конца хода (ревью PR #601). Гейт кадра взрыва в
+ * `moveBullet` спрашивал только `isHit(ctx)`, а `drawExplosion` обнуляет `radius`,
+ * по которому этот же `isHit` и проверяет землю. Пока `move()` работал после
+ * детонации, снаряд «дотапливался» гравитацией и гейт снова открывался; заморозка
+ * снаряда (она чинит дрейф полосы очистки) этот механизм убрала — и бой вставал
+ * навсегда: вспышка застывала, воронки не было, ход не передавался.
+ *
+ * Тесты гоняют ПУБЛИЧНЫЙ `moveBullet`, а не руками собранную последовательность
+ * `move()` + `drawExplosion`: именно обход гейта и позволил зависанию проехать
+ * мимо зелёного набора.
+ */
+describe('GamePlay.moveBullet — взрыв доигрывается до конца (ревью #601)', () => {
+    /**
+     * Снаряд ровно в кадре попадания: центр ВЫШЕ поверхности на свой радиус —
+     * типичный случай (`isHit` срабатывает, когда до земли осталось не больше
+     * радиуса). Именно на нём гейт и закрывался навсегда.
+     */
+    const setupImpact = (wind: number, kind = EWeaponKind.HighExplosive) => {
+        const { gamePlay, ground, leftTank, rightTank } = makeGamePlay();
+        const stub = new CtxStub();
+        gamePlay.ctx = asCtx(stub);
+        const bullet = new Bullet(
+            WIDTH,
+            HEIGHT,
+            ground,
+            leftTank,
+            rightTank,
+            wind,
+            WEAPON_SPECS[kind],
+        );
+        const hitX = Math.floor(WIDTH / 2);
+        bullet.x = hitX;
+        // Порог попадания по земле — `innerHeight − y − radius ≤ heights[x]`, то есть
+        // низ снаряда коснулся поверхности, а ЦЕНТР остался выше неё на радиус. Именно
+        // на таком кадре гейт `isHit` закрывался навсегда, когда `drawExplosion`
+        // обнулял радиус. Скорость обнулена: снаряд детонирует в этой самой точке.
+        bullet.y = HEIGHT - ground.heights[hitX] - bullet.radius;
+        bullet.dx = 0;
+        bullet.dy = 0;
+        gamePlay.bullet = bullet;
+        return { gamePlay, ground, bullet, hitX, stub };
+    };
+
+    it.each([
+        ['фугас', EWeaponKind.HighExplosive],
+        ['кластер', EWeaponKind.Cluster],
+    ])('%s: взрыв над поверхностью роет воронку и передаёт ход', (_name, kind) => {
+        const { gamePlay, ground, bullet, stub } = setupImpact(0, kind);
+        const fall = vi.spyOn(ground, 'fall');
+        const spec = WEAPON_SPECS[kind];
+
+        let frames = 0;
+        while (gamePlay.bullet && frames < 1500) {
+            gamePlay.moveBullet(asCtx(stub));
+            frames += 1;
+        }
+
+        expect(frames, 'бой не доиграл выстрел за 1500 кадров').toBeLessThan(1500);
+        expect(gamePlay.bullet, 'снаряд не сброшен — ход не передан').toBeUndefined();
+        expect(bullet.isFinished).toBe(true);
+        expect(bullet.focusIndex).toBe(spec.foci.length);
+        expect(fall, 'воронка не вырыта').toHaveBeenCalledTimes(spec.foci.length);
+    });
+
+    it('воронка ложится в точку детонации, а не уезжает по ветру за время взрыва', () => {
+        const { gamePlay, ground, bullet, stub } = setupImpact(-0.02);
+        const fall = vi.spyOn(ground, 'fall');
+        let detonationX: number | undefined;
+
+        for (let frame = 0; frame < 1500 && gamePlay.bullet; frame += 1) {
+            gamePlay.moveBullet(asCtx(stub));
+            if (detonationX === undefined && bullet.detonated) detonationX = bullet.x;
+        }
+
+        // Гвард: снаряд обязан был детонировать, иначе сравнивать нечего.
+        expect(detonationX).toBeDefined();
+        expect(fall).toHaveBeenCalledTimes(1);
+        const [craterX] = fall.mock.calls[0];
+        expect(craterX, 'воронка уехала от точки детонации').toBe(detonationX);
     });
 });
 
@@ -567,48 +705,6 @@ describe('GamePlay — флажок ветра следует за ветром 
  * мимо зоны очистки она больше не может.
  */
 describe('GamePlay — зона очистки покрывает габарит тени танка (#580)', () => {
-    /** ctx-заглушка: журнал `clearRect` (зона очистки) и `ellipse` (тень). */
-    class RedrawCtxStub {
-        fillStyle = '';
-        strokeStyle = '';
-        lineWidth = 0;
-        lineJoin = 'miter';
-        clearRects: number[][] = [];
-        ellipses: number[][] = [];
-
-        clearRect(x: number, y: number, w: number, h: number) {
-            this.clearRects.push([x, y, w, h]);
-        }
-        ellipse(x: number, y: number, rx: number, ry: number) {
-            this.ellipses.push([x, y, rx, ry]);
-        }
-        save() {}
-        restore() {}
-        setTransform() {}
-        beginPath() {}
-        closePath() {}
-        rect() {}
-        clip() {}
-        moveTo() {}
-        lineTo() {}
-        arc() {}
-        translate() {}
-        rotate() {}
-        getTransform() {
-            return new DOMMatrix();
-        }
-        drawImage() {}
-        fillRect() {}
-        fill() {}
-        stroke() {}
-        createPattern() {
-            return null;
-        }
-        createRadialGradient() {
-            return { addColorStop: () => undefined };
-        }
-    }
-
     /** Свет у горизонта (закат) — худший случай смещения тени по горизонтали. */
     const SUNSET_LIGHT = { dx: -1, dy: 0.05 };
 
@@ -622,8 +718,8 @@ describe('GamePlay — зона очистки покрывает габарит
 
     const setupWithShadows = (lightDx: number) => {
         const { gamePlay, leftTank, rightTank } = makeGamePlay();
-        const stub = new RedrawCtxStub();
-        gamePlay.ctx = stub as unknown as CanvasRenderingContext2D;
+        const stub = new CtxStub();
+        gamePlay.ctx = asCtx(stub);
         const shadow = {
             direction: { dx: lightDx, dy: SUNSET_LIGHT.dy },
             color: 'rgba(12, 10, 8, 0.32)',
@@ -634,7 +730,7 @@ describe('GamePlay — зона очистки покрывает габарит
     };
 
     /** Полностью ли горизонтальный отрезок тени накрыт одной из очищенных полос. */
-    const coveredByClear = (stub: RedrawCtxStub, left: number, right: number) =>
+    const coveredByClear = (stub: CtxStub, left: number, right: number) =>
         stub.clearRects.some(([x, , w]) => x <= left && x + w >= right);
 
     it.each([
@@ -695,40 +791,6 @@ describe('GamePlay — зона очистки покрывает габарит
  * кончики лучей и смещённые очаги кластера) рисуется внутри очищенной полосы.
  */
 describe('GamePlay — зона очистки покрывает габарит взрыва (#582)', () => {
-    /** ctx-заглушка: журнал `clearRect` (зона) и `fillRect` (пиксели вспышки). */
-    class ExplosionCtxStub {
-        fillStyle = '';
-        globalAlpha = 1;
-        imageSmoothingEnabled = true;
-        clearRects: number[][] = [];
-        fillRects: number[][] = [];
-
-        clearRect(x: number, y: number, w: number, h: number) {
-            this.clearRects.push([x, y, w, h]);
-        }
-        fillRect(x: number, y: number, w: number, h: number) {
-            this.fillRects.push([x, y, w, h]);
-        }
-        save() {}
-        restore() {}
-        beginPath() {}
-        closePath() {}
-        rect() {}
-        clip() {}
-        moveTo() {}
-        lineTo() {}
-        arc() {}
-        fill() {}
-        stroke() {}
-        drawImage() {}
-        setTransform() {}
-        translate() {}
-        rotate() {}
-        createRadialGradient() {
-            return { addColorStop: () => undefined };
-        }
-    }
-
     /** Один кадр точечной перерисовки взрыва: то, что зовёт кадровый цикл. */
     const redrawExplosion = (gamePlay: GamePlay, bullet: Bullet) =>
         (gamePlay as unknown as { explosionAreaRedraw(bullet: Bullet): void }).explosionAreaRedraw(
@@ -744,8 +806,8 @@ describe('GamePlay — зона очистки покрывает габарит
      */
     const setupExplosion = (kind: EWeaponKind, wind = 0) => {
         const { gamePlay, ground, leftTank, rightTank } = makeGamePlay();
-        const stub = new ExplosionCtxStub();
-        gamePlay.ctx = stub as unknown as CanvasRenderingContext2D;
+        const stub = new CtxStub();
+        gamePlay.ctx = asCtx(stub);
         const bullet = new Bullet(
             WIDTH,
             HEIGHT,
@@ -774,7 +836,7 @@ describe('GamePlay — зона очистки покрывает габарит
         // Взрыв уже раскрылся: на нулевом радиусе прежняя (битая) пара выражений
         // случайно совпадала, и тест сторожил бы совпадение, а не связь.
         for (let frame = 0; frame < 5; frame += 1) {
-            bullet.drawExplosion(stub as unknown as CanvasRenderingContext2D);
+            bullet.drawExplosion(asCtx(stub));
         }
         expect(bullet.explosionRadius).toBeGreaterThan(0);
         const drawSpy = vi.spyOn(ground, 'draw');
@@ -807,7 +869,7 @@ describe('GamePlay — зона очистки покрывает габарит
             stub.clearRects.length = 0;
             stub.fillRects.length = 0;
             redrawExplosion(gamePlay, bullet);
-            bullet.drawExplosion(stub as unknown as CanvasRenderingContext2D);
+            bullet.drawExplosion(asCtx(stub));
 
             const [clearX, , clearWidth] = stub.clearRects[0];
             for (const [x, , w] of stub.fillRects) {
@@ -831,7 +893,7 @@ describe('GamePlay — зона очистки покрывает габарит
         for (let frame = 0; frame < 400 && !bullet.isFinished; frame += 1) {
             stub.clearRects.length = 0;
             redrawExplosion(gamePlay, bullet);
-            bullet.drawExplosion(stub as unknown as CanvasRenderingContext2D);
+            bullet.drawExplosion(asCtx(stub));
             const [clearX, , clearWidth] = stub.clearRects[0];
             bands.add(`${clearX}:${clearWidth}`);
         }
@@ -857,7 +919,7 @@ describe('GamePlay — зона очистки покрывает габарит
                 stub.clearRects.length = 0;
                 bullet.move();
                 redrawExplosion(gamePlay, bullet);
-                bullet.drawExplosion(stub as unknown as CanvasRenderingContext2D);
+                bullet.drawExplosion(asCtx(stub));
                 const [clearX, , clearWidth] = stub.clearRects[0];
                 bands.add(`${clearX}:${clearWidth}`);
             }
