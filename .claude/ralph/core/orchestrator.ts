@@ -872,6 +872,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         { model, maxTurns, fallbackModel }: ClaudeOpts,
         cfg: Pick<RalphConfig, 'permissionMode' | 'fallbackModel'>,
     ): string[] {
+        // `-p` БЕЗ значения — это не забытый аргумент (ревью #612: соблазн «починить» его
+        // обратно на ['-p', prompt] велик). Флаг включает неинтерактивный режим, а сам
+        // промпт уходит через stdin (spawnClaude, опция input) — см. докблок выше.
         const cmdArgs = ['-p', '--max-turns', String(maxTurns)];
         if (model) cmdArgs.push('--model', model);
         if (cfg.permissionMode) cmdArgs.push('--permission-mode', cfg.permissionMode);
