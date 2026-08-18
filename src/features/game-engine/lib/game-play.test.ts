@@ -543,6 +543,22 @@ describe('GamePlay.animate — ветка точечной перерисовк�
 
         expect(bandCleared(stub, from, to), 'полоса взрыва не почищена').toBe(true);
     });
+
+    it('кадр называет свою ветку перерисовки — за неё цепляется эталон «частицы догорели»', () => {
+        // `lastRedraw` наружу отдаёт debug-хук (`game-debug.ts`): кадр #605 держится
+        // на факте «шли точечной полосой взрыва», а не на трёх косвенных признаках
+        // (частицы мертвы, тряски нет, снаряд сдетонировал).
+        const { gamePlay: falling, ground } = setupSettlingGround();
+        ground.fallingFrom = 60;
+        ground.fallingTo = 100;
+        drive(falling, 1);
+        expect(falling.lastRedraw).toBe('ground-fall');
+
+        const { gamePlay: detonated, bullet } = setupSettlingGround();
+        bullet.detonated = true;
+        drive(detonated, 1);
+        expect(detonated.lastRedraw).toBe('explosion-area');
+    });
 });
 
 describe('GamePlay — колбэки хода и ветра (handoff «Состояние»)', () => {
