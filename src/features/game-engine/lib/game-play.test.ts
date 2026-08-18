@@ -735,8 +735,14 @@ describe('GamePlay — зона очистки покрывает габарит
             bullet,
         );
 
-    /** Настраивает бой с уже детонировавшим снарядом нужного типа. */
-    const setupExplosion = (kind: EWeaponKind) => {
+    /**
+     * Настраивает бой с уже детонировавшим снарядом нужного типа.
+     *
+     * `wind` — параметр, а не ноль по умолчанию во всех сценариях: при нулевом ветре
+     * снаряд стоит на месте по любой реализации, и тест «полоса не двигается» выходит
+     * vacuous. Дрейф после детонации ловится только ненулевым ветром (см. тест ниже).
+     */
+    const setupExplosion = (kind: EWeaponKind, wind = 0) => {
         const { gamePlay, ground, leftTank, rightTank } = makeGamePlay();
         const stub = new ExplosionCtxStub();
         gamePlay.ctx = stub as unknown as CanvasRenderingContext2D;
@@ -746,7 +752,7 @@ describe('GamePlay — зона очистки покрывает габарит
             ground,
             leftTank,
             rightTank,
-            0,
+            wind,
             WEAPON_SPECS[kind],
         );
         // Точка попадания — середина арены: полоса взрыва целиком внутри канваса,
@@ -834,4 +840,31 @@ describe('GamePlay — зона очистки покрывает габарит
         expect(bullet.focusIndex).toBe(WEAPON_SPECS[EWeaponKind.Cluster].foci.length);
         expect(bands.size, `полоса меняла границы: ${[...bands].join(', ')}`).toBe(1);
     });
+
+    // Кадровый цикл целиком: `GamePlay.moveBullet` зовёт `move()` ПЕРВЫМ и каждый кадр,
+    // в том числе после детонации, а `drawExplosion` обнуляет `dx/dy` уже после него.
+    // Тесты выше этого не воспроизводили и потому не могли поймать дрейф: они гоняют
+    // только отрисовку, да ещё при нулевом ветре. Ветер обоих знаков — потому что
+    // усечение `| 0` работает к нулю, и знак меняет, на каком кадре уедет координата.
+    it.each([-0.02, 0.02])(
+        'снаряд не дрейфует после детонации (ветер %s): центр и полоса стоят весь взрыв',
+        (wind) => {
+            const { gamePlay, bullet, stub } = setupExplosion(EWeaponKind.Cluster, wind);
+            const startX = bullet.x;
+            const bands = new Set<string>();
+
+            for (let frame = 0; frame < 400 && !bullet.isFinished; frame += 1) {
+                stub.clearRects.length = 0;
+                bullet.move();
+                redrawExplosion(gamePlay, bullet);
+                bullet.drawExplosion(stub as unknown as CanvasRenderingContext2D);
+                const [clearX, , clearWidth] = stub.clearRects[0];
+                bands.add(`${clearX}:${clearWidth}`);
+            }
+
+            expect(bullet.x, 'координата снаряда уехала за время взрыва').toBe(startX);
+            expect(bands.size, `полоса меняла границы: ${[...bands].join(', ')}`).toBe(1);
+            expect(bullet.focusIndex).toBe(WEAPON_SPECS[EWeaponKind.Cluster].foci.length);
+        },
+    );
 });

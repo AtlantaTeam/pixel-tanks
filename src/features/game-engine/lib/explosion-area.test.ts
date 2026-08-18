@@ -1,3 +1,4 @@
+import { describe, expect, it } from 'vitest';
 import { explosionRedrawRange } from './explosion-area';
 import { paintExplosionFocus, WEAPON_SPECS, type TWeaponSpec } from './weapon-specs';
 import { WORLD_UNITS } from './world-scale';

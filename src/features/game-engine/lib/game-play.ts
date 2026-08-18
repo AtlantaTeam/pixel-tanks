@@ -1020,9 +1020,7 @@ export class GamePlay {
     private explosionAreaRedraw(bullet: Bullet) {
         if (this.ctx && this.ground) {
             const { from, to } = bullet.explosionRedrawRange;
-            const clearX = from;
-            const clearWidth = to - from;
-            this.ctx.clearRect(clearX, 0, clearWidth, this.innerHeight);
+            this.ctx.clearRect(from, 0, to - from, this.innerHeight);
             this.ground.draw(this.ctx, from, to);
             // Точечная перерисовка чистит лишь узкую вертикальную полосу — призрачная
             // трасса (issue #543), если проходит через неё, обязана быть перерисована
@@ -1030,7 +1028,7 @@ export class GamePlay {
             // fullRedraw. Клип же не даёт «пересветить» альфу нетронутых сегментов
             // трассы вне этой полосы (compositing без клипа удваивал бы альфу на
             // каждый кадр роста взрыва).
-            this.clippedGhostTrailRedraw(this.ctx, clearX, 0, clearWidth, this.innerHeight);
+            this.clippedGhostTrailRedraw(this.ctx, from, 0, to - from, this.innerHeight);
         }
     }
 

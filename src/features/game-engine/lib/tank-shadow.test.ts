@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { computeLightDirection } from './scene-light';
+import { pickCelestialGeometry } from './sky-celestial';
+import type { TSkyPresetId } from './sky-preset';
 import {
     TANK_DECOR_REDRAW_PADDING,
     TANK_SHADOW_OFFSET_X_FRAC,
@@ -10,6 +13,13 @@ import {
 
 /** Канон мира: `WORLD_UNITS.tankWidth` = 60 при `scale === 1`. */
 const TANK_WIDTH = 60;
+
+/**
+ * Все пресеты неба. `satisfies` вместо голого массива: добавят четвёртый пресет —
+ * список здесь не покраснеет сам, но `tsc` покраснеет на любом `Record<TSkyPresetId, …>`
+ * рядом, и расхождение всплывёт сразу, а не через зелёный vacuous-тест.
+ */
+const SKY_PRESET_IDS = ['day', 'sunset', 'night'] as const satisfies readonly TSkyPresetId[];
 
 describe('tankShadowGeometry — геометрия эллипса тени', () => {
     it('светило справа (dx<0) смещает тень влево от центра корпуса', () => {
@@ -63,12 +73,50 @@ describe('tankShadowGeometry — геометрия эллипса тени', ()
     });
 
     it('высота светила (dy) на геометрию НЕ влияет — регресс #571 не возвращается', () => {
-        // #571 привязал полуширину к dy, и на закате (dy→0) тень вырождалась в
-        // чёрную полосу шириной с треть экрана. Подпись функции высоты светила
-        // не знает вовсе — это структурный барьер, а не подобранное число.
-        const params = { centerX: 100, tankWidth: TANK_WIDTH, scale: 1, lightDx: -0.9 };
-        expect(tankShadowGeometry(params)).toEqual(tankShadowGeometry({ ...params }));
-        expect(tankShadowGeometry(params).radiusX).toBeLessThanOrEqual(TANK_WIDTH);
+        // #571 привязал полуширину к dy, и на закате (dy→0) тень вырождалась в чёрную
+        // полосу шириной с треть экрана. Что высоты нет в подписи — держит `tsc`, и
+        // отдельный assert этого не докажет: прежняя версия теста сравнивала чистую
+        // функцию саму с собой на одном и том же входе и оставалась зелёной при любой
+        // реализации, включая ту, что снова притянет dy.
+        //
+        // Проверяем то, что подпись доказать не может: на РЕАЛЬНЫХ светилах трёх
+        // пресетов (у них разная высота — день высоко, закат у горизонта) геометрия
+        // определяется только горизонтальной компонентой.
+        const perPreset = SKY_PRESET_IDS.map((presetId) => {
+            const light = computeLightDirection(pickCelestialGeometry('shadow-seed', presetId));
+            return { presetId, light };
+        });
+
+        // Гвард от вырождения: пресеты обязаны реально различаться высотой светила,
+        // иначе «везде одинаково» ничего не значит.
+        const heights = new Set(perPreset.map(({ light }) => light.dy.toFixed(4)));
+        expect(heights.size, `пресеты дали одинаковый dy: ${[...heights].join(', ')}`).toBe(
+            SKY_PRESET_IDS.length,
+        );
+
+        // Один и тот же dx на разных пресетах — одна и та же геометрия, несмотря на dy.
+        const sharedDx = -0.9;
+        const reference = tankShadowGeometry({
+            centerX: 100,
+            tankWidth: TANK_WIDTH,
+            scale: 1,
+            lightDx: sharedDx,
+        });
+        for (const { presetId, light } of perPreset) {
+            const withPresetDx = tankShadowGeometry({
+                centerX: 100,
+                tankWidth: TANK_WIDTH,
+                scale: 1,
+                lightDx: light.dx,
+            });
+            expect(withPresetDx.radiusX, `radiusX пресета ${presetId} зависит от высоты`).toBe(
+                reference.radiusX,
+            );
+            expect(withPresetDx.radiusY, `radiusY пресета ${presetId} зависит от высоты`).toBe(
+                reference.radiusY,
+            );
+            expect(withPresetDx.radiusX).toBeLessThanOrEqual(TANK_WIDTH);
+        }
     });
 
     it('габарит тени не выходит за разумные пределы корпуса при любом наклоне света', () => {
