@@ -29,6 +29,7 @@ describe('buildGameDebugSnapshot', () => {
             particlesAlive: false,
             explosionActive: false,
             groundFalling: false,
+            explosionRadius: 0,
         });
     });
 
@@ -42,6 +43,7 @@ describe('buildGameDebugSnapshot', () => {
             particlesAlive: false,
             explosionActive: false,
             groundFalling: false,
+            explosionRadius: 0,
         });
     });
 
@@ -90,6 +92,17 @@ describe('buildGameDebugSnapshot', () => {
         expect(snapshot.particlesAlive).toBe(false);
         expect(snapshot.groundFalling).toBe(false);
     });
+
+    it('отдаёт радиус растущего очага взрыва (issue #605)', () => {
+        expect(
+            buildGameDebugSnapshot({ bullet: { detonated: true, explosionRadius: 42 } })
+                .explosionRadius,
+        ).toBe(42);
+    });
+
+    it('без снаряда радиус — 0, а не undefined', () => {
+        expect(buildGameDebugSnapshot({}).explosionRadius).toBe(0);
+    });
 });
 
 describe('install/uninstallGameDebugHook', () => {
@@ -108,6 +121,7 @@ describe('install/uninstallGameDebugHook', () => {
             particlesAlive: false,
             explosionActive: false,
             groundFalling: false,
+            explosionRadius: 0,
         });
     });
 

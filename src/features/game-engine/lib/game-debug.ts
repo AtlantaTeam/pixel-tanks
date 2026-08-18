@@ -42,6 +42,18 @@ export type TGameDebugSnapshot = {
     explosionActive: boolean;
     /** Земля осыпается в воронку после взрыва. */
     groundFalling: boolean;
+    /**
+     * Радиус текущего очага вспышки (`bullet.explosionRadius`, 0 — очага нет или
+     * он между сменой очагов кластера). Кадру «частицы догорели» (issue #605) мало
+     * булева `explosionActive`: тот держится и в первый кадр после смерти частиц,
+     * когда сцена только что вышла из чистого `fullRedraw` и точечная перерисовка
+     * (`GamePlay.explosionAreaRedraw`, #582) ещё не успела дать грязь — измерено,
+     * что именно на этом кадре откат #582 остаётся зелёным. Радиус даёт кадру
+     * зацепиться за момент, когда очаг ЕЩЁ растёт (радиус > 0), то есть точечная
+     * перерисовка уже отработала минимум один раз поверх собственного предыдущего
+     * кадра, а не поверх чистого фона.
+     */
+    explosionRadius: number;
 };
 
 /** Минимальная структурная форма `GamePlay`, которой достаточно для снапшота —
@@ -49,7 +61,7 @@ export type TGameDebugSnapshot = {
 type TGameDebugSource = {
     leftTank?: { bodyRect(): TGameDebugRect };
     rightTank?: { bodyRect(): TGameDebugRect };
-    bullet?: { detonated: boolean };
+    bullet?: { detonated: boolean; explosionRadius?: number };
     ground?: { isFalling: boolean };
     /** Узкий геттер движка вместо всего пула частиц (ревью #585): снапшоту нужен
      *  один булев факт, а публичный `ParticlePool` открыл бы отсюда и спавн, и
@@ -71,6 +83,7 @@ export function buildGameDebugSnapshot(game: TGameDebugSource): TGameDebugSnapsh
         particlesAlive: Boolean(game.hasAliveParticles),
         explosionActive: Boolean(game.bullet?.detonated),
         groundFalling: Boolean(game.ground?.isFalling),
+        explosionRadius: game.bullet?.explosionRadius ?? 0,
     };
 }
 
