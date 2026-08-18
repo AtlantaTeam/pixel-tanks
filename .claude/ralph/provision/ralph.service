@@ -1,0 +1,43 @@
+# Юнит запуска ralph (Issue #103, вариант B — полностью AFK). Ставится руками, штатным
+# деплоем не приезжает: sudo cp … /etc/systemd/system/ && systemctl daemon-reload.
+#
+# Авто-рестарта здесь НАМЕРЕННО НЕТ (Restart=no). В отличие от ss-local/privoxy (сетевые демоны,
+# Restart=always в provision.sh уместен), остановки ralph — красный гейт, blocked-тупик,
+# breaker, мёртвый туннель — это осознанные fail-closed стопы, а не сетевой чих. Слепой
+# авто-рестарт бился бы об ту же стену по кругу и жёг лимиты API вместо того, чтобы
+# дождаться разбора человеком (RUNBOOK.md, «После фазы»). Перезапуск — `systemctl start
+# ralph` руками, либо в будущем умный монитор, отличающий штатный стоп от сетевого сбоя
+# (research #173).
+#
+# Type=exec, не oneshot: `systemctl start ralph` обязан вернуть приглашение сразу, а
+# `systemctl status` — показывать `active (running)` во время прогона. У oneshot старт
+# считается выполненным только по завершении ExecStart, то есть команда «висела» бы часы,
+# и первый же оператор нажал бы Ctrl+C, решив, что она зависла. Код выхода одинаково виден
+# в статусе: 0 → `inactive (dead)`, ненулевой → `failed`.
+#
+# [Install] здесь НЕТ намеренно: `systemctl enable` поднимал бы фазу после reboot в обход
+# чек-листа «Перед стартом фазы» (конфиг в origin/main, разметка milestone, секреты,
+# отсутствие второго экземпляра). Ребут ничем не отличается от падения: раз авто-рестарт
+# после сбоя признан вредным, то и авто-старт после ребута тоже. Понадобится автостарт —
+# штатная форма ralph.timer с OnBootSec=, а не WantedBy=multi-user.target.
+[Unit]
+Description=Ralph — автономный раннер разработки (профиль prod)
+Documentation=file:/root/pixel-tanks/.claude/ralph/RUNBOOK.md
+# Wants=, а не только After=: After задаёт лишь ПОРЯДОК и лишь внутри одной транзакции —
+# при ручном `systemctl start ralph` (основной сценарий) упавший туннель не поднялся бы,
+# и ралф пошёл бы в мёртвый прокси.
+After=network-online.target shadowsocks-libev-local@frankfurt.service privoxy.service
+Wants=network-online.target shadowsocks-libev-local@frankfurt.service privoxy.service
+
+[Service]
+Type=exec
+Restart=no
+WorkingDirectory=/root/pixel-tanks
+User=root
+# env читается ШЕЛЛОМ (`set -a; . file; set +a`), как в start-tmux.sh, а не парсером
+# systemd (EnvironmentFile): у них разная семантика кавычек, нет подстановки $VAR и не
+# поддерживается export — один и тот же ralph.env давал бы РАЗНЫЕ значения в вариантах A
+# и B (реальный кандидат — пароль/токен со спецсимволами, а SS_SERVER ещё и участвует в
+# egress-проверке туннеля). Отсутствующий файл роняет `.` при set -e — тот же честный
+# отказ, что у EnvironmentFile без «-».
+ExecStart=/usr/bin/env bash -c 'set -euo pipefail; set -a; . /root/ralph.env; set +a; exec node .claude/ralph/ralph.js --profile prod'

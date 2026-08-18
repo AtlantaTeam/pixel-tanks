@@ -27,6 +27,17 @@ const DONE_OPTION = 'Done';
 // репо), а не от cwd: project:sync зовётся и раннером, и человеком из разных мест.
 const CONFIG_PATH = fileURLToPath(new URL('../.claude/ralph/ralph.config.json', import.meta.url));
 
+// Корень репозитория — оттуда же, от расположения скрипта (scripts/ лежит в корне), а не
+// от cwd: по нему резолвится адрес репозитория (resolveRepo), и он обязан быть одним и
+// тем же, откуда бы скрипт ни звали.
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+// Потолок выборки открытых issues. Не бизнес-лимит, а страховка: `gh issue list` без
+// --limit отдаёт МОЛЧА первые 30 (дефолт CLI), то есть проход отчитался бы успехом,
+// не увидев большей части репозитория, — ровно тот молчаливый отказ, ради которого
+// написана пагинация доски. Упор в потолок ниже — throw, а не усечение.
+const OPEN_ISSUES_LIMIT = 1000;
+
 // Резолв доски: env важнее конфига (быстрый оверрайд под другой проект без правки файла),
 // иначе common.board из ralph.config.json. Отсутствие owner ИЛИ невалидный номер — throw
 // (fail-closed): без адреса доски синкать нечего, а угадывать чужую нельзя.
@@ -80,6 +91,52 @@ export function resolveBoard({
     return { owner, number: num };
 }
 
+// Адрес репозитория (`owner/name`) для выборки открытых issues. Резолвится ДЕТЕРМИНИРОВАННО,
+// а не от cwd (#90-ревью): `gh repo view` без `--repo` смотрит на текущий каталог, а скрипт
+// зовут и раннер из своего дерева, и человек из произвольного места — из домашнего каталога
+// такой вызов молча ушёл бы в ЧУЖОЙ репозиторий либо отвалился. Источник тот же, что у
+// CONFIG_PATH: отсчёт от import.meta.url, то есть от дерева, в котором лежит сам скрипт.
+//
+// Владельца ДОСКИ (resolveBoard) для склейки адреса не переиспользуем сознательно: доска
+// организации + форк в личном аккаунте — штатная пара, и `${owner доски}/${имя репо}` дал
+// бы адрес-кентавр ровно того класса, от которого защищается resolveBoard (#204-ревью).
+//
+// RALPH_REPO (env) важнее origin — оверрайд под нестандартную раскладку без правки кода,
+// той же формы `owner/name`. Не распарсили ни то ни другое — throw (fail-closed): выбрать
+// репозиторий наугад хуже, чем честно попросить задать переменную.
+export function resolveRepo({ env = process.env, repoRoot = REPO_ROOT, spawnFn = spawnSync } = {}) {
+    const fromEnv = typeof env.RALPH_REPO === 'string' ? env.RALPH_REPO.trim() : '';
+    if (fromEnv) return assertFullName(fromEnv, 'RALPH_REPO');
+    const result = spawnFn('git', ['-C', repoRoot, 'remote', 'get-url', 'origin'], {
+        encoding: 'utf8',
+        timeout: 30_000,
+    });
+    if (result.status !== 0 || !result.stdout) {
+        const why = result.error?.message || result.stderr?.trim() || `код ${result.status}`;
+        throw new Error(
+            `не прочитан origin репозитория (${repoRoot}): ${why}; задай RALPH_REPO=owner/name`,
+        );
+    }
+    return assertFullName(parseRemoteUrl(result.stdout.trim()), 'origin');
+}
+
+// Формы origin, которые обязаны разобраться одинаково: scp-подобная (git@host:owner/name.git),
+// https (https://host/owner/name.git) и ssh:// (ssh://git@host/owner/name). Берём два
+// последних сегмента и снимаем .git — остальное (хост, порт, пользователь) для адреса
+// репозитория не нужно.
+function parseRemoteUrl(url) {
+    return /[/:]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url)?.slice(1, 3).join('/') ?? url;
+}
+
+function assertFullName(value, source) {
+    if (!/^[^/\s]+\/[^/\s]+$/.test(value)) {
+        throw new Error(
+            `адрес репозитория из ${source} не читается как owner/name: "${value}"; задай RALPH_REPO=owner/name`,
+        );
+    }
+    return value;
+}
+
 // Закрытая карточка — это Issue в CLOSED и PR в CLOSED/MERGED. Списки состояний
 // ПОЛНЫЕ, а не только «закрытые»: незнакомое состояние (переименованный enum, новый
 // регистр) не имеет права молча трактоваться как «не закрыт» — так синк тихо перестал
@@ -109,8 +166,8 @@ query($owner: String!, $number: Int!, $cursor: String) {
           isArchived
           content {
             __typename
-            ... on Issue { number state }
-            ... on PullRequest { number state }
+            ... on Issue { id number state }
+            ... on PullRequest { id number state }
           }
           fieldValues(first: 100) {
             pageInfo { hasNextPage }
@@ -132,6 +189,13 @@ mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
   updateProjectV2ItemFieldValue(
     input: {projectId: $project, itemId: $item, fieldId: $field, value: {singleSelectOptionId: $option}}
   ) { projectV2Item { id } }
+}`;
+
+const ADD_ITEM_MUTATION = `
+mutation($project: ID!, $contentId: ID!) {
+  addProjectV2ItemById(
+    input: {projectId: $project, contentId: $contentId}
+  ) { item { id } }
 }`;
 
 // gh с ненулевым кодом — это сбой чтения, а не «данных нет»: spawnSync (не execSync,
@@ -276,8 +340,66 @@ export function markDone(item, { projectId, fieldId, doneOptionId }, ghFn = runG
     ]);
 }
 
-export function syncBoard({ ghFn = runGh, owner, number, logFn = console.log } = {}) {
-    const { projectId, field, items } = fetchBoard(ghFn, { owner, number });
+// #90: второй проход того же барьера — карточка, заведённая мимо доски, на неё не попадает
+// сама. `gh issue create` (в том числе намерением `new-issue` раннера) доски не знает, а
+// встроенная автоматизация Projects добавляет только созданное ИЗ доски: issue заводится,
+// на доске его нет, и об этом никто не узнаёт — тот же молчаливый разъезд, что и #199.
+//
+// Берём ВСЕ открытые issues, а не выборку по метке (`backlog`): раннер создаёт карточки
+// РОВНО с метками из намерения (createIssue в core/orchestrator.ts ничего не добавляет), а
+// образец намерения в ralph.md идёт без `backlog`. Фильтр по метке молча исключил бы именно
+// тот класс, ради которого проход и писался, — и проект-правило «новые issues обязательно
+// на доске» держалось бы только на дисциплине автора намерения.
+//
+// --limit обязателен: дефолт `gh issue list` — 30 карточек, МОЛЧА. Упор в потолок — throw,
+// а не усечение: «столько и есть» неотличимо от «дальше не посмотрели», а именно эта
+// неотличимость и есть отказ, против которого написан весь файл.
+export function fetchOpenIssues({ repo, limit = OPEN_ISSUES_LIMIT } = {}, ghFn = runGh) {
+    const result = ghFn([
+        'issue',
+        'list',
+        '--repo',
+        repo,
+        '--state',
+        'open',
+        '--limit',
+        String(limit),
+        '--json',
+        'number,id',
+    ]);
+    if (!Array.isArray(result)) {
+        throw new Error(
+            'gh issue list вернул не список — формат вывода изменился, сверка ненадёжна',
+        );
+    }
+    if (result.length >= limit) {
+        throw new Error(
+            `открытых issues не меньше потолка выборки (${limit}) — часть репозитория осталась бы ` +
+                `непроверенной; подними OPEN_ISSUES_LIMIT`,
+        );
+    }
+    return result;
+}
+
+// Добавляет issue на доску БЕЗУСЛОВНО: проверку «нет ли уже» делает вызывающий
+// (addMissingIssues) — здесь, как и в markDone, ровно одна мутация без своей политики.
+export function addIssueToBoard(issueId, { projectId }, ghFn = runGh) {
+    ghFn([
+        'api',
+        'graphql',
+        '-f',
+        `query=${ADD_ITEM_MUTATION}`,
+        '-f',
+        `project=${projectId}`,
+        '-f',
+        `contentId=${issueId}`,
+    ]);
+}
+
+// `board` — уже прочитанная доска (fetchBoard): один проход пагинации на оба прохода синка.
+// Не передали — читает сама, чтобы функция оставалась вызываемой отдельно.
+export function syncBoard({ ghFn = runGh, owner, number, board, logFn = console.log } = {}) {
+    const { projectId, field, items } = board ?? fetchBoard(ghFn, { owner, number });
     const { fieldId, doneOptionId } = resolveDone(field);
     const stale = pickStale(items, doneOptionId);
     for (const item of stale) {
@@ -287,15 +409,68 @@ export function syncBoard({ ghFn = runGh, owner, number, logFn = console.log } =
     return { scanned: items.length, updated: stale.length };
 }
 
+// #90: добавить на доску открытые issues, которых на ней нет. Идемпотентен — issue уже на
+// доске не порождает ни одной мутации (то же свойство, что у syncBoard, и проверяется тестом).
+//
+// Сверка по node-id контента, а НЕ по номеру: доска Projects штатно держит карточки
+// нескольких репозиториев (fetchBoard их не фильтрует), а номера в разных репо пересекаются
+// — чужой #90 «скрыл» бы свой, и карточка не добавилась бы молча. `id` из
+// `gh issue list --json id` — тот же node-id, что отдаёт GraphQL `content.id`, поэтому
+// сравнение однородно и фильтр по `__typename` не нужен.
+//
+// Архивные карточки СЧИТАЮТСЯ присутствующими на доске — противоположно pickStale, и это
+// осознанно: там архив исключается, потому что мутацию по архивной карточке API отвергает
+// (одна такая красила бы синк вечно); здесь архив — человеческое «убрать с доски», и
+// затащить карточку обратно значило бы каждый прогон отменять решение человека.
+export function addMissingIssues({
+    ghFn = runGh,
+    owner,
+    number,
+    board,
+    repo,
+    logFn = console.log,
+} = {}) {
+    const { projectId, items } = board ?? fetchBoard(ghFn, { owner, number });
+    const onBoard = new Set(items.map((item) => item?.content?.id).filter(Boolean));
+
+    const open = fetchOpenIssues({ repo }, ghFn);
+    let added = 0;
+    for (const issue of open) {
+        if (onBoard.has(issue.id)) continue;
+        addIssueToBoard(issue.id, { projectId }, ghFn);
+        logFn(`   • #${issue.number} добавлена на доску`);
+        added++;
+    }
+
+    return { checked: open.length, added };
+}
+
+// Оба прохода синка за один проход по доске + ИТОГОВАЯ строка возвращается, а не
+// печатается: раннер кладёт в ralph.log ровно ПОСЛЕДНЮЮ строку вывода (syncProjectBoard,
+// core/orchestrator.ts). Пока сводка одна и печатает её вызывающий последней, «переведено
+// в Done» не может быть вытеснено из лога отчётом о добавленных карточках — а именно так
+// и вышло бы с двумя сводками в прогон, где на доске было больше всего движения.
+export function runSync({ ghFn = runGh, owner, number, repo, logFn = console.log } = {}) {
+    // Доска читается ОДИН раз на оба прохода: пагинация 300+ карточек — четыре запроса
+    // GraphQL, и повторный проход ради тех же данных был бы платой ни за что.
+    const board = fetchBoard(ghFn, { owner, number });
+    const { scanned, updated } = syncBoard({ ghFn, board, logFn });
+    // Добавление — fail-closed, как и синк статусов: протухший токен или снятое право на
+    // доску не имеют права выглядеть как «добавлять нечего». Ронять из-за этого смердженную
+    // фазу не приходится — вызов раннера (syncProjectBoard) сам best-effort и переживает
+    // ненулевой код скрипта.
+    const { checked, added } = addMissingIssues({ ghFn, board, repo, logFn });
+    // Сводка печатается ВСЕГДА, в том числе на нулях: «проверил, всё на месте» обязано быть
+    // отличимо от «не проверял вовсе» — ради этой отличимости синк и заводился.
+    return (
+        `✅ project-sync: в ${DONE_OPTION} переведено — ${updated} (просмотрено ${scanned}), ` +
+        `добавлено на доску — ${added} (открытых issues ${checked})`
+    );
+}
+
 function main() {
     try {
-        const { owner, number } = resolveBoard();
-        const { scanned, updated } = syncBoard({ owner, number });
-        console.log(
-            updated
-                ? `✅ project-sync: переведено в ${DONE_OPTION} закрытых карточек — ${updated} (просмотрено ${scanned})`
-                : `✅ project-sync: доска в порядке, правок не потребовалось (просмотрено ${scanned})`,
-        );
+        console.log(runSync({ ...resolveBoard(), repo: resolveRepo() }));
     } catch (e) {
         console.error(`⛔ project-sync: ${e.message}`);
         process.exit(1);
