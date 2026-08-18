@@ -3,7 +3,6 @@ import {
     EXPLOSION_ALPHA_LEVELS,
     EXPLOSION_PIXEL_SCALE,
     explosionSpriteHalfWidth,
-    explosionSpriteMetrics,
     type TExplosionSilhouette,
 } from './explosion-sprite';
 
@@ -155,16 +154,17 @@ describe('buildExplosionSprite — пиксельная техника (issue #5
  * считалась от `explosionRadius` — и кончики лучей фугаса (35% радиуса) оставались
  * на песке. Тесты сторожат САМУ СВЯЗЬ: габарит выведен из тех же чисел, что решётка.
  */
-describe('explosionSpriteMetrics / explosionSpriteHalfWidth (issue #582)', () => {
-    it('метрики совпадают с построенным спрайтом на всех силуэтах и радиусах', () => {
+describe('explosionSpriteHalfWidth — габарит спрайта без его построения (issue #582)', () => {
+    it('габарит выведен из ТОЙ ЖЕ решётки, что и построенный спрайт', () => {
+        // Проверяем связь через публичную пару, а не через внутренние метрики: сам
+        // `explosionSpriteMetrics` наружу не торчит намеренно (ревью #601) — иначе
+        // следующий вызывающий возьмёт метрики и снова разведёт две формулы габарита,
+        // ради устранения которых модуль и появился.
         for (const s of SILHOUETTES) {
             for (const radius of [1, 7, 33.75, 45, 75, 106]) {
                 const sprite = buildExplosionSprite(s, radius);
-                const metrics = explosionSpriteMetrics(s, radius);
-                expect(metrics.size).toBe(sprite.size);
-                expect(metrics.gridRadius).toBe(sprite.gridRadius);
-                expect(metrics.scale).toBe(sprite.scale);
-                expect(metrics.half).toBe((sprite.size - 1) / 2);
+                const half = (sprite.size - 1) / 2;
+                expect(explosionSpriteHalfWidth(s, radius)).toBe((half + 1) * sprite.scale);
             }
         }
     });

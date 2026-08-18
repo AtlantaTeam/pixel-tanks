@@ -1,6 +1,7 @@
 import { clamp, lerp } from '@/shared/lib/math';
 import { createSeededRandom } from '@/shared/lib/random';
 import { computeWorldScale, WORLD_UNITS } from './world-scale';
+import { MOUNTAIN_HORIZON_FRAC } from './sky-horizon';
 import { MAX_WIND } from './wind';
 
 /**
@@ -67,17 +68,6 @@ export const CLOUD_DENSITY_STEP_PX = 320;
  *  не больше десятка (потолок держит и читаемость неба, и бюджет кадра). */
 export const CLOUD_COUNT_MIN = 3;
 export const CLOUD_COUNT_MAX = 10;
-
-/**
- * Доля высоты канваса, на которой стоит ПОДОШВА силуэта дальних гор (`sky-scene`) —
- * то есть линия горизонта, НИЗ горной полосы: `paintMountains` берёт
- * `bottom = height · MOUNTAIN_HORIZON_FRAC` и рисует полосу ВВЕРХ на `bandHeight`
- * (0.16 высоты), так что горы занимают `[0.46 … 0.62]`, а ниже 0.62 силуэта нет вовсе.
- * Единый источник правды: тут его берёт модель плана облака (`cloudPlane` — линия
- * горизонта = 0), а `sky-scene.paintMountains` и клэмп низа облака рисуют по нему же,
- * чтобы облако не заезжало за силуэт (#572).
- */
-export const MOUNTAIN_HORIZON_FRAC = 0.62;
 
 /**
  * Вертикальный разброс: облака живут в верхней части неба, над рельефом. Расширен с

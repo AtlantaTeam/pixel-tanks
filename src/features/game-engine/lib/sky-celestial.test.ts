@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createSeededRandom } from '@/shared/lib/random';
-import { MOUNTAIN_HORIZON_FRAC } from './cloud-field';
+import { MOUNTAIN_HORIZON_FRAC } from './sky-horizon';
 import {
     buildStarField,
     CELESTIAL_HORIZON_MARGIN_FRAC,

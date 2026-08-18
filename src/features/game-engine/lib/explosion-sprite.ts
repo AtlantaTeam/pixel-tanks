@@ -72,10 +72,12 @@ function marginFor(silhouette: TExplosionSilhouette, gridRadius: number): number
  * лучей фугаса (35% радиуса) оставались на песке. Теперь габарит считается ОДНОЙ
  * функцией и для отрисовки, и для очистки.
  *
- * Экспортируется ради теста рядом (`explosion-sprite.test.ts`): вне модуля габарит
- * читает только `explosion-area.ts`, и ему хватает `explosionSpriteHalfWidth`.
+ * Наружу НЕ выходит (ревью #601): экспорт «ради теста» — это всё равно API, и
+ * следующий вызывающий взял бы метрики напрямую, снова разведя две формулы габарита.
+ * Вне модуля его читает только `explosion-area.ts`, и ему хватает
+ * `explosionSpriteHalfWidth`; связь метрик с решёткой тест проверяет через эту пару.
  */
-export type TExplosionSpriteMetrics = {
+type TExplosionSpriteMetrics = {
     /** Сторона решётки в ячейках (нечётная — центр ровно в середине). */
     size: number;
     /** Радиус залитого очага в ячейках (без запаса под лучи/обод/конус). */
@@ -97,7 +99,7 @@ export type TExplosionSpriteMetrics = {
  * аргументом, очистка и отрисовка сходились лишь на общем ДЕФОЛТЕ, то есть
  * расхождение оставалось в одном аргументе от возвращения (ревью #601).
  */
-export function explosionSpriteMetrics(
+function explosionSpriteMetrics(
     silhouette: TExplosionSilhouette,
     radius: number,
 ): TExplosionSpriteMetrics {
