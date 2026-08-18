@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { explosionRedrawRange } from './explosion-area';
 import { paintExplosionFocus, WEAPON_SPECS, type TWeaponSpec } from './weapon-specs';
-import { WORLD_UNITS } from './world-scale';
+import { WORLD_SCALE_MAX, WORLD_SCALE_MIN, WORLD_UNITS } from './world-scale';
 import { EWeaponKind } from '@/shared/model';
 
 /**
@@ -15,10 +15,19 @@ import { EWeaponKind } from '@/shared/model';
 /** Все типы оружия из таблицы спеков — перебираем каждый, а не один любимый. */
 const KINDS = Object.keys(WEAPON_SPECS) as EWeaponKind[];
 
-/** Боевые масштабы мира: канон (1) и края диапазона ресайза. */
-const SCALES = [0.6, 1, 1.5, 2.2];
+/**
+ * Боевые масштабы мира: канон (1) и НАСТОЯЩИЕ края диапазона ресайза —
+ * `WORLD_SCALE_MIN`/`WORLD_SCALE_MAX` из `world-scale.ts` (ревью #601: прежний
+ * список подписывался краями, но брал 0.6 и 2.2 — минимум не покрыт, максимум
+ * недостижим). Последнее значение — запас на вырост, заведомо выше потолка: полоса
+ * обязана покрывать вспышку и там, куда мир пока не растягивается.
+ */
+const SCALES = [WORLD_SCALE_MIN, 1, WORLD_SCALE_MAX, 2.2];
 
 const baseRadiusFor = (scale: number) => WORLD_UNITS.explosionMaxRadius * scale;
+
+/** Потолок кадров роста одного очага — страховка от бесконечного цикла в модели. */
+const GROWTH_FRAMES_GUARD = 500;
 
 /** Журнал заливок: `paintExplosionFocus` рисует спрайт целыми квадратами. */
 class PaintLogCtx {
@@ -37,6 +46,13 @@ class PaintLogCtx {
  * очаг за очагом, радиус растёт шагами `growthPerFrame` до максимума очага.
  * Возвращает крайние координаты по горизонтали среди ВСЕХ нарисованных пикселей
  * и всех столбцов, задетых воронкой (`ground.fall`).
+ *
+ * **Это МОДЕЛЬ автомата взрыва, и она обязана следовать за движком.** Цикл роста,
+ * порядок «нарисовать → инкремент → воронка по инкрементированному радиусу» и
+ * формула `craterRadius` списаны с `Bullet.drawExplosion`: поправят автомат там —
+ * этот тест продолжит сторожить старую модель и останется зелёным. Настоящий
+ * `Bullet` гоняет интеграционный тест в `game-play.test.ts`; здесь модель нужна,
+ * чтобы собрать габарит вспышки БЕЗ канваса и земли (ревью #601).
  */
 function paintWholeExplosion(spec: TWeaponSpec, hitX: number, baseRadius: number) {
     const ctx = new PaintLogCtx();
@@ -46,7 +62,8 @@ function paintWholeExplosion(spec: TWeaponSpec, hitX: number, baseRadius: number
         const centerX = hitX + focus.dxFactor * baseRadius;
         const maxRadius = focus.radiusFactor * baseRadius;
         let radius = 0;
-        for (let guard = 0; guard < 500; guard += 1) {
+        let frames = 0;
+        for (; frames < GROWTH_FRAMES_GUARD; frames += 1) {
             ctx.rects.length = 0;
             paintExplosionFocus(
                 ctx as unknown as CanvasRenderingContext2D,
@@ -63,6 +80,13 @@ function paintWholeExplosion(spec: TWeaponSpec, hitX: number, baseRadius: number
             radius += spec.growthPerFrame;
             if (radius >= maxRadius) break;
         }
+        // Гвард исчерпался — очаг обойдён не целиком, и все выводы ниже про четверть
+        // взрыва. Без этой проверки тест молча вырождался бы в частичный обход.
+        if (frames >= GROWTH_FRAMES_GUARD) {
+            throw new Error(
+                `очаг не дорос за ${GROWTH_FRAMES_GUARD} кадров: radius=${radius}, max=${maxRadius}`,
+            );
+        }
         // Воронка режется на том же кадре, где радиус перешагнул максимум очага.
         const craterRadius = Math.floor(spec.craterRadiusFactor * radius);
         left = Math.min(left, Math.floor(centerX) - craterRadius);
@@ -76,9 +100,9 @@ describe('explosionRedrawRange — одна полоса на весь взры�
         expect(KINDS).toHaveLength(4);
     });
 
-    it.each(KINDS.map((kind) => [kind, kind] as const))(
+    it.each(KINDS)(
         '%s: вся вспышка и вся воронка лежат внутри полосы на всех масштабах мира',
-        (_name, kind) => {
+        (kind) => {
             const spec = WEAPON_SPECS[kind];
             for (const scale of SCALES) {
                 const baseRadius = baseRadiusFor(scale);
