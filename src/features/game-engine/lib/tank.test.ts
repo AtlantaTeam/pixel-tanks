@@ -14,7 +14,8 @@ import {
     WIND_FLAG_POLE_WIDTH,
     windFlagRotationRad,
 } from './wind-flag';
-import { WORLD_SCALE_MIN, WORLD_UNITS } from './world-scale';
+import { MAX_WIND } from './wind';
+import { WORLD_SCALE_MAX, WORLD_SCALE_MIN, WORLD_UNITS } from './world-scale';
 
 // Пин структурного совпадения `TTankWheelSpec` движка (`tank.ts`) и реестра
 // скинов (`entities/tank-skins`). `Tank` намеренно НЕ импортирует тип из
@@ -628,6 +629,65 @@ describe('Tank.draw — флажок ветра: вымпел, а не прям�
             expect(clothTipY + outline / 2).toBeLessThan(tank.bodyRect().y);
         },
     );
+
+    // Максимальный ветер — вторая крайняя поза (#609): полотнище выходит на
+    // ПЕРПЕНДИКУЛЯР мачте и уже не висит вдоль неё. Зазор до корпуса в этой позе
+    // считался «на глаз» из соотношения `POLE_HEIGHT`/`THICKNESS`, посчитанного для
+    // ВИСЯЩЕГО положения (ревью PR фазы): правка длины мачты или толщины полотнища
+    // уронила бы его молча — ни один из 15 эталонов сцены максимума ветра не
+    // показывает (`vrt-night-9` даёт штиль), а угол сторожит только unit-тест.
+    // Проверяем оба знака ветра (полотнище зеркалится) и оба края масштаба мира.
+    it.each([
+        [WORLD_SCALE_MIN, MAX_WIND],
+        [WORLD_SCALE_MIN, -MAX_WIND],
+        [WORLD_SCALE_MAX, MAX_WIND],
+        [WORLD_SCALE_MAX, -MAX_WIND],
+    ])('на максимуме ветра (scale=%p, wind=%p) полотнище не наезжает на корпус', (scale, wind) => {
+        const rotation = windFlagRotationRad(wind);
+        const { tank, ops } = drawFlag(scale, wind);
+        // Поворот полотнища — последний `rotate` ПЕРЕД его вершинами, а не первый с
+        // таким углом: при ветре вправо угол ровно 0, и поиск по значению нашёл бы
+        // нулевой наклон корпуса на плоском рельефе.
+        const firstVertexAt = ops.findIndex((o) => o.op === 'vertex');
+        expect(firstVertexAt).toBeGreaterThan(0);
+        const rotateAt = ops
+            .slice(0, firstVertexAt)
+            .map((o) => o.op)
+            .lastIndexOf('rotate');
+        expect(rotateAt).toBeGreaterThanOrEqual(0);
+        // Заодно пин: полотнище крутится ровно на модельный угол ветра (#550/#609).
+        expect(ops[rotateAt].args[0]).toBeCloseTo(rotation, 6);
+        // Вершина мачты — последний translate ПЕРЕД поворотом на угол ветра.
+        const pivot = ops
+            .slice(0, rotateAt)
+            .filter((o) => o.op === 'translate')
+            .at(-1);
+        expect(pivot).toBeDefined();
+        const pivotX = Number(pivot?.args[0]);
+        const pivotY = Number(pivot?.args[1]);
+
+        const vertices = ops.filter((o) => o.op === 'vertex');
+        expect(vertices).toHaveLength(WIND_FLAG_PENNANT.length);
+        // Обводка идёт ПО ЦЕНТРУ контура — половина ширины торчит наружу, поэтому
+        // корпус «раздуваем» на неё, как в проверке штиля.
+        const outline = ops.find((o) => o.op === 'stroke')?.lineWidth ?? 0;
+        expect(outline).toBeGreaterThan(0);
+        const body = tank.bodyRect();
+        const margin = outline / 2;
+        const sin = Math.sin(rotation);
+        const cos = Math.cos(rotation);
+
+        vertices.forEach(({ args: [x, y] }) => {
+            const worldX = pivotX + x * cos - y * sin;
+            const worldY = pivotY + x * sin + y * cos;
+            const insideX = worldX > body.x - margin && worldX < body.x + body.width + margin;
+            const insideY = worldY > body.y - margin && worldY < body.y + body.height + margin;
+            expect(
+                insideX && insideY,
+                `вершина (${worldX.toFixed(1)}, ${worldY.toFixed(1)}) попала в корпус ${JSON.stringify(body)}`,
+            ).toBe(false);
+        });
+    });
 
     // Склон — главный нетривиальный случай для флажка: он живёт в МИРОВЫХ
     // координатах, вне наклонного трансформа корпуса (ревью #579). Прочие
