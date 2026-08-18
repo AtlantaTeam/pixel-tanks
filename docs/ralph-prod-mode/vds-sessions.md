@@ -57,19 +57,26 @@ claude --continue  # продолжить последний разговор (�
 w                  # тот же разговор, та же сессия, всё на месте
 ```
 
-### Запуск ralph — только так
+### Запуск ralph — не в сессию `work`
+
+Ралф запускается **своим управляемым процессом**, а не командой в панели рабочей сессии
+(Issue #103). Два штатных способа и их подробности — `.claude/ralph/RUNBOOK.md`, раздел
+«Запуск»; здесь только адрес:
 
 ```bash
-w                                             # войти в tmux
-IS_SANDBOX=1 node .claude/ralph/ralph.js      # напрямую в панели tmux, БЕЗ claude
-# Ctrl+B, D — отцепиться; ralph продолжит работать
+/root/pixel-tanks/.claude/ralph/provision/start-tmux.sh prod   # вариант A: своя сессия `ralph` + дашборд
+sudo systemctl start ralph                                     # вариант B: systemd, полностью AFK
 ```
 
-Или из другой сессии, не заходя в панель глазами:
+Прежний способ — `tmux send-keys -t work 'node .claude/ralph/ralph.js'` в общую сессию —
+устарел: он смешивал прогон с рабочими окнами человека (индексы панелей плавают) и
+зависел от того, кто и что закрыл в `work`.
+
+Посмотреть на прогон, не мешая ему:
 
 ```bash
-tmux send-keys -t work 'IS_SANDBOX=1 node .claude/ralph/ralph.js' Enter
-tmux capture-pane -t work -p | tail -20   # подсмотреть вывод, не подключаясь
+tmux attach -t ralph                       # вариант A
+journalctl -u ralph -f                     # вариант B
 ```
 
 ### Шпаргалка tmux (префикс — Ctrl+B, потом клавиша)

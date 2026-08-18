@@ -4974,8 +4974,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // Уборка сирот-мониторов мимо monitor.pid (#235, ночь 23.07 — сирота pid 742406,
     // ppid=1, uptime ~10ч, adoptMonitor его не увидел). Сканим /proc целиком, оставляем
     // РОВНО ОДИН (в нужном профиле), остальных — stopMonitor, с логом скольких прибрали.
-    // Штатная tmux-панель (RUNBOOK, окно 3 — `node monitor.js --profile prod` в живой
-    // tmux-панели) — тот же monitor.js, но с живым родителем-shell: ppid≠1. В уборку не
+    // Штатная панель дашборда (RUNBOOK, «Запуск», вариант A: нижняя панель сессии `ralph`,
+    // `node monitor.js --profile prod`) — тот же monitor.js, но с живым родителем-shell: ppid≠1. В уборку не
     // попадают ВООБЩЕ никакие процессы с ppid≠1 — только настоящие сироты (родитель умер,
     // init их усыновил, ppid==1) участвуют в отборе и в остановке. Вызывается один раз на
     // старте (main(), до preflight) — не встроена в ensureMonitorAlive: там своя узкая

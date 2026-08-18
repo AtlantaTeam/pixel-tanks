@@ -214,11 +214,12 @@ IPv4.
 
 - **`start-tmux.sh [профиль]`** — вариант A (HITL): отдельная tmux-сессия `ralph`,
   панель 0 — `ralph.js`, панель 1 — дашборд `monitor.js`.
-- **`ralph.service`** — вариант B (AFK): systemd-юнит, `Type=oneshot`, без авто-рестарта.
-  Установка — `sudo cp ralph.service /etc/systemd/system/ && systemctl daemon-reload`,
+- **`ralph.service`** — вариант B (AFK): systemd-юнит, `Type=exec`, без авто-рестарта и
+  без `[Install]` (автостарт после reboot не нужен — см. RUNBOOK). Установка —
+  `sudo cp /root/pixel-tanks/.claude/ralph/provision/ralph.service /etc/systemd/system/ && sudo systemctl daemon-reload`,
   запуск — `systemctl start ralph`, лог — `journalctl -u ralph -f`.
 
-Оба запускают то же самое, что и ручная команда ниже — годится для разового/тестового
+Оба запускают то же самое, что и ручная команда ниже. Она годится для разового/тестового
 прогона, когда управляемый запуск избыточен (`--dry-run`, разовая проверка правки
 самого раннера). Запускать **из корня репо**: пути в `ralph.js` относительные, из
 `.claude/ralph/` конфиг не найдётся.
@@ -229,5 +230,6 @@ cd /root/pixel-tanks && set -a && . /root/ralph.env && set +a && node .claude/ra
 
 ## Осталось (не в этом скрипте)
 
-- **Linux-порт `ralph.js`** — писался под Windows (`spawnSync shell:true` → `/bin/sh`,
-  guard `%`/`"` под cmd.exe). Прогнать `--dry-run`, починить (#66–70).
+- **`gh auth login --with-token`** — скрипт делает только `gh auth setup-git` и `gh api`,
+  то есть `gh` живёт исключительно на `GH_TOKEN` из окружения. Всё, что запускается без
+  `ralph.env` (ручной `gh` в чужой панели, чужой cron), увидит неавторизованный CLI.
