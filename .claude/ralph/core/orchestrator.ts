@@ -22,6 +22,7 @@
 // тянет env/сеть при сборке, а тесты передают фейки (см. orchestrator.test.ts).
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createGithubForgeCommands } from '../adapters/github-forge-commands.ts';
 import { spawnSync, spawn } from 'node:child_process';
@@ -1132,9 +1133,38 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // риск #3: чужой CLI на неизвестный флаг упал бы). fallback-model — тоже Claude-only, нет.
     function buildCodexArgs(
         prompt: string,
-        { model, sandboxMode }: { model?: string; sandboxMode: string },
+        {
+            model,
+            sandboxMode,
+            authMode = 'apiKey',
+        }: { model?: string; sandboxMode: string; authMode?: 'apiKey' | 'subscription' },
     ): string[] {
-        const cmdArgs = ['exec', '-a', CODEX_APPROVAL, '-s', sandboxMode];
+        // Порядок критичен: `-a` — ГЛОБАЛЬНЫЙ флаг codex и обязан стоять ДО подкоманды.
+        // `codex exec -a never …` CLI 0.147.0 отвергает (`unexpected argument '-a'`, exit 2) —
+        // то есть OpenAI-рантайм не запускался вовсе, и юниты этого не ловили, потому что
+        // spawnFn подставной. Найдено ревью Codex (3-й проход), проверено живым запуском.
+        const cmdArgs = ['-a', CODEX_APPROVAL, 'exec', '-s', sandboxMode];
+        // Провайдер фиксируется явно: `forced_login_method` ограничивает СПОСОБ входа, но не
+        // выбор провайдера — пользовательский `config.toml` мог бы увести сессию на custom
+        // provider со своим `env_key`/`base_url`, и `login status` при этом честно показывал бы
+        // ChatGPT. Инвариант №1: провайдер выбирается нами, а не окружением.
+        cmdArgs.push('-c', 'model_provider="openai"');
+        // Пользовательский `~/.codex/config.toml` не загружаем вовсе (ревью Codex, 4-й проход):
+        // `model_provider` запрещает выбор ЧУЖОГО провайдера по id, но `openai_base_url` в
+        // конфиге перенаправил бы встроенный `openai` на любой endpoint — и токен подписки
+        // уехал бы туда. Вектор не умозрительный: кодер-сессии ходят с danger-full-access и
+        // сами могут дописать этот файл. Авторизация от флага не страдает — CLI берёт её из
+        // `CODEX_HOME`, а не из конфига.
+        cmdArgs.push('--ignore-user-config');
+        // Канал входа фиксируется на САМОМ вызове (ревью Codex, 2-й проход): проверка
+        // `login status` живёт до spawn, и между ней и `exec` остаётся окно, а к custom
+        // provider она не относится вовсе. `forced_login_method` — документированный ключ,
+        // CLI сам перечисляет допустимые значения (`chatgpt`/`api`).
+        // ВАЖНО: при несовпадении он РАЗЛОГИНИВАЕТ («Logging out»), а не отказывает —
+        // проверено живьём. Поэтому он не заменяет проверку статуса, а идёт после неё:
+        // иначе AFK-раннер при чужом входе снёс бы авторизацию и всю ночь бился в 401
+        // вместо одного честного стопа.
+        if (authMode === 'subscription') cmdArgs.push('-c', 'forced_login_method="chatgpt"');
         if (model) cmdArgs.push('-m', model);
         cmdArgs.push('--', prompt);
         return cmdArgs;
@@ -1173,6 +1203,181 @@ export function createOrchestrator(env: OrchestratorEnv) {
         return result;
     }
 
+    // Фактический канал входа codex (ревью Codex по !104). Чистка `OPENAI_API_KEY` из
+    // окружения НЕ равна «сессия пойдёт по подписке»: codex кеширует метод входа сам —
+    // api-key login живёт в `auth.json`/keyring/другом `CODEX_HOME` и был бы применён молча,
+    // а счёт пришёл бы по API. Поэтому режим `subscription` проверяет ФАКТ (`codex login
+    // status` → «Logged in using ChatGPT»), а не отсутствие переменной. Проверка идёт тем же
+    // инжектируемым spawnFn, что и сама сессия, — тест обходится без живого CLI.
+    // Строка статуса, а НЕ подстрока где угодно: подстрочный поиск делал барьер fail-open —
+    // «Not Logged in using ChatGPT» проходил как успех, равно как и фраза, попавшая в
+    // предупреждение stderr при ином реальном статусе (ревью Codex, 2-й проход).
+    const CODEX_LOGIN_LINE_RE = /^Logged in using /i;
+    const CODEX_LOGIN_CHANNEL_RE = {
+        chatgpt: /^Logged in using ChatGPT\b/i,
+        api: /^Logged in using an API key\b/i,
+    } as const;
+
+    /**
+     * Пользовательский `forced_login_method` против режима раннера (ревью Codex, 5-й проход).
+     *
+     * `codex login status` — единственная подкоманда, которая НЕ принимает
+     * `--ignore-user-config`, поэтому грузит `$CODEX_HOME/config.toml`. Если там записан
+     * несовпадающий `forced_login_method`, CLI разлогинивает пользователя прямо во время
+     * нашей «безобидной» проверки — то есть барьер срабатывает деструктивно ровно в том
+     * случае, ради которого ставился. Читаем конфиг сами и падаем ДО спавна.
+     *
+     * Полностью класс закрывается отдельным `CODEX_HOME` для раннера (#86) — тогда чужого
+     * конфига нет вовсе; до тех пор это честный стоп вместо снесённого входа человека.
+     */
+    function assertNoConflictingForcedLogin(
+        readFileFn: (path: string, encoding: 'utf8') => string,
+        failFn: (msg: string) => never,
+        expected: 'chatgpt' | 'api',
+        spawnEnv: NodeJS.ProcessEnv,
+    ): void {
+        // Смотреть нужно ровно туда, куда посмотрит subprocess. authTokenEnv может удалить
+        // CODEX_HOME/HOME при санитаризации, поэтому process.env здесь дал бы другой конфиг.
+        const home = spawnEnv.CODEX_HOME || path.join(spawnEnv.HOME || os.homedir(), '.codex');
+        // Codex читает несколько слоёв конфигурации, и конфликт из системного разлогинит
+        // ровно так же (независимое ревью, 7-й проход).
+        for (const configPath of [path.join(home, 'config.toml'), SYSTEM_CODEX_CONFIG]) {
+            checkForcedLoginIn(configPath, readFileFn, failFn, expected);
+        }
+    }
+
+    /** Системный слой конфигурации Codex — читается наравне с пользовательским. */
+    const SYSTEM_CODEX_CONFIG = '/etc/codex/config.toml';
+
+    function checkForcedLoginIn(
+        configPath: string,
+        readFileFn: (path: string, encoding: 'utf8') => string,
+        failFn: (msg: string) => never,
+        expected: 'chatgpt' | 'api',
+    ): void {
+        let text = '';
+        try {
+            text = readFileFn(configPath, 'utf8');
+        } catch (error: unknown) {
+            if (
+                typeof error === 'object' &&
+                error !== null &&
+                'code' in error &&
+                error.code === 'ENOENT'
+            ) {
+                return; // только отсутствие файла означает, что переопределять нечего
+            }
+            const detail = error instanceof Error ? error.message : String(error);
+            failFn(
+                `Не удалось прочитать ${configPath} перед codex login status: ${detail}. ` +
+                    'Канал входа не проверен, запускать сессию нельзя.',
+            );
+        }
+
+        let inSection = false;
+        let multilineDelimiter: '"""' | "'''" | null = null;
+        let found: 'chatgpt' | 'api' | null = null;
+        for (const line of text.split(/\r?\n/)) {
+            if (multilineDelimiter) {
+                if (line.includes(multilineDelimiter)) multilineDelimiter = null;
+                continue;
+            }
+            // Комментарий не открывает multiline: строка вида `# """ пример` иначе
+            // прятала бы настоящий ключ ниже, тогда как TOML-парсер Codex его видит
+            // (независимое ревью, 7-й проход).
+            const code = line.replace(/^\s*#.*$/, '');
+            const tripleDouble = code.indexOf('"""');
+            const tripleSingle = code.indexOf("'''");
+            const tripleIndexes = [tripleDouble, tripleSingle].filter((index) => index >= 0);
+            if (tripleIndexes.length > 0) {
+                const index = Math.min(...tripleIndexes);
+                const delimiter = code.slice(index, index + 3) as '"""' | "'''";
+                if (code.indexOf(delimiter, index + 3) < 0) multilineDelimiter = delimiter;
+                // Значение fixed enum обязано быть однострочной строкой; содержимое
+                // multiline не разбираем, чтобы текст внутри не стал ложным ключом.
+                continue;
+            }
+            if (/^\s*\[/.test(line)) {
+                inSection = true;
+                continue;
+            }
+            if (inSection) continue;
+            const match =
+                /^\s*(?:forced_login_method|"forced_login_method"|'forced_login_method')\s*=\s*(?:"(chatgpt|api)"|'(chatgpt|api)')\s*(?:#.*)?$/.exec(
+                    line,
+                );
+            const value = match?.[1] || match?.[2];
+            if (value === 'chatgpt' || value === 'api') {
+                found = value;
+                break;
+            }
+        }
+        if (found && found !== expected) {
+            failFn(
+                `В ${configPath} задан forced_login_method="${found}", ` +
+                    `а раннер идёт каналом '${expected}'. Проверка канала (codex login status) ` +
+                    'этот конфиг читает и при несовпадении РАЗЛОГИНИВАЕТ — стоп до запуска. ' +
+                    'Убери ключ из конфига либо заведи отдельный CODEX_HOME для раннера (#86).',
+            );
+        }
+    }
+
+    function assertCodexLoginChannel(
+        spawnFn: typeof spawnSync,
+        env: NodeJS.ProcessEnv,
+        failFn: (msg: string) => never,
+        expected: 'chatgpt' | 'api',
+    ): void {
+        if (spawnFn === spawnSync) guardSideEffect('assertCodexLoginChannel(codex login status)');
+        const res = spawnFn('codex', ['login', 'status'], {
+            encoding: 'utf8',
+            shell: false,
+            env,
+            timeout: 60 * 1000,
+        });
+        const mode = expected === 'chatgpt' ? 'subscription' : 'apiKey';
+        // Сигнал проверяется ПЕРВЫМ: реальный spawnSync при таймауте отдаёт `error=ETIMEDOUT`
+        // И `signal=SIGTERM` одновременно, поэтому ветка error забирала бы управление и
+        // сообщение про сигнал было бы недостижимо (ревью Codex, 4-й проход: прежний тест
+        // был ложнозелёным — его мок нёс только signal).
+        if (res.signal) {
+            failFn(
+                `openaiRuntime.authMode='${mode}': проверка канала входа (codex login status) ` +
+                    `убита сигналом ${res.signal} — канал не проверен, запускать сессию нельзя.`,
+            );
+        }
+        if (res.error) {
+            failFn(
+                `openaiRuntime.authMode='${mode}': не удалось спросить codex о канале входа ` +
+                    `(codex login status) — ${res.error.message}.`,
+            );
+        }
+        // Статус берём из stdout: stderr несёт подсказки и предупреждения, в которых та же
+        // фраза встречается как совет («run `codex login` to be Logged in using ChatGPT»).
+        const stdout = String(res.stdout ?? '').trim();
+        const stderr = String(res.stderr ?? '').trim();
+        const statusLine = stdout
+            .split('\n')
+            .map((line) => line.trim())
+            .find((line) => CODEX_LOGIN_LINE_RE.test(line));
+        const out = stdout || stderr;
+        if (
+            (res.status ?? 1) !== 0 ||
+            !statusLine ||
+            !CODEX_LOGIN_CHANNEL_RE[expected].test(statusLine)
+        ) {
+            const howTo =
+                expected === 'chatgpt'
+                    ? "Войди подпиской (`codex login`) либо поставь authMode='apiKey'"
+                    : "Войди ключом (`codex login --with-api-key`) либо поставь authMode='subscription'";
+            failFn(
+                `openaiRuntime.authMode='${mode}', но codex залогинен иначе: ` +
+                    `${out.slice(0, 200) || '(пустой ответ codex login status)'}. ` +
+                    `${howTo} — оплата не тем каналом узнаётся по счёту, а не по логу.`,
+            );
+        }
+    }
+
     // Окружение для spawn OpenAI-сессии: базовое env раннера + ключ OpenAI под именем,
     // которое ждёт codex — `OPENAI_API_KEY` (независимо от того, из какой env-переменной
     // резолвился ключ через authTokenEnv). Секрет уходит ТОЛЬКО окружением, НЕ в argv
@@ -1186,8 +1391,15 @@ export function createOrchestrator(env: OrchestratorEnv) {
     function buildOpenAISpawnEnv(
         token: string | null,
         baseEnv: NodeJS.ProcessEnv,
+        tokenEnv: string = OPENAI_DEFAULT_TOKEN_ENV,
     ): NodeJS.ProcessEnv {
         const env: NodeJS.ProcessEnv = { ...baseEnv };
+        // Кастомное имя переменной с ключом (authTokenEnv) чужому бинарю не нужно НИКОГДА:
+        // codex читает только OPENAI_API_KEY. Ревью Codex по !104 показало дыру — при
+        // подписке резолвер возвращал token=null, а сам ключ оставался в окружении под своим
+        // именем и уезжал в песочницу danger-full-access (плюс codex умеет env_key у custom
+        // provider, то есть мог бы его и применить).
+        if (tokenEnv !== OPENAI_DEFAULT_TOKEN_ENV) delete env[tokenEnv];
         // #83: при подписке (token=null) переменную именно УДАЛЯЕМ, а не «не подставляем» —
         // ключ из окружения раннера иначе доехал бы до codex и увёл сессию на платный API.
         if (token) env.OPENAI_API_KEY = token;
@@ -1217,12 +1429,15 @@ export function createOrchestrator(env: OrchestratorEnv) {
         sandboxMode: string;
         token: string | null;
         authMode: 'apiKey' | 'subscription';
+        tokenEnv: string;
     } {
         const requireToken = opts.requireToken ?? true;
         const openai = openaiCfg ?? {};
         // #83: канал авторизации. Значение вне пары — стоп, а не тихий откат к дефолту:
         // опечатка `subscribtion` иначе молча вернула бы требование ключа (инвариант №1).
-        const authMode = openai.authMode ?? 'apiKey';
+        // Различаем ОТСУТСТВИЕ поля и любое его значение: `?? 'apiKey'` глотал явный JSON-null
+        // (находка ревью Codex), и конфиг с `"authMode": null` тихо уходил на платный канал.
+        const authMode = 'authMode' in openai ? openai.authMode : 'apiKey';
         if (authMode !== 'apiKey' && authMode !== 'subscription') {
             failFn(
                 `openaiRuntime.authMode='${String(authMode)}' — допустимы только 'apiKey' ` +
@@ -1256,7 +1471,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     "и codex авторизован подпиской — openaiRuntime.authMode: 'subscription'.",
             );
         }
-        return { model: model as string, sandboxMode, token, authMode };
+        return { model: model as string, sandboxMode, token, authMode, tokenEnv };
     }
 
     // Одна OpenAI-сессия. Форма и роль как у runClaudeOnce/runKimiOnce: {code, output}, DRY
@@ -1277,6 +1492,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         prompt: string,
         { model, modelProvider }: ClaudeOpts,
         spawnFn: typeof spawnSync = spawnSync,
+        readFileFn: (path: string, encoding: 'utf8') => string = fs.readFileSync,
     ): RunResult {
         // Провайдер-гейт: чужую (не-openai) модель к codex `-m` не пускаем — резолвер тогда
         // возьмёт openaiRuntime.model.
@@ -1285,11 +1501,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
             model: resolvedModel,
             sandboxMode,
             token,
+            authMode,
+            tokenEnv,
         } = resolveOpenAIRuntime(config.openaiRuntime, process.env, fail, {
             requireToken: !DRY,
             model: routedModel,
         });
-        const cmdArgs = buildCodexArgs(prompt, { model: resolvedModel, sandboxMode });
+        const cmdArgs = buildCodexArgs(prompt, { model: resolvedModel, sandboxMode, authMode });
         log(
             `▶ openai (codex exec) "${prompt.slice(0, 80)}…" -m ${resolvedModel} -s ${sandboxMode}`,
         );
@@ -1298,7 +1516,23 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // token не-null при !DRY только в режиме apiKey (requireToken выше); при подписке он
         // null штатно, и buildOpenAISpawnEnv тогда вычищает OPENAI_API_KEY из окружения.
         // Секрет — только в env процесса, НЕ в argv (иначе виден в /proc/*/cmdline).
-        const env = buildOpenAISpawnEnv(token, process.env);
+        const env = buildOpenAISpawnEnv(token, process.env, tokenEnv);
+        // Порядок важен: канал входа проверяется ДО спавна сессии — иначе платный запрос уже
+        // ушёл бы, и «стоп» опоздал ровно на одну оплаченную итерацию.
+        // Проверяются ОБА режима (ревью Codex, 4-й проход): при `apiKey` кешированный
+        // ChatGPT-вход увёл бы сессию на подписку так же молча, как раньше наоборот.
+        // Принудительный `forced_login_method="api"` при этом НЕ ставим: он деструктивен —
+        // при несовпадении разлогинивает, снося вход человека на той же машине (#86).
+        // Канал проверяется ТОЛЬКО у подписки. Симметричная проверка `apiKey` (её просил
+        // 4-й проход ревью) ломала документированный сценарий: `codex login status` при ключе
+        // в env и чистом CODEX_HOME отвечает `Not logged in` — проверено живьём. Пройти её
+        // можно было бы лишь через `codex login --with-api-key`, то есть ЗАПИСАВ секрет в
+        // auth.json вопреки инварианту №11. Остаточная дыра (при кешированном ChatGPT-входе
+        // сессия `apiKey` уйдёт по подписке) описана в #86 вместе с отдельным CODEX_HOME.
+        if (authMode === 'subscription') {
+            assertNoConflictingForcedLogin(readFileFn, fail, 'chatgpt', env);
+            assertCodexLoginChannel(spawnFn, env, fail, 'chatgpt');
+        }
         return spawnCodex(cmdArgs, timeout, spawnFn, env);
     }
 
@@ -5395,6 +5629,8 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // #374 (фаза 6): рантайм OpenAI (отдельный `codex exec`). Экспорт — для смоук-теста
         // рантайма и юнитов чистых хелперов (argv/env/резолв, fail-closed).
         runOpenAIOnce,
+        assertCodexLoginChannel,
+        assertNoConflictingForcedLogin,
         buildCodexArgs,
         buildOpenAISpawnEnv,
         resolveOpenAIRuntime,
