@@ -50,7 +50,21 @@ const COMMENT_KINDS = ['comment', 'pr-comment'] as const;
 export const MAX_MUTATION_REQUESTS = 20;
 // Заметно больше: комментарий стоит строки в ленте, а не состояния проекта — тесный
 // предел здесь ловит не сорвавшуюся сессию, а просто дотошное ревью.
-export const MAX_COMMENT_REQUESTS = 200;
+//
+// Ревью #612: потолок соразмерен ПРОПУСКНОЙ СПОСОБНОСТИ форжа, а не только вкусу. У GitHub
+// на создание контента отдельный secondary rate limit (порядка 80 создающих запросов в
+// минуту и жёстче — в час), а применение поштучное: батч в 200 комментариев упирался бы в
+// стену где-то в середине, и человек получал бы пуш «намерение не применилось» с
+// транспортной ошибкой. 100 — вчетверо больше самого дотошного из виденных ревью (23
+// находки на PR #601) и в пределах часового окна форжа; ровность потока держит пауза в
+// applySessionRequests (orchestrator.ts).
+export const MAX_COMMENT_REQUESTS = 100;
+// Грубая ранняя граница на объём файла — ДО единого JSON.parse. Точный раздельный счёт по
+// классам возможен только после разбора, но разбирать сорвавшийся батч на 100 000 строк
+// целиком (каждая — parse + валидация, комментарий до 10 000 символов), чтобы потом его
+// отвергнуть, незачем. Второй довод — диагноз: среди тысяч строк почти наверняка найдётся
+// кривая, и человек читал бы «строка 137: ожидался объект JSON» вместо «сессия сорвалась».
+export const MAX_REQUEST_LINES = MAX_MUTATION_REQUESTS + MAX_COMMENT_REQUESTS;
 // Не предел, а водораздел для лога (не отказ): столько комментариев в батче — не срыв,
 // но повод сказать человеку «PR/фаза великоват(а)», тем же числом, что раньше отвергало
 // батч целиком.
@@ -62,12 +76,25 @@ export function classifySessionRequests(requests: readonly TSessionRequest[]): {
     mutations: TSessionRequest[];
     comments: TSessionRequest[];
 } {
-    const mutationSet: readonly string[] = MUTATION_KINDS;
-    const commentSet: readonly string[] = COMMENT_KINDS;
-    return {
-        mutations: requests.filter((r) => mutationSet.includes(r.kind)),
-        comments: requests.filter((r) => commentSet.includes(r.kind)),
-    };
+    const mutations = requests.filter((r) =>
+        (MUTATION_KINDS as readonly string[]).includes(r.kind),
+    );
+    const comments = requests.filter((r) => (COMMENT_KINDS as readonly string[]).includes(r.kind));
+    // Ревью #612: классификация ИСЧЕРПЫВАЮЩА, и это проверяется, а не подразумевается.
+    // Namespace-типы здесь не помогут — оба массива сведены к `readonly string[]`, так что
+    // новый вариант union (докблок TSessionRequest прямо предполагает рост списка) проехал
+    // бы мимо ОБОИХ пределов молча, то есть новый класс намерений приехал бы вовсе без
+    // предохранителя. Тихий дефолт вместо fail-closed — ровно инвариант №1.
+    if (mutations.length + comments.length !== requests.length) {
+        const known = new Set([...MUTATION_KINDS, ...COMMENT_KINDS] as readonly string[]);
+        const orphans = [...new Set(requests.map((r) => r.kind).filter((k) => !known.has(k)))];
+        throw new Error(
+            `Запрос сессии: намерение вида ${orphans.map((k) => JSON.stringify(k)).join(', ')} ` +
+                'не отнесено ни к мутациям, ни к комментариям — значит оно проехало бы мимо ' +
+                'обоих пределов. Добавь его в MUTATION_KINDS или COMMENT_KINDS (session-requests.ts).',
+        );
+    }
+    return { mutations, comments };
 }
 
 // Разбивка батча по kind — для сообщения об отказе: человек видит не просто «слишком
@@ -189,6 +216,18 @@ export function parseSessionRequests(
         .split('\n')
         .map((l, i) => ({ text: l.trim(), no: i + 1 }))
         .filter((l) => l.text !== '');
+
+    // Ревью #612: грубый предохранитель ДО разбора — по числу строк. Точные пределы по
+    // классам ниже (после разбора), но батч, который заведомо не влезает даже в их сумму,
+    // отвергается сразу и с ПРАВИЛЬНЫМ диагнозом («сессия сорвалась»), а не случайной
+    // синтаксической придиркой к 137-й строке из ста тысяч.
+    if (lines.length > MAX_REQUEST_LINES) {
+        throw new Error(
+            `Запрос сессии: ${String(lines.length)} строк — больше суммы пределов ` +
+                `(${String(MAX_REQUEST_LINES)}). Батч отвергнут целиком, НЕ разбираясь: столько ` +
+                'намерений за одну итерацию похоже на сорвавшуюся сессию.',
+        );
+    }
 
     const requests = lines.map(({ text: source, no }) => {
         let parsed: unknown;

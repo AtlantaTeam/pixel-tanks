@@ -1708,6 +1708,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
     //
     // «Закрой с комментарием» — это два намерения подряд, и порядок значим: комментарий
     // ложится ДО закрытия, иначе объяснение уезжает в уже закрытую карточку.
+    // Пауза между запросами форжа на крупном батче (ревью #612). Секунда — ≤60 запросов в
+    // минуту при окне GitHub около 80: с запасом, но без заметного удлинения обычных сдач.
+    const FORGE_PACE_MS = 1000;
+    // Узко: только явные формулировки лимита форжа. Широкий матч («403») подписал бы под
+    // «это лимит» обычный отказ прав, и человек чинил бы не то.
+    const FORGE_RATE_LIMIT_RE = /secondary rate limit|rate limit exceeded|\bHTTP 429\b/i;
+
     function applySessionRequests({
         cfg,
         phase,
@@ -1718,6 +1725,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         taskSource = adapters.taskSource,
         logFn = log,
         pushEventFn = pushEvent,
+        sleepFn = sleep,
     }: {
         cfg: RalphConfig;
         // #45: контекст фазы нужен намерениям по PR — сам PR они не называют (сессия не
@@ -1731,6 +1739,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         taskSource?: TaskSourceAdapter;
         logFn?: typeof log;
         pushEventFn?: typeof pushEvent;
+        // Ревью #612: пауза между запросами форжа на КРУПНОМ батче (см. FORGE_PACE_MS).
+        // Инжектируется, чтобы тесты не спали по-настоящему.
+        sleepFn?: typeof sleep;
     }): { applied: number; failed: boolean; closedIssues: number[] } {
         const raw = readFn();
         if (!raw || raw.trim() === '') return { applied: 0, failed: false, closedIssues: [] };
@@ -1775,8 +1786,22 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // действие надёжнее чужого списка.
         const closedIssues: number[] = [];
 
+        // Ревью #612: крупный батч применяем РОВНЫМ потоком. У GitHub на создание контента
+        // свой secondary rate limit (порядка 80 создающих запросов в минуту), а применение
+        // поштучное — сотня комментариев подряд с высокой вероятностью упиралась бы в него
+        // на середине, и повтор сохранённого хвоста шёл бы в ту же стену. Секунда паузы
+        // держит темп ниже окна форжа; на обычных батчах (≤ COMMENT_NOTICE_THRESHOLD)
+        // пауза не берётся вовсе, поведение прежнее.
+        const paced = requests.length > COMMENT_NOTICE_THRESHOLD;
+        if (paced) {
+            logFn(
+                `⏳ Батч крупный (${String(requests.length)}) — применяю с паузой ` +
+                    `${String(FORGE_PACE_MS)}мс между запросами, чтобы не упереться в secondary rate limit форжа.`,
+            );
+        }
         for (let i = 0; i < requests.length; i += 1) {
             const req = requests[i];
+            if (paced && i > 0) sleepFn(FORGE_PACE_MS);
             try {
                 if (req.kind === 'new-issue') {
                     const num = taskSource.createIssue(req);
@@ -1936,8 +1961,16 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 } catch (writeErr) {
                     writeErrMsg = (writeErr as Error).message;
                 }
+                // Ревью #612: упёрлись в лимит форжа — называем это прямо. Иначе человек
+                // читает сырую транспортную ошибку и не понимает, что повтор хвоста имеет
+                // смысл только после паузы, а не сразу.
+                const limitHint = FORGE_RATE_LIMIT_RE.test((e as Error).message)
+                    ? 'Похоже, упёрлись в rate limit форжа (не отказ по существу): ' +
+                      'хвост повторится следующей итерацией, к тому времени окно сбросится. '
+                    : '';
                 pushEventFn(
                     `⚠ Ralph: намерение сессии (${req.kind}) не применилось — ${(e as Error).message}. ` +
+                        limitHint +
                         `Применено ${String(i)} из ${String(requests.length)}. ` +
                         (writeErrMsg === null
                             ? `Остаток сохранён в ${REQUESTS_PATH} и будет повторён.`

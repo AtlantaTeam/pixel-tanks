@@ -9,6 +9,8 @@ import { describe, expect, it } from 'vitest';
 import {
     MAX_MUTATION_REQUESTS,
     MAX_COMMENT_REQUESTS,
+    MAX_REQUEST_LINES,
+    classifySessionRequests,
     parseSessionRequests,
     serializeSessionRequest,
 } from './session-requests.ts';
@@ -259,7 +261,7 @@ describe('parseSessionRequests — разбор намерений кодер-с
 
     it('смешанный батч: каждый класс считается по своему пределу независимо', () => {
         // Мутаций — ровно на пределе (проходит), комментариев — далеко за старым общим
-        // пределом (20), но под своим (200): раньше такой батч отвергся бы целиком.
+        // пределом (20), но под своим, куда большим: раньше такой батч отвергся бы целиком.
         const raw = [
             ...Array.from({ length: MAX_MUTATION_REQUESTS }, (_, i) =>
                 line({ kind: 'close', issue: i + 1, comment: 'x' }),
@@ -279,6 +281,30 @@ describe('parseSessionRequests — разбор намерений кодер-с
             line({ kind: 'pr-comment', comment: 'сводка' }),
         ].join('\n');
         expect(() => parseSessionRequests(raw, opts)).toThrow(/предел|лимит/i);
+    });
+
+    // Ревью #612: грубая ранняя граница по числу строк — ДО разбора. Сорвавшийся батч на
+    // сотню тысяч строк не должен разбираться целиком, чтобы быть отвергнутым, а диагноз
+    // обязан звучать как «сессия сорвалась», а не как придирка к случайной кривой строке.
+    it('НЕГАТИВНЫЙ: строк больше суммы пределов — отказ ДО разбора, с правильным диагнозом', () => {
+        const raw = [
+            ...Array.from({ length: MAX_REQUEST_LINES }, (_, i) =>
+                line({ kind: 'pr-comment', comment: `замечание ${String(i)}` }),
+            ),
+            'это даже не JSON',
+        ].join('\n');
+        // Кривая строка в батче есть, но человек читает про объём, а не про её синтаксис.
+        expect(() => parseSessionRequests(raw, opts)).toThrow(/строк — больше суммы пределов/);
+        expect(() => parseSessionRequests(raw, opts)).not.toThrow(/не разобралось как JSON/);
+    });
+
+    it('ровно предел строк — разбирается штатно (граница не съезжает на единицу)', () => {
+        const raw = Array.from({ length: MAX_REQUEST_LINES }, (_, i) =>
+            i < MAX_MUTATION_REQUESTS
+                ? line({ kind: 'close', issue: i + 1, comment: 'x' })
+                : line({ kind: 'pr-comment', comment: `замечание ${String(i)}` }),
+        ).join('\n');
+        expect(parseSessionRequests(raw, opts)).toHaveLength(MAX_REQUEST_LINES);
     });
 
     it('НЕГАТИВНЫЙ: строка-массив или строка-скаляр вместо объекта — отказ', () => {
@@ -321,5 +347,30 @@ describe('serializeSessionRequest: round-trip записи и чтения хв�
         const parsed = parseSessionRequests(raw, opts);
         const again = parseSessionRequests(parsed.map(serializeSessionRequest).join('\n'), opts);
         expect(again).toEqual(parsed);
+    });
+});
+
+// Ревью #612: классификация обязана быть ИСЧЕРПЫВАЮЩЕЙ. Оба списка сведены к
+// readonly string[], поэтому новый вариант union TS здесь не поймает — намерение
+// неизвестного класса проехало бы мимо ОБОИХ пределов вовсе (тихий дефолт вместо
+// fail-closed, инвариант №1). Проверка живёт в самой функции, и вот она.
+describe('classifySessionRequests: неклассифицированный kind — отказ, а не тихий пропуск', () => {
+    it('известные виды раскладываются по двум классам без остатка', () => {
+        const { mutations, comments } = classifySessionRequests([
+            { kind: 'close', issue: 1, comment: 'x' },
+            { kind: 'pr-block', comment: 'блок' },
+            { kind: 'pr-comment', comment: 'замечание' },
+            { kind: 'comment', issue: 2, comment: 'коммент' },
+        ]);
+        expect(mutations).toHaveLength(2);
+        expect(comments).toHaveLength(2);
+    });
+
+    it('НЕГАТИВНЫЙ: kind вне обоих списков — бросает и называет его поимённо', () => {
+        const future = [{ kind: 'pr-approve', comment: 'ship it' }] as unknown as Parameters<
+            typeof classifySessionRequests
+        >[0];
+        expect(() => classifySessionRequests(future)).toThrow(/pr-approve/);
+        expect(() => classifySessionRequests(future)).toThrow(/MUTATION_KINDS|COMMENT_KINDS/);
     });
 });

@@ -51,6 +51,7 @@ import type { AdapterRegistries, AdapterConfig } from '../adapters/adapters-impl
 import type { ReviewComment } from '../adapters/adapters.ts';
 import type { DeployOutcome } from './deploy-check.ts';
 import type { RalphState } from './state-lock.ts';
+import { COMMENT_NOTICE_THRESHOLD } from './session-requests.ts';
 
 // #204: состав чеков гейта переехал в ralph.config.json. gateChecksFor и tryMergePhase
 // читают ФАБРИЧНЫЙ config, который в проде ставит main() (в юнит-тестах не запускаемая).
@@ -8137,11 +8138,116 @@ describe('applySessionRequests: намерения сессии применяе
             taskSource: ts,
             logFn,
             pushEventFn: () => {},
+            sleepFn: () => {},
         });
         expect(res.failed).toBe(false);
         expect(res.applied).toBe(30);
         expect(calls).toHaveLength(30);
         expect(logFn.mock.calls.some((c) => /30 комментариев/.test(String(c[0])))).toBe(true);
+    });
+
+    // Ревью #612: от прежнего предела 20 для комментариев остался ТОЛЬКО лог — значит его
+    // порог и надо сторожить с обеих сторон, иначе сигнал тихо потеряется при следующем
+    // рефакторе applySessionRequests.
+    const commentBatch = (n: number) =>
+        Array.from({ length: n }, (_, i) =>
+            line({ kind: 'pr-comment', comment: `замечание ${String(i)}` }),
+        ).join('\n');
+
+    const applyCommentBatch = (n: number) => {
+        const { ts } = prTaskSource();
+        const logFn = vi.fn();
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => commentBatch(n),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn,
+            pushEventFn: () => {},
+            sleepFn: () => {},
+        });
+        const logged = logFn.mock.calls.map((c) => String(c[0])).join('\n');
+        return { res, logged };
+    };
+
+    it('ревью #612: ровно на пороге (20 комментариев) заметка МОЛЧИТ', () => {
+        const { res, logged } = applyCommentBatch(COMMENT_NOTICE_THRESHOLD);
+        expect(res.applied).toBe(COMMENT_NOTICE_THRESHOLD);
+        expect(logged).not.toMatch(/в батче намерений/);
+    });
+
+    it('ревью #612: на 21 комментарии заметка появляется и называет число', () => {
+        const { res, logged } = applyCommentBatch(COMMENT_NOTICE_THRESHOLD + 1);
+        expect(res.applied).toBe(COMMENT_NOTICE_THRESHOLD + 1);
+        expect(logged).toMatch(
+            new RegExp(`в батче намерений ${String(COMMENT_NOTICE_THRESHOLD + 1)}`),
+        );
+    });
+
+    // Ревью #612: у GitHub на создание контента свой secondary rate limit (порядка 80
+    // запросов в минуту) — крупный батч применяется с паузой, обычный идёт как раньше.
+    it('ревью #612: крупный батч применяется с паузами между запросами форжа', () => {
+        const { ts } = prTaskSource();
+        const sleepFn = vi.fn();
+        ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => commentBatch(25),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn: () => {},
+            sleepFn,
+        });
+        // Пауза между запросами, а не перед первым: 25 намерений → 24 паузы.
+        expect(sleepFn).toHaveBeenCalledTimes(24);
+        expect(sleepFn.mock.calls.every((c) => c[0] === 1000)).toBe(true);
+    });
+
+    it('ревью #612: обычный батч (≤ порога) применяется БЕЗ пауз — поведение прежнее', () => {
+        const { ts } = prTaskSource();
+        const sleepFn = vi.fn();
+        ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => commentBatch(COMMENT_NOTICE_THRESHOLD),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn: () => {},
+            sleepFn,
+        });
+        expect(sleepFn).not.toHaveBeenCalled();
+    });
+
+    it('ревью #612: отказ форжа по rate limit назван в пуше прямо, а не сырой ошибкой', () => {
+        const { ts } = prTaskSource({
+            commentOnPullRequest: () => {
+                throw new Error('gh: You have exceeded a secondary rate limit (HTTP 403)');
+            },
+        });
+        const pushEventFn = vi.fn();
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => commentBatch(3),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn,
+            sleepFn: () => {},
+        });
+        expect(res.failed).toBe(true);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/rate limit форжа/);
     });
 
     // #45: намерения ревью-сессии по PR. Фейк шва тот же, плюс PR ветки фазы и метки на нём.
