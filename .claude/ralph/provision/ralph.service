@@ -1,0 +1,28 @@
+[Unit]
+Description=Ralph — автономный раннер разработки pixel-tanks (профиль prod)
+Documentation=file:/root/pixel-tanks/.claude/ralph/RUNBOOK.md
+After=network-online.target shadowsocks-libev-local@frankfurt.service privoxy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/pixel-tanks
+EnvironmentFile=/root/ralph.env
+ExecStart=/usr/bin/env node .claude/ralph/ralph.js --profile prod
+User=root
+StandardOutput=journal
+StandardError=journal
+# Restart=always ЗДЕСЬ НАМЕРЕННО НЕ СТОИТ (Issue #103). В отличие от ss-local/privoxy,
+# остановки ralph — красный гейт, blocked-тупик, breaker, мёртвый туннель — это
+# осознанные fail-closed стопы, а не сетевой чих. Слепой авто-рестарт бился бы об ту
+# же стену по кругу и жёг лимиты API вместо того, чтобы дождаться разбора человеком
+# (RUNBOOK.md, «После фазы»). Перезапуск — `systemctl start ralph` руками, либо в
+# будущем умный монитор, отличающий штатный стоп от сетевого сбоя (research #173).
+# Type=oneshot, не simple: прод-профиль сам завершается штатно после мерджа фазы
+# (haltBeforeDeploy, RUNBOOK.md «Профили») — это одноразовый прогон фазы, а не
+# демон, который обязан жить непрерывно. Код выхода 0 = inactive (dead), ненулевой =
+# failed — статус виден в `systemctl status ralph`/`journalctl -u ralph` как факт,
+# не теряется молча.
+
+[Install]
+WantedBy=multi-user.target

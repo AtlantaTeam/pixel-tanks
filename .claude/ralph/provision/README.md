@@ -205,15 +205,29 @@ IPv4.
 
 > `image_id` актуального образа — в `.claude/state/HANDOFF.md` и памяти проекта, не хардкодим.
 
-## Осталось (не в этом скрипте — Фазы 1-2 плана)
+## Управляемый запуск (не ручной фон, #103)
 
-- **Linux-порт `ralph.js`** — писался под Windows (`spawnSync shell:true` → `/bin/sh`,
-  guard `%`/`"` под cmd.exe). Прогнать `--dry-run`, починить (#66–70).
-- **systemd-юнит для ralph** + health-check туннеля перед итерацией — после prod-профиля.
+Раньше первый боевой прогон держался фоновым процессом claude-сессии — работало, но
+случайно, не по дизайну. Штатных способа два, оба независимы от разрыва SSH — выбор
+и подробности (что делает каждый скрипт, почему `Restart=always` ralph
+противопоказан) — `../RUNBOOK.md`, раздел «Запуск»:
 
-Прод-профиль (`--profile prod`) реализован в Фазе 2 (#71–75). Запускать **из корня репо**:
-пути в `ralph.js` относительные, из `.claude/ralph/` конфиг не найдётся.
+- **`start-tmux.sh [профиль]`** — вариант A (HITL): отдельная tmux-сессия `ralph`,
+  панель 0 — `ralph.js`, панель 1 — дашборд `monitor.js`.
+- **`ralph.service`** — вариант B (AFK): systemd-юнит, `Type=oneshot`, без авто-рестарта.
+  Установка — `sudo cp ralph.service /etc/systemd/system/ && systemctl daemon-reload`,
+  запуск — `systemctl start ralph`, лог — `journalctl -u ralph -f`.
+
+Оба запускают то же самое, что и ручная команда ниже — годится для разового/тестового
+прогона, когда управляемый запуск избыточен (`--dry-run`, разовая проверка правки
+самого раннера). Запускать **из корня репо**: пути в `ralph.js` относительные, из
+`.claude/ralph/` конфиг не найдётся.
 
 ```bash
 cd /root/pixel-tanks && set -a && . /root/ralph.env && set +a && node .claude/ralph/ralph.js --profile prod
 ```
+
+## Осталось (не в этом скрипте)
+
+- **Linux-порт `ralph.js`** — писался под Windows (`spawnSync shell:true` → `/bin/sh`,
+  guard `%`/`"` под cmd.exe). Прогнать `--dry-run`, починить (#66–70).
