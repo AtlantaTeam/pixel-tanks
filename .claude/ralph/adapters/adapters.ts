@@ -443,12 +443,43 @@ export type RunOptions = {
     fallbackModel?: string | null;
 };
 
+// Классификация отказа ЗАПУСКА процесса (#611, milestone «Раннер · Устойчивость к
+// отказам») — на границе spawn, где ещё доступен res.error, а не по тексту вывода
+// (текстовый путь isRuntimeUnavailable остаётся defense-in-depth поверх, не вместо).
+// До #611 spawnClaude/spawnCodex читали у результата spawnSync только status/signal/
+// stdout/stderr, НИКОГДА res.error — ENOENT (бинаря нет, идёт автообновление CLI),
+// E2BIG (промпт/argv превысил MAX_ARG_STRLEN), EACCES, ENOBUFS были неотличимы от
+// обычного `{code: 1, output: '\n'}` честного краха сессии.
+//
+// - 'runtime-unavailable' — бинаря нет (ENOENT) — транзиент, повторить с backoff;
+// - 'arg-too-long'        — E2BIG/«Argument list too long» — детерминированный отказ
+//                            ЗАПУСКА, повторов НЕТ, чинить (усечение/stdin, #607);
+// - 'spawn-failed'        — иная ошибка транспорта запуска (EACCES/…) — тоже отказ
+//                            запуска, не отказ сессии по существу, но и не транзиент —
+//                            повторов нет;
+// - 'session-failed'      — процесс реально СТАРТОВАЛ и завершился (успешно или нет).
+//                            Это не только «res.error отсутствовал»: ревью #612 отнесло
+//                            сюда и два исхода С res.error, где процесс всё же отработал —
+//                            таймаут (`signal: SIGTERM` + ETIMEDOUT) и переполненный
+//                            maxBuffer (`status: 0` + ENOBUFS). Признак старта — живой
+//                            status/signal, а не отсутствие ошибки.
+export type SpawnFailureKind =
+    'runtime-unavailable' | 'arg-too-long' | 'spawn-failed' | 'session-failed';
+
 // Результат одной сессии: код возврата процесса и объединённый вывод (stdout+stderr).
 // Оркестратор сканирует `output` на маркер API-лимита и решает про повтор/ожидание —
 // это его политика, не рантайма; рантайм лишь честно отдаёт код и вывод.
+// `failureKind`/`systemErrorCode` (#611) — структурная классификация отказа запуска.
+// Оба поля НЕОБЯЗАТЕЛЬНЫ по существу контракта, а не ради удобства тестов (ревью #612):
+// сторонняя реализация шва рантайма может не уметь классифицировать отказ вовсе, и ядро
+// обязано работать без них — текстовая эвристика isRuntimeUnavailable остаётся именно на
+// этот случай. Боевые реализации заполняют их при `code !== 0` и опускают при успехе
+// (`code === 0`): у успеха класса отказа нет.
 export type RunResult = {
     code: number;
     output: string;
+    failureKind?: SpawnFailureKind;
+    systemErrorCode?: string;
 };
 
 export type CoderRuntimeAdapter = {

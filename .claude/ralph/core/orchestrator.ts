@@ -50,7 +50,12 @@ import { createWorktreeManager } from './worktree.ts';
 import { createReviewModule } from './review.ts';
 import { createGateRunner, resolveGateChecks } from './gate.ts';
 import { createDeployCheckModule } from './deploy-check.ts';
-import { parseSessionRequests, serializeSessionRequest } from './session-requests.ts';
+import {
+    parseSessionRequests,
+    serializeSessionRequest,
+    classifySessionRequests,
+    COMMENT_NOTICE_THRESHOLD,
+} from './session-requests.ts';
 // #45: тексты промптов сессий — отдельным модулем, чтобы барьер чистоты мог их грепать
 // (в самом оркестраторе команды `gh` законны — там живёт реализация форжа GitHub).
 import {
@@ -71,6 +76,14 @@ import {
     apiLimitWaitMs,
     apiLimitMessage,
 } from './api-limit.ts';
+import {
+    isRuntimeUnavailable,
+    runtimeUnavailableWaitMs,
+    runtimeUnavailableMessage,
+    runtimeUnavailableExhaustedMessage,
+    DEFAULT_RUNTIME_UNAVAILABLE_MAX_WAIT_MS,
+} from './runtime-availability.ts';
+import { isArgvTooLong, argvTooLongMessage, resolveSpawnResult } from './spawn-failure.ts';
 // #369 (фаза 5): сборка адаптеров — текущие реализации пяти швов (форж/гейт/нотификатор/
 // деплой/рантайм) оформлены как интерфейсы adapters.ts и выбираются через конфиг. Ядро
 // ниже зависит ТОЛЬКО от типов-интерфейсов (RalphAdapters); конкретные модули (gate.ts,
@@ -211,6 +224,10 @@ export type RalphConfig = {
     waitOnApiLimit?: boolean;
     apiLimitGraceMin?: number;
     apiLimitFallbackWaitMin?: number;
+    // #606: бюджет и шаг backoff повторов при транзиентной недоступности рантайма (CLI
+    // автообновляется — код 127/ENOENT). Дефолты — runtime-availability.ts.
+    runtimeUnavailableMaxWaitMs?: number;
+    runtimeUnavailableRetryDelayMs?: number;
     claudeTimeoutMs?: number;
     haltBeforeDeploy?: boolean;
     runnerWorktreePath?: string;
@@ -650,12 +667,92 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // молча исчез бы, и раннер спал/повторял без ограничения. positiveIntOrDefault
         // отсекает NaN/строку/≤0, как уже делают apiLimitGraceMin/FallbackWaitMin.
         const maxWaits = positiveIntOrDefault(cfg.apiLimitMaxWaits, 3);
+        // Ревью #612: бюджет ожидания рантайм-недоступности поднят СЮДА, к соседнему
+        // maxWaits, — cfg внутри цикла не меняется, а рядом видно главное: бюджеты двух
+        // ожиданий независимы и считаются каждый своим счётчиком.
+        const runtimeUnavailMaxWaitMs = positiveIntOrDefault(
+            cfg.runtimeUnavailableMaxWaitMs,
+            DEFAULT_RUNTIME_UNAVAILABLE_MAX_WAIT_MS,
+        );
         // #376 доп.скоуп: «сначала фолбэк, потом ожидание» — пробуем ОДИН раз ЗА ВЕСЬ
         // вызов (не на каждый attempt: иначе тот же кросс-провайдерный запуск повторялся
         // бы вместе с обычными повторами и жёг чужой лимит/бюджет без пользы).
         let fallbackTried = false;
-        for (let attempt = 0; ; attempt++) {
-            const { code, output } = runClaudeOnceFn(prompt, opts);
+        // #606: рантайм временно недоступен (CLI автообновляется — симлинк бинаря на
+        // секунды-минуты пересоздаётся) — накопленное время УЖЕ потраченных пауз, не
+        // Date.now(): арифметика на своих же waitMs детерминирована и не требует часов
+        // в тестах (тот же приём, что счётчик attempt у API-лимита, только по сумме
+        // времени, а не числу попыток — обновление CLI не гарантирует фиксированное
+        // число ретраев).
+        let runtimeUnavailAttempt = 0;
+        let runtimeUnavailElapsedMs = 0;
+        // Ревью #612: `attempt` — счётчик ОЖИДАНИЙ API-ЛИМИТА, и повышает его только сам
+        // цикл ожидания лимита (в самом низу тела). Раньше он рос на каждом витке `for`,
+        // то есть повторы рантайм-недоступности жгли чужой бюджет: три моргания CLI — и
+        // `attempt >= maxWaits` истинно СРАЗУ, раннер не ждёт сброса окна лимита ни разу,
+        // а в шаге сдачи фазы это fail-closed стоп по причине, к лимиту отношения не
+        // имеющей. Документированное «ждать не более N раз» обязано значить ровно это, а
+        // не «N минус число транзиентов».
+        let attempt = 0;
+        for (;;) {
+            const { code, output, failureKind, systemErrorCode } = runClaudeOnceFn(prompt, opts);
+            // #611: 'arg-too-long' — детерминированный отказ ЗАПУСКА (argv/env превысили
+            // MAX_ARG_STRLEN), НЕ транзиент. Причина уже названа в логе на границе spawn
+            // (spawnClaude/spawnCodex) — здесь просто честно возвращаем код БЕЗ повтора:
+            // повторный запуск с тем же argv упрётся в тот же предел ядра, ожидание его не
+            // лечит (в отличие от 'runtime-unavailable' ниже).
+            if (failureKind === 'arg-too-long') {
+                onOutput(output);
+                return code;
+            }
+            // #611: структурная классификация (res.error.code === 'ENOENT' на границе spawn)
+            // — источник истины. Текстовая isRuntimeUnavailable(code, output) остаётся
+            // ВТОРЫМ, более широким условием (code 127 от шелл-обёртки, либо рантаймы вне
+            // spawnClaude/spawnCodex, которых эта классификация не касается) — оба пути ведут
+            // к одному и тому же повтору с backoff, ни один не заменяет другой целиком.
+            if (
+                failureKind === 'runtime-unavailable' ||
+                isRuntimeUnavailable(code, output, failureKind)
+            ) {
+                const remainingMs = runtimeUnavailMaxWaitMs - runtimeUnavailElapsedMs;
+                if (remainingMs <= 0) {
+                    // Честный fail-closed стоп, но с пушем, который НАЗЫВАЕТ причину:
+                    // критерий готовности #606 требует не путать «рантайм недоступен» с
+                    // «сессия/ревью не дало вердикта» — вызывающий (шаги сдачи фазы)
+                    // логирует свой прежний generic-текст следом, этот пуш идёт первым и
+                    // остаётся в истории уведомлений как точная причина.
+                    pushEventFn(
+                        runtimeUnavailableExhaustedMessage(
+                            runtimeUnavailMaxWaitMs,
+                            runtimeUnavailAttempt,
+                            systemErrorCode,
+                        ),
+                        cfg,
+                    );
+                    onOutput(output);
+                    // Ревью #612: код НОРМАЛИЗУЕТСЯ в 127. Наружу из runClaude уходит голое
+                    // число, а разбор падения кодер-итерации (handleCrashedCoderSession)
+                    // отличает отказ СРЕДЫ от отказа сессии именно по номеру — `127 || 126`
+                    // (#445). Структурный путь #611 отдаёт ENOENT кодом 1, и без подмены
+                    // петля увидела бы обычную неудачу, напечатала «продолжаем» и молотила
+                    // итерации об отсутствующий бинарь до maxIterations — при уже ушедшем
+                    // пуше «рантайм недоступен». 127 — тот же класс («command not found»),
+                    // которым этот отказ приходит от шелл-обёртки, так что разбор падения
+                    // получает его в понятной ему форме, а не в новой.
+                    return 127;
+                }
+                runtimeUnavailAttempt++;
+                const waitMs = Math.min(
+                    runtimeUnavailableWaitMs(runtimeUnavailAttempt, cfg),
+                    remainingMs,
+                );
+                runtimeUnavailElapsedMs += waitMs;
+                log(
+                    runtimeUnavailableMessage(runtimeUnavailAttempt, waitMs, code, systemErrorCode),
+                );
+                sleepFn(waitMs);
+                continue;
+            }
             const limitHit = code !== 0 && API_LIMIT_RE.test(output);
             if (!limitHit) {
                 onOutput(output);
@@ -728,13 +825,28 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // даже без Telegram): парный log() выше давал двойную строку в логе.
             pushEventFn(limitMsg, cfg);
             sleepFn(waitMs);
+            // ЕДИНСТВЕННОЕ место, где растёт счётчик ожиданий лимита (ревью #612): бюджет
+            // «не более N ожиданий» тратит только сам факт ожидания лимита.
+            attempt++;
         }
     }
 
     // Построение argv для claude -p (ядро Linux-порта #67). Чистая функция: тот же
     // вход → тот же массив, без побочных эффектов — вынесена из runClaudeOnce, чтобы
-    // покрыть юнит-тестами (спецсимволы промпта проходят дословно; флаги model/
-    // permission-mode добавляются по конфигу).
+    // покрыть юнит-тестами (флаги model/permission-mode добавляются по конфигу).
+    //
+    // #607: ПРОМПТА В ARGV БОЛЬШЕ НЕТ. Раньше он был вторым элементом ('-p', prompt, …), и
+    // у одного argv-элемента в Linux жёсткий предел — MAX_ARG_STRLEN, 131072 байта.
+    // Повторное ревью собирает промпт из диффа фазы (до review.diffLimit символов) И ВСЕЙ
+    // ленты комментариев PR — на PR #601 это дало ≈138000 байт при пределе 131072: execve
+    // вернул E2BIG, `claude` не запустился ВООБЩЕ (код 1, ноль строк вывода за 2-3 секунды),
+    // а раннер трактовал пустой вывод как «ревью не дало вердикта» и вставал fail-closed с
+    // меткой blocked — притом что чинить было нечего, промпт просто не поместился в argv.
+    // Отказ самоусиливался: чем дотошнее ревью, тем больше комментариев, тем вернее
+    // следующий круг снова упрётся в тот же потолок. Argv теперь ФИКСИРОВАННОЙ длины (флаги
+    // + имена моделей — единицы/десятки байт), промпт уходит отдельно через stdin
+    // (spawnClaude, опция input) — у stdin такого предела нет. См. shArgv (exec.ts, #133) —
+    // тот же приём уже применялся для комментариев PR, уходящих счётчику находок.
     //
     // fallback-модель: опции.fallbackModel, если передан (даже null/'none'), ПОЛНОСТЬЮ
     // переопределяет cfg.fallbackModel — не подмешивается и не деградирует до общего
@@ -753,13 +865,17 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // вывод упавшего теста (excerpt в heal-промпте) с обратной кавычкой исполнился бы
     // как команда (RCE). argv-массив снимает ВЕСЬ класс: шелл не участвует, спецсимволы
     // не раскрываются — прежний guard /["%]/ и санитизация excerpt больше не нужны.
+    // Промпт со спецсимволами теперь тем же приёмом уходит через input (см. spawnClaude) —
+    // не строкой в шелл, а сырыми байтами на stdin дочернего процесса.
     // См. docs/ralph-prod-mode/linux-port-audit.md (#66/#67).
     function buildClaudeArgs(
-        prompt: string,
         { model, maxTurns, fallbackModel }: ClaudeOpts,
         cfg: Pick<RalphConfig, 'permissionMode' | 'fallbackModel'>,
     ): string[] {
-        const cmdArgs = ['-p', prompt, '--max-turns', String(maxTurns)];
+        // `-p` БЕЗ значения — это не забытый аргумент (ревью #612: соблазн «починить» его
+        // обратно на ['-p', prompt] велик). Флаг включает неинтерактивный режим, а сам
+        // промпт уходит через stdin (spawnClaude, опция input) — см. докблок выше.
+        const cmdArgs = ['-p', '--max-turns', String(maxTurns)];
         if (model) cmdArgs.push('--model', model);
         if (cfg.permissionMode) cmdArgs.push('--permission-mode', cfg.permissionMode);
         const fb = fallbackModel !== undefined ? fallbackModel : cfg.fallbackModel;
@@ -767,12 +883,28 @@ export function createOrchestrator(env: OrchestratorEnv) {
         return cmdArgs;
     }
 
+    // #607/#611: правила классификации отказа запуска и тексты причин живут в
+    // core/spawn-failure.ts (вынесены ревью #612 — чистые функции без замыканий на
+    // config/DRY/adapters, общие для обоих spawn-путей). Здесь остаётся только сам spawn.
+
     // Тонкая обвязка над реальным spawnSync (Linux-порт #67) — единственное место, где
     // действительно запускается процесс claude. Вынесена отдельно от runClaudeOnce и
     // экспортирована, чтобы проверить САМУ границу anti-RCE защиты: что shell:false и
     // argv от buildClaudeArgs реально доходят до вызова (не только собираются в массив,
-    // но и уходят процессу как есть, одним элементом на промпт) — раньше это
-    // подразумевалось, но ничем не было покрыто.
+    // но и уходят процессу как есть) — раньше это подразумевалось, но ничем не было
+    // покрыто.
+    //
+    // #607: промпт передаётся ОТДЕЛЬНЫМ параметром и уходит через `input` (stdin
+    // дочернего процесса), не через argv — см. докблок buildClaudeArgs. `claude -p` без
+    // позиционного промпта читает его со стандартного ввода (штатное поведение CLI, как
+    // `cat file | claude -p`), лимита MAX_ARG_STRLEN там нет. Проверено ЖИВЫМ прогоном
+    // (ревью #612), а не только фейковым spawnFn: `printf '…' | claude -p --max-turns 1`
+    // на CLI 2.1.234 отвечает и выходит с кодом 0. Фейк подтверждает, что промпт лёг в
+    // `opts.input`; что живой CLI его оттуда ЧИТАЕТ — подтверждает только запуск, а
+    // `--dry-run` сюда не доходит вовсе (runClaudeOnce возвращает раньше). `stdio: ['pipe', …]` ставим
+    // ЯВНО (не полагаемся на то, что `input` молча перекрывает 'ignore' — тот же приём,
+    // что shArgv в exec.ts #133/#138: молчаливая зависимость от перекрытия — ровно то
+    // место, где следующая правка опций spawn тихо оборвёт stdin).
     //
     // spawnFn — инжектируемая точка вызова (дефолт: настоящий spawnSync модуля). В проде
     // параметр никогда не передают — работает как раньше. В тестах передают фейковую
@@ -781,14 +913,15 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // реально пробивался до настоящего spawnSync и один раз запустил живой процесс
     // `claude` вместо фейка). Явный параметр — детерминирован независимо от того, как
     // раннер загружен require'ом или через import.
-    // Чистый вход (argv + timeout [+ spawnFn]) → {code, output}; чтение config — забота
-    // вызывающего.
+    // Чистый вход (argv + prompt + timeout [+ spawnFn]) → {code, output}; чтение config —
+    // забота вызывающего.
     function spawnClaude(
         cmdArgs: string[],
+        prompt: string,
         timeoutMs: number,
         spawnFn: typeof spawnSync = spawnSync,
         env?: NodeJS.ProcessEnv,
-    ): { code: number; output: string } {
+    ): RunResult {
         // Дефолт — настоящий spawnSync: забытый мок запустил бы живую claude-сессию
         // (это уже случалось, см. докблок выше). Guard делает промах громким.
         if (spawnFn === spawnSync) guardSideEffect('spawnClaude(claude)');
@@ -796,11 +929,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // байт-в-байт прежний (опция `env` в объекте не появляется). Задан → передаём как
         // есть: так рантайм Kimi (#373) подсовывает окружение Moonshot (ANTHROPIC_BASE_URL/
         // ANTHROPIC_AUTH_TOKEN) тому же бинарю `claude`, не форкая spawn-путь.
-        // pipe вместо inherit — вывод нужен для детекции API-лимита (см. runClaude).
         // maxBuffer 64 МБ: многочасовая сессия может быть многословной, обрезка вывода
         // уронила бы spawnSync и замаскировала настоящий exit-код.
         const res = spawnFn('claude', cmdArgs, {
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ['pipe', 'pipe', 'pipe'],
+            input: prompt,
             shell: false,
             timeout: timeoutMs,
             encoding: 'utf-8',
@@ -812,23 +945,23 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // делал inherit — просто постфактум, а не потоком.
         if (res.stdout) process.stdout.write(res.stdout);
         if (res.stderr) process.stderr.write(res.stderr);
-        if (res.signal) {
-            log(`⚠ claude убит по сигналу ${res.signal} (таймаут ${timeoutMs}мс?)`);
-            return { code: 1, output };
-        }
-        return { code: res.status ?? 1, output };
+        // #607/#611: spawnSync, не сумевший поднять процесс (execve упал), отдаёт
+        // res.error, а не status/signal. Раньше это молча падало в `code: res.status ?? 1`
+        // — код 1 без единой строки вывода, неотличимый от «сессия отработала и не сказала
+        // ни слова». Классификация — НА ГРАНИЦЕ (пока res.error ещё доступен), общим
+        // модулем spawn-failure.ts; лог получает готовые строки, называющие причину прямо.
+        const { result, logLines } = resolveSpawnResult('claude', res, output, timeoutMs);
+        for (const line of logLines) log(line);
+        return result;
     }
 
     function runClaudeOnce(
         prompt: string,
         { model, maxTurns, fallbackModel }: ClaudeOpts,
-    ): {
-        code: number;
-        output: string;
-    } {
+    ): RunResult {
         // Работает кроссплатформенно, т.к. `claude` — нативный бинарник (claude.exe на
         // Windows, бинарь/симлинк на Linux), а НЕ npm .cmd-shim (тот без shell даёт ENOENT).
-        const cmdArgs = buildClaudeArgs(prompt, { model, maxTurns, fallbackModel }, config);
+        const cmdArgs = buildClaudeArgs({ model, maxTurns, fallbackModel }, config);
         log(
             `▶ claude -p "${prompt.slice(0, 80)}…" --max-turns ${maxTurns}${model ? ` --model ${model}` : ''}`,
         );
@@ -836,7 +969,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // timeout (M3): зависший claude (сетевой столл) иначе блокирует синхронный
         // loop навсегда — AFK-прогон молча стоит до утра.
         const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
-        return spawnClaude(cmdArgs, timeout);
+        return spawnClaude(cmdArgs, prompt, timeout);
     }
 
     // ── Рантайм Kimi (#373, фаза 6) ──────────────────────────────────────────
@@ -938,7 +1071,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         prompt: string,
         { model, maxTurns, modelProvider }: ClaudeOpts,
         spawnFn: typeof spawnSync = spawnSync,
-    ): { code: number; output: string } {
+    ): RunResult {
         // Провайдер-гейт: чужую (не-kimi) модель к Moonshot не пускаем — резолвер тогда
         // возьмёт kimiRuntime.model.
         const routedModel = modelProvider === 'kimi' ? model : undefined;
@@ -952,7 +1085,6 @@ export function createOrchestrator(env: OrchestratorEnv) {
             model: routedModel,
         });
         const cmdArgs = buildClaudeArgs(
-            prompt,
             { model: resolvedModel, maxTurns, fallbackModel },
             // permissionMode — из конфига (bypassPermissions в бою); общий cfg.fallbackModel
             // НЕ прокидываем (opts.fallbackModel всегда задан → cfg.fallbackModel не читается).
@@ -966,7 +1098,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // token гарантированно не-null при !DRY (requireToken выше). Секрет — только в env
         // процесса (buildKimiSpawnEnv), НЕ в argv (иначе виден в /proc/*/cmdline).
         const env = buildKimiSpawnEnv(baseUrl, token as string, process.env);
-        return spawnClaude(cmdArgs, timeout, spawnFn, env);
+        return spawnClaude(cmdArgs, prompt, timeout, spawnFn, env);
     }
 
     // ── Рантайм OpenAI (#374, фаза 6) ────────────────────────────────────────
@@ -1009,7 +1141,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         timeoutMs: number,
         spawnFn: typeof spawnSync = spawnSync,
         env?: NodeJS.ProcessEnv,
-    ): { code: number; output: string } {
+    ): RunResult {
         if (spawnFn === spawnSync) guardSideEffect('spawnCodex(codex)');
         const res = spawnFn('codex', cmdArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1022,11 +1154,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
         const output = `${res.stdout || ''}\n${res.stderr || ''}`;
         if (res.stdout) process.stdout.write(res.stdout);
         if (res.stderr) process.stderr.write(res.stderr);
-        if (res.signal) {
-            log(`⚠ codex убит по сигналу ${res.signal} (таймаут ${timeoutMs}мс?)`);
-            return { code: 1, output };
-        }
-        return { code: res.status ?? 1, output };
+        // #611: та же граничная классификация, что у spawnClaude — оба spawn-пути обязаны
+        // классифицировать res.error одинаково (codex-argv тоже несёт промпт позиционным
+        // элементом, buildCodexArgs, и подвержен тому же классу отказов запуска). Ревью
+        // #612: одинаковость держится ОДНИМ вызовом общего модуля, а не копией трёх веток
+        // логирования — разъехавшись, копии дали бы разный диагноз одному отказу.
+        const { result, logLines } = resolveSpawnResult('codex', res, output, timeoutMs);
+        for (const line of logLines) log(line);
+        return result;
     }
 
     // Окружение для spawn OpenAI-сессии: базовое env раннера + ключ OpenAI под именем,
@@ -1112,7 +1247,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         prompt: string,
         { model, modelProvider }: ClaudeOpts,
         spawnFn: typeof spawnSync = spawnSync,
-    ): { code: number; output: string } {
+    ): RunResult {
         // Провайдер-гейт: чужую (не-openai) модель к codex `-m` не пускаем — резолвер тогда
         // возьмёт openaiRuntime.model.
         const routedModel = modelProvider === 'openai' ? model : undefined;
@@ -1580,6 +1715,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
     //
     // «Закрой с комментарием» — это два намерения подряд, и порядок значим: комментарий
     // ложится ДО закрытия, иначе объяснение уезжает в уже закрытую карточку.
+    // Пауза между запросами форжа на крупном батче (ревью #612). Секунда — ≤60 запросов в
+    // минуту при окне GitHub около 80: с запасом, но без заметного удлинения обычных сдач.
+    const FORGE_PACE_MS = 1000;
+    // Узко: только явные формулировки лимита форжа. Широкий матч («403») подписал бы под
+    // «это лимит» обычный отказ прав, и человек чинил бы не то.
+    const FORGE_RATE_LIMIT_RE = /secondary rate limit|rate limit exceeded|\bHTTP 429\b/i;
+
     function applySessionRequests({
         cfg,
         phase,
@@ -1590,6 +1732,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         taskSource = adapters.taskSource,
         logFn = log,
         pushEventFn = pushEvent,
+        sleepFn = sleep,
     }: {
         cfg: RalphConfig;
         // #45: контекст фазы нужен намерениям по PR — сам PR они не называют (сессия не
@@ -1603,6 +1746,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         taskSource?: TaskSourceAdapter;
         logFn?: typeof log;
         pushEventFn?: typeof pushEvent;
+        // Ревью #612: пауза между запросами форжа на КРУПНОМ батче (см. FORGE_PACE_MS).
+        // Инжектируется, чтобы тесты не спали по-настоящему.
+        sleepFn?: typeof sleep;
     }): { applied: number; failed: boolean; closedIssues: number[] } {
         const raw = readFn();
         if (!raw || raw.trim() === '') return { applied: 0, failed: false, closedIssues: [] };
@@ -1621,6 +1767,17 @@ export function createOrchestrator(env: OrchestratorEnv) {
         }
         if (requests.length === 0) return { applied: 0, failed: false, closedIssues: [] };
 
+        // #603: комментариев в батче много — не отказ (свой, куда больший предел, живёт в
+        // session-requests.ts), но повод сказать человеку, что PR/фаза великоват(а), — той
+        // же цифрой, что раньше отвергала батч целиком наравне с мутациями.
+        const { comments } = classifySessionRequests(requests);
+        if (comments.length > COMMENT_NOTICE_THRESHOLD) {
+            logFn(
+                `ℹ️ Ralph: в батче намерений ${String(requests.length)}, из них ${String(comments.length)} ` +
+                    'комментариев — PR/фаза великоват(а), но предел мутаций это не задевает.',
+            );
+        }
+
         if (dry) {
             logFn(
                 `🔎 dry: намерений сессии — ${String(requests.length)} (${requests
@@ -1636,8 +1793,22 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // действие надёжнее чужого списка.
         const closedIssues: number[] = [];
 
+        // Ревью #612: крупный батч применяем РОВНЫМ потоком. У GitHub на создание контента
+        // свой secondary rate limit (порядка 80 создающих запросов в минуту), а применение
+        // поштучное — сотня комментариев подряд с высокой вероятностью упиралась бы в него
+        // на середине, и повтор сохранённого хвоста шёл бы в ту же стену. Секунда паузы
+        // держит темп ниже окна форжа; на обычных батчах (≤ COMMENT_NOTICE_THRESHOLD)
+        // пауза не берётся вовсе, поведение прежнее.
+        const paced = requests.length > COMMENT_NOTICE_THRESHOLD;
+        if (paced) {
+            logFn(
+                `⏳ Батч крупный (${String(requests.length)}) — применяю с паузой ` +
+                    `${String(FORGE_PACE_MS)}мс между запросами, чтобы не упереться в secondary rate limit форжа.`,
+            );
+        }
         for (let i = 0; i < requests.length; i += 1) {
             const req = requests[i];
+            if (paced && i > 0) sleepFn(FORGE_PACE_MS);
             try {
                 if (req.kind === 'new-issue') {
                     const num = taskSource.createIssue(req);
@@ -1797,8 +1968,16 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 } catch (writeErr) {
                     writeErrMsg = (writeErr as Error).message;
                 }
+                // Ревью #612: упёрлись в лимит форжа — называем это прямо. Иначе человек
+                // читает сырую транспортную ошибку и не понимает, что повтор хвоста имеет
+                // смысл только после паузы, а не сразу.
+                const limitHint = FORGE_RATE_LIMIT_RE.test((e as Error).message)
+                    ? 'Похоже, упёрлись в rate limit форжа (не отказ по существу): ' +
+                      'хвост повторится следующей итерацией, к тому времени окно сбросится. '
+                    : '';
                 pushEventFn(
                     `⚠ Ralph: намерение сессии (${req.kind}) не применилось — ${(e as Error).message}. ` +
+                        limitHint +
                         `Применено ${String(i)} из ${String(requests.length)}. ` +
                         (writeErrMsg === null
                             ? `Остаток сохранён в ${REQUESTS_PATH} и будет повторён.`
@@ -5115,6 +5294,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
         sweepOrphanMonitors,
         ensureMonitorAlive,
         buildClaudeArgs,
+        // #607: чистые хелперы детекции E2BIG экспортируются отдельно от spawnClaude —
+        // юнит-тестам не нужен фейковый spawnFn, чтобы проверить саму классификацию ошибки.
+        isArgvTooLong,
+        argvTooLongMessage,
         shq,
         // sh/log/sideEffectAttempts экспортируются только ради предохранителя #138: проверить,
         // что в тестовом окружении шелл запрещён и лог не пишется, можно лишь дёрнув их

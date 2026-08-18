@@ -51,6 +51,7 @@ import type { AdapterRegistries, AdapterConfig } from '../adapters/adapters-impl
 import type { ReviewComment } from '../adapters/adapters.ts';
 import type { DeployOutcome } from './deploy-check.ts';
 import type { RalphState } from './state-lock.ts';
+import { COMMENT_NOTICE_THRESHOLD } from './session-requests.ts';
 
 // #204: состав чеков гейта переехал в ralph.config.json. gateChecksFor и tryMergePhase
 // читают ФАБРИЧНЫЙ config, который в проде ставит main() (в юнит-тестах не запускаемая).
@@ -170,35 +171,31 @@ const mkCmdRecorders = (shImpl?: (cmd: string) => string) => {
     };
 };
 
-describe('buildClaudeArgs — построение argv для claude -p (ядро порта)', () => {
-    it('минимальный вызов: -p <prompt> --max-turns <n> и больше ничего при пустом конфиге', () => {
-        const argv = buildClaudeArgs('привет', { maxTurns: 200 }, {});
-        expect(argv).toEqual(['-p', 'привет', '--max-turns', '200']);
+describe('buildClaudeArgs — построение argv для claude -p (ядро порта; #607 — без промпта)', () => {
+    it('минимальный вызов: -p --max-turns <n> и больше ничего при пустом конфиге', () => {
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
+        expect(argv).toEqual(['-p', '--max-turns', '200']);
     });
 
     it('maxTurns приводится к строке (spawnSync требует строковые argv)', () => {
-        const argv = buildClaudeArgs('x', { maxTurns: 30 }, {});
-        expect(argv[3]).toBe('30');
-        expect(typeof argv[3]).toBe('string');
+        const argv = buildClaudeArgs({ maxTurns: 30 }, {});
+        expect(argv[2]).toBe('30');
+        expect(typeof argv[2]).toBe('string');
     });
 
     it('model добавляет пару --model <model>', () => {
-        const argv = buildClaudeArgs('x', { model: 'claude-opus-4-8', maxTurns: 200 }, {});
+        const argv = buildClaudeArgs({ model: 'claude-opus-4-8', maxTurns: 200 }, {});
         expect(argv).toContain('--model');
         expect(argv[argv.indexOf('--model') + 1]).toBe('claude-opus-4-8');
     });
 
     it('permissionMode из конфига добавляет --permission-mode', () => {
-        const argv = buildClaudeArgs(
-            'x',
-            { maxTurns: 200 },
-            { permissionMode: 'bypassPermissions' },
-        );
+        const argv = buildClaudeArgs({ maxTurns: 200 }, { permissionMode: 'bypassPermissions' });
         expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('bypassPermissions');
     });
 
     it('fallbackModel из конфига используется, когда опция fallbackModel не передана (back-compat)', () => {
-        const argv = buildClaudeArgs('x', { maxTurns: 200 }, { fallbackModel: 'claude-sonnet-5' });
+        const argv = buildClaudeArgs({ maxTurns: 200 }, { fallbackModel: 'claude-sonnet-5' });
         expect(argv[argv.indexOf('--fallback-model') + 1]).toBe('claude-sonnet-5');
     });
 
@@ -207,7 +204,6 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
     // явно указывает СВОЮ модель фолбэка (см. pickReviewFallbackModel).
     it('явный опции.fallbackModel переопределяет cfg.fallbackModel', () => {
         const argv = buildClaudeArgs(
-            'x',
             { maxTurns: 200, fallbackModel: 'claude-opus-4-8' },
             { fallbackModel: 'claude-sonnet-5' },
         );
@@ -216,7 +212,6 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
 
     it('опции.fallbackModel = null подавляет --fallback-model, даже если в конфиге он задан (fail-closed без фолбэка)', () => {
         const argv = buildClaudeArgs(
-            'x',
             { maxTurns: 200, fallbackModel: null },
             { fallbackModel: 'claude-sonnet-5' },
         );
@@ -225,7 +220,6 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
 
     it('опции.fallbackModel = "none" тоже подавляет --fallback-model', () => {
         const argv = buildClaudeArgs(
-            'x',
             { maxTurns: 200, fallbackModel: 'none' },
             { fallbackModel: 'claude-sonnet-5' },
         );
@@ -233,19 +227,17 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
     });
 
     it('без fallbackModel в конфиге и в опциях флаг fallback не появляется', () => {
-        const argv = buildClaudeArgs('x', { maxTurns: 200 }, {});
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
         expect(argv).not.toContain('--fallback-model');
     });
 
     it('полный набор опций: порядок флагов детерминирован', () => {
         const argv = buildClaudeArgs(
-            'задача',
             { model: 'claude-fable-5', maxTurns: 100 },
             { permissionMode: 'bypassPermissions', fallbackModel: 'claude-sonnet-5' },
         );
         expect(argv).toEqual([
             '-p',
-            'задача',
             '--max-turns',
             '100',
             '--model',
@@ -257,40 +249,33 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
         ]);
     });
 
-    it('anti-RCE: спецсимволы промпта проходят ОДНИМ дословным элементом argv, не раскрываются и не разбиваются', () => {
-        // Ровно тот класс, ради которого порт ушёл от shell-строки: backtick/$()/%/
-        // кавычки/точка-с-запятой на /bin/sh были бы command substitution (RCE), на
-        // cmd.exe % раскрывался бы в %VAR%. В argv-массиве всё это — байты промпта.
-        const evil = 'вывод: `rm -rf /` и $(whoami) и %PATH% и "кавычки" ; echo pwned';
-        const argv = buildClaudeArgs(evil, { maxTurns: 200 }, {});
-        // Промпт — ровно один элемент, идентичный входу (ничего не срезано/не экранировано).
-        expect(argv[1]).toBe(evil);
-        // Никакой лишний элемент не появился из-за пробелов/точки-с-запятой внутри промпта.
-        expect(argv).toHaveLength(4);
-    });
-
-    it('промпт с переводами строк и кавычками остаётся единым элементом', () => {
-        const multiline = 'строка1\nstring "2"\n\tтаб';
-        const argv = buildClaudeArgs(multiline, { maxTurns: 200 }, {});
-        expect(argv[1]).toBe(multiline);
+    // #607: argv больше не содержит промпт вовсе — длина и состав зависят только от
+    // model/maxTurns/permissionMode/fallbackModel, а не от размера диффа или ленты
+    // комментариев PR. Это и снимает класс E2BIG целиком: argv одного и того же
+    // фиксированного вида что для промпта в 10 байт, что в 200 КБ.
+    it('#607: argv не содержит промпт вовсе — состав фиксирован флагами', () => {
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
+        expect(argv).toEqual(['-p', '--max-turns', '200']);
     });
 
     it('чистота: не мутирует переданный конфиг', () => {
         const cfg = { permissionMode: 'bypassPermissions', fallbackModel: 'claude-sonnet-5' };
         const snapshot = JSON.stringify(cfg);
-        buildClaudeArgs('x', { maxTurns: 200 }, cfg);
+        buildClaudeArgs({ maxTurns: 200 }, cfg);
         expect(JSON.stringify(cfg)).toBe(snapshot);
     });
 });
 
-describe('spawnClaude — фактический вызов spawn-функции (граница anti-RCE защиты)', () => {
+describe('spawnClaude — фактический вызов spawn-функции (граница anti-RCE защиты + #607 стдин)', () => {
     // buildClaudeArgs выше проверяет только сборку argv-массива. Здесь — что этот
-    // массив реально доходит до вызова ОДНИМ элементом на промпт и с shell:false:
-    // именно это, а не сама сборка массива, закрывает RCE-класс (#67). Регрессия вида
-    // «shell:false случайно потерялся при рефакторе» ловится только тут.
-    // Фейковую spawn-функцию передаём 3-м параметром явно (см. комментарий в шапке
-    // файла) — production-путь (без 3-го аргумента) здесь намеренно не трогаем,
-    // чтобы не дёргать настоящий claude.exe из юнит-теста.
+    // массив реально доходит до вызова с shell:false, и что промпт уходит через
+    // `input` (stdin), а НЕ через argv — именно это, а не сама сборка массива,
+    // закрывает и RCE-класс (#67), и E2BIG-класс (#607). Регрессия вида «shell:false
+    // случайно потерялся при рефакторе» или «промпт снова подмешали в argv» ловится
+    // только тут.
+    // Фейковую spawn-функцию передаём параметром явно (см. комментарий в шапке
+    // файла) — production-путь (без него) здесь намеренно не трогаем, чтобы не
+    // дёргать настоящий claude.exe из юнит-теста.
     let spawnFn: Mock;
     beforeEach(() => {
         spawnFn = vi.fn();
@@ -305,28 +290,59 @@ describe('spawnClaude — фактический вызов spawn-функции
         vi.restoreAllMocks();
     });
 
-    it('вызывает spawnFn с бинарём claude, shell:false и ровно тем argv-массивом, что построил buildClaudeArgs', () => {
+    it('вызывает spawnFn с бинарём claude, shell:false, argv от buildClaudeArgs и промптом через input, НЕ argv', () => {
         spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
-        const evil = 'вывод: `rm -rf /` и $(whoami) и %PATH%';
-        const argv = buildClaudeArgs(evil, { maxTurns: 200 }, {});
+        const evil = 'вывод: `rm -rf /` и $(whoami) и %PATH% и "кавычки" ; echo pwned';
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
 
-        spawnClaude(argv, 60_000, spawnFn);
+        spawnClaude(argv, evil, 60_000, spawnFn);
 
         expect(spawnFn).toHaveBeenCalledTimes(1);
         const [bin, calledArgs, opts] = spawnFn.mock.calls[0];
         expect(bin).toBe('claude');
-        // Тот же массив, не пересобран и не сериализован в строку — промпт со
-        // спецсимволами доходит до вызова одним элементом argv, а не только до
-        // чистой сборки массива в buildClaudeArgs.
+        // Тот же массив, не пересобран — и промпт в нём НЕ появился (#607: раньше был
+        // вторым элементом argv, теперь argv от размера/содержимого промпта не зависит).
         expect(calledArgs).toBe(argv);
-        expect(calledArgs[1]).toBe(evil);
+        expect(calledArgs.join(' ')).not.toContain(evil);
+        // Промпт со спецсимволами доходит до вызова как есть — байт-в-байт, дословно,
+        // но через input, не через шелл-строку и не через argv.
+        expect(opts.input).toBe(evil);
         expect(opts.shell).toBe(false);
         expect(opts.timeout).toBe(60_000);
     });
 
+    it('промпт с переводами строк и кавычками уходит через input дословно', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+        const multiline = 'строка1\nstring "2"\n\tтаб';
+        spawnClaude(['-p', '--max-turns', '1'], multiline, 1000, spawnFn);
+        const [, , opts] = spawnFn.mock.calls[0];
+        expect(opts.input).toBe(multiline);
+    });
+
+    // #607, критерий готовности: промпт 200 КБ (дифф фазы + вся лента комментариев PR)
+    // уходит в сессию и не роняет запуск. Раньше эквивалентный по размеру промпт в
+    // argv ловил execve E2BIG (предел ядра — 131072 байта на аргумент); через input
+    // такого предела нет.
+    it('#607: промпт 200 КБ уходит через input, argv остаётся коротким и фиксированным', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+        const bigPrompt = 'ф'.repeat(200_000);
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
+
+        const result = spawnClaude(argv, bigPrompt, 60_000, spawnFn);
+
+        const [, calledArgs, opts] = spawnFn.mock.calls[0];
+        // argv тот же самый, что для крошечного промпта — вот содержательная проверка
+        // «argv не растёт с размером промпта» (ревью #612: прежняя мерила длину массива,
+        // уже зафиксированного toEqual выше, и упасть не могла в принципе).
+        expect(calledArgs).toEqual(buildClaudeArgs({ maxTurns: 200 }, {}));
+        expect(opts.input).toBe(bigPrompt);
+        expect(opts.input.length).toBe(200_000);
+        expect(result.code).toBe(0);
+    });
+
     it('успешное завершение (status:0) → {code:0, output: stdout+stderr}', () => {
         spawnFn.mockReturnValue({ status: 0, stdout: 'done', stderr: '', signal: null });
-        expect(spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn)).toEqual({
+        expect(spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn)).toEqual({
             code: 0,
             output: 'done\n',
         });
@@ -334,21 +350,25 @@ describe('spawnClaude — фактический вызов spawn-функции
 
     it('ненулевой exit-код процесса пробрасывается как code', () => {
         spawnFn.mockReturnValue({ status: 2, stdout: '', stderr: 'boom', signal: null });
-        expect(spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn)).toEqual({
+        // #611: обычное падение сессии (status ненулевой, res.error нет) классифицируется
+        // как failureKind:'session-failed' — прежнее поведение (code/output) не меняется,
+        // структурный признак лишь называет класс отказа явно.
+        expect(spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn)).toEqual({
             code: 2,
             output: '\nboom',
+            failureKind: 'session-failed',
         });
     });
 
     it('процесс убит по сигналу (таймаут) → code:1, не бросает исключение', () => {
         spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: 'SIGTERM' });
-        const result = spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn);
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
         expect(result.code).toBe(1);
     });
 
     it('без env-аргумента опции spawn НЕ содержат ключ env — Claude-путь наследует env раннера байт-в-байт', () => {
         spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
-        spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn);
+        spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
         const [, , opts] = spawnFn.mock.calls[0];
         expect('env' in opts).toBe(false);
     });
@@ -356,12 +376,146 @@ describe('spawnClaude — фактический вызов spawn-функции
     it('с env-аргументом (#373 Kimi) опции spawn несут ровно этот env', () => {
         spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
         const env = { PATH: '/usr/bin', ANTHROPIC_BASE_URL: 'https://api.moonshot.ai/anthropic' };
-        spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn, env);
+        spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn, env);
         const [, , opts] = spawnFn.mock.calls[0];
         expect(opts.env).toBe(env);
         expect(opts.shell).toBe(false);
     });
+
+    // #607, критерий готовности: E2BIG (или текстовая формулировка "Argument list too
+    // long") распознаётся отдельно от обычного падения сессии, и лог называет причину
+    // прямо — раньше это тонуло в generic «code 1, ноль строк вывода», которое раннер
+    // трактовал как «ревью не дало вердикта».
+    it('#607/#611: спавн-ошибка E2BIG логируется отдельной строкой и несёт failureKind:arg-too-long', () => {
+        const err = Object.assign(new Error('spawnSync claude E2BIG'), { code: 'E2BIG' });
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+        const logSpy = vi.spyOn(console, 'log');
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.code).toBe(1);
+        expect(result.failureKind).toBe('arg-too-long');
+        expect(result.systemErrorCode).toBe('E2BIG');
+        const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).toMatch(/E2BIG/);
+        expect(logged).not.toMatch(/не дало вердикта/);
+    });
+
+    it('#607: текст "Argument list too long" без кода E2BIG распознаётся тем же путём', () => {
+        const err = new Error('posix_spawn: Argument list too long');
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+        const logSpy = vi.spyOn(console, 'log');
+
+        spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).toMatch(/Argument list too long/);
+    });
+
+    // #611: корень трёх ночных отказов — spawnSync.error терялся целиком (только status/
+    // signal/stdout/stderr читались, res.error никогда). ENOENT/E2BIG/EACCES/ENOBUFS были
+    // неотличимы от честного `{code:1, output:'\n'}`. Классификация — НА ГРАНИЦЕ spawn (где
+    // res.error ещё доступен), не по тексту вывода.
+    it('#611: {status:null, error:{code:ENOENT}} → failureKind:runtime-unavailable, systemErrorCode:ENOENT', () => {
+        const err = Object.assign(new Error('spawnSync claude ENOENT'), { code: 'ENOENT' });
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+        const logSpy = vi.spyOn(console, 'log');
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.code).toBe(1);
+        expect(result.failureKind).toBe('runtime-unavailable');
+        expect(result.systemErrorCode).toBe('ENOENT');
+        const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).toMatch(/рантайм недоступен/);
+    });
+
+    it('#611: {status:null, error:{code:E2BIG}} → failureKind:arg-too-long, systemErrorCode:E2BIG', () => {
+        const err = Object.assign(new Error('spawnSync claude E2BIG'), { code: 'E2BIG' });
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.failureKind).toBe('arg-too-long');
+        expect(result.systemErrorCode).toBe('E2BIG');
+    });
+
+    it('#611: обычное падение сессии (status:1, есть вывод, res.error нет) → failureKind:session-failed', () => {
+        spawnFn.mockReturnValue({
+            status: 1,
+            stdout: '',
+            stderr: 'Error: тест не прошёл, ожидали 3 получили 4',
+            signal: null,
+        });
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.code).toBe(1);
+        expect(result.failureKind).toBe('session-failed');
+        expect(result.systemErrorCode).toBeUndefined();
+    });
+
+    it('#611: иная ошибка запуска (EACCES, нет прав) → failureKind:spawn-failed, systemErrorCode:EACCES', () => {
+        const err = Object.assign(new Error('spawnSync claude EACCES'), { code: 'EACCES' });
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.code).toBe(1);
+        expect(result.failureKind).toBe('spawn-failed');
+        expect(result.systemErrorCode).toBe('EACCES');
+    });
+
+    // Ревью #612: два исхода, где res.error ЕСТЬ, но процесс отработал. Граница обязана
+    // относить их к сессии, а не к запуску, иначе таймаут читается в логе как «не
+    // запустился», а успешный многословный прогон превращается в падение.
+    it('ревью #612: таймаут (SIGTERM + ETIMEDOUT) → прежняя точная строка про сигнал', () => {
+        const err = Object.assign(new Error('spawnSync claude ETIMEDOUT'), { code: 'ETIMEDOUT' });
+        spawnFn.mockReturnValue({
+            status: null,
+            stdout: '',
+            stderr: '',
+            signal: 'SIGTERM',
+            error: err,
+        });
+        const logSpy = vi.spyOn(console, 'log');
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 60_000, spawnFn);
+
+        expect(result).toEqual({ code: 1, output: '\n', failureKind: 'session-failed' });
+        const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).toMatch(/убит по сигналу SIGTERM/);
+        expect(logged).not.toMatch(/не запустился/);
+    });
+
+    it('ревью #612: ENOBUFS при status:0 остаётся успехом (вывод обрезан, сессия отработала)', () => {
+        const err = Object.assign(new Error('spawnSync claude ENOBUFS'), { code: 'ENOBUFS' });
+        spawnFn.mockReturnValue({
+            status: 0,
+            stdout: 'много букв',
+            stderr: '',
+            signal: null,
+            error: err,
+        });
+        const logSpy = vi.spyOn(console, 'log');
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result).toEqual({ code: 0, output: 'много букв\n' });
+        expect(logSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/ENOBUFS/);
+    });
+
+    it('#611: успех (status:0) не несёт failureKind вовсе', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+        expect(result.failureKind).toBeUndefined();
+    });
 });
+
+// Юниты самих правил (isArgvTooLong/argvTooLongMessage/classifySpawnOutcome) переехали к
+// своему модулю — core/spawn-failure.test.ts (ревью #612). Здесь остаётся только граница
+// spawn: что spawnClaude/spawnCodex эти правила ПРИМЕНЯЮТ (см. describe выше) и что имена
+// остаются на API-поверхности (REQUIRED_API).
 
 // #373 (фаза 6): рантайм Kimi — тот же бинарь `claude` через endpoint Moonshot, выбор
 // конфигом (adapters.coderRuntime: 'kimi'). Смоук + юниты чистых хелперов. Claude-путь не
@@ -793,9 +947,12 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
 
         it('ненулевой exit-код процесса пробрасывается как code; вывод — stdout+stderr', () => {
             spawnFn.mockReturnValue({ status: 2, stdout: '', stderr: 'boom', signal: null });
+            // #611: тот же класс, что у spawnClaude — обычное падение сессии без res.error
+            // классифицируется как failureKind:'session-failed'.
             expect(ralph.spawnCodex(['exec'], 1000, spawnFn)).toEqual({
                 code: 2,
                 output: '\nboom',
+                failureKind: 'session-failed',
             });
         });
 
@@ -812,6 +969,55 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             spawnFn.mockClear();
             ralph.spawnCodex(['exec'], 1000, spawnFn);
             expect('env' in spawnFn.mock.calls[0][2]).toBe(false);
+        });
+
+        // #611, критерий готовности «оба spawn-пути классифицируют одинаково»: codex-argv
+        // тоже несёт промпт позиционным элементом (buildCodexArgs) и подвержен тому же
+        // классу отказов запуска, что claude-путь до #607 — до этой правки spawnCodex не
+        // читал res.error вовсе.
+        it('#611: {status:null, error:{code:ENOENT}} → failureKind:runtime-unavailable, systemErrorCode:ENOENT', () => {
+            const err = Object.assign(new Error('spawnSync codex ENOENT'), { code: 'ENOENT' });
+            spawnFn.mockReturnValue({
+                status: null,
+                stdout: '',
+                stderr: '',
+                signal: null,
+                error: err,
+            });
+            const logSpy = vi.spyOn(console, 'log');
+
+            const result = ralph.spawnCodex(['exec'], 1000, spawnFn);
+
+            expect(result.code).toBe(1);
+            expect(result.failureKind).toBe('runtime-unavailable');
+            expect(result.systemErrorCode).toBe('ENOENT');
+            const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+            expect(logged).toMatch(/рантайм недоступен/);
+        });
+
+        it('#611: {status:null, error:{code:E2BIG}} → failureKind:arg-too-long, повторов быть не должно (стоп)', () => {
+            const err = Object.assign(new Error('spawnSync codex E2BIG'), { code: 'E2BIG' });
+            spawnFn.mockReturnValue({
+                status: null,
+                stdout: '',
+                stderr: '',
+                signal: null,
+                error: err,
+            });
+            const logSpy = vi.spyOn(console, 'log');
+
+            const result = ralph.spawnCodex(['exec'], 1000, spawnFn);
+
+            expect(result.code).toBe(1);
+            expect(result.failureKind).toBe('arg-too-long');
+            expect(result.systemErrorCode).toBe('E2BIG');
+            const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+            expect(logged).toMatch(/E2BIG/);
+        });
+
+        it('#611: успех (status:0) не несёт failureKind вовсе', () => {
+            spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+            expect(ralph.spawnCodex(['exec'], 1000, spawnFn).failureKind).toBeUndefined();
         });
     });
 
@@ -1612,6 +1818,356 @@ describe('runClaude — 4-е событие (#88): API-лимит пушит у�
         expect(code).toBe(1);
         expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
         expect(pushEventFn).not.toHaveBeenCalled();
+    });
+});
+
+// #606: рантайм временно недоступен (CLI автообновляется, симлинк /usr/bin/claude
+// пересоздаётся) — код 127 / ENOENT / "No such file or directory" в выводе трактуется как
+// транзиент, а не отказ по существу: повтор с backoff в пределах бюджета времени, а не
+// немедленный fail-closed стоп, как раньше.
+describe('runClaude — #606: транзиентная недоступность рантайма повторяется с backoff', () => {
+    const { runClaude } = ralph;
+
+    it('код 127 → повтор с backoff, успех на N-й попытке засчитывается', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValueOnce({
+                code: 127,
+                output: '/usr/local/bin/claude: line 70: /usr/bin/claude: No such file or directory',
+            })
+            .mockReturnValueOnce({ code: 127, output: 'No such file or directory' })
+            .mockReturnValueOnce({ code: 0, output: 'ok' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            { model: 'sonnet' },
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { runtimeUnavailableRetryDelayMs: 1000 },
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(3);
+        expect(sleepFn).toHaveBeenCalledTimes(2);
+        expect(sleepFn.mock.calls[0][0]).toBe(1000); // попытка 1: база × 1
+        expect(sleepFn.mock.calls[1][0]).toBe(2000); // попытка 2: база × 2
+        // Короткие промежуточные повторы не пушатся — пуш зовётся только на честном
+        // исчерпании бюджета (см. следующий тест).
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('ненулевой код с обычным выводом модели → стоп без повторов, как раньше', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValue({ code: 1, output: 'Error: тест не прошёл' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {},
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('предел по времени исчерпан → честный fail-closed стоп с пушем, называющим причину', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValue({ code: 127, output: 'No such file or directory' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {
+                    // Бюджет крошечный и делится нацело базой backoff — детерминированное
+                    // число попыток без хрупкой арифметики по реальным дефолтам (5 мин/10с).
+                    runtimeUnavailableMaxWaitMs: 3000,
+                    runtimeUnavailableRetryDelayMs: 1000,
+                },
+            },
+        );
+
+        expect(code).toBe(127);
+        // Попытка 1 ждёт 1000мс (elapsed 1000), попытка 2 ждёт min(2000, 2000)=2000
+        // (elapsed 3000 == бюджет) → на попытке 3 remainingMs <= 0 → стоп.
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(3);
+        expect(sleepFn).toHaveBeenCalledTimes(2);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        const [msg, cfgArg] = pushEventFn.mock.calls[0];
+        expect(msg).toMatch(/рантайм недоступен/);
+        expect(msg).not.toMatch(/вердикт/);
+        expect(cfgArg).toEqual({
+            runtimeUnavailableMaxWaitMs: 3000,
+            runtimeUnavailableRetryDelayMs: 1000,
+        });
+    });
+
+    // Ревью #612 (blocker): текстовая эвристика применялась к ЛЮБОМУ исходу, включая
+    // code === 0. Успешная сессия, процитировавшая в отчёте «No such file or directory»,
+    // перезапускалась до исчерпания бюджета (≈8 полных сессий) — с дублированием побочек
+    // и ложным пушем «рантайм недоступен» в конце.
+    it('ревью #612: успешная сессия с ENOENT в выводе НЕ повторяется', () => {
+        const runClaudeOnceFn = vi.fn().mockReturnValue({
+            code: 0,
+            output: 'починил падавший тест: cat: x: No such file or directory',
+        });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { runtimeUnavailableRetryDelayMs: 1000 },
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('ревью #612: упавшая сессия (session-failed), процитировавшая ENOENT, тоже не повторяется', () => {
+        const runClaudeOnceFn = vi.fn().mockReturnValue({
+            code: 1,
+            output: 'тест падал с No such file or directory — не починил',
+            failureKind: 'session-failed',
+        });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            { pushEventFn, sleepFn, ensureTunnelFn: () => true, runClaudeOnceFn, cfg: {} },
+        );
+
+        expect(code).toBe(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+    });
+
+    // Ревью #612: повторы рантайм-недоступности жгли `attempt` — счётчик бюджета ожиданий
+    // API-лимита. Три моргания CLI, и `attempt >= maxWaits` истинно СРАЗУ: раннер не ждёт
+    // сброса окна лимита ни разу, а в шаге сдачи фазы это fail-closed стоп по причине, к
+    // лимиту отношения не имеющей.
+    it('ревью #612: транзиенты рантайма не тратят бюджет ожиданий API-лимита', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValueOnce({ code: 1, output: '', failureKind: 'runtime-unavailable' })
+            .mockReturnValueOnce({ code: 1, output: '', failureKind: 'runtime-unavailable' })
+            .mockReturnValueOnce({ code: 1, output: '', failureKind: 'runtime-unavailable' })
+            .mockReturnValueOnce({ code: 1, output: "You've hit your session limit · resets 11am" })
+            .mockReturnValueOnce({ code: 0, output: 'ok' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {
+                    apiLimitMaxWaits: 3,
+                    apiLimitGraceMin: 0,
+                    runtimeUnavailableRetryDelayMs: 1000,
+                },
+            },
+        );
+
+        // Лимит ДОЖДАЛСЯ своей паузы (первое из трёх разрешённых ожиданий), а не упал в
+        // «бюджет исчерпан» из-за трёх предшествующих транзиентов.
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(5);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/API-лимит/);
+    });
+
+    // Ревью #612: наружу из runClaude уходит голое число, а разбор падения кодер-итерации
+    // отличает отказ среды от отказа сессии по НОМЕРУ (127/126, #445). Структурный путь
+    // #611 отдаёт ENOENT кодом 1 — без нормализации петля молотила бы итерации об
+    // отсутствующий бинарь при уже ушедшем пуше «рантайм недоступен».
+    it('ревью #612: исчерпанная рантайм-недоступность возвращается кодом 127 (отказ среды)', () => {
+        const runClaudeOnceFn = vi.fn().mockReturnValue({
+            code: 1,
+            output: '',
+            failureKind: 'runtime-unavailable',
+            systemErrorCode: 'ENOENT',
+        });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {
+                    runtimeUnavailableMaxWaitMs: 3000,
+                    runtimeUnavailableRetryDelayMs: 1000,
+                },
+            },
+        );
+
+        expect(code).toBe(127);
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        // Код ОС назван прямо в пуше — «код 1» человеку не говорит ничего.
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/ENOENT/);
+    });
+
+    it('API-лимит и рантайм-недоступность не путаются: маркер лимита не ретраится этой веткой', () => {
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValueOnce({ code: 1, output: "You've hit your session limit · resets 11am" })
+            .mockReturnValueOnce({ code: 0, output: 'ok' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { apiLimitMaxWaits: 3, apiLimitGraceMin: 0 },
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(2);
+        // Пуш пришёл через штатную ветку API-лимита (текст "API-лимит"), не через
+        // рантайм-недоступность.
+        expect(pushEventFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/API-лимит/);
+    });
+});
+
+// #611: корень трёх ночных отказов — spawnSync.error терялся целиком, ENOENT/E2BIG были
+// неотличимы от честного падения сессии (code:1, output:'\n'). Здесь runClaude принимает
+// решение о повторе/стопе ПО СТРУКТУРНОМУ failureKind, а не по тексту output — так что
+// классификация не зависит от того, упоминает ли конкретное сообщение об ошибке слово
+// "ENOENT" дословно.
+describe('runClaude — #611: решение о повторе по структурному failureKind, не по тексту', () => {
+    const { runClaude } = ralph;
+
+    it('failureKind:runtime-unavailable без текстовых маркеров в output → повтор с backoff', () => {
+        // output намеренно НЕ содержит "ENOENT"/"No such file" — только структурный
+        // признак от spawnClaude/spawnCodex говорит раннеру, что это транзиент.
+        const runClaudeOnceFn = vi
+            .fn()
+            .mockReturnValueOnce({ code: 1, output: '', failureKind: 'runtime-unavailable' })
+            .mockReturnValueOnce({ code: 0, output: 'ok' });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: { runtimeUnavailableRetryDelayMs: 1000 },
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(2);
+        expect(sleepFn).toHaveBeenCalledTimes(1);
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('failureKind:arg-too-long → НИ ОДНОГО повтора, честный стоп с исходным кодом', () => {
+        // Даже если output случайно содержит слова, похожие на "рантайм недоступен" —
+        // структурный failureKind сильнее и решает раньше текстовой проверки.
+        const runClaudeOnceFn = vi.fn().mockReturnValue({
+            code: 1,
+            output: 'No such file or directory упомянуто в выводе модели',
+            failureKind: 'arg-too-long',
+        });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {},
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
+        expect(pushEventFn).not.toHaveBeenCalled();
+    });
+
+    it('failureKind:session-failed (обычный крах) → стоп без повторов, поведение прежнее', () => {
+        const runClaudeOnceFn = vi.fn().mockReturnValue({
+            code: 1,
+            output: 'Error: тест не прошёл',
+            failureKind: 'session-failed',
+        });
+        const pushEventFn = vi.fn();
+        const sleepFn = vi.fn();
+
+        const code = runClaude(
+            'промпт',
+            {},
+            {
+                pushEventFn,
+                sleepFn,
+                ensureTunnelFn: () => true,
+                runClaudeOnceFn,
+                cfg: {},
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(runClaudeOnceFn).toHaveBeenCalledTimes(1);
+        expect(sleepFn).not.toHaveBeenCalled();
     });
 });
 
@@ -7541,6 +8097,158 @@ describe('applySessionRequests: намерения сессии применяе
     };
 
     const line = (o: unknown) => JSON.stringify(o);
+
+    // #603: предел на батч намерений теперь считается раздельно по классам (мутации vs
+    // комментарии) — здесь проверяется ПРОВОДКА до пуша/лога, сами пределы и разбор — в
+    // session-requests.test.ts.
+    it('#603 батч мутаций сверх предела: не применилось, пуш несёт разбивку по классам', () => {
+        const { ts, calls } = fakeTaskSource();
+        const pushEventFn = vi.fn();
+        const raw = Array.from({ length: 21 }, (_, i) =>
+            line({ kind: 'close', issue: i + 1, comment: 'x' }),
+        ).join('\n');
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            dry: false,
+            readFn: () => raw,
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn,
+        });
+        expect(calls).toEqual([]);
+        expect(res.failed).toBe(true);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/21 close/);
+    });
+
+    it('#603 30 pr-comment без мутаций — применяется, лог несёт заметку о размере', () => {
+        const { ts, calls } = prTaskSource();
+        const logFn = vi.fn();
+        const raw = Array.from({ length: 30 }, (_, i) =>
+            line({ kind: 'pr-comment', comment: `замечание ${String(i)}` }),
+        ).join('\n');
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => raw,
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn,
+            pushEventFn: () => {},
+            sleepFn: () => {},
+        });
+        expect(res.failed).toBe(false);
+        expect(res.applied).toBe(30);
+        expect(calls).toHaveLength(30);
+        expect(logFn.mock.calls.some((c) => /30 комментариев/.test(String(c[0])))).toBe(true);
+    });
+
+    // Ревью #612: от прежнего предела 20 для комментариев остался ТОЛЬКО лог — значит его
+    // порог и надо сторожить с обеих сторон, иначе сигнал тихо потеряется при следующем
+    // рефакторе applySessionRequests.
+    const commentBatch = (n: number) =>
+        Array.from({ length: n }, (_, i) =>
+            line({ kind: 'pr-comment', comment: `замечание ${String(i)}` }),
+        ).join('\n');
+
+    const applyCommentBatch = (n: number) => {
+        const { ts } = prTaskSource();
+        const logFn = vi.fn();
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => commentBatch(n),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn,
+            pushEventFn: () => {},
+            sleepFn: () => {},
+        });
+        const logged = logFn.mock.calls.map((c) => String(c[0])).join('\n');
+        return { res, logged };
+    };
+
+    it('ревью #612: ровно на пороге (20 комментариев) заметка МОЛЧИТ', () => {
+        const { res, logged } = applyCommentBatch(COMMENT_NOTICE_THRESHOLD);
+        expect(res.applied).toBe(COMMENT_NOTICE_THRESHOLD);
+        expect(logged).not.toMatch(/в батче намерений/);
+    });
+
+    it('ревью #612: на 21 комментарии заметка появляется и называет число', () => {
+        const { res, logged } = applyCommentBatch(COMMENT_NOTICE_THRESHOLD + 1);
+        expect(res.applied).toBe(COMMENT_NOTICE_THRESHOLD + 1);
+        expect(logged).toMatch(
+            new RegExp(`в батче намерений ${String(COMMENT_NOTICE_THRESHOLD + 1)}`),
+        );
+    });
+
+    // Ревью #612: у GitHub на создание контента свой secondary rate limit (порядка 80
+    // запросов в минуту) — крупный батч применяется с паузой, обычный идёт как раньше.
+    it('ревью #612: крупный батч применяется с паузами между запросами форжа', () => {
+        const { ts } = prTaskSource();
+        const sleepFn = vi.fn();
+        ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => commentBatch(25),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn: () => {},
+            sleepFn,
+        });
+        // Пауза между запросами, а не перед первым: 25 намерений → 24 паузы.
+        expect(sleepFn).toHaveBeenCalledTimes(24);
+        expect(sleepFn.mock.calls.every((c) => c[0] === 1000)).toBe(true);
+    });
+
+    it('ревью #612: обычный батч (≤ порога) применяется БЕЗ пауз — поведение прежнее', () => {
+        const { ts } = prTaskSource();
+        const sleepFn = vi.fn();
+        ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => commentBatch(COMMENT_NOTICE_THRESHOLD),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn: () => {},
+            sleepFn,
+        });
+        expect(sleepFn).not.toHaveBeenCalled();
+    });
+
+    it('ревью #612: отказ форжа по rate limit назван в пуше прямо, а не сырой ошибкой', () => {
+        const { ts } = prTaskSource({
+            commentOnPullRequest: () => {
+                throw new Error('gh: You have exceeded a secondary rate limit (HTTP 403)');
+            },
+        });
+        const pushEventFn = vi.fn();
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => commentBatch(3),
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn,
+            sleepFn: () => {},
+        });
+        expect(res.failed).toBe(true);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/rate limit форжа/);
+    });
 
     // #45: намерения ревью-сессии по PR. Фейк шва тот же, плюс PR ветки фазы и метки на нём.
     const prTaskSource = (over: Record<string, unknown> = {}) => {
