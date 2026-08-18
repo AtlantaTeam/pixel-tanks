@@ -49,6 +49,16 @@ describe('windFlagRotationRad — направление и сила (issue #550
     it('деление на ноль в windMagnitude (maxWind = 0) не роняет расчёт — остаётся нейтраль', () => {
         expect(windFlagRotationRad(MAX_WIND, 0)).toBeCloseTo(NEUTRAL_RAD);
     });
+
+    it('максимальный ветер: флажок перпендикулярен мачте (критерий #609)', () => {
+        // При windMagnitude === 3 (максимум) флажок должен быть горизонтален.
+        // windDirection === 'right': 90° - 90° = 0° → 0 рад (горизонтально вправо)
+        // windDirection === 'left': 90° + 90° = 180° → π рад (горизонтально влево)
+        const rightWind = windFlagRotationRad(MAX_WIND);
+        const leftWind = windFlagRotationRad(-MAX_WIND);
+        expect(rightWind).toBeCloseTo(0, 5);
+        expect(leftWind).toBeCloseTo(Math.PI, 5);
+    });
 });
 
 describe('WIND_FLAG_PENNANT — контур вымпела (issue #579)', () => {
