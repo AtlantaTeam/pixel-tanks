@@ -861,6 +861,21 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             expect('RALPH_TG_BOT_TOKEN' in env).toBe(false);
             expect(env.GH_TOKEN).toBe('gh-secret');
         });
+
+        it('подписка (token=null): OPENAI_API_KEY вычищается, а не наследуется из базового env', () => {
+            // #83: ключ, случайно оказавшийся в окружении раннера, молча увёл бы сессию на
+            // платный API вместо подписки — тихий выбор канала оплаты (инвариант №1). Поэтому
+            // при подписке переменная именно УДАЛЯЕТСЯ, а не «просто не подставляется».
+            const env = buildOpenAISpawnEnv(null, {
+                OPENAI_API_KEY: 'sk-from-env',
+                HOME: '/root',
+                GH_TOKEN: 'gh-secret',
+            });
+            expect('OPENAI_API_KEY' in env).toBe(false);
+            // HOME остаётся: подписка читается codex'ом из ~/.codex/auth.json.
+            expect(env.HOME).toBe('/root');
+            expect(env.GH_TOKEN).toBe('gh-secret');
+        });
     });
 
     describe('resolveOpenAIRuntime — резолв параметров из конфига + env (fail-closed)', () => {
@@ -904,6 +919,48 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             expect(() => resolveOpenAIRuntime({ model: 'gpt-5-codex' }, {}, throwingFail)).toThrow(
                 /OPENAI_API_KEY/,
             );
+        });
+
+        it('authMode subscription: без ключа не падает, token=null (авторизация — ~/.codex/auth.json)', () => {
+            // #83: у нас нет ключа OpenAI вовсе — codex авторизуется подпиской ChatGPT.
+            const r = resolveOpenAIRuntime(
+                { model: 'gpt-5.6-sol', authMode: 'subscription' },
+                {},
+                throwingFail,
+            );
+            expect(r.authMode).toBe('subscription');
+            expect(r.token).toBe(null);
+        });
+
+        it('authMode subscription: ключ из env НЕ подхватывается (иначе тихий уход на платный API)', () => {
+            const r = resolveOpenAIRuntime(
+                { model: 'gpt-5.6-sol', authMode: 'subscription' },
+                { OPENAI_API_KEY: 'sk-openai' },
+                throwingFail,
+            );
+            expect(r.token).toBe(null);
+        });
+
+        it('дефолт authMode — apiKey: прежнее поведение fail-closed без ключа', () => {
+            const r = resolveOpenAIRuntime(
+                { model: 'gpt-5-codex' },
+                { OPENAI_API_KEY: 'sk-openai' },
+                throwingFail,
+            );
+            expect(r.authMode).toBe('apiKey');
+            expect(() => resolveOpenAIRuntime({ model: 'gpt-5-codex' }, {}, throwingFail)).toThrow(
+                /OPENAI_API_KEY/,
+            );
+        });
+
+        it('неизвестный authMode → fail (канал авторизации не выбирается молча, инвариант №1)', () => {
+            expect(() =>
+                resolveOpenAIRuntime(
+                    { model: 'gpt-5-codex', authMode: 'oauth' } as never,
+                    { OPENAI_API_KEY: 'sk-openai' },
+                    throwingFail,
+                ),
+            ).toThrow(/authMode/);
         });
 
         it('requireToken:false (dry) — без ключа не падает, token=null, но кривая модель всё равно fail', () => {
@@ -1070,6 +1127,26 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             expect(argv.join(' ')).not.toContain('sk-openai-smoke');
             expect(opts.shell).toBe(false);
             expect(opts.env.OPENAI_API_KEY).toBe('sk-openai-smoke');
+        });
+
+        it('подписка: в env спавна нет OPENAI_API_KEY, хотя ключ лежит в окружении раннера', () => {
+            // #83: beforeEach кладёт ключ в process.env — при authMode:'subscription' он не
+            // должен доехать до codex, иначе сессия молча уйдёт на платный API.
+            runtime.setConfigForTests({
+                ...REAL_CONFIG,
+                permissionMode: 'bypassPermissions',
+                openaiRuntime: { model: 'gpt-5.6-sol', authMode: 'subscription' },
+            });
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'ok',
+                stderr: '',
+                signal: null,
+            }));
+            runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
+            const [, argv, opts] = spawnFn.mock.calls[0];
+            expect('OPENAI_API_KEY' in opts.env).toBe(false);
+            expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5.6-sol');
         });
 
         it('НЕ тащит Claude-флаги --max-turns/--fallback-model в codex argv (риск #3)', () => {

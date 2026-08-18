@@ -306,6 +306,14 @@ export type RalphConfig = {
     //   authTokenEnv — имя env-переменной с ключом OpenAI (дефолт `OPENAI_API_KEY`). Сам КЛЮЧ —
     //           только из env (инвариант №11), в конфиг/argv не попадает; codex читает его из
     //           `OPENAI_API_KEY` окружения процесса.
+    //   authMode — канал авторизации codex: `apiKey` (дефолт, прежнее поведение — ключ из
+    //           authTokenEnv, fail-closed без него) либо `subscription` (#83) — авторизация
+    //           подпиской ChatGPT из `~/.codex/auth.json`, ключа нет вовсе. При `subscription`
+    //           ключ не только не подставляется, но и ВЫЧИЩАЕТСЯ из окружения codex: иначе
+    //           `OPENAI_API_KEY`, случайно оставшийся в окружении раннера, молча увёл бы
+    //           сессии на платный API мимо подписки — тихий выбор канала оплаты (инвариант №1).
+    //           Файловый канал подписки требует `HOME` в env сессии — он там есть (санация
+    //           gate-env-allowlist.json к кодер-сессии не применяется, только к чекам гейта).
     //   Fallback-модели у Codex в argv НЕТ (research, риск #3: `--fallback-model` — Claude-флаг,
     //           в чужой CLI не тащим); политика фолбэка — honest-стоп/повторная итерация.
     //   Аппрув фиксирован `never` (non-interactive AFK: при запросе аппрува `codex exec` падает;
@@ -314,6 +322,7 @@ export type RalphConfig = {
         model?: string;
         sandboxMode?: string;
         authTokenEnv?: string;
+        authMode?: 'apiKey' | 'subscription';
     };
     tunnelCheck?: {
         enabled?: boolean;
@@ -1174,11 +1183,15 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // вычищаем из окружения стороннего бинаря `codex` — иначе промпт-инъекция в codex-сессии
     // одной командой `env` эксфильтровала бы ключи всех провайдеров разом. GH_TOKEN остаётся:
     // он нужен кодер-сессии для git/gh-хореографии (та же экспозиция, что у Claude-пути).
-    function buildOpenAISpawnEnv(token: string, baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-        const env: NodeJS.ProcessEnv = {
-            ...baseEnv,
-            OPENAI_API_KEY: token,
-        };
+    function buildOpenAISpawnEnv(
+        token: string | null,
+        baseEnv: NodeJS.ProcessEnv,
+    ): NodeJS.ProcessEnv {
+        const env: NodeJS.ProcessEnv = { ...baseEnv };
+        // #83: при подписке (token=null) переменную именно УДАЛЯЕМ, а не «не подставляем» —
+        // ключ из окружения раннера иначе доехал бы до codex и увёл сессию на платный API.
+        if (token) env.OPENAI_API_KEY = token;
+        else delete env.OPENAI_API_KEY;
         delete env.CLAUDE_CODE_OAUTH_TOKEN;
         delete env.ANTHROPIC_API_KEY;
         delete env.ANTHROPIC_AUTH_TOKEN;
@@ -1199,9 +1212,23 @@ export function createOrchestrator(env: OrchestratorEnv) {
         envSource: NodeJS.ProcessEnv,
         failFn: (msg: string) => never,
         opts: { requireToken?: boolean; model?: string } = {},
-    ): { model: string; sandboxMode: string; token: string | null } {
+    ): {
+        model: string;
+        sandboxMode: string;
+        token: string | null;
+        authMode: 'apiKey' | 'subscription';
+    } {
         const requireToken = opts.requireToken ?? true;
         const openai = openaiCfg ?? {};
+        // #83: канал авторизации. Значение вне пары — стоп, а не тихий откат к дефолту:
+        // опечатка `subscribtion` иначе молча вернула бы требование ключа (инвариант №1).
+        const authMode = openai.authMode ?? 'apiKey';
+        if (authMode !== 'apiKey' && authMode !== 'subscription') {
+            failFn(
+                `openaiRuntime.authMode='${String(authMode)}' — допустимы только 'apiKey' ` +
+                    "(ключ из env) и 'subscription' (подписка ChatGPT из ~/.codex/auth.json).",
+            );
+        }
         const model =
             typeof opts.model === 'string' && opts.model.trim() !== '' ? opts.model : openai.model;
         if (typeof model !== 'string' || model.trim() === '') {
@@ -1219,14 +1246,17 @@ export function createOrchestrator(env: OrchestratorEnv) {
             typeof openai.authTokenEnv === 'string' && openai.authTokenEnv.trim() !== ''
                 ? openai.authTokenEnv
                 : OPENAI_DEFAULT_TOKEN_ENV;
-        const token = envSource[tokenEnv] || null;
-        if (requireToken && !token) {
+        // При подписке ключ не читаем вовсе: подхватить его «раз уж лежит в env» означало бы
+        // выбрать платный канал оплаты за человека.
+        const token = authMode === 'subscription' ? null : envSource[tokenEnv] || null;
+        if (requireToken && authMode === 'apiKey' && !token) {
             failFn(
                 `adapters.coderRuntime='openai' требует ключ OpenAI в env ${tokenEnv} — ` +
-                    'секреты только из env (инвариант №11), не из конфига/argv.',
+                    'секреты только из env (инвариант №11), не из конфига/argv. Если ключа нет ' +
+                    "и codex авторизован подпиской — openaiRuntime.authMode: 'subscription'.",
             );
         }
-        return { model: model as string, sandboxMode, token };
+        return { model: model as string, sandboxMode, token, authMode };
     }
 
     // Одна OpenAI-сессия. Форма и роль как у runClaudeOnce/runKimiOnce: {code, output}, DRY
@@ -1265,9 +1295,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
         );
         if (DRY) return { code: 0, output: '' };
         const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
-        // token гарантированно не-null при !DRY (requireToken выше). Секрет — только в env
-        // процесса (buildOpenAISpawnEnv), НЕ в argv (иначе виден в /proc/*/cmdline).
-        const env = buildOpenAISpawnEnv(token as string, process.env);
+        // token не-null при !DRY только в режиме apiKey (requireToken выше); при подписке он
+        // null штатно, и buildOpenAISpawnEnv тогда вычищает OPENAI_API_KEY из окружения.
+        // Секрет — только в env процесса, НЕ в argv (иначе виден в /proc/*/cmdline).
+        const env = buildOpenAISpawnEnv(token, process.env);
         return spawnCodex(cmdArgs, timeout, spawnFn, env);
     }
 

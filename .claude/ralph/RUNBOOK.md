@@ -167,12 +167,25 @@ Claude.
     "model": "gpt-5-codex"                     // ОБЯЗАТЕЛЕН — имя модели OpenAI
     // "sandboxMode": "danger-full-access"     // дефолт; более узкие: workspace-write / read-only
     // "authTokenEnv": "OPENAI_API_KEY"         // дефолт; имя env-переменной с ключом
+    // "authMode": "apiKey"                    // дефолт; "subscription" — подписка, ключ не нужен
 }
 ```
 
-**Ключ — только из env** (инвариант №11): в env-файле раннера
-`export OPENAI_API_KEY=sk-…`. В argv он не попадает (не светится в `/proc/*/cmdline`) —
-codex читает его из окружения процесса. Аппрув фиксирован `never` (non-interactive AFK:
+**Два канала авторизации, выбирается явно** (`authMode`, #83):
+
+- `apiKey` (дефолт) — **ключ только из env** (инвариант №11): в env-файле раннера
+  `export OPENAI_API_KEY=sk-…`. В argv он не попадает (не светится в `/proc/*/cmdline`) —
+  codex читает его из окружения процесса. Ключа нет — раннер встаёт fail-closed;
+- `subscription` — авторизация подпиской ChatGPT из `~/.codex/auth.json` (поле
+  `auth_mode` со значением `chatgpt`), ключа нет вовсе. Ставится тем же `codex login`,
+  что и для ручной работы;
+  сессии наследуют `HOME`, поэтому файл им виден. В этом режиме `OPENAI_API_KEY`
+  **вычищается** из окружения codex: иначе ключ, случайно оставшийся в окружении раннера,
+  молча увёл бы сессии на платный API мимо подписки.
+
+Расход подписки виден в недельном окне (`used_percent` в ответах codex); пятичасового окна
+план Plus для этого канала не присылает вовсе, поэтому «в пятичасовом лимите пусто» —
+не признак того, что прогонов не было. Аппрув фиксирован `never` (non-interactive AFK:
 `codex exec` при запросе аппрува падает); песочница `danger-full-access` штатна, т.к.
 раннер крутится в изолированном worktree (инвариант №3), и нужна для git/npm.
 
@@ -180,7 +193,7 @@ codex читает его из окружения процесса. Аппрув
 «OpenAI-рантайм»; ниже — живой прогон против OpenAI):
 
 ```bash
-export OPENAI_API_KEY=sk-…                        # ключ OpenAI
+export OPENAI_API_KEY=sk-…                        # только при authMode=apiKey; для подписки не нужен
 # в конфиге: adapters.coderRuntime=openai, openaiRuntime.model=gpt-5-codex
 node .claude/ralph/ralph.js --profile playground --once --dry-run   # проводка без спавна
 # затем без --dry-run на тестовой фазе — codex-сессия стартует и выдаёт дифф
