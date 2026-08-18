@@ -233,11 +233,35 @@ export function AtomicComponentsSection() {
                 {/* Раскладка inline (#450): имя, трек и число в одну строку —
                     компактная HP-карточка мобильного HUD, экономит высоту оверлея. */}
                 <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
-                    HP-bar · inline (компактный мобильный HUD)
+                    HP-bar · inline · density=comfortable (канон)
                 </span>
                 <div className="flex flex-col gap-2">
                     <HPBar label="Rex Commander" value={72} faction="player" layout="inline" />
                     <HPBar label="Terminator" value={38} faction="enemy" layout="inline" />
+                </div>
+
+                {/* Плотность compact (#561): ужатый зазор строки и пол ширины трека —
+                    для потребителя, у которого строка HP делит ряд с соседями
+                    (боевой HUD). Показываем рядом с каноном: разница в зазорах и
+                    минимальной ширине трека — это то, что вмораживает визрегрессия. */}
+                <span className="font-ui text-label tracking-[0.14em] text-text-muted uppercase">
+                    HP-bar · inline · density=compact (тесный ряд HUD)
+                </span>
+                <div className="flex flex-col gap-2">
+                    <HPBar
+                        label="Rex Commander"
+                        value={72}
+                        faction="player"
+                        layout="inline"
+                        density="compact"
+                    />
+                    <HPBar
+                        label="Terminator"
+                        value={38}
+                        faction="enemy"
+                        layout="inline"
+                        density="compact"
+                    />
                 </div>
 
                 <div className="h-0.5 bg-border" />
