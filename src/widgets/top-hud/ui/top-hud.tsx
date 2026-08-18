@@ -91,7 +91,11 @@ function HpCard({
                 // получает высоту ряда через stretch, а не через собственный
                 // паддинг — паддинг только держит контент от клипа на самом
                 // тесном (32px) бюджете.
-                layout === 'inline' ? 'px-1.5 py-1' : 'p-1.5 xl:p-2',
+                // px-1 (не px-1.5=6px, #561): на планшете эта карточка — главная
+                // информация боя (handoff), горизонтальный паддинг ужат ещё на
+                // 2px с каждой стороны в пользу ника — см. также сжатие зазоров
+                // `HPBar` (inline) и бейджа заморозки в этом же ряду.
+                layout === 'inline' ? 'px-1 py-1' : 'p-1.5 xl:p-2',
                 // Без glow (#548, разбор §2): HP — класс 2 «раз в ход», карточка
                 // держит активную сторону только цветом рамки. Glow остаётся
                 // только у угла/силы (класс 1) — иначе на кадре прицеливания
@@ -168,7 +172,7 @@ function TurnPill({
                 // Без shadow-glow (#548): пилюля хода — класс 3 «состояние»,
                 // остаётся цветной плашкой (рамка + текст в --accent), не
                 // источником свечения — glow держат только угол и сила.
-                'flex min-h-10 min-w-0 items-center gap-1.5 border-[length:var(--border-w)] border-[color:var(--accent)] px-2 py-2 xl:gap-2 xl:px-3',
+                'flex min-h-10 min-w-0 items-center gap-1 border-[length:var(--border-w)] border-[color:var(--accent)] px-1.5 py-2 xl:gap-2 xl:px-3',
                 // На десктопе сосед по ряду — HP-блок с flex-1: без shrink-0 он забирает
                 // всё свободное место, и пилюля сжимается ниже контента («ТВОЙ» / «ХОД»
                 // в две строки). В мобильном ряду соседи — только кнопки фиксированной
@@ -827,6 +831,14 @@ function FrozenNote({ className }: { className?: string }) {
  * уже существовать в дереве доступности ДО появления текста, иначе анонса нет;
  * бейдж же то `aria-hidden`, то `invisible` — на такой смене большинство
  * скринридеров молчат. Поэтому анонс вынесен из бейджа.
+ *
+ * Подпись «Заморожено» скрыта на планшете (`md`, #561): в ряду 1 бейдж делит
+ * ширину с HP-картами (главная информация боя — handoff «HP обязан
+ * схлопываться последним»), и текстовая часть, не несущая смысла для AT (узел
+ * `aria-hidden` целиком, реальный анонс — `FreezeAnnouncer`), — самая дешёвая
+ * уступка. Замок остаётся: то же значение читается по иконке + теме хода
+ * (враг), а на десктопе (`xl`, полоса 78px с запасом) текст возвращается —
+ * там ширина уже не в дефиците.
  */
 function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
     return (
@@ -843,7 +855,7 @@ function FreezeBadgeOrNothing({ visible }: { visible: boolean }) {
             )}
         >
             <Icon name="lock" size={12} className="shrink-0 text-text-muted" />
-            <span className="font-ui text-[9px] tracking-[0.06em] whitespace-nowrap text-text-muted uppercase xl:text-[10px] xl:tracking-[0.1em]">
+            <span className="hidden font-ui text-[10px] tracking-[0.1em] whitespace-nowrap text-text-muted uppercase xl:inline">
                 Заморожено
             </span>
         </div>
@@ -1163,7 +1175,7 @@ export function TopHud({ onPauseClick }: TTopHudProps = {}) {
                     // статуса — прямые дети этого ряда, растягиваются до общей
                     // легальной высоты (44 на планшете, 56 на xl) вместо
                     // центрирования разных по высоте боксов (55/44 на xl).
-                    className="flex flex-1 items-stretch gap-4 md:h-11 xl:h-14 xl:flex-nowrap xl:gap-1 min-[1440px]:gap-2"
+                    className="flex flex-1 items-stretch gap-2 md:h-11 xl:h-14 xl:flex-nowrap xl:gap-1 min-[1440px]:gap-2"
                 >
                     {/* На 768–1279 (#538) HP-бары держат минимум только собственных
                         карточек (150px каждая, `HpCard`) — фикс `min-w-[420px]`
