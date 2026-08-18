@@ -3,6 +3,11 @@ import { createSeededRandom } from '@/shared/lib/random';
 import { computeTerrainHeights, type TArenaInsets } from './arena-insets';
 import { Ground } from './ground';
 
+/** Потолок кадров осадки кратера в тестах: осыпание идёт по пикселю за кадр и
+ *  обязано сходиться — без границы регресс сходимости повесил бы прогон до общего
+ *  таймаута vitest вместо внятного падения. */
+const SETTLE_CAP_FRAMES = 200;
+
 const WIDTH = 800;
 const HEIGHT = 600;
 
@@ -396,10 +401,21 @@ describe('Ground: offscreen-кэш террейна (.claude/rules/canvas.md)', 
         // Догоняем осыпание кратера до полной остановки (как реальный игровой цикл
         // делает через beginFrame() на каждом тике), чтобы взять финальную глубину.
         ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
-        while (ground.isFalling) {
+        // Потолок итераций, а не `while (isFalling)` без границы: регресс, при
+        // котором осадка перестанет сходиться, обязан упасть внятно и здесь, а не
+        // повиснуть до общего таймаута vitest (тот же гвард, что
+        // `GROUND_SETTLE_CAP_FRAMES` в VRT-спеке).
+        let steps = 0;
+        while (ground.isFalling && steps < SETTLE_CAP_FRAMES) {
             ground.beginFrame();
             ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+            steps += 1;
         }
+        expect(ground.isFalling, 'осадка кратера не сошлась за отведённые кадры').toBe(false);
+        expect(
+            steps,
+            'осадка обязана занять хотя бы кадр — иначе тест меряет пустоту',
+        ).toBeGreaterThan(0);
 
         expect(layerCtxMock.fillRect.mock.calls.length).toBeGreaterThan(0);
         layerCtxMock.fillRect.mock.calls.forEach(([, y, , height]) => {
@@ -409,6 +425,57 @@ describe('Ground: offscreen-кэш террейна (.claude/rules/canvas.md)', 
             expect(y).toBeGreaterThan(100 - heightMax);
             expect(y + height).toBeLessThanOrEqual(100);
         });
+    });
+
+    it('на склоне базовая высота идёт по форме склона, а не по среднему опор (ревью #620)', () => {
+        const ground = new Ground(
+            100,
+            100,
+            createSeededRandom(1),
+            undefined,
+            undefined,
+            [],
+            undefined,
+            { darkenAlpha: 0.28, edgeSoftenPx: 1 },
+        );
+        // Ровный склон: высота растёт на 1 px за столбец — «дюна» без шума.
+        ground.flatten(30, 1);
+        const beforeFall = [...ground.heights];
+        ground.fall(50, 40, 5);
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        let steps = 0;
+        while (ground.isFalling && steps < SETTLE_CAP_FRAMES) {
+            ground.beginFrame();
+            ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+            steps += 1;
+        }
+
+        // Только колонны ПОСЛЕДНЕГО кадра: мок копит вызовы всех кадров осадки, а
+        // сверяем мы их с финальными высотами. Столбцов ровно столько, сколько
+        // помечено кратерными (радиус 5 → 11).
+        const CRATER_COLUMNS = 11;
+        const bands = (layerCtxMock.fillRect.mock.calls as number[][]).slice(-CRATER_COLUMNS);
+        expect(bands).toHaveLength(CRATER_COLUMNS);
+
+        // Хвост под дном — один и тот же у всех столбцов, значит высота колонны
+        // следует РЕАЛЬНОЙ глубине в каждом столбце. Со средним двух опор глубина
+        // на склоне косая: у верхних по склону столбцов она завышена, у нижних
+        // схлопывается в 0 (столб красится одним хвостом) — хвосты разъезжаются.
+        const tails = bands.map(([x, , , height]) => height - (beforeFall[x] - ground.heights[x]));
+        tails.forEach((tail, i) => {
+            expect(tail, `столбец ${bands[i][0]}: хвост ${tail} против ${tails[0]} у первого`).toBe(
+                tails[0],
+            );
+        });
+        expect(tails[0], 'хвост под дном воронки обязан быть положительным').toBeGreaterThan(0);
+
+        // И симметрия по сторонам склона: «со стороны подъёма затемнения почти нет»
+        // было прямым симптомом среднего (левая сумма вдвое больше правой).
+        const sumSide = (side: (x: number) => boolean) =>
+            bands.filter(([x]) => side(x)).reduce((acc, [, , , h]) => acc + h, 0);
+        const uphill = sumSide((x) => x > 50);
+        const downhill = sumSide((x) => x < 50);
+        expect(Math.abs(uphill - downhill)).toBeLessThanOrEqual(Math.max(uphill, downhill) * 0.1);
     });
 
     it('без осадков-дождя (нет craterStyle) воронки не затемняются', () => {
