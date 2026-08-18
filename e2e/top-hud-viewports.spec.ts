@@ -10,6 +10,17 @@ const VIEWPORTS = [
     { name: 'wide-1920', width: 1920, height: 1080 },
 ];
 
+/** Минимальная ширина бокса ника на планшете (768) — фиксирует результат #561:
+ *  до него ряд 1 сжимал бокс до 25px при содержимом 104px. Планка ниже
+ *  замеренных ~86px, чтобы тест не краснел от смены шрифта на пиксель, но
+ *  кратно выше дефекта. */
+const NAME_BOX_MIN_768 = 80;
+
+/** Сколько пикселей ника допустимо срезать на 768: ~2 символа `font-ui` при
+ *  10–12px. Длинные ники здесь всё ещё клипаются (бюджет ряда 1 конечен), но
+ *  «хвостом», а не наполовину. */
+const NAME_CLIP_MAX_768 = 24;
+
 for (const viewport of VIEWPORTS) {
     test.describe(`Верхний HUD — ${viewport.name}`, () => {
         test.use({ viewport: { width: viewport.width, height: viewport.height } });
@@ -64,19 +75,36 @@ for (const viewport of VIEWPORTS) {
 
             const seen: string[] = [];
             for (const box of boxes) {
-                seen.push((await box.textContent())?.trim() ?? '');
-                const clipped = await box.evaluate((el) => el.scrollWidth > el.clientWidth);
+                const text = (await box.textContent())?.trim() ?? '';
+                seen.push(text);
+                const { clientWidth, scrollWidth } = await box.evaluate((el) => ({
+                    clientWidth: el.clientWidth,
+                    scrollWidth: el.scrollWidth,
+                }));
+                const clipped = scrollWidth > clientWidth;
                 if (viewport.width >= 1024) {
                     // 16ch против «Rex Commander» (13) и «Terminator» (10) — клипа нет ни у
                     // одного из двух ников.
                     expect(clipped).toBe(false);
                 } else if (viewport.width >= 768) {
-                    // 768 — ФАКТ, а не спека: ник сжат до 25px при содержимом 104px, потому
-                    // что первый ряд отдаёт ширину пилюле и иконкам, а `min-w-0` разрешает
-                    // HP-карточке схлопнуться (issue #561; докблок `HpName` пока обещает
-                    // обратное). Фиксируем как есть: почините вёрстку — тест покраснеет и
-                    // напомнит обновить ожидание, а не тихо разойдётся с реальностью.
-                    expect(clipped).toBe(true);
+                    // #561: ряд 1 делит ширину между HP-картами (главная информация боя,
+                    // handoff — «схлопывается последней») и пилюлей хода/бейджем/иконками.
+                    // Ужатие зазоров, паддинга карточки и подписи бейджа подняло бокс ника
+                    // с 25px до ~86px. Сторожим сам ФАКТ, ради которого чинили #561, а не
+                    // конкретные ники (ревью PR фазы): равенство `text === 'Rex Commander'`
+                    // переворачивалось бы от переименования бота или правки `font-ui`, и
+                    // падало бы сообщением про клип, а не про причину.
+                    expect(
+                        clientWidth,
+                        `бокс ника "${text}" на 768 сжат до ${clientWidth}px — регресс #561`,
+                    ).toBeGreaterThanOrEqual(NAME_BOX_MIN_768);
+                    // Клип на планшете допустим только у длинного ника и только «хвостом»:
+                    // 104px содержимого против ~86px бокса — это 1–2 символа. Схлопнись
+                    // бокс обратно, обрезка выросла бы кратно и этот предел покраснел бы.
+                    expect(
+                        scrollWidth - clientWidth,
+                        `ник "${text}" на 768 обрезан на ${scrollWidth - clientWidth}px`,
+                    ).toBeLessThanOrEqual(NAME_CLIP_MAX_768);
                 } else {
                     // На мобилке лимит 6ch, и оба ника длиннее: усечение здесь ОЖИДАЕМО и
                     // является спекой, а не дефектом — фиксируем, чтобы правка ширины не
@@ -153,8 +181,11 @@ function boxesOverlap(
 // ряда телеметрии, лежал поверх числовых ячеек на xl, где полоса — 78px без
 // запаса под целую строку текста). Стартовый ход игрока это не покрывает (там
 // бейджа нет вовсе), поэтому отдельный сценарий с turn='enemy' на каждом из
-// двух вьюпортов, где баг был замерен.
-for (const width of [1280, 1920]) {
+// вьюпортов, где баг был замерен (1280 и 1920), плюс 1100 — см. ниже.
+// 1100 добавлен ревью PR фазы: на 1024–1199 у бейджа своя, СОКРАЩЁННАЯ подпись
+// («Замор.», `FreezeBadgeOrNothing`) — полоса на этой ступени ничем больше не
+// замерена, а именно подпись и растит бейдж по ширине.
+for (const width of [1100, 1280, 1920]) {
     test.describe(`Верхний HUD — ход бота (desktop-${width})`, () => {
         test.use({ viewport: { width, height: 800 } });
 

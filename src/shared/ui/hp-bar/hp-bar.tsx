@@ -14,6 +14,19 @@ export type THPBarFaction = TFaction;
  *  вертикальный ряд-заголовок, экономя высоту оверлея. */
 export type THPBarLayout = 'stacked' | 'inline';
 
+/**
+ * Плотность inline-раскладки. `comfortable` (дефолт) — канон компонента: зазоры
+ * и пол ширины трека, при которых строка читается сама по себе. `compact` —
+ * ужатые зазоры для потребителя, у которого строка делит ширину с соседями по
+ * ряду (боевой HUD: пилюля хода, бейдж заморозки, кнопки).
+ *
+ * Проп, а не «ужать канон под самый тесный экран» (ревью PR фазы #561): знание о
+ * бюджете ряда — знание ВИДЖЕТА, и `shared/ui` не должен носить его в себе, иначе
+ * за компромисс одного экрана платят все потребители и витрина показывает не
+ * канон компонента, а его частный случай.
+ */
+export type THPBarDensity = 'comfortable' | 'compact';
+
 type THPBarProps = {
     label: string;
     value: number;
@@ -22,6 +35,8 @@ type THPBarProps = {
      *  а не от сырого `value` — чтобы бар не поехал при другом балансе/режиме. */
     max?: number;
     layout?: THPBarLayout;
+    /** Плотность inline-раскладки (см. `THPBarDensity`). В `stacked` не влияет. */
+    density?: THPBarDensity;
     className?: string;
     /** Счётчик попаданий по этой стороне (issue #549) — см. докблок `HpTrack`. */
     hitNonce?: number;
@@ -48,10 +63,22 @@ function hpFillClass(percent: number) {
  *  Максимальная ширина ника (#540): 6ch на мобилке, 16ch на планшете/десктопе —
  *  разделение по приоритету сброса. Целиком ник виден с 1024: на 1280 и 1920 клипа
  *  нет, замерено e2e.
- *  ⚠️ На 768 верхняя граница НЕ работает: фактическую ширину решает не `max-w`, а
- *  сжатие во флекс-ряду — первый ряд отдаёт место пилюле и иконкам (#538), а `min-w-0`
- *  разрешает карточке схлопнуться, и бокс ника садится до 25px при содержимом 104px.
- *  Разбирается в issue #561; до решения факт зафиксирован в `top-hud-viewports.spec.ts`. */
+ *  На 768 верхняя граница `max-w` фактическую ширину НЕ определяет — её решает
+ *  сжатие во флекс-ряду 1 (`top-hud.tsx`): HP-карты делят ширину с пилюлей хода,
+ *  бейджем заморозки и иконками mute/пауза. По handoff «HP-карточка» HP обязан
+ *  схлопываться последним (главная информация боя) — #561 подтянул это ужатием
+ *  зазоров `HPBar`/`HpCard` и сокращением бейджа заморозки (иконка без подписи на
+ *  планшете, см. `FreezeBadgeOrNothing`): бокс ника вырос с 25px до ~86px. Этого
+ *  хватает на короткие ники («Terminator», 80px — больше не клипается), но не на
+ *  длинные («Rex Commander», 104px — клипается на 1-2 символа вместо 11). Пилюля
+ *  хода не даёт ужать себя дальше без риска переноса текста на две строки (#449) —
+ *  дальнейшее расширение бюджета на 768 требует новой сессии ужатия или второй
+ *  строки под статус-кластер, см. issue #561 и `top-hud-viewports.spec.ts`.
+ *  На мобилке (390/320) действует ровно тот же механизм: `max-w-[6ch]` — только
+ *  верхняя граница, а фактическую ширину так же решает сжатие во флекс-ряду —
+ *  замерено ≈28px бокса при содержимом 80–104px, то есть ~2 символа, а не шесть.
+ *  Усечение там ОЖИДАЕМО (спека #540, пин в `top-hud-viewports.spec.ts`): на 390
+ *  ряд несёт две HP-карточки, и ник уступает полосе и числу. */
 function HpName({ label, faction }: { label: string; faction: THPBarFaction }) {
     return (
         <span className="flex min-w-0 max-w-[6ch] md:max-w-[16ch] items-center gap-1.5 font-ui text-caption font-bold text-text">
@@ -168,6 +195,7 @@ export function HPBar({
     faction,
     max = DEFAULT_HP_MAX,
     layout = 'stacked',
+    density = 'comfortable',
     className,
     hitNonce,
 }: THPBarProps) {
@@ -178,8 +206,13 @@ export function HPBar({
         // Компактная строка (#450): имя (усекается) — трек (`flex-1`, тянется) —
         // число. Один ряд вместо двух: высота карточки падает почти вдвое, а
         // информация та же (имя, полоса, число).
+        // Зазор и пол трека — от плотности (#561, ревью PR фазы): канон `gap-2` /
+        // `min-w-10`, а `compact` отдаёт 2px зазора и ~16px пола трека нику. Кто
+        // из потребителей в дефиците ширины, решает потребитель — см.
+        // `THPBarDensity`.
+        const compact = density === 'compact';
         return (
-            <div className={clsx('flex items-center gap-2', className)}>
+            <div className={clsx('flex items-center', compact ? 'gap-1.5' : 'gap-2', className)}>
                 <HpName label={label} faction={faction} />
                 <HpTrack
                     // Ключ ЗДЕСЬ, а не на внутреннем div: смена ключа у div пересоздаёт
@@ -191,7 +224,9 @@ export function HPBar({
                     clamped={clamped}
                     max={max}
                     percent={percent}
-                    className="min-w-10 flex-1"
+                    // Пол ширины трека: канон `min-w-10`, у `compact` — `min-w-6`
+                    // (12px-полоса читается и на 24px, а ~16px уходят нику).
+                    className={clsx('flex-1', compact ? 'min-w-6' : 'min-w-10')}
                     hitNonce={hitNonce}
                 />
                 <HpCaption clamped={clamped} max={max} />

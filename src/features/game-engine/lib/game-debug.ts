@@ -20,6 +20,21 @@ export type TGameDebugRect = {
     height: number;
 };
 
+/**
+ * Ветка перерисовки кадра (issue #605, ревью PR фазы): чем движок рисовал
+ * последний кадр — целиком (`full`) или точечно. Кадр «частицы догорели»
+ * держится ровно на том, что сцена идёт ТОЧЕЧНОЙ полосой взрыва
+ * (`GamePlay.explosionAreaRedraw`, #582), а не `fullRedraw`; условий для этого
+ * в движке три (`particlesAlive`, `shakeActive`, наличие сдетонировавшего
+ * снаряда — `GamePlay.animate`), и сверять их снаружи по одному значит
+ * сторожить кадр косвенными признаками: вырастет время жизни частиц или
+ * длительность тряски — кадр молча вернётся на `fullRedraw`, а эталон
+ * переснимут. Поэтому наружу отдаётся сам факт ветки.
+ *
+ * `none` — кадр ещё ни разу не рисовался (движок только создан).
+ */
+export type TGameDebugRedraw = 'none' | 'full' | 'explosion-area' | 'ground-fall' | 'tanks';
+
 export type TGameDebugSnapshot = {
     player: TGameDebugRect | null;
     enemy: TGameDebugRect | null;
@@ -42,15 +57,38 @@ export type TGameDebugSnapshot = {
     explosionActive: boolean;
     /** Земля осыпается в воронку после взрыва. */
     groundFalling: boolean;
+    /**
+     * Радиус текущего очага вспышки (`bullet.explosionRadius`, 0 — очага нет или
+     * он между сменой очагов кластера). Кадру «частицы догорели» (issue #605) мало
+     * булева `explosionActive`: тот держится и в первый кадр после смерти частиц,
+     * когда сцена только что вышла из чистого `fullRedraw` и точечная перерисовка
+     * (`GamePlay.explosionAreaRedraw`, #582) ещё не успела дать грязь — измерено,
+     * что именно на этом кадре откат #582 остаётся зелёным. Радиус даёт кадру
+     * зацепиться за момент, когда очаг ЕЩЁ растёт (радиус > 0), то есть точечная
+     * перерисовка уже отработала минимум один раз поверх собственного предыдущего
+     * кадра, а не поверх чистого фона.
+     */
+    explosionRadius: number;
+    /** Ветка, которой отрисован последний кадр — см. `TGameDebugRedraw`. */
+    lastRedraw: TGameDebugRedraw;
 };
 
 /** Минимальная структурная форма `GamePlay`, которой достаточно для снапшота —
- *  не тянет весь класс движка в тестируемую единицу. */
-type TGameDebugSource = {
+ *  не тянет весь класс движка в тестируемую единицу.
+ *
+ *  Необязательны здесь только те поля, которых у движка в моменте может не быть
+ *  (танки до `initPaint`, снаряд вне выстрела). Поля ВНУТРИ них обязательны:
+ *  `Bullet.explosionRadius` и `GamePlay.lastRedraw` существуют всегда, и `?` на
+ *  них означал бы «может исчезнуть» — тогда переименование поля движка утекало бы
+ *  в снапшот молча (0 / `none` вместо ошибки тайпчека), а VRT-ассерт краснел бы
+ *  как «кадр не тот», а не как «поля больше нет» (ревью PR фазы). */
+export type TGameDebugSource = {
     leftTank?: { bodyRect(): TGameDebugRect };
     rightTank?: { bodyRect(): TGameDebugRect };
-    bullet?: { detonated: boolean };
+    bullet?: { detonated: boolean; explosionRadius: number };
     ground?: { isFalling: boolean };
+    /** Ветка перерисовки последнего кадра движка (`GamePlay.lastRedraw`). */
+    lastRedraw: TGameDebugRedraw;
     /** Узкий геттер движка вместо всего пула частиц (ревью #585): снапшоту нужен
      *  один булев факт, а публичный `ParticlePool` открыл бы отсюда и спавн, и
      *  сброс — read-only контракт хука держим формой источника, а не уговором. */
@@ -71,6 +109,8 @@ export function buildGameDebugSnapshot(game: TGameDebugSource): TGameDebugSnapsh
         particlesAlive: Boolean(game.hasAliveParticles),
         explosionActive: Boolean(game.bullet?.detonated),
         groundFalling: Boolean(game.ground?.isFalling),
+        explosionRadius: game.bullet?.explosionRadius ?? 0,
+        lastRedraw: game.lastRedraw,
     };
 }
 

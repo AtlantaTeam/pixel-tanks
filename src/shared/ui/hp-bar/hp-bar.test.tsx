@@ -80,6 +80,23 @@ describe('HPBar', () => {
         expect((container.firstChild as HTMLElement).className).toContain('custom-hp-bar');
     });
 
+    it('плотность inline: канон — широкие зазоры, compact — ужатые (#561)', () => {
+        // Ужатие — выбор ПОТРЕБИТЕЛЯ (боевой HUD делит ряд с пилюлей и иконками),
+        // а не канон компонента: по умолчанию `shared/ui` остаётся просторным.
+        const canon = render(<HPBar label="Игрок" value={72} faction="player" layout="inline" />);
+        const canonRoot = canon.container.firstChild as HTMLElement;
+        expect(canonRoot).toHaveClass('gap-2');
+        expect(canon.container.querySelector('[role="progressbar"]')).toHaveClass('min-w-10');
+
+        const compact = render(
+            <HPBar label="Игрок" value={72} faction="player" layout="inline" density="compact" />,
+        );
+        const compactRoot = compact.container.firstChild as HTMLElement;
+        expect(compactRoot).toHaveClass('gap-1.5');
+        expect(compactRoot).not.toHaveClass('gap-2');
+        expect(compact.container.querySelector('[role="progressbar"]')).toHaveClass('min-w-6');
+    });
+
     it('раскладка inline держит имя, трек и число в одной строке (#450)', () => {
         const { container, getByText } = render(
             <HPBar label="Игрок" value={72} faction="player" layout="inline" />,

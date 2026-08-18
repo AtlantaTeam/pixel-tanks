@@ -1,1 +1,1 @@
-export { HPBar, type THPBarFaction, type THPBarLayout } from './hp-bar';
+export { HPBar, type THPBarDensity, type THPBarFaction, type THPBarLayout } from './hp-bar';

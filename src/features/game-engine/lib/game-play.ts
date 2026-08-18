@@ -33,6 +33,7 @@ import { BulletTrail } from './bullet-trail';
 import { GhostTrail, ghostDashUnit } from './ghost-trail';
 import { ENGINE_COLORS } from './engine-palette';
 import { computeSceneLight, type TSceneLight } from './scene-light';
+import type { TGameDebugRedraw } from './game-debug';
 import { pickPrecipPreset, precipGroundTint, type TPrecipPreset } from './precipitation';
 import {
     applyWindModifier,
@@ -337,6 +338,16 @@ export class GamePlay {
     // Тряска была в прошлом кадре — чтобы один раз «доосадить» сцену в базовое
     // положение, когда дрожание закончилось (иначе остаётся суб-пиксельный сдвиг).
     private wasShaking = false;
+    /**
+     * Ветка перерисовки последнего кадра — наружу через debug-хук
+     * (`game-debug.ts`, issue #605). Не влияет на отрисовку: это факт О кадре,
+     * за который цепляются эталонные кадры сцены, чтобы не сторожить «точечную
+     * перерисовку» тремя косвенными признаками (частицы, тряска, снаряд).
+     * Метка ставится ПЕРЕД точечным вызовом: `fullRedraw` перебивает её сам,
+     * поэтому эскалация точечной ветки в полную (предпросмотр прицела,
+     * `tankAreaRedraw`) отражается честно.
+     */
+    lastRedraw: TGameDebugRedraw = 'none';
     // Начало дуги предпросмотра (ствол) и её узлы: переиспользуются каждый кадр
     // драга вместо аллокации новых точек (правило .claude/rules/canvas.md).
     private readonly aimArcFrom: TCoords = { x: 0, y: 0 };
@@ -950,6 +961,7 @@ export class GamePlay {
                 this.fullRedraw();
             } else if (this.bullet.detonated) {
                 this.explosionAreaRedraw(this.bullet);
+                this.lastRedraw = 'explosion-area';
                 this.tankAreaRedraw([this.leftTank, this.rightTank]);
             } else {
                 // Земля ещё осыпается от ПРОШЛОЙ воронки (осадка идёт по пикселю за
@@ -966,9 +978,11 @@ export class GamePlay {
                 // столбцов воронка визуально замирала бы на весь полёт следующего
                 // снаряда и прыгала на первом `fullRedraw` (ревью #601).
                 this.groundFallRedraw();
+                this.lastRedraw = 'ground-fall';
                 this.tankAreaRedraw([this.leftTank, this.rightTank]);
             }
         } else if (!this.bullet) {
+            this.lastRedraw = 'tanks';
             this.tankAreaRedraw([this.leftTank, this.rightTank]);
         }
 
@@ -1106,6 +1120,10 @@ export class GamePlay {
         // взаимно исключаются, оба сразу не включаются.
         if (this.showAimPreview) this.drawAimPreview(this.ctx);
         else if (this.showBarrelReadout) this.drawBarrelReadoutOnly(this.ctx);
+        // Метку ставит сам полный перерисов — тогда она верна и когда в него
+        // эскалировала точечная ветка (см. `lastRedraw`), и когда его дёрнули
+        // вне кадрового цикла (resize, смена хода).
+        this.lastRedraw = 'full';
     }
 
     /**

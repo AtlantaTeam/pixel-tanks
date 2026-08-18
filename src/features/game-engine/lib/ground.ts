@@ -23,6 +23,25 @@ export type TCraterStyle = {
 /** Тёмный тон размокшей воронки (#547): почти чёрный, силу задаёт `darkenAlpha`. */
 const CRATER_DARKEN_COLOR = '#0a0806';
 
+/**
+ * Короткий хвост затемнения ниже дна воронки (#620): столб красится не строго
+ * по границе дна, а с небольшим запасом — край не обрывается ровно по расчётной
+ * глубине пиксель в пиксель.
+ *
+ * Доля от амплитуды рельефа (`heightMax`), а не фиксированные пиксели (ревью PR
+ * фазы): в сцене масштабируется всё (`computeWorldScale`, арена от мобилки до
+ * широкого десктопа), и фикс читался бы по-разному — на узкой арене заметной
+ * долей неглубокой воронки, на широкой почти незаметно. Коэффициент подобран
+ * от типовой десктопной арены (`heightMax ≈ 400` при высоте канваса 800), где
+ * хвост остаётся прежними 6 px; на мобильной (≈200) он вдвое короче — вместе с
+ * самой воронкой.
+ */
+const CRATER_DARKEN_TAIL_RATIO = 0.015;
+
+/** Пол хвоста в CSS-пикселях: на крошечной арене доля выродилась бы в тонкую
+ *  полупрозрачную полоску, а хвост нужен видимый. */
+const CRATER_DARKEN_TAIL_MIN_PX = 2;
+
 type THeightBand = { min: number; max: number };
 
 /**
@@ -78,6 +97,16 @@ export class Ground {
      * Постоянна на весь бой — воронка остаётся тёмной после осыпания. Индекс = X.
      */
     private cratered: boolean[];
+    /**
+     * Буферы расчёта базовой высоты воронок (`craterBaseline`, #620): живут между
+     * кадрами и перевыделяются только при смене ширины — затемнение считается на
+     * каждой перестройке слоя, а осыпание кратера метит слой грязным каждый кадр
+     * (`.claude/rules/canvas.md`: аллокаций в кадре нет). Пустые до первой воронки:
+     * бой без дождя за них не платит вовсе.
+     */
+    private baselineBuf = new Float64Array(0);
+    private anchorHeightBuf = new Float64Array(0);
+    private anchorXBuf = new Int32Array(0);
     isFalling = false;
     /**
      * Крайние столбцы, которые осыпаются прямо сейчас (`[fallingFrom … fallingTo]`,
@@ -334,20 +363,95 @@ export class Ground {
      * воронки «оплывает» — на `edgeSoftenPx` пикселей по краям альфа спадает
      * (`craterEdgeFactor`), а не обрывается резко. Нет дождя (`craterStyle` пуст)
      * или воронок ещё не было — no-op. Запекается в offscreen-слой, не проход за кадр.
+     *
+     * По вертикали (#620) столб красится не на всю `heightMax` до низа канваса, а на
+     * фактическую глубину воронки в этом столбце (`craterBaseline` минус текущая
+     * высота) плюс короткий хвост (`CRATER_DARKEN_TAIL_RATIO` от амплитуды рельефа)
+     * — иначе краска утекала колонной до нижнего края экрана и читалась как дюны или
+     * шов текстуры, а не воронка.
      */
     private darkenCraters(ctx: CanvasRenderingContext2D) {
         const style = this.craterStyle;
         if (!style || style.darkenAlpha <= 0) return;
+        const baseline = this.craterBaseline();
+        const tail = Math.max(
+            CRATER_DARKEN_TAIL_MIN_PX,
+            Math.round(this.heightMax * CRATER_DARKEN_TAIL_RATIO),
+        );
         ctx.save();
         ctx.globalCompositeOperation = 'source-atop';
         ctx.fillStyle = CRATER_DARKEN_COLOR;
-        const bandTop = this.innerHeight - this.heightMax;
         for (let x = 0; x < this.innerWidth; x++) {
             if (!this.cratered[x]) continue;
+            const depth = Math.max(0, baseline[x] - this.heights[x]);
+            const bandHeight = Math.min(this.heightMax, depth + tail);
+            const surfaceY = this.innerHeight - this.heights[x];
             ctx.globalAlpha = style.darkenAlpha * this.craterEdgeFactor(x, style.edgeSoftenPx);
-            ctx.fillRect(x, bandTop, 1, this.heightMax);
+            ctx.fillRect(x, surfaceY, 1, bandHeight);
         }
         ctx.restore();
+    }
+
+    /**
+     * Высота рельефа «до воронки» по столбцу (#620) — для оценки глубины пробитой
+     * ямы, поскольку `fall()` вычитает кратер прямо из `heights` и исходное значение
+     * не хранится отдельно. Между ближайшими НЕ кратерными опорами слева и справа
+     * высота берётся ЛИНЕЙНОЙ интерполяцией по x, а не средним двух опор (ревью PR
+     * фазы): на склоне среднее — систематическая ошибка в обе стороны (у верхних по
+     * склону столбцов baseline оказывался ниже их же исходной высоты, глубина
+     * схлопывалась в 0 и столб красился одним хвостом, а у нижних глубина
+     * завышалась), и затемнение воронки на дюне выходило асимметричным — со стороны
+     * подъёма его почти не было. Интерполяция стоит тех же двух проходов и следует
+     * форме склона. Есть опора только с одной стороны — берётся она; весь ряд
+     * кратерный — фолбэк на `heightMax` (прежнее поведение).
+     *
+     * Два линейных прохода вместо поиска соседа на каждый столбец — иначе сплошная
+     * полоса воронок даёт O(width²). Буферы — поля класса, переиспользуются между
+     * кадрами (`.claude/rules/canvas.md`, «никаких аллокаций в кадре»): осыпание
+     * кратера метит слой грязным КАЖДЫЙ кадр и тянется сотнями кадров, так что три
+     * массива на вызов были бы тремя массивами на кадр. Перевыделяются только при
+     * смене ширины (`generate`/`resize`/`flatten` её и меняют).
+     */
+    private craterBaseline(): Float64Array {
+        const width = this.innerWidth;
+        if (this.baselineBuf.length !== width) {
+            this.baselineBuf = new Float64Array(width);
+            this.anchorHeightBuf = new Float64Array(width);
+            this.anchorXBuf = new Int32Array(width);
+        }
+        const baseline = this.baselineBuf;
+        const leftHeight = this.anchorHeightBuf;
+        const leftX = this.anchorXBuf;
+        // Проход слева направо: ближайшая некратерная опора слева (высота и её x).
+        let lastHeight = -1;
+        let lastX = -1;
+        for (let x = 0; x < width; x++) {
+            if (!this.cratered[x]) {
+                lastHeight = this.heights[x];
+                lastX = x;
+            }
+            leftHeight[x] = lastHeight;
+            leftX[x] = lastX;
+        }
+        // Проход справа налево: опора справа известна на месте, поэтому baseline
+        // заполняется тем же проходом — третий буфер не нужен.
+        lastHeight = -1;
+        lastX = -1;
+        for (let x = width - 1; x >= 0; x--) {
+            if (!this.cratered[x]) {
+                lastHeight = this.heights[x];
+                lastX = x;
+            }
+            const l = leftHeight[x];
+            const r = lastHeight;
+            if (l >= 0 && r >= 0) {
+                const span = lastX - leftX[x];
+                baseline[x] = span > 0 ? l + ((r - l) * (x - leftX[x])) / span : l;
+            } else if (l >= 0) baseline[x] = l;
+            else if (r >= 0) baseline[x] = r;
+            else baseline[x] = this.heightMax;
+        }
+        return baseline;
     }
 
     /**
