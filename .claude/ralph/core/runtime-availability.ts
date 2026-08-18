@@ -19,15 +19,40 @@
 
 import { positiveIntOrDefault } from '../shared/ralph-util.ts';
 
-// Узкая детекция НАМЕРЕННО: код 127 (shell «command not found» — ровно то, что даёт
-// упавший на пересоздании симлинк `/usr/bin/claude`) либо явные ENOENT-формулировки в
-// выводе. Ненулевой код с осмысленным выводом модели (обычное падение сессии) под этот
-// паттерн не подходит и остаётся прежним fail-closed стопом — разводить два класса именно
-// по тексту, а не по самому факту ненулевого кода, того и требует критерий готовности.
+// Узкая формулировка НАМЕРЕННО: только явный ENOENT-текст, ничего похожего «по смыслу».
+// Регекс — САМЫЙ СЛАБЫЙ из трёх признаков (см. isRuntimeUnavailable ниже): он ничего не
+// знает ни о коде возврата, ни о том, стартовал ли процесс, и потому применяется последним
+// и только там, где структурных признаков нет вовсе.
 export const RUNTIME_UNAVAILABLE_RE = /ENOENT|No such file or directory/i;
 
-export function isRuntimeUnavailable(code: number, output: string): boolean {
-    return code === 127 || RUNTIME_UNAVAILABLE_RE.test(output);
+/**
+ * Транзиентная недоступность рантайма — по коду возврата, структурному классу отказа и
+ * (последним) тексту вывода.
+ *
+ * Порядок условий — не стиль, а три отдельных барьера, каждый закрывает свой отказ:
+ *
+ *   1. `code === 0` — НЕ транзиент никогда (ревью #612). Регекс матчит любой текст, включая
+ *      вывод УСПЕШНОЙ сессии, процитировавшей чужую ошибку («тест падал с No such file or
+ *      directory — починил»). Без этого барьера такая сессия перезапускалась бы до
+ *      исчерпания бюджета, каждый раз ЗАНОВО делая побочки (коммиты, `gh pr create`,
+ *      повторная запись файла намерений → дубли комментариев в PR), и заканчивалась ложным
+ *      пушем «рантайм недоступен». Соседняя ветка API-лимита такой guard имеет с рождения
+ *      (`code !== 0 && API_LIMIT_RE.test(output)`).
+ *   2. `code === 127` — «command not found» от ШЕЛЛ-ОБЁРТКИ `/usr/local/bin/claude`: сама
+ *      обёртка стартовала и упала, поэтому граница spawn видит обычный `session-failed`.
+ *      Это ровно инцидент 18.08, ради которого модуль и написан, — судим по коду, не по
+ *      тексту, и не глушим его классом отказа.
+ *   3. `failureKind === 'session-failed'` — процесс реально стартовал и завершился сам
+ *      (#611 знает это структурно, с границы spawn). Тогда любые ENOENT-формулировки в
+ *      выводе — это ЦИТАТА модели, а не диагноз рантайма: текстовую эвристику глушим.
+ *      Она остаётся defense-in-depth для рантаймов, которые классификации не дают вовсе
+ *      (`failureKind === undefined`).
+ */
+export function isRuntimeUnavailable(code: number, output: string, failureKind?: string): boolean {
+    if (code === 0) return false;
+    if (code === 127) return true;
+    if (failureKind === 'session-failed') return false;
+    return RUNTIME_UNAVAILABLE_RE.test(output);
 }
 
 // Обновление CLI занимает секунды-минуты (research в теле issue) — 5 минут суммарного
@@ -55,20 +80,40 @@ export function runtimeUnavailableWaitMs(attempt: number, cfg: RuntimeUnavailabl
 
 // Текст промежуточного повтора (в лог, не в пуш — короткие паузы не должны спамить
 // человека; пуш зовётся один раз, на честном исчерпании бюджета, см. ниже).
-export function runtimeUnavailableMessage(attempt: number, waitMs: number, code: number): string {
+//
+// systemErrorCode (ревью #612) — код ОС с границы spawn (`ENOENT`), если он там был. Без
+// него на структурном пути #611 человек читал «(код 1)», где «1» не значит ничего: настоящую
+// причину называла только более ранняя строка spawnClaude, уехавшая вверх по логу. «код 127»
+// (шелл-обёртка) и `ENOENT` (execve) — разные диагнозы, и в строке они теперь различимы.
+export function runtimeUnavailableMessage(
+    attempt: number,
+    waitMs: number,
+    code: number,
+    systemErrorCode?: string,
+): string {
     return (
-        `⚠ Рантайм недоступен (код ${code}) — похоже, CLI обновляется. ` +
+        `⚠ Рантайм недоступен (${runtimeCauseText(code, systemErrorCode)}) — похоже, CLI обновляется. ` +
         `Повтор через ${Math.round(waitMs / 1000)}с (попытка ${attempt}).`
     );
+}
+
+// Единая форма «чем именно доказана недоступность»: код процесса всегда, код ОС — если
+// граница spawn его назвала.
+function runtimeCauseText(code: number, systemErrorCode?: string): string {
+    return systemErrorCode ? `код ${String(code)} / ${systemErrorCode}` : `код ${String(code)}`;
 }
 
 // Текст честного исчерпания бюджета — ЕДИНСТВЕННЫЙ источник правды формулировки причины.
 // Явно называет её «рантайм недоступен», а не «вердикта не было»/«сессия упала»: критерий
 // готовности #606 требует, чтобы пуш не путал транзиентную помеху с отказом по существу.
-export function runtimeUnavailableExhaustedMessage(maxWaitMs: number, attempts: number): string {
+export function runtimeUnavailableExhaustedMessage(
+    maxWaitMs: number,
+    attempts: number,
+    systemErrorCode?: string,
+): string {
     return (
         `⛔ Ralph: рантайм недоступен дольше ${Math.round(maxWaitMs / 60000)} мин ` +
-        `(${attempts} повторов) — стоп (fail-closed). Причина — CLI недоступен ` +
-        `(обновление/симлинк), а НЕ отказ ревью или сессии по существу.`
+        `(${attempts} повторов${systemErrorCode ? `, ${systemErrorCode}` : ''}) — стоп (fail-closed). ` +
+        `Причина — CLI недоступен (обновление/симлинк), а НЕ отказ ревью или сессии по существу.`
     );
 }

@@ -32,6 +32,45 @@ describe('isRuntimeUnavailable — детекция транзиентной н�
         expect(isRuntimeUnavailable(code, output)).toBe(false);
     });
 
+    // Ревью #612 (blocker): регекс матчит ЛЮБОЙ текст, включая вывод УСПЕШНОЙ сессии,
+    // процитировавшей чужую ошибку. Без барьера по коду такая сессия перезапускалась бы до
+    // исчерпания бюджета, каждый раз заново делая побочки (коммиты, `gh pr create`,
+    // повторная запись файла намерений → дубли комментариев в PR).
+    it.each([
+        [0, 'починил падавший тест: cat: x: No such file or directory'],
+        [0, 'spawn claude ENOENT — упоминание в отчёте сессии'],
+        [0, ''],
+    ])('код 0 (успех), вывод "%s" → НЕ транзиент, чем бы сессия ни цитировала', (code, output) => {
+        expect(isRuntimeUnavailable(code, output)).toBe(false);
+    });
+
+    it('структурный session-failed глушит текстовую эвристику: процесс стартовал и упал сам', () => {
+        expect(
+            isRuntimeUnavailable(
+                1,
+                'тест падал с No such file or directory — починил',
+                'session-failed',
+            ),
+        ).toBe(false);
+    });
+
+    it('код 127 — транзиент ДАЖЕ при session-failed: так приходит отказ от шелл-обёртки', () => {
+        // Инцидент 18.08: `/usr/local/bin/claude: line 70: /usr/bin/claude: No such file or
+        // directory`. Обёртка стартовала и вернула 127 — граница spawn честно видит
+        // session-failed, но это ровно тот транзиент, ради которого модуль и написан.
+        expect(
+            isRuntimeUnavailable(
+                127,
+                '/usr/local/bin/claude: line 70: /usr/bin/claude: No such file or directory',
+                'session-failed',
+            ),
+        ).toBe(true);
+    });
+
+    it('без структурного класса (сторонний рантайм) текст остаётся defense-in-depth', () => {
+        expect(isRuntimeUnavailable(1, 'spawn claude ENOENT', undefined)).toBe(true);
+    });
+
     it('RUNTIME_UNAVAILABLE_RE не матчит осмысленный вывод модели', () => {
         expect(RUNTIME_UNAVAILABLE_RE.test('Все тесты прошли, PR готов к ревью')).toBe(false);
     });
@@ -63,6 +102,19 @@ describe('тексты сообщений — формулировка прич�
         expect(msg).toMatch(/код 127/);
         expect(msg).toMatch(/попытка 2/);
         expect(msg).toMatch(/20с/);
+    });
+
+    it('runtimeUnavailableMessage добавляет код ОС, когда граница spawn его назвала', () => {
+        // Ревью #612: на структурном пути #611 код процесса всегда 1 и сам по себе не значит
+        // ничего — настоящая причина (ENOENT) обязана быть в той же строке.
+        const msg = runtimeUnavailableMessage(1, 10_000, 1, 'ENOENT');
+        expect(msg).toMatch(/код 1 \/ ENOENT/);
+    });
+
+    it('runtimeUnavailableExhaustedMessage несёт код ОС, если он известен', () => {
+        const msg = runtimeUnavailableExhaustedMessage(300_000, 7, 'ENOENT');
+        expect(msg).toMatch(/ENOENT/);
+        expect(msg).toMatch(/7 повторов/);
     });
 
     it('runtimeUnavailableExhaustedMessage прямо называет причину «рантайм недоступен», не «вердикта не было»', () => {

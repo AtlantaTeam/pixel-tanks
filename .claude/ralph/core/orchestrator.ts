@@ -83,6 +83,7 @@ import {
     runtimeUnavailableExhaustedMessage,
     DEFAULT_RUNTIME_UNAVAILABLE_MAX_WAIT_MS,
 } from './runtime-availability.ts';
+import { isArgvTooLong, argvTooLongMessage, resolveSpawnResult } from './spawn-failure.ts';
 // #369 (фаза 5): сборка адаптеров — текущие реализации пяти швов (форж/гейт/нотификатор/
 // деплой/рантайм) оформлены как интерфейсы adapters.ts и выбираются через конфиг. Ядро
 // ниже зависит ТОЛЬКО от типов-интерфейсов (RalphAdapters); конкретные модули (gate.ts,
@@ -98,7 +99,6 @@ import type {
     ReviewComment,
     RunOptions,
     RunResult,
-    SpawnFailureKind,
     TaskSourceAdapter,
 } from '../adapters/adapters.ts';
 import {
@@ -667,6 +667,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // молча исчез бы, и раннер спал/повторял без ограничения. positiveIntOrDefault
         // отсекает NaN/строку/≤0, как уже делают apiLimitGraceMin/FallbackWaitMin.
         const maxWaits = positiveIntOrDefault(cfg.apiLimitMaxWaits, 3);
+        // Ревью #612: бюджет ожидания рантайм-недоступности поднят СЮДА, к соседнему
+        // maxWaits, — cfg внутри цикла не меняется, а рядом видно главное: бюджеты двух
+        // ожиданий независимы и считаются каждый своим счётчиком.
+        const runtimeUnavailMaxWaitMs = positiveIntOrDefault(
+            cfg.runtimeUnavailableMaxWaitMs,
+            DEFAULT_RUNTIME_UNAVAILABLE_MAX_WAIT_MS,
+        );
         // #376 доп.скоуп: «сначала фолбэк, потом ожидание» — пробуем ОДИН раз ЗА ВЕСЬ
         // вызов (не на каждый attempt: иначе тот же кросс-провайдерный запуск повторялся
         // бы вместе с обычными повторами и жёг чужой лимит/бюджет без пользы).
@@ -679,8 +686,16 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // число ретраев).
         let runtimeUnavailAttempt = 0;
         let runtimeUnavailElapsedMs = 0;
-        for (let attempt = 0; ; attempt++) {
-            const { code, output, failureKind } = runClaudeOnceFn(prompt, opts);
+        // Ревью #612: `attempt` — счётчик ОЖИДАНИЙ API-ЛИМИТА, и повышает его только сам
+        // цикл ожидания лимита (в самом низу тела). Раньше он рос на каждом витке `for`,
+        // то есть повторы рантайм-недоступности жгли чужой бюджет: три моргания CLI — и
+        // `attempt >= maxWaits` истинно СРАЗУ, раннер не ждёт сброса окна лимита ни разу,
+        // а в шаге сдачи фазы это fail-closed стоп по причине, к лимиту отношения не
+        // имеющей. Документированное «ждать не более N раз» обязано значить ровно это, а
+        // не «N минус число транзиентов».
+        let attempt = 0;
+        for (;;) {
+            const { code, output, failureKind, systemErrorCode } = runClaudeOnceFn(prompt, opts);
             // #611: 'arg-too-long' — детерминированный отказ ЗАПУСКА (argv/env превысили
             // MAX_ARG_STRLEN), НЕ транзиент. Причина уже названа в логе на границе spawn
             // (spawnClaude/spawnCodex) — здесь просто честно возвращаем код БЕЗ повтора:
@@ -695,12 +710,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // ВТОРЫМ, более широким условием (code 127 от шелл-обёртки, либо рантаймы вне
             // spawnClaude/spawnCodex, которых эта классификация не касается) — оба пути ведут
             // к одному и тому же повтору с backoff, ни один не заменяет другой целиком.
-            if (failureKind === 'runtime-unavailable' || isRuntimeUnavailable(code, output)) {
-                const maxWaitMs = positiveIntOrDefault(
-                    cfg.runtimeUnavailableMaxWaitMs,
-                    DEFAULT_RUNTIME_UNAVAILABLE_MAX_WAIT_MS,
-                );
-                const remainingMs = maxWaitMs - runtimeUnavailElapsedMs;
+            if (
+                failureKind === 'runtime-unavailable' ||
+                isRuntimeUnavailable(code, output, failureKind)
+            ) {
+                const remainingMs = runtimeUnavailMaxWaitMs - runtimeUnavailElapsedMs;
                 if (remainingMs <= 0) {
                     // Честный fail-closed стоп, но с пушем, который НАЗЫВАЕТ причину:
                     // критерий готовности #606 требует не путать «рантайм недоступен» с
@@ -708,11 +722,24 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // логирует свой прежний generic-текст следом, этот пуш идёт первым и
                     // остаётся в истории уведомлений как точная причина.
                     pushEventFn(
-                        runtimeUnavailableExhaustedMessage(maxWaitMs, runtimeUnavailAttempt),
+                        runtimeUnavailableExhaustedMessage(
+                            runtimeUnavailMaxWaitMs,
+                            runtimeUnavailAttempt,
+                            systemErrorCode,
+                        ),
                         cfg,
                     );
                     onOutput(output);
-                    return code;
+                    // Ревью #612: код НОРМАЛИЗУЕТСЯ в 127. Наружу из runClaude уходит голое
+                    // число, а разбор падения кодер-итерации (handleCrashedCoderSession)
+                    // отличает отказ СРЕДЫ от отказа сессии именно по номеру — `127 || 126`
+                    // (#445). Структурный путь #611 отдаёт ENOENT кодом 1, и без подмены
+                    // петля увидела бы обычную неудачу, напечатала «продолжаем» и молотила
+                    // итерации об отсутствующий бинарь до maxIterations — при уже ушедшем
+                    // пуше «рантайм недоступен». 127 — тот же класс («command not found»),
+                    // которым этот отказ приходит от шелл-обёртки, так что разбор падения
+                    // получает его в понятной ему форме, а не в новой.
+                    return 127;
                 }
                 runtimeUnavailAttempt++;
                 const waitMs = Math.min(
@@ -720,7 +747,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     remainingMs,
                 );
                 runtimeUnavailElapsedMs += waitMs;
-                log(runtimeUnavailableMessage(runtimeUnavailAttempt, waitMs, code));
+                log(
+                    runtimeUnavailableMessage(runtimeUnavailAttempt, waitMs, code, systemErrorCode),
+                );
                 sleepFn(waitMs);
                 continue;
             }
@@ -796,6 +825,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // даже без Telegram): парный log() выше давал двойную строку в логе.
             pushEventFn(limitMsg, cfg);
             sleepFn(waitMs);
+            // ЕДИНСТВЕННОЕ место, где растёт счётчик ожиданий лимита (ревью #612): бюджет
+            // «не более N ожиданий» тратит только сам факт ожидания лимита.
+            attempt++;
         }
     }
 
@@ -848,54 +880,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         return cmdArgs;
     }
 
-    // #607: узкая детекция отказа ЗАПУСКА процесса (execve вернул E2BIG — argv/env вместе
-    // превысили системный предел), а не падения самой сессии. До перехода промпта на stdin
-    // это был единственный молчаливый путь: spawnSync не поднимал процесс вовсе, отдавал
-    // res.error, а не status/signal, и раннер это видел как code:1 без единой строки
-    // вывода — неотличимо от «ревью не дало вердикта». Проверка остаётся defense-in-depth
-    // (argv теперь фиксированной длины, но имя модели/пути — тоже в argv, и барьер не
-    // должен зависеть от того, что где-то ещё не выросло).
-    const ARGV_TOO_LONG_RE = /E2BIG|Argument list too long/i;
-
-    function isArgvTooLong(error: NodeJS.ErrnoException | null | undefined): boolean {
-        if (!error) return false;
-        return error.code === 'E2BIG' || ARGV_TOO_LONG_RE.test(error.message ?? '');
-    }
-
-    // Текст — ЕДИНСТВЕННЫЙ источник формулировки причины (тот же приём, что
-    // runtimeUnavailableExhaustedMessage в runtime-availability.ts, #606): называет её
-    // прямо, а не оставляет раннеру гадать по пустому выводу.
-    function argvTooLongMessage(error: NodeJS.ErrnoException): string {
-        return (
-            `⛔ claude -p не запустился: превышен предел ядра на аргумент командной строки ` +
-            `(E2BIG${error.code ? ` / код ${error.code}` : ''} — обычно MAX_ARG_STRLEN, ` +
-            `131072 байта). Это отказ ЗАПУСКА процесса, а НЕ отказ сессии/ревью по существу — ` +
-            `${error.message}`
-        );
-    }
-
-    // #611: структурная классификация НА ГРАНИЦЕ spawn — где res.error ещё доступен, а не
-    // по тексту вывода. До сих пор spawnClaude/spawnCodex читали у результата spawnSync
-    // только status/signal/stdout/stderr и НИКОГДА res.error: ENOENT (бинаря нет, идёт
-    // автообновление CLI), E2BIG (argv/env превысили MAX_ARG_STRLEN), EACCES (нет прав),
-    // ENOBUFS (вывод больше maxBuffer) — все они схлопывались в один и тот же
-    // `{code: 1, output: '\n'}`, неотличимый от честного падения сессии без единой строки
-    // вывода. Общая для ОБОИХ spawn-путей (Claude и Codex) — критерий готовности требует
-    // одинаковой классификации, поэтому функция здесь одна, не продублирована в
-    // spawnClaude/spawnCodex по отдельности.
-    function classifySpawnOutcome(error: NodeJS.ErrnoException | null | undefined): {
-        failureKind: SpawnFailureKind;
-        systemErrorCode?: string;
-    } {
-        if (!error) return { failureKind: 'session-failed' };
-        if (error.code === 'ENOENT') {
-            return { failureKind: 'runtime-unavailable', systemErrorCode: error.code };
-        }
-        if (isArgvTooLong(error)) {
-            return { failureKind: 'arg-too-long', systemErrorCode: error.code ?? 'E2BIG' };
-        }
-        return { failureKind: 'spawn-failed', systemErrorCode: error.code };
-    }
+    // #607/#611: правила классификации отказа запуска и тексты причин живут в
+    // core/spawn-failure.ts (вынесены ревью #612 — чистые функции без замыканий на
+    // config/DRY/adapters, общие для обоих spawn-путей). Здесь остаётся только сам spawn.
 
     // Тонкая обвязка над реальным spawnSync (Linux-порт #67) — единственное место, где
     // действительно запускается процесс claude. Вынесена отдельно от runClaudeOnce и
@@ -951,41 +938,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // делал inherit — просто постфактум, а не потоком.
         if (res.stdout) process.stdout.write(res.stdout);
         if (res.stderr) process.stderr.write(res.stderr);
-        // #607/#611: ПЕРЕД проверкой signal — spawnSync, не сумевший поднять процесс
-        // (execve упал), отдаёт res.error, а не status/signal. Раньше это молча падало в
-        // `code: res.status ?? 1` — код 1 без единой строки вывода, неотличимый от
-        // «сессия отработала и не сказала ни слова». Классифицируем НА ГРАНИЦЕ (пока
-        // res.error ещё доступен) и называем причину прямо в лог.
-        const spawnFailure = classifySpawnOutcome(
-            res.error as NodeJS.ErrnoException | null | undefined,
-        );
-        if (spawnFailure.failureKind === 'arg-too-long') {
-            log(argvTooLongMessage(res.error as NodeJS.ErrnoException));
-            return { code: 1, output, ...spawnFailure };
-        }
-        if (spawnFailure.failureKind === 'runtime-unavailable') {
-            log(
-                `⚠ claude не запустился: рантайм недоступен (${spawnFailure.systemErrorCode}) — ` +
-                    `похоже, CLI обновляется, бинарь временно отсутствует. Это отказ ЗАПУСКА ` +
-                    `процесса, а НЕ отказ сессии по существу — ${(res.error as NodeJS.ErrnoException)?.message ?? ''}`,
-            );
-            return { code: 1, output, ...spawnFailure };
-        }
-        if (spawnFailure.failureKind === 'spawn-failed') {
-            log(
-                `⚠ claude не запустился: ошибка запуска процесса` +
-                    `${spawnFailure.systemErrorCode ? ` (${spawnFailure.systemErrorCode})` : ''} — ` +
-                    `${(res.error as NodeJS.ErrnoException)?.message ?? ''}. Это отказ ЗАПУСКА, а НЕ ` +
-                    `отказ сессии по существу.`,
-            );
-            return { code: 1, output, ...spawnFailure };
-        }
-        if (res.signal) {
-            log(`⚠ claude убит по сигналу ${res.signal} (таймаут ${timeoutMs}мс?)`);
-            return { code: 1, output, failureKind: 'session-failed' };
-        }
-        const code = res.status ?? 1;
-        return code === 0 ? { code, output } : { code, output, failureKind: 'session-failed' };
+        // #607/#611: spawnSync, не сумевший поднять процесс (execve упал), отдаёт
+        // res.error, а не status/signal. Раньше это молча падало в `code: res.status ?? 1`
+        // — код 1 без единой строки вывода, неотличимый от «сессия отработала и не сказала
+        // ни слова». Классификация — НА ГРАНИЦЕ (пока res.error ещё доступен), общим
+        // модулем spawn-failure.ts; лог получает готовые строки, называющие причину прямо.
+        const { result, logLines } = resolveSpawnResult('claude', res, output, timeoutMs);
+        for (const line of logLines) log(line);
+        return result;
     }
 
     function runClaudeOnce(
@@ -1189,37 +1149,12 @@ export function createOrchestrator(env: OrchestratorEnv) {
         if (res.stderr) process.stderr.write(res.stderr);
         // #611: та же граничная классификация, что у spawnClaude — оба spawn-пути обязаны
         // классифицировать res.error одинаково (codex-argv тоже несёт промпт позиционным
-        // элементом, buildCodexArgs, и подвержен тому же классу отказов запуска).
-        const spawnFailure = classifySpawnOutcome(
-            res.error as NodeJS.ErrnoException | null | undefined,
-        );
-        if (spawnFailure.failureKind === 'arg-too-long') {
-            log(argvTooLongMessage(res.error as NodeJS.ErrnoException));
-            return { code: 1, output, ...spawnFailure };
-        }
-        if (spawnFailure.failureKind === 'runtime-unavailable') {
-            log(
-                `⚠ codex не запустился: рантайм недоступен (${spawnFailure.systemErrorCode}) — ` +
-                    `похоже, бинарь временно отсутствует. Это отказ ЗАПУСКА процесса, а НЕ отказ ` +
-                    `сессии по существу — ${(res.error as NodeJS.ErrnoException)?.message ?? ''}`,
-            );
-            return { code: 1, output, ...spawnFailure };
-        }
-        if (spawnFailure.failureKind === 'spawn-failed') {
-            log(
-                `⚠ codex не запустился: ошибка запуска процесса` +
-                    `${spawnFailure.systemErrorCode ? ` (${spawnFailure.systemErrorCode})` : ''} — ` +
-                    `${(res.error as NodeJS.ErrnoException)?.message ?? ''}. Это отказ ЗАПУСКА, а НЕ ` +
-                    `отказ сессии по существу.`,
-            );
-            return { code: 1, output, ...spawnFailure };
-        }
-        if (res.signal) {
-            log(`⚠ codex убит по сигналу ${res.signal} (таймаут ${timeoutMs}мс?)`);
-            return { code: 1, output, failureKind: 'session-failed' };
-        }
-        const code = res.status ?? 1;
-        return code === 0 ? { code, output } : { code, output, failureKind: 'session-failed' };
+        // элементом, buildCodexArgs, и подвержен тому же классу отказов запуска). Ревью
+        // #612: одинаковость держится ОДНИМ вызовом общего модуля, а не копией трёх веток
+        // логирования — разъехавшись, копии дали бы разный диагноз одному отказу.
+        const { result, logLines } = resolveSpawnResult('codex', res, output, timeoutMs);
+        for (const line of logLines) log(line);
+        return result;
     }
 
     // Окружение для spawn OpenAI-сессии: базовое env раннера + ключ OpenAI под именем,
