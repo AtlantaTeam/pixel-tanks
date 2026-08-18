@@ -650,12 +650,21 @@ describe('Kimi-рантайм (#373) — Claude-spawn + env Moonshot', () => {
         });
 
         it('спавнит `claude` с моделью Kimi и env Moonshot, возвращает дифф, токен НЕ в argv', () => {
-            const spawnFn = vi.fn<SpawnFake>(() => ({
-                status: 0,
-                stdout: 'diff --git a/f b/f\n+добавлено',
-                stderr: '',
-                signal: null,
-            }));
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? {
+                          status: 0,
+                          stdout: 'Logged in using an API key',
+                          stderr: '',
+                          signal: null,
+                      }
+                    : {
+                          status: 0,
+                          stdout: 'diff --git a/f b/f\n+добавлено',
+                          stderr: '',
+                          signal: null,
+                      },
+            );
 
             const res = runtime.runKimiOnce(
                 'тестовая задача',
@@ -768,12 +777,17 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
                 model: 'gpt-5-codex',
                 sandboxMode: 'danger-full-access',
             });
+            // Порядок исправлен по 3-му проходу ревью: `-a` — глобальный флаг и стоит ДО
+            // подкоманды `exec`, иначе CLI отвергает argv целиком (проверено живым запуском).
             expect(argv).toEqual([
-                'exec',
                 '-a',
                 'never',
+                'exec',
                 '-s',
                 'danger-full-access',
+                '-c',
+                'model_provider="openai"',
+                '--ignore-user-config',
                 '-m',
                 'gpt-5-codex',
                 '--',
@@ -815,6 +829,75 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
                 sandboxMode: 'danger-full-access',
             });
             expect(argv[argv.length - 1]).toBe(evil);
+        });
+    });
+
+    describe('buildCodexArgs — принудительный канал входа в argv (подписка)', () => {
+        const { buildCodexArgs } = ralph;
+
+        it('глобальные флаги идут ДО подкоманды exec (иначе CLI отвергает argv)', () => {
+            // Ревью Codex (3-й проход) + живая проверка: `codex exec -a never` даёт
+            // `unexpected argument '-a'` и exit 2 на CLI 0.147.0 — то есть OpenAI-рантайм не
+            // запускался вовсе. Верный порядок: `codex -a never exec …`.
+            const argv = buildCodexArgs('задача', {
+                model: 'gpt-5-codex',
+                sandboxMode: 'read-only',
+            });
+            expect(argv[0]).toBe('-a');
+            expect(argv[2]).toBe('exec');
+            expect(argv.indexOf('-a')).toBeLessThan(argv.indexOf('exec'));
+        });
+
+        it('пользовательский config.toml не загружается: --ignore-user-config', () => {
+            // Ревью Codex (4-й проход): `model_provider="openai"` запрещает custom provider по
+            // id, но `openai_base_url` в пользовательском конфиге всё равно перенаправил бы
+            // встроенный провайдер. Вектор не теоретический: сессии раннера ходят с
+            // danger-full-access и сами могут дописать ~/.codex/config.toml.
+            const argv = buildCodexArgs('задача', {
+                model: 'gpt-5-codex',
+                sandboxMode: 'read-only',
+            });
+            expect(argv).toContain('--ignore-user-config');
+            expect(argv.indexOf('--ignore-user-config')).toBeLessThan(argv.indexOf('--'));
+        });
+
+        it('провайдер фиксируется в argv: -c model_provider="openai"', () => {
+            // Ревью Codex (3-й проход): `forced_login_method` ограничивает СПОСОБ входа, но не
+            // выбор провайдера — пользовательский config.toml мог увести сессию на custom
+            // provider со своим env_key/base_url, а `login status` при этом честно показывал бы
+            // ChatGPT.
+            const argv = buildCodexArgs('задача', {
+                model: 'gpt-5-codex',
+                sandboxMode: 'read-only',
+            });
+            const i = argv.indexOf('model_provider="openai"');
+            expect(i).toBeGreaterThan(0);
+            expect(argv[i - 1]).toBe('-c');
+        });
+
+        it('subscription: argv несёт -c forced_login_method="chatgpt"', () => {
+            // Ревью Codex (2-й проход): проверка `login status` оставляет TOCTOU между
+            // проверкой и exec, а custom provider с ней не связан вовсе. Канал фиксируется
+            // на самом вызове.
+            const argv = buildCodexArgs('задача', {
+                model: 'gpt-5.6-sol',
+                sandboxMode: 'read-only',
+                authMode: 'subscription',
+            });
+            const i = argv.indexOf('forced_login_method="chatgpt"');
+            expect(i).toBeGreaterThan(0);
+            expect(argv[i - 1]).toBe('-c');
+            // Промпт остаётся последним аргументом после `--` (anti-RCE, прежний инвариант).
+            expect(argv[argv.length - 1]).toBe('задача');
+        });
+
+        it('apiKey: флага принуждения нет — чужой канал не навязываем', () => {
+            const argv = buildCodexArgs('задача', {
+                model: 'gpt-5-codex',
+                sandboxMode: 'danger-full-access',
+                authMode: 'apiKey',
+            });
+            expect(argv.join(' ')).not.toContain('forced_login_method');
         });
     });
 
@@ -860,6 +943,25 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             expect('RALPH_KIMI_AUTH_TOKEN' in env).toBe(false);
             expect('RALPH_TG_BOT_TOKEN' in env).toBe(false);
             expect(env.GH_TOKEN).toBe('gh-secret');
+        });
+
+        it('вычищает и КАСТОМНУЮ env-переменную ключа — при подписке и при apiKey', () => {
+            // Ревью Codex по !104: при authTokenEnv='MY_OPENAI_KEY' резолвер возвращал token=null,
+            // а сама переменная оставалась в окружении — секрет уезжал в песочницу
+            // danger-full-access, и codex мог взять его как env_key custom provider.
+            const sub = buildOpenAISpawnEnv(null, { MY_OPENAI_KEY: 'sk-secret' }, 'MY_OPENAI_KEY');
+            expect('MY_OPENAI_KEY' in sub).toBe(false);
+            expect('OPENAI_API_KEY' in sub).toBe(false);
+
+            // В режиме apiKey ключ уходит под именем, которое ждёт codex, а кастомное имя
+            // в окружении стороннего бинаря не нужно вовсе.
+            const api = buildOpenAISpawnEnv(
+                'sk-secret',
+                { MY_OPENAI_KEY: 'sk-secret' },
+                'MY_OPENAI_KEY',
+            );
+            expect(api.OPENAI_API_KEY).toBe('sk-secret');
+            expect('MY_OPENAI_KEY' in api).toBe(false);
         });
 
         it('подписка (token=null): OPENAI_API_KEY вычищается, а не наследуется из базового env', () => {
@@ -953,6 +1055,27 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             );
         });
 
+        it('явный null в authMode → fail, а не молчаливый apiKey', () => {
+            // Ревью Codex: `openai.authMode ?? 'apiKey'` глотает JSON-значение null, и обещанный
+            // fail-closed не срабатывает — конфиг с опечаткой уходит на платный канал.
+            expect(() =>
+                resolveOpenAIRuntime(
+                    { model: 'gpt-5-codex', authMode: null } as never,
+                    { OPENAI_API_KEY: 'sk-openai' },
+                    throwingFail,
+                ),
+            ).toThrow(/authMode/);
+        });
+
+        it('возвращает имя env-переменной ключа — его вычищают из окружения сессии', () => {
+            const r = resolveOpenAIRuntime(
+                { model: 'gpt-5-codex', authTokenEnv: 'MY_OPENAI_KEY' },
+                { MY_OPENAI_KEY: 'sk-custom' },
+                throwingFail,
+            );
+            expect(r.tokenEnv).toBe('MY_OPENAI_KEY');
+        });
+
         it('неизвестный authMode → fail (канал авторизации не выбирается молча, инвариант №1)', () => {
             expect(() =>
                 resolveOpenAIRuntime(
@@ -971,6 +1094,279 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             expect(() =>
                 resolveOpenAIRuntime({}, {}, throwingFail, { requireToken: false }),
             ).toThrow(/openaiRuntime\.model/);
+        });
+    });
+
+    describe('assertNoConflictingForcedLogin — конфиг пользователя против режима', () => {
+        const { assertNoConflictingForcedLogin } = ralph;
+
+        const env = { HOME: '/home/runner' };
+
+        it('чужой forced_login_method → стоп ДО запуска codex login status', () => {
+            // Ревью Codex (5-й проход): `login status` не принимает --ignore-user-config,
+            // поэтому грузит пользовательский config.toml — и при несовпадении сам
+            // РАЗЛОГИНИВАЕТ. То есть «недеструктивная проверка» деструктивна ровно в том
+            // случае, ради которого её ставили. Ловим это до спавна, чтением конфига.
+            const readFn = () => 'model = "gpt-5.6-sol"\nforced_login_method = "api"\n';
+            expect(() =>
+                assertNoConflictingForcedLogin(readFn, throwingFail, 'chatgpt', env),
+            ).toThrow(/forced_login_method/);
+        });
+
+        it('совпадающий forced_login_method — не мешает', () => {
+            const readFn = () => 'forced_login_method = "chatgpt"\n';
+            expect(() =>
+                assertNoConflictingForcedLogin(readFn, throwingFail, 'chatgpt', env),
+            ).not.toThrow();
+        });
+
+        it('конфига нет или ключа в нём нет — не мешает', () => {
+            const missing = () => {
+                throw Object.assign(new Error('нет файла'), { code: 'ENOENT' });
+            };
+            expect(() =>
+                assertNoConflictingForcedLogin(missing, throwingFail, 'chatgpt', env),
+            ).not.toThrow();
+            expect(() =>
+                assertNoConflictingForcedLogin(() => 'model = "x"', throwingFail, 'api', env),
+            ).not.toThrow();
+        });
+
+        it('закомментированная строка не считается', () => {
+            const readFn = () => '# forced_login_method = "api"\n';
+            expect(() =>
+                assertNoConflictingForcedLogin(readFn, throwingFail, 'chatgpt', env),
+            ).not.toThrow();
+        });
+
+        it.each([
+            ["forced_login_method = 'api'", 'literal string'],
+            ['"forced_login_method" = "api"', 'quoted key'],
+        ])('ловит несовпадение в %s (%s)', (text) => {
+            expect(() =>
+                assertNoConflictingForcedLogin(() => text, throwingFail, 'chatgpt', env),
+            ).toThrow(/forced_login_method/);
+        });
+
+        it.each([
+            ['forced_login_method = """api"""', 'многострочное значение'],
+            ['forced_login_method = api', 'незакавыченное значение'],
+            ['Forced_Login_Method = "api"', 'ключ в другом регистре'],
+            ['[profile]\nforced_login_method = "api"', 'ключ внутри секции'],
+            ['note = """\nforced_login_method = "api"\n"""', 'текст внутри многострочной строки'],
+        ])('не принимает %s (%s) за глобальную настройку', (text) => {
+            expect(() =>
+                assertNoConflictingForcedLogin(() => text, throwingFail, 'chatgpt', env),
+            ).not.toThrow();
+        });
+
+        it('системный /etc/codex/config.toml тоже читается', () => {
+            // Независимое ревью (7-й проход): Codex грузит и системный слой, конфликт оттуда
+            // так же разлогинил бы человека на `login status`.
+            const seen: string[] = [];
+            const readFn = (file: string) => {
+                seen.push(file);
+                return file.startsWith('/etc/') ? 'forced_login_method = "api"\n' : '';
+            };
+            expect(() =>
+                assertNoConflictingForcedLogin(readFn, throwingFail, 'chatgpt', env),
+            ).toThrow(/etc\/codex\/config\.toml/);
+            expect(seen).toContain('/etc/codex/config.toml');
+        });
+
+        it('комментарий с тройными кавычками не прячет настоящий ключ', () => {
+            // Независимое ревью (7-й проход): `# """` уводил парсер в режим multiline, и
+            // реальная настройка ниже переставала замечаться, хотя TOML-парсер Codex её видит.
+            const readFn = () => '# """ пример\nforced_login_method = "api"\n';
+            expect(() =>
+                assertNoConflictingForcedLogin(readFn, throwingFail, 'chatgpt', env),
+            ).toThrow(/forced_login_method/);
+        });
+
+        it('ошибка чтения кроме ENOENT → fail-closed', () => {
+            const denied = () => {
+                throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+            };
+            expect(() =>
+                assertNoConflictingForcedLogin(denied, throwingFail, 'chatgpt', env),
+            ).toThrow(/прочитать.*config\.toml/i);
+        });
+
+        it.each([
+            [{ CODEX_HOME: '/srv/codex', HOME: '/home/runner' }, '/srv/codex/config.toml'],
+            [{ HOME: '/home/runner' }, '/home/runner/.codex/config.toml'],
+        ])('читает config.toml из окружения subprocess: %j', (spawnEnv, expectedPath) => {
+            const readFn = vi.fn(() => '');
+            assertNoConflictingForcedLogin(readFn, throwingFail, 'chatgpt', spawnEnv);
+            expect(readFn).toHaveBeenCalledWith(expectedPath, 'utf8');
+        });
+    });
+
+    describe('assertCodexLoginChannel — фактический канал входа codex (чистая функция)', () => {
+        const { assertCodexLoginChannel } = ralph;
+        const reply = (stdout: string, status = 0) =>
+            vi.fn(() => ({ status, stdout, stderr: '', signal: null }));
+
+        it('вход подпиской — молча пропускает и спрашивает именно `codex login status`', () => {
+            const spawnFn = reply('Logged in using ChatGPT');
+            expect(() =>
+                assertCodexLoginChannel(
+                    spawnFn as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'chatgpt',
+                ),
+            ).not.toThrow();
+            const [bin, args] = spawnFn.mock.calls[0] as unknown as [string, string[]];
+            expect(bin).toBe('codex');
+            expect(args).toEqual(['login', 'status']);
+        });
+
+        it('вход ключом → fail с указанием, что именно ответил codex', () => {
+            expect(() =>
+                assertCodexLoginChannel(
+                    reply('Logged in using an API key') as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'chatgpt',
+                ),
+            ).toThrow(/Logged in using an API key/);
+        });
+
+        it('частичное совпадение НЕ проходит: «Not Logged in using ChatGPT» → fail', () => {
+            // Ревью Codex (2-й проход): подстрочный поиск делал барьер fail-open — отрицание
+            // перед фразой проходило как успех. Ищем строку статуса, а не подстроку где угодно.
+            expect(() =>
+                assertCodexLoginChannel(
+                    reply('Not Logged in using ChatGPT') as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'chatgpt',
+                ),
+            ).toThrow(/authMode='subscription'/);
+        });
+
+        it('фраза в stderr при ином статусе в stdout → fail (судим по stdout)', () => {
+            const spawnFn = vi.fn(() => ({
+                status: 0,
+                stdout: 'Logged in using an API key',
+                stderr: 'hint: run `codex login` to be Logged in using ChatGPT',
+                signal: null,
+            }));
+            expect(() =>
+                assertCodexLoginChannel(
+                    spawnFn as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'chatgpt',
+                ),
+            ).toThrow(/API key/);
+        });
+
+        it('api-канал: частичное совпадение и подмена через stderr не проходят', () => {
+            // Симметрия к проверкам ChatGPT-канала (ревью Codex, 5-й проход): ослабление
+            // ТОЛЬКО api-регулярки до подстрочного поиска иначе осталось бы зелёным.
+            expect(() =>
+                assertCodexLoginChannel(
+                    reply('Not Logged in using an API key') as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'api',
+                ),
+            ).toThrow(/authMode='apiKey'/);
+
+            const spawnFn = vi.fn(() => ({
+                status: 0,
+                stdout: 'Logged in using ChatGPT',
+                stderr: 'hint: you could be Logged in using an API key',
+                signal: null,
+            }));
+            expect(() =>
+                assertCodexLoginChannel(spawnFn as unknown as SpawnSyncFn, {}, throwingFail, 'api'),
+            ).toThrow(/ChatGPT/);
+        });
+
+        it('не залогинен вовсе (ненулевой код) → fail', () => {
+            expect(() =>
+                assertCodexLoginChannel(
+                    reply('Not logged in', 1) as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'chatgpt',
+                ),
+            ).toThrow(/authMode='subscription'/);
+        });
+
+        it('пустой ответ codex → fail, а не молчаливый пропуск (fail-closed)', () => {
+            expect(() =>
+                assertCodexLoginChannel(
+                    reply('') as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'chatgpt',
+                ),
+            ).toThrow(/пустой ответ/);
+        });
+
+        it('таймаут: spawnSync отдаёт error И signal — в тексте сигнал, а не общая ошибка', () => {
+            // Ревью Codex (4-й проход): прежний тест был ложнозелёным — мок нёс только signal,
+            // а реальный spawnSync при timeout возвращает ОБА поля, и ветка error забирала
+            // управление первой, делая ветку сигнала недостижимой.
+            const spawnFn = vi.fn(() => ({
+                status: null,
+                stdout: '',
+                stderr: '',
+                signal: 'SIGTERM',
+                error: Object.assign(new Error('spawnSync codex ETIMEDOUT'), {
+                    code: 'ETIMEDOUT',
+                }),
+            }));
+            expect(() =>
+                assertCodexLoginChannel(
+                    spawnFn as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'chatgpt',
+                ),
+            ).toThrow(/SIGTERM/);
+        });
+
+        it('процесс убит сигналом → fail говорит про сигнал, а не «залогинен иначе»', () => {
+            // Встроенное ревью SourceCraft: при SIGKILL/таймауте status=null, и прежний текст
+            // обвинял бы канал входа вместо настоящей причины. Стоп в обоих случаях, но
+            // диагноз обязан быть честным — по нему человек решает, что чинить.
+            const spawnFn = vi.fn(() => ({
+                status: null,
+                stdout: '',
+                stderr: '',
+                signal: 'SIGKILL',
+            }));
+            expect(() =>
+                assertCodexLoginChannel(
+                    spawnFn as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'chatgpt',
+                ),
+            ).toThrow(/SIGKILL/);
+        });
+
+        it('бинаря нет (spawn отдал error) → fail с текстом ошибки запуска', () => {
+            const spawnFn = vi.fn(() => ({
+                status: null,
+                stdout: '',
+                stderr: '',
+                signal: null,
+                error: new Error('spawn codex ENOENT'),
+            }));
+            expect(() =>
+                assertCodexLoginChannel(
+                    spawnFn as unknown as SpawnSyncFn,
+                    {},
+                    throwingFail,
+                    'chatgpt',
+                ),
+            ).toThrow(/ENOENT/);
         });
     });
 
@@ -1102,12 +1498,21 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
         });
 
         it('спавнит `codex` с моделью OpenAI и ключом в env, возвращает дифф, ключ НЕ в argv', () => {
-            const spawnFn = vi.fn<SpawnFake>(() => ({
-                status: 0,
-                stdout: 'diff --git a/f b/f\n+добавлено',
-                stderr: '',
-                signal: null,
-            }));
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? {
+                          status: 0,
+                          stdout: 'Logged in using an API key',
+                          stderr: '',
+                          signal: null,
+                      }
+                    : {
+                          status: 0,
+                          stdout: 'diff --git a/f b/f\n+добавлено',
+                          stderr: '',
+                          signal: null,
+                      },
+            );
 
             const res = runtime.runOpenAIOnce(
                 'тестовая задача',
@@ -1116,8 +1521,10 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
             );
 
             expect(res).toEqual({ code: 0, output: 'diff --git a/f b/f\n+добавлено\n' });
+            // Режим apiKey канал не проверяет — процесс ровно один (см. тест ниже про то,
+            // почему симметричная проверка ломала «ключ только из env»).
             expect(spawnFn).toHaveBeenCalledTimes(1);
-            const [bin, argv, opts] = spawnFn.mock.calls[0];
+            const [bin, argv, opts] = spawnFn.mock.calls[spawnFn.mock.calls.length - 1];
             expect(bin).toBe('codex');
             // Модель — OpenAI из openaiRuntime.model, а НЕ claude-модель из modelRouting.
             expect(argv).toContain('-m');
@@ -1137,19 +1544,102 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
                 permissionMode: 'bypassPermissions',
                 openaiRuntime: { model: 'gpt-5.6-sol', authMode: 'subscription' },
             });
-            const spawnFn = vi.fn<SpawnFake>(() => ({
-                status: 0,
-                stdout: 'ok',
-                stderr: '',
-                signal: null,
-            }));
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? { status: 0, stdout: 'Logged in using ChatGPT', stderr: '', signal: null }
+                    : { status: 0, stdout: 'ok', stderr: '', signal: null },
+            );
             runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
-            const [, argv, opts] = spawnFn.mock.calls[0];
+            // Первым идёт `codex login status` (проверка канала), последним — сама сессия.
+            const [, argv, opts] = spawnFn.mock.calls[spawnFn.mock.calls.length - 1];
             expect('OPENAI_API_KEY' in opts.env).toBe(false);
             expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5.6-sol');
         });
 
-        it('НЕ тащит Claude-флаги --max-turns/--fallback-model в codex argv (риск #3)', () => {
+        it('подписка: сперва проверяет фактический канал входа `codex login status`', () => {
+            // Ревью Codex по !104: чистка env НЕ гарантирует подписку — codex мог быть
+            // залогинен ключом (auth.json/keyring/другой CODEX_HOME), и сессия молча ушла бы
+            // на платный API. Проверяем факт, а не отсутствие переменной.
+            runtime.setConfigForTests({
+                ...REAL_CONFIG,
+                permissionMode: 'bypassPermissions',
+                openaiRuntime: { model: 'gpt-5.6-sol', authMode: 'subscription' },
+            });
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? { status: 0, stdout: 'Logged in using ChatGPT', stderr: '', signal: null }
+                    : { status: 0, stdout: 'ok', stderr: '', signal: null },
+            );
+            runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
+
+            const [firstBin, firstArgs] = spawnFn.mock.calls[0];
+            expect(firstBin).toBe('codex');
+            expect(firstArgs).toEqual(['login', 'status']);
+            // Сессия всё равно стартовала — вход подписочный.
+            expect(spawnFn.mock.calls.length).toBe(2);
+        });
+
+        it('перед login status читает config.toml, затем обязательно запускает сессию', () => {
+            runtime.setConfigForTests({
+                ...REAL_CONFIG,
+                permissionMode: 'bypassPermissions',
+                openaiRuntime: { model: 'gpt-5.6-sol', authMode: 'subscription' },
+            });
+            const events: string[] = [];
+            const readFn = () => {
+                events.push('read-config');
+                return 'model = "gpt-5.6-sol"\n';
+            };
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) => {
+                if (Array.isArray(args) && args.includes('status')) {
+                    events.push('login-status');
+                    return {
+                        status: 0,
+                        stdout: 'Logged in using ChatGPT',
+                        stderr: '',
+                        signal: null,
+                    };
+                }
+                events.push('session');
+                return { status: 0, stdout: 'ok', stderr: '', signal: null };
+            });
+            runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn, readFn);
+            // Слоёв конфигурации несколько (пользовательский и системный), поэтому проверяем
+            // ПОРЯДОК, а не их количество: любое чтение — до проверки входа, сессия — после.
+            expect(events).toContain('read-config');
+            expect(events.lastIndexOf('read-config')).toBeLessThan(events.indexOf('login-status'));
+            expect(events.indexOf('login-status')).toBeLessThan(events.indexOf('session'));
+            expect(spawnFn).toHaveBeenCalledTimes(2);
+        });
+
+        it('подписка: codex залогинен ключом → стоп, сессия не спавнится', () => {
+            runtime.setConfigForTests({
+                ...REAL_CONFIG,
+                permissionMode: 'bypassPermissions',
+                openaiRuntime: { model: 'gpt-5.6-sol', authMode: 'subscription' },
+            });
+            const spawnFn = vi.fn<SpawnFake>(() => ({
+                status: 0,
+                stdout: 'Logged in using an API key',
+                stderr: '',
+                signal: null,
+            }));
+            // Боевой fail() уходит в process.exit — тест ловит именно стоп; текст сообщения
+            // проверяется отдельно на чистой assertCodexChatGPTLogin с throwingFail.
+            expect(() =>
+                runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn),
+            ).toThrow();
+            // Ровно один вызов — проверка входа; сама сессия не запускалась.
+            expect(spawnFn.mock.calls.length).toBe(1);
+        });
+
+        it('apiKey: канал НЕ проверяется — ключ из env самодостаточен', () => {
+            // Независимое ревью (7-й проход) + живая проверка: `codex login status` при чистом
+            // CODEX_HOME и ключом в env отвечает `Not logged in`. Симметричная проверка делала
+            // документированный сценарий «секрет только из env» (инвариант №11) нерабочим:
+            // чтобы её пройти, пришлось бы выполнить `codex login --with-api-key`, то есть
+            // ЗАПИСАТЬ секрет в auth.json. Дыра «apiKey уедет на подписку при кешированном
+            // ChatGPT-входе» осталась и вынесена в #86 — там же отдельный CODEX_HOME.
             const spawnFn = vi.fn<SpawnFake>(() => ({
                 status: 0,
                 stdout: 'ok',
@@ -1157,7 +1647,134 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
                 signal: null,
             }));
             runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
+            expect(spawnFn.mock.calls.length).toBe(1);
             const [, argv] = spawnFn.mock.calls[0];
+            expect(argv).toContain('exec');
+            expect(argv.join(' ')).not.toContain('forced_login_method');
+        });
+
+        it('кастомный authTokenEnv не доезжает до сессии — проводка end-to-end', () => {
+            // Ревью Codex (2-й проход): прежние тесты проверяли helper и резолвер по
+            // отдельности и оставались зелёными при сломанной проводке в runOpenAIOnce.
+            process.env.MY_OPENAI_KEY = 'sk-custom-secret';
+            try {
+                runtime.setConfigForTests({
+                    ...REAL_CONFIG,
+                    permissionMode: 'bypassPermissions',
+                    openaiRuntime: {
+                        model: 'gpt-5-codex',
+                        authTokenEnv: 'MY_OPENAI_KEY',
+                    },
+                });
+                const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                    Array.isArray(args) && args.includes('status')
+                        ? {
+                              status: 0,
+                              stdout: 'Logged in using an API key',
+                              stderr: '',
+                              signal: null,
+                          }
+                        : { status: 0, stdout: 'ok', stderr: '', signal: null },
+                );
+                runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
+                const [, , opts] = spawnFn.mock.calls[spawnFn.mock.calls.length - 1];
+                // Ключ ушёл под именем, которое ждёт codex...
+                expect(opts.env.OPENAI_API_KEY).toBe('sk-custom-secret');
+                // ...а кастомное имя в окружение стороннего бинаря не попало.
+                expect('MY_OPENAI_KEY' in opts.env).toBe(false);
+                // Ревью Codex (5-й проход): у ПРОВЕРКИ канала окружение тоже санировано —
+                // иначе замена его на process.env прошла бы мимо сьюта, и `login status`
+                // снова увидел бы родительский ключ.
+                const [, , statusOpts] = spawnFn.mock.calls[0];
+                expect('MY_OPENAI_KEY' in statusOpts.env).toBe(false);
+                expect(statusOpts.env.OPENAI_API_KEY).toBe('sk-custom-secret');
+            } finally {
+                delete process.env.MY_OPENAI_KEY;
+            }
+        });
+
+        it('подписка: forced_login_method доезжает до argv РЕАЛЬНОЙ сессии', () => {
+            // Ревью Codex (3-й проход): проводка проверялась только на чистой buildCodexArgs —
+            // убери `authMode` из вызова, и тесты остались бы зелёными (тот же класс
+            // ложнозелёной проводки, что раньше нашли для tokenEnv).
+            runtime.setConfigForTests({
+                ...REAL_CONFIG,
+                permissionMode: 'bypassPermissions',
+                openaiRuntime: { model: 'gpt-5.6-sol', authMode: 'subscription' },
+            });
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? { status: 0, stdout: 'Logged in using ChatGPT', stderr: '', signal: null }
+                    : { status: 0, stdout: 'ok', stderr: '', signal: null },
+            );
+            runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
+            const [, argv] = spawnFn.mock.calls[spawnFn.mock.calls.length - 1];
+            expect(argv).toContain('forced_login_method="chatgpt"');
+            // Ревью Codex (5-й проход): проводка проверяется целиком, а не по одному флагу.
+            expect(argv).toContain('--ignore-user-config');
+            expect(argv).toContain('model_provider="openai"');
+        });
+
+        it('apiKey: forced_login_method в argv сессии НЕ появляется', () => {
+            // Флаг деструктивен при несовпадении (разлогинивает), поэтому чужой канал не
+            // навязываем: в apiKey он не ставится вовсе.
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? {
+                          status: 0,
+                          stdout: 'Logged in using an API key',
+                          stderr: '',
+                          signal: null,
+                      }
+                    : { status: 0, stdout: 'ok', stderr: '', signal: null },
+            );
+            runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
+            const [, argv] = spawnFn.mock.calls[spawnFn.mock.calls.length - 1];
+            expect(argv.join(' ')).not.toContain('forced_login_method');
+        });
+
+        it('DRY: не спавнит ни `login status`, ни саму сессию', () => {
+            // Ревью Codex (2-й проход): DRY проверялся только на уровне резолвера. --dry-run
+            // строго read-only, и проверка канала входа — тоже процесс, которого там быть не
+            // должно.
+            const dryRuntime = buildRuntime({ ...FLAGS_OFF, dry: true });
+            dryRuntime.setConfigForTests({
+                ...REAL_CONFIG,
+                permissionMode: 'bypassPermissions',
+                openaiRuntime: { model: 'gpt-5.6-sol', authMode: 'subscription' },
+            });
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? {
+                          status: 0,
+                          stdout: 'Logged in using an API key',
+                          stderr: '',
+                          signal: null,
+                      }
+                    : { status: 0, stdout: 'ok', stderr: '', signal: null },
+            );
+            const res = dryRuntime.runOpenAIOnce(
+                'x',
+                { maxTurns: 1 },
+                spawnFn as unknown as SpawnSyncFn,
+            );
+            expect(res).toEqual({ code: 0, output: '' });
+            expect(spawnFn).not.toHaveBeenCalled();
+        });
+
+        it('НЕ тащит Claude-флаги --max-turns/--fallback-model в codex argv (риск #3)', () => {
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? {
+                          status: 0,
+                          stdout: 'Logged in using an API key',
+                          stderr: '',
+                          signal: null,
+                      }
+                    : { status: 0, stdout: 'ok', stderr: '', signal: null },
+            );
+            runtime.runOpenAIOnce('x', { maxTurns: 1 }, spawnFn as unknown as SpawnSyncFn);
+            const [, argv] = spawnFn.mock.calls[spawnFn.mock.calls.length - 1];
             expect(argv).not.toContain('--max-turns');
             expect(argv).not.toContain('--fallback-model');
         });
@@ -1166,53 +1783,65 @@ describe('OpenAI-рантайм (#374) — codex exec, отдельный бин
         // либо кодер-итерация на config.model) НЕ должно уехать `codex -m claude-opus-4-8` —
         // рантайм обязан отбросить его и взять openaiRuntime.model.
         it('#393: claude-имя opts.model БЕЗ modelProvider отбрасывается → argv берёт openaiRuntime.model', () => {
-            const spawnFn = vi.fn<SpawnFake>(() => ({
-                status: 0,
-                stdout: 'ok',
-                stderr: '',
-                signal: null,
-            }));
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? {
+                          status: 0,
+                          stdout: 'Logged in using an API key',
+                          stderr: '',
+                          signal: null,
+                      }
+                    : { status: 0, stdout: 'ok', stderr: '', signal: null },
+            );
             runtime.runOpenAIOnce(
                 'сессия сдачи',
                 { model: 'claude-opus-4-8', maxTurns: 5 },
                 spawnFn as unknown as SpawnSyncFn,
             );
-            const [, argv] = spawnFn.mock.calls[0];
+            const [, argv] = spawnFn.mock.calls[spawnFn.mock.calls.length - 1];
             expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex');
             expect(argv.join(' ')).not.toContain('claude-opus-4-8');
         });
 
         // #393: модель ИЗ МАРШРУТА с тегом modelProvider:'openai' — применяется.
         it('#393: opts.model с modelProvider:"openai" применяется (модель маршрута OpenAI)', () => {
-            const spawnFn = vi.fn<SpawnFake>(() => ({
-                status: 0,
-                stdout: 'ok',
-                stderr: '',
-                signal: null,
-            }));
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? {
+                          status: 0,
+                          stdout: 'Logged in using an API key',
+                          stderr: '',
+                          signal: null,
+                      }
+                    : { status: 0, stdout: 'ok', stderr: '', signal: null },
+            );
             runtime.runOpenAIOnce(
                 'кодер-итерация',
                 { model: 'gpt-5-codex-mini', maxTurns: 5, modelProvider: 'openai' },
                 spawnFn as unknown as SpawnSyncFn,
             );
-            const [, argv] = spawnFn.mock.calls[0];
+            const [, argv] = spawnFn.mock.calls[spawnFn.mock.calls.length - 1];
             expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex-mini');
         });
 
         // #393: чужой тег (kimi) к codex-рантайму модель не пускает.
         it('#393: opts.model с чужим modelProvider:"kimi" отбрасывается codex-рантаймом', () => {
-            const spawnFn = vi.fn<SpawnFake>(() => ({
-                status: 0,
-                stdout: 'ok',
-                stderr: '',
-                signal: null,
-            }));
+            const spawnFn = vi.fn<SpawnFake>((_bin, args) =>
+                Array.isArray(args) && args.includes('status')
+                    ? {
+                          status: 0,
+                          stdout: 'Logged in using an API key',
+                          stderr: '',
+                          signal: null,
+                      }
+                    : { status: 0, stdout: 'ok', stderr: '', signal: null },
+            );
             runtime.runOpenAIOnce(
                 'x',
                 { model: 'kimi-k2-0711-preview', maxTurns: 5, modelProvider: 'kimi' },
                 spawnFn as unknown as SpawnSyncFn,
             );
-            const [, argv] = spawnFn.mock.calls[0];
+            const [, argv] = spawnFn.mock.calls[spawnFn.mock.calls.length - 1];
             expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5-codex');
             expect(argv.join(' ')).not.toContain('kimi-k2-0711-preview');
         });
