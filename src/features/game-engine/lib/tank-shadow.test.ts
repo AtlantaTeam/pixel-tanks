@@ -140,17 +140,21 @@ describe('tankShadowGeometry — геометрия эллипса тени', ()
 
 describe('tankShadowOverhangX — вылет тени за габарит корпуса', () => {
     it('считается по худшему направлению света, а не по текущему', () => {
-        const overhang = tankShadowOverhangX(TANK_WIDTH, 1);
+        const overhang = tankShadowOverhangX(TANK_WIDTH);
         const expected = TANK_WIDTH * (TANK_SHADOW_RADIUS_X_FRAC + TANK_SHADOW_OFFSET_X_FRAC - 0.5);
         expect(overhang).toBeCloseTo(expected, 6);
     });
 
-    it('растёт вместе с корпусом (масштаб мира)', () => {
-        expect(tankShadowOverhangX(90, 1.5)).toBeGreaterThan(tankShadowOverhangX(30, 0.5));
+    it('растёт вместе с ШИРИНОЙ КОРПУСА — единственным, от чего зависит', () => {
+        // Корпус уже отмасштабирован миром, поэтому вылет — функция одной ширины.
+        // Проверяем обе половины утверждения: шире корпус — больше вылет...
+        expect(tankShadowOverhangX(90)).toBeGreaterThan(tankShadowOverhangX(30));
+        // ...и линейно, а не как попало: вдвое шире корпус — вдвое дальше вылет.
+        expect(tankShadowOverhangX(120)).toBeCloseTo(tankShadowOverhangX(60) * 2, 6);
     });
 
     it('никогда не отрицателен — тень внутри корпуса даёт нулевой вылет', () => {
-        expect(tankShadowOverhangX(0, 1)).toBe(0);
+        expect(tankShadowOverhangX(0)).toBe(0);
     });
 });
 
@@ -164,8 +168,8 @@ describe('tankRedrawPaddingX — зона очистки следует за г�
     it('покрывает вылет тени на всём диапазоне масштаба мира', () => {
         for (const scale of [0.5, 0.75, 1, 1.25, 1.5]) {
             const tankWidth = 60 * scale;
-            expect(tankRedrawPaddingX(tankWidth, scale)).toBeGreaterThanOrEqual(
-                tankShadowOverhangX(tankWidth, scale),
+            expect(tankRedrawPaddingX(tankWidth)).toBeGreaterThanOrEqual(
+                tankShadowOverhangX(tankWidth),
             );
         }
     });
@@ -173,17 +177,17 @@ describe('tankRedrawPaddingX — зона очистки следует за г�
     it('покрывает вылет и у гипотетически огромной тени — связь, а не совпадение чисел', () => {
         // Корпус шириной 1000 px даёт вылет 280 px — вчетверо больше исторического
         // паддинга декора. Зона обязана поехать за тенью, а не остаться на 50.
-        const huge = tankRedrawPaddingX(1000, 1);
-        expect(huge).toBeGreaterThanOrEqual(tankShadowOverhangX(1000, 1));
+        const huge = tankRedrawPaddingX(1000);
+        expect(huge).toBeGreaterThanOrEqual(tankShadowOverhangX(1000));
         expect(huge).toBeGreaterThan(TANK_DECOR_REDRAW_PADDING);
     });
 
     it('не опускается ниже исторического запаса на ствол и мачту флажка', () => {
-        expect(tankRedrawPaddingX(30, 0.5)).toBeGreaterThanOrEqual(TANK_DECOR_REDRAW_PADDING);
+        expect(tankRedrawPaddingX(30)).toBeGreaterThanOrEqual(TANK_DECOR_REDRAW_PADDING);
     });
 
     it('целое число пикселей — зона очистки не дробится на субпиксели', () => {
-        expect(Number.isInteger(tankRedrawPaddingX(90, 1.5))).toBe(true);
-        expect(Number.isInteger(tankRedrawPaddingX(1000, 1))).toBe(true);
+        expect(Number.isInteger(tankRedrawPaddingX(90))).toBe(true);
+        expect(Number.isInteger(tankRedrawPaddingX(1000))).toBe(true);
     });
 });

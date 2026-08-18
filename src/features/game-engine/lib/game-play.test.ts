@@ -344,6 +344,77 @@ describe('GamePlay.moveBullet — взрыв доигрывается до ко�
     });
 });
 
+/**
+ * Кадровый цикл целиком (`animate`), а не его куски: ветка точечной перерисовки
+ * выбирается по состоянию боя, и выбор этот тестируется только отсюда. rAF и часы
+ * подменены — цикл шагает ровно столько раз, сколько его позвали.
+ */
+describe('GamePlay.animate — ветка точечной перерисовки (ревью #601)', () => {
+    /** Шагает кадровый цикл `frames` раз с шагом заведомо больше интервала кадра. */
+    const drive = (gamePlay: GamePlay, frames: number) => {
+        let now = 1000;
+        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => now);
+        const rafSpy = vi
+            .spyOn(globalThis, 'requestAnimationFrame')
+            .mockImplementation(() => 0 as unknown as number);
+        try {
+            for (let frame = 0; frame < frames; frame += 1) {
+                now += 100;
+                gamePlay.animate();
+            }
+        } finally {
+            nowSpy.mockRestore();
+            rafSpy.mockRestore();
+        }
+    };
+
+    /** Бой в состоянии «земля осыпается от прошлой воронки, снаряд в воздухе». */
+    const setupSettlingGround = () => {
+        const { gamePlay, ground, bullet } = makeGamePlay();
+        const stub = new CtxStub();
+        gamePlay.ctx = asCtx(stub);
+        ground.isFalling = true;
+        // Между танками (200 и 600) — полоса взрыва не пересекается с их зонами
+        // очистки, поэтому «полоса взрыва почищена» отличимо от «почищены танки».
+        bullet.x = WIDTH / 2;
+        bullet.y = HEIGHT / 3;
+        bullet.dx = 0;
+        bullet.dy = 0;
+        gamePlay.bullet = bullet;
+        return { gamePlay, bullet, stub };
+    };
+
+    /** Есть ли среди очищенных прямоугольников тот, что накрывает полосу целиком. */
+    const bandCleared = (stub: CtxStub, from: number, to: number) =>
+        stub.clearRects.some(([x, , w]) => x <= from && x + w >= to);
+
+    it('снаряд ещё летит, а земля осыпается: полоса взрыва вокруг него НЕ чистится', () => {
+        const { gamePlay, bullet, stub } = setupSettlingGround();
+        const { from, to } = bullet.explosionRedrawRange;
+        // Гвард: полоса заведомо широкая, иначе «не почищена» ничего не значит.
+        expect(to - from).toBeGreaterThan(100);
+
+        drive(gamePlay, 1);
+
+        expect(bullet.detonated, 'снаряд не должен был детонировать').toBe(false);
+        expect(stub.clearRects.length, 'кадр не прошёл по точечной перерисовке').toBeGreaterThan(0);
+        expect(
+            bandCleared(stub, from, to),
+            `полоса взрыва [${from}, ${to}] чистится вокруг НЕ взорвавшегося снаряда`,
+        ).toBe(false);
+    });
+
+    it('тот же кадр после детонации: полоса взрыва чистится — гейт не задушил живой путь', () => {
+        const { gamePlay, bullet, stub } = setupSettlingGround();
+        bullet.detonated = true;
+        const { from, to } = bullet.explosionRedrawRange;
+
+        drive(gamePlay, 1);
+
+        expect(bandCleared(stub, from, to), 'полоса взрыва не почищена').toBe(true);
+    });
+});
+
 describe('GamePlay — колбэки хода и ветра (handoff «Состояние»)', () => {
     it('changeActiveTank сообщает новую сторону хода после передачи хода', () => {
         const { gamePlay, callbacks } = makeGamePlay();

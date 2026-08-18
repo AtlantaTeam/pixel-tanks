@@ -28,6 +28,14 @@
  * принимает вовсе, и это структурный барьер, а не подобранное число.
  */
 
+/**
+ * Полутень корпуса: тёмный полупрозрачный тон, читается на песке любого пресета.
+ * Живёт здесь, а не в `tank.ts`: цвет — такая же характеристика тени, как радиусы,
+ * и читает его тот же `game-play.ts`, что и геометрию (ревью #601). Модуль обещает
+ * быть ОДНИМ источником про тень — значит, и про цвет тоже.
+ */
+export const TANK_SHADOW_COLOR = 'rgba(12, 10, 8, 0.32)';
+
 /** Полуширина тени как доля ширины корпуса: тень ровно под корпусом. */
 export const TANK_SHADOW_RADIUS_X_FRAC = 0.5;
 
@@ -37,7 +45,15 @@ export const TANK_SHADOW_RADIUS_X_FRAC = 0.5;
  */
 export const TANK_SHADOW_OFFSET_X_FRAC = 0.28;
 
-/** Полувысота тени в мировых единицах: тонкий эллипс, тень, а не «клякса». */
+/**
+ * Полувысота тени в мировых единицах: тонкий эллипс, тень, а не «клякса».
+ *
+ * Применяется с полом в CSS-пикселях (`Math.max(2, 2 · scale)` в
+ * `tankShadowGeometry`), поэтому при `scale < 1` (узкие экраны, до
+ * `WORLD_SCALE_MIN = 0.5`) это уже не мировая единица: тень не худеет вместе с
+ * миром. Так и задумано — на половинном масштабе честная мировая полувысота дала
+ * бы 1 px, то есть линию вместо эллипса.
+ */
 export const TANK_SHADOW_RADIUS_Y_UNITS = 2;
 
 /**
@@ -93,15 +109,24 @@ export function tankShadowGeometry({
  * На сколько тень выходит за габарит корпуса по горизонтали при САМОМ невыгодном
  * направлении света. Считается прогоном `tankShadowGeometry` по крайним `dx` —
  * не повторяет формулу радиусов, а зовёт её, поэтому не может от неё отстать.
+ *
+ * Масштаба мира в подписи нет намеренно (ревью #601): по горизонтали геометрия
+ * зависит только от ширины корпуса — а она уже отмасштабирована, — тогда как
+ * `scale` входит в одну лишь полувысоту, которую вылет по X не читает. Параметр
+ * тут был бы обещанием зависимости, которой нет: 0.5 и 5 давали один результат.
+ * Зона очистки всё равно во всю высоту канваса, так что вертикальный вылет её не
+ * интересует; понадобится — считать его придётся отдельной функцией.
  */
-export function tankShadowOverhangX(tankWidth: number, scale: number): number {
+export function tankShadowOverhangX(tankWidth: number): number {
     const hullCenterX = tankWidth / 2;
     let overhang = 0;
     for (const lightDx of [-1, 1]) {
         const { centerX, radiusX } = tankShadowGeometry({
             centerX: hullCenterX,
             tankWidth,
-            scale,
+            // Полувысота в горизонтальный вылет не входит — канон мира, чтобы не
+            // тащить в подпись параметр, который на результат не влияет.
+            scale: 1,
             lightDx,
         });
         overhang = Math.max(overhang, -(centerX - radiusX), centerX + radiusX - tankWidth);
@@ -124,11 +149,8 @@ export function tankShadowOverhangX(tankWidth: number, scale: number): number {
  * мира или доля вылета — паддинг вырастет сам, вместо того чтобы молча разойтись с
  * геометрией. Это барьер, а не фикс, и читать его надо так.
  */
-export function tankRedrawPaddingX(tankWidth: number, scale: number): number {
+export function tankRedrawPaddingX(tankWidth: number): number {
     return Math.ceil(
-        Math.max(
-            TANK_DECOR_REDRAW_PADDING,
-            tankShadowOverhangX(tankWidth, scale) + SHADOW_REDRAW_MARGIN,
-        ),
+        Math.max(TANK_DECOR_REDRAW_PADDING, tankShadowOverhangX(tankWidth) + SHADOW_REDRAW_MARGIN),
     );
 }

@@ -19,8 +19,8 @@ import {
 } from './arena-insets';
 import { loadSandImage } from './game-assets';
 import { Ground } from './ground';
-import { Tank, TANK_SHADOW_COLOR } from './tank';
-import { tankRedrawPaddingX } from './tank-shadow';
+import { Tank } from './tank';
+import { TANK_SHADOW_COLOR, tankRedrawPaddingX } from './tank-shadow';
 import { Bullet } from './bullet';
 import { generateWind } from './wind';
 import { BULLET_GRAVITY, fillTrajectoryPreview, TRAJECTORY_PREVIEW_POINTS } from './bullet-physics';
@@ -939,11 +939,20 @@ export class GamePlay {
             (this.isFireMode && (!this.bullet || this.bullet.detonated)) ||
             this.ground.isFalling
         ) {
-            if (this.bullet) {
+            if (!this.bullet) {
+                this.fullRedraw();
+            } else if (this.bullet.detonated) {
                 this.explosionAreaRedraw(this.bullet);
                 this.tankAreaRedraw([this.leftTank, this.rightTank]);
             } else {
-                this.fullRedraw();
+                // Земля ещё осыпается от ПРОШЛОЙ воронки (осадка идёт по пикселю за
+                // кадр и тянется сотнями кадров, а `fire()` её не ждёт), но снаряд уже
+                // летит и не взрывался. Полоса взрыва к нему не относится: она считается
+                // по ПИКОВОМУ радиусу спеки (у фугаса при scale 1.5 это ±110 px) и
+                // чистилась бы каждый кадр вокруг не детонировавшего снаряда — лишняя
+                // работа и смысловой сдвиг (ревью #601). Свой прошлый прямоугольник
+                // снаряд стирает сам (`Bullet.draw`).
+                this.tankAreaRedraw([this.leftTank, this.rightTank]);
             }
         } else if (!this.bullet) {
             this.tankAreaRedraw([this.leftTank, this.rightTank]);
@@ -1100,8 +1109,11 @@ export class GamePlay {
      */
     private redrawGroundUnderTanks(tanks: Tank[]) {
         tanks.forEach((tank) => {
-            const padding = tankRedrawPaddingX(tank.tankWidth, tank.scale);
             if (this.ctx && this.ground) {
+                // Считается ПОСЛЕ гварда: внутри крутится цикл по двум направлениям
+                // света с созданием геометрии на каждом — в кадрах, где рисовать
+                // нечем, эта работа не нужна (ревью #601).
+                const padding = tankRedrawPaddingX(tank.tankWidth);
                 const x = tank.x - padding;
                 const width = tank.tankWidth + padding * 2;
                 this.ctx.clearRect(x, 0, width, this.innerHeight);

@@ -22,9 +22,6 @@ import { WORLD_UNITS } from './world-scale';
  */
 export type TTankShadow = { direction: TLightDirection; color: string } | null;
 
-/** Полутень корпуса: тёмный полупрозрачный тон, читается на песке любого пресета. */
-export const TANK_SHADOW_COLOR = 'rgba(12, 10, 8, 0.32)';
-
 type TGroundUnderTankData = {
     leftSideX: number;
     rightSideX: number;
