@@ -98,7 +98,12 @@ class CtxStub {
 /** Заглушка в типе канваса — каст в одном месте, а не на каждом вызове. */
 const asCtx = (stub: CtxStub) => stub as unknown as CanvasRenderingContext2D;
 
-const ctxStub = asCtx(new CtxStub());
+/**
+ * Свежая заглушка на каждый вызов — не общий экземпляр на файл: журналы
+ * (`clearRects`/`fillRects`/`ellipses`) копились бы от теста к тесту, и первый же
+ * тест, который в них заглянет, увидел бы мусор соседей (ревью #601).
+ */
+const makeCtx = () => asCtx(new CtxStub());
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -159,8 +164,9 @@ describe('GamePlay.moveBullet — разрешение попадания на �
             .mockImplementation(() => Promise.resolve());
         const jumpOnHit = vi.spyOn(rightTank, 'jumpOnHit');
 
+        const ctx = makeCtx();
         for (let frame = 0; frame < 5; frame += 1) {
-            gamePlay.moveBullet(ctxStub);
+            gamePlay.moveBullet(ctx);
         }
 
         expect(playSfx).toHaveBeenCalledTimes(1);
@@ -184,8 +190,9 @@ describe('GamePlay.moveBullet — разрешение попадания на �
             .spyOn(getAudioEngine(), 'playSfx')
             .mockImplementation(() => Promise.resolve());
 
+        const ctx = makeCtx();
         for (let frame = 0; frame < 5; frame += 1) {
-            gamePlay.moveBullet(ctxStub);
+            gamePlay.moveBullet(ctx);
         }
 
         expect(playSfx).toHaveBeenCalledTimes(1);
@@ -219,8 +226,9 @@ describe('GamePlay.moveBullet — многоочаговый кластер (л�
         const jumpOnHit = vi.spyOn(rightTank, 'jumpOnHit');
 
         // Достаточно кадров, чтобы все три очага доигрались до конца.
+        const ctx = makeCtx();
         for (let frame = 0; frame < 300 && gamePlay.bullet; frame += 1) {
-            gamePlay.moveBullet(ctxStub);
+            gamePlay.moveBullet(ctx);
         }
 
         // Три очага отыграны (снаряд убран), но раздача — ровно один раз.
@@ -251,8 +259,9 @@ describe('GamePlay.moveBullet — многоочаговый кластер (л�
             .mockImplementation(() => Promise.resolve());
         const fall = vi.spyOn(ground, 'fall');
 
+        const ctx = makeCtx();
         for (let frame = 0; frame < 300 && gamePlay.bullet; frame += 1) {
-            gamePlay.moveBullet(ctxStub);
+            gamePlay.moveBullet(ctx);
         }
 
         expect(playSfx.mock.calls.filter((c) => c[0] === 'miss')).toHaveLength(1);
@@ -567,12 +576,13 @@ describe('GamePlay — колбэки хода и ветра (handoff «Сост
 
         // explosionMaxRadius = 50: взрыв доигрывает 50 кадров, затем bullet
         // очищается и ход передаётся — до этого onShotEnd молчит.
+        const ctx = makeCtx();
         for (let frame = 0; frame < 49; frame += 1) {
-            gamePlay.moveBullet(ctxStub);
+            gamePlay.moveBullet(ctx);
         }
         expect(callbacks.onShotEnd).not.toHaveBeenCalled();
 
-        gamePlay.moveBullet(ctxStub);
+        gamePlay.moveBullet(ctx);
 
         expect(callbacks.onShotEnd).toHaveBeenCalledTimes(1);
         expect(gamePlay.bullet).toBeUndefined();
@@ -697,8 +707,9 @@ describe('GamePlay — призрачная трасса прошлого выс
         if (!bullet) throw new Error('fire() не создал снаряд');
         bullet.isTankHit = false;
         bullet.isHit = () => true;
+        const ctx = makeCtx();
         for (let frame = 0; frame < 60 && gamePlay.bullet; frame += 1) {
-            gamePlay.moveBullet(ctxStub);
+            gamePlay.moveBullet(ctx);
         }
         if (gamePlay.bullet) throw new Error('выстрел не долетел в бюджет кадров теста');
     }
@@ -859,8 +870,9 @@ describe('GamePlay — флажок ветра следует за ветром 
         bullet.isHit = () => true;
         game.bullet = bullet;
         // explosionMaxRadius = 50 кадров, как в тестах разрешения попадания выше.
+        const ctx = makeCtx();
         for (let frame = 0; frame < 51 && game.bullet; frame += 1) {
-            game.moveBullet(ctxStub);
+            game.moveBullet(ctx);
         }
     };
 
@@ -897,8 +909,12 @@ describe('GamePlay — флажок ветра следует за ветром 
  * мимо зоны очистки она больше не может.
  */
 describe('GamePlay — зона очистки покрывает габарит тени танка (#580)', () => {
-    /** Свет у горизонта (закат) — худший случай смещения тени по горизонтали. */
-    const SUNSET_LIGHT = { dx: -1, dy: 0.05 };
+    /**
+     * Высота светила у горизонта (закат) — худший случай для тени. Только `dy`:
+     * горизонталь каждый сценарий задаёт свою, и имя не должно обещать больше
+     * (ревью #601).
+     */
+    const SUNSET_LIGHT_DY = 0.05;
 
     /**
      * Один кадр точечной перерисовки танков: то, что зовёт кадровый цикл.
@@ -922,7 +938,7 @@ describe('GamePlay — зона очистки покрывает габарит
         const stub = new CtxStub();
         gamePlay.ctx = asCtx(stub);
         const shadow = {
-            direction: { dx: lightDx, dy: SUNSET_LIGHT.dy },
+            direction: { dx: lightDx, dy: SUNSET_LIGHT_DY },
             color: 'rgba(12, 10, 8, 0.32)',
         };
         leftTank.shadow = shadow;

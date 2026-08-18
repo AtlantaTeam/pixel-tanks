@@ -119,9 +119,13 @@ describe('tankShadowGeometry — геометрия эллипса тени', ()
         }
     });
 
-    it('габарит тени не выходит за разумные пределы корпуса при любом наклоне света', () => {
-        // Критерий #580: на любом пресете неба (свет от вертикали до горизонта)
-        // тень остаётся тенью корпуса, а не полосой.
+    it('тень выходит за корпус ровно на смещение по свету, не дальше', () => {
+        // Критерий #580 в НАСТОЯЩЕЙ границе, а не «в разумных пределах»: прежние
+        // допуски (ширина ≤ 1.5 корпуса, край ≤ 2 корпусов) держались с таким
+        // запасом, что не могли упасть ни при какой реализации мягче регресса #571
+        // (там полуширина была 2.25 корпуса). Проверяем то, что считает
+        // `tankShadowOverhangX`: вылет за габарит корпуса — ровно доля смещения.
+        const maxOverhang = TANK_WIDTH * TANK_SHADOW_OFFSET_X_FRAC;
         for (const lightDx of [-1, -0.5, 0, 0.5, 1]) {
             const { centerX, radiusX } = tankShadowGeometry({
                 centerX: TANK_WIDTH / 2,
@@ -131,9 +135,14 @@ describe('tankShadowGeometry — геометрия эллипса тени', ()
             });
             const left = centerX - radiusX;
             const right = centerX + radiusX;
-            expect(right - left).toBeLessThanOrEqual(TANK_WIDTH * 1.5);
-            expect(left).toBeGreaterThanOrEqual(-TANK_WIDTH);
-            expect(right).toBeLessThanOrEqual(TANK_WIDTH * 2);
+            // Ширина тени — ширина корпуса: смещение двигает эллипс, а не растит.
+            expect(right - left).toBeCloseTo(TANK_WIDTH, 6);
+            expect(left, `свет ${lightDx}: тень ушла левее допустимого`).toBeGreaterThanOrEqual(
+                -maxOverhang,
+            );
+            expect(right, `свет ${lightDx}: тень ушла правее допустимого`).toBeLessThanOrEqual(
+                TANK_WIDTH + maxOverhang,
+            );
         }
     });
 });

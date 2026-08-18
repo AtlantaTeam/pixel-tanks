@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { createSeededRandom } from '@/shared/lib/random';
+import { Bullet } from './bullet';
 import { explosionRedrawRange } from './explosion-area';
+import { Ground } from './ground';
+import { Tank } from './tank';
 import { paintExplosionFocus, WEAPON_SPECS, type TWeaponSpec } from './weapon-specs';
 import { WORLD_SCALE_MAX, WORLD_SCALE_MIN, WORLD_UNITS } from './world-scale';
 import { EWeaponKind } from '@/shared/model';
@@ -25,6 +29,17 @@ const KINDS = Object.keys(WEAPON_SPECS) as EWeaponKind[];
 const SCALES = [WORLD_SCALE_MIN, 1, WORLD_SCALE_MAX, 2.2];
 
 const baseRadiusFor = (scale: number) => WORLD_UNITS.explosionMaxRadius * scale;
+
+beforeAll(() => {
+    if (typeof globalThis.Path2D === 'undefined') {
+        vi.stubGlobal(
+            'Path2D',
+            class {
+                addPath = () => undefined;
+            },
+        );
+    }
+});
 
 /** Потолок кадров роста одного очага — страховка от бесконечного цикла в модели. */
 const GROWTH_FRAMES_GUARD = 500;
@@ -58,6 +73,8 @@ function paintWholeExplosion(spec: TWeaponSpec, hitX: number, baseRadius: number
     const ctx = new PaintLogCtx();
     let left = Infinity;
     let right = -Infinity;
+    let craterLeft = Infinity;
+    let craterRight = -Infinity;
     for (const focus of spec.foci) {
         const centerX = hitX + focus.dxFactor * baseRadius;
         const maxRadius = focus.radiusFactor * baseRadius;
@@ -89,10 +106,66 @@ function paintWholeExplosion(spec: TWeaponSpec, hitX: number, baseRadius: number
         }
         // Воронка режется на том же кадре, где радиус перешагнул максимум очага.
         const craterRadius = Math.floor(spec.craterRadiusFactor * radius);
-        left = Math.min(left, Math.floor(centerX) - craterRadius);
-        right = Math.max(right, Math.floor(centerX) + craterRadius);
+        craterLeft = Math.min(craterLeft, Math.floor(centerX) - craterRadius);
+        craterRight = Math.max(craterRight, Math.floor(centerX) + craterRadius);
     }
-    return { left, right };
+    return {
+        left: Math.min(left, craterLeft),
+        right: Math.max(right, craterRight),
+        flashLeft: left,
+        flashRight: right,
+        craterLeft,
+        craterRight,
+    };
+}
+
+/**
+ * Настоящий `Bullet.drawExplosion` в тех же координатах, что и модель выше: тот же
+ * центр, тот же базовый радиус, тот же журнал заливок. Нужен ровно для одного —
+ * сверить габарит модели с габаритом движка (ревью #601): пока сверки не было,
+ * признание «модель обязана следовать за движком» оставалось обещанием, а не
+ * барьером — поправят автомат в `bullet.ts`, и модель тихо разойдётся с ним.
+ */
+function paintWholeExplosionByEngine(kind: EWeaponKind, hitX: number) {
+    const width = 1600;
+    const height = 800;
+    const ground = new Ground(width, height, createSeededRandom(7));
+    const active = new Tank(hitX, height - 100, width, height, 0, []);
+    const target = new Tank(hitX + 400, height - 100, width, height, Math.PI, []);
+    const bullet = new Bullet(width, height, ground, active, target, 0, WEAPON_SPECS[kind]);
+    bullet.x = hitX;
+    bullet.y = 200;
+
+    const ctx = new PaintLogCtx();
+    let left = Infinity;
+    let right = -Infinity;
+    let craterFrom = Infinity;
+    let craterTo = -Infinity;
+    // `ground.fall` — единственный след воронки наружу: перехватываем её столбцы.
+    ground.fall = (x: number, _y: number, radius: number) => {
+        craterFrom = Math.min(craterFrom, x - radius);
+        craterTo = Math.max(craterTo, x + radius);
+    };
+
+    for (let frame = 0; frame < GROWTH_FRAMES_GUARD && !bullet.isFinished; frame += 1) {
+        ctx.rects.length = 0;
+        bullet.drawExplosion(ctx as unknown as CanvasRenderingContext2D);
+        for (const [x, , w] of ctx.rects) {
+            left = Math.min(left, x);
+            right = Math.max(right, x + w);
+        }
+    }
+    if (!bullet.isFinished) {
+        throw new Error(`взрыв ${kind} не доигран за ${GROWTH_FRAMES_GUARD} кадров`);
+    }
+    return {
+        left: Math.min(left, craterFrom),
+        right: Math.max(right, craterTo),
+        flashLeft: left,
+        flashRight: right,
+        craterLeft: craterFrom,
+        craterRight: craterTo,
+    };
 }
 
 describe('explosionRedrawRange — одна полоса на весь взрыв (issue #582)', () => {
@@ -174,6 +247,25 @@ describe('explosionRedrawRange — одна полоса на весь взры�
             });
             expect(hitX - from).toBe(to - hitX);
         }
+    });
+
+    it.each(KINDS)('%s: модель взрыва в этом файле не разошлась с настоящим Bullet', (kind) => {
+        // Габарит МОДЕЛИ (`paintWholeExplosion`) против габарита ДВИЖКА на одном
+        // входе. Разъедутся формулы — красный тест, а не тихо разные пики.
+        const hitX = 800;
+        const baseRadius = baseRadiusFor(1);
+        const model = paintWholeExplosion(WEAPON_SPECS[kind], hitX, baseRadius);
+        const engine = paintWholeExplosionByEngine(kind, hitX);
+
+        expect(Number.isFinite(engine.left) && Number.isFinite(engine.right)).toBe(true);
+        // Вспышка и воронка сверяются ПОРОЗНЬ: у фугаса воронка мельче вспышки и в
+        // общий габарит не входит — расхождение по ней утонуло бы в максимуме.
+        // Допуск в пиксель: движок снапит центр очага к целому столбцу (`floor(cx)`
+        // в `ground.fall`), модель считает от дробного центра.
+        expect(model.flashLeft).toBeCloseTo(engine.flashLeft, -0.5);
+        expect(model.flashRight).toBeCloseTo(engine.flashRight, -0.5);
+        expect(model.craterLeft).toBeCloseTo(engine.craterLeft, -0.5);
+        expect(model.craterRight).toBeCloseTo(engine.craterRight, -0.5);
     });
 
     it('спека без очагов не превращается в очистку всей сцены', () => {
