@@ -1,12 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+    addIssueToBoard,
+    addMissingIssues,
     fetchBoard,
+    fetchOpenIssues,
     isClosed,
     markDone,
     pickStale,
     resolveBoard,
     resolveDone,
+    resolveRepo,
     runGh,
+    runSync,
     syncBoard,
 } from './project-sync.mjs';
 
@@ -333,5 +338,237 @@ describe('syncBoard', () => {
         const ghFn = vi.fn().mockReturnValue(page([], { field: null }));
         expect(() => syncBoard({ ghFn, logFn: vi.fn() })).toThrow(/нет single-select поля/);
         expect(ghFn).toHaveBeenCalledTimes(1);
+    });
+});
+
+// #90: второй проход синка — открытые issues, заведённые мимо доски. Свойства те же, что
+// у синка статусов, и проверяются так же: он не делает лишних мутаций (идемпотентность) и
+// краснеет на данных, которым нельзя верить (fail-closed), — молчаливое «проверено 30 из
+// 300» здесь такой же отказ, как несинхронизированная доска в #199.
+
+const issueItem = (itemId, number, nodeId, extra = {}) => ({
+    id: itemId,
+    isArchived: false,
+    content: { __typename: 'Issue', id: nodeId, number, state: 'OPEN' },
+    fieldValues: { pageInfo: { hasNextPage: false }, nodes: [] },
+    ...extra,
+});
+
+describe('resolveRepo — адрес репо детерминирован, не от cwd (#90)', () => {
+    const spawnOk = (stdout) => vi.fn().mockReturnValue({ status: 0, stdout });
+
+    it('берёт RALPH_REPO из env, git не зовёт вовсе', () => {
+        const spawnFn = vi.fn();
+        expect(resolveRepo({ env: { RALPH_REPO: 'Some/repo' }, spawnFn })).toBe('Some/repo');
+        expect(spawnFn).not.toHaveBeenCalled();
+    });
+
+    it('разбирает origin во всех трёх формах записи', () => {
+        for (const [url, expected] of [
+            ['git@github.com:Owner/repo.git\n', 'Owner/repo'],
+            ['https://github.com/Owner/repo.git\n', 'Owner/repo'],
+            ['ssh://git@github.com/Owner/repo\n', 'Owner/repo'],
+        ]) {
+            expect(resolveRepo({ env: {}, spawnFn: spawnOk(url) })).toBe(expected);
+        }
+    });
+
+    it('спрашивает git по каталогу скрипта, а не по cwd', () => {
+        const spawnFn = spawnOk('git@github.com:Owner/repo.git');
+        resolveRepo({ env: {}, repoRoot: '/srv/checkout', spawnFn });
+        expect(spawnFn.mock.calls[0][1]).toEqual([
+            '-C',
+            '/srv/checkout',
+            'remote',
+            'get-url',
+            'origin',
+        ]);
+    });
+
+    it('падает, когда origin не прочитан: угадывать чужой репозиторий нельзя', () => {
+        const spawnFn = vi.fn().mockReturnValue({ status: 128, stdout: '', stderr: 'no origin' });
+        expect(() => resolveRepo({ env: {}, spawnFn })).toThrow(/не прочитан origin/);
+    });
+
+    it('падает на мусоре вместо owner/name — и в env, и в origin', () => {
+        expect(() => resolveRepo({ env: { RALPH_REPO: 'просто-имя' }, spawnFn: vi.fn() })).toThrow(
+            /RALPH_REPO/,
+        );
+        expect(() => resolveRepo({ env: {}, spawnFn: spawnOk('нечто-без-слэша') })).toThrow(
+            /не читается как owner\/name/,
+        );
+    });
+});
+
+describe('fetchOpenIssues', () => {
+    it('всегда шлёт --limit: дефолт gh — 30 карточек молча', () => {
+        const ghFn = vi.fn().mockReturnValue([]);
+        fetchOpenIssues({ repo: 'Owner/repo' }, ghFn);
+        const args = ghFn.mock.calls[0][0];
+        const at = args.indexOf('--limit');
+        expect(at, 'выборка без --limit обрезалась бы на 30').toBeGreaterThan(-1);
+        expect(Number(args[at + 1])).toBeGreaterThanOrEqual(1000);
+        expect(args.join(' ')).toContain('--repo Owner/repo');
+        expect(args.join(' ')).toContain('--state open');
+    });
+
+    it('упор в потолок выборки — отказ, а не молчаливое усечение', () => {
+        const ghFn = vi
+            .fn()
+            .mockReturnValue(Array.from({ length: 5 }, (_, i) => ({ id: `i${i}` })));
+        expect(() => fetchOpenIssues({ repo: 'Owner/repo', limit: 5 }, ghFn)).toThrow(
+            /потолка выборки/,
+        );
+    });
+
+    it('не список вместо выборки — отказ: формат вывода gh изменился', () => {
+        const ghFn = vi.fn().mockReturnValue({ issues: [] });
+        expect(() => fetchOpenIssues({ repo: 'Owner/repo' }, ghFn)).toThrow(/не список/);
+    });
+});
+
+describe('addIssueToBoard', () => {
+    it('шлёт мутацию добавления с node-id issue', () => {
+        const ghFn = vi.fn().mockReturnValue({ data: {} });
+        addIssueToBoard('I_node1', { projectId: 'proj-1' }, ghFn);
+        const args = ghFn.mock.calls[0][0];
+        expect(args.join(' ')).toContain('addProjectV2ItemById');
+        expect(args.join(' ')).toContain('contentId=I_node1');
+        for (const name of ['project', 'contentId']) {
+            const at = args.findIndex((a) => a.startsWith(`${name}=`));
+            expect(args[at - 1], `${name} должен передаваться через -f`).toBe('-f');
+        }
+    });
+});
+
+describe('addMissingIssues', () => {
+    const board = (items) => ({ projectId: 'proj-1', items });
+
+    it('добавляет только те issues, которых на доске нет', () => {
+        const ghFn = vi
+            .fn()
+            .mockReturnValueOnce([
+                { number: 90, id: 'I_a' },
+                { number: 91, id: 'I_b' },
+            ])
+            .mockReturnValue({ data: {} });
+        const logFn = vi.fn();
+
+        expect(
+            addMissingIssues({
+                ghFn,
+                board: board([issueItem('it1', 90, 'I_a')]),
+                repo: 'O/r',
+                logFn,
+            }),
+        ).toEqual({ checked: 2, added: 1 });
+        expect(ghFn).toHaveBeenCalledTimes(2); // выборка issues + одна мутация
+        expect(logFn).toHaveBeenCalledWith(expect.stringContaining('#91'));
+    });
+
+    it('идемпотентность: всё уже на доске — ни одной мутации', () => {
+        const ghFn = vi.fn().mockReturnValue([{ number: 90, id: 'I_a' }]);
+        expect(
+            addMissingIssues({
+                ghFn,
+                board: board([issueItem('it1', 90, 'I_a')]),
+                repo: 'O/r',
+                logFn: vi.fn(),
+            }),
+        ).toEqual({ checked: 1, added: 0 });
+        expect(ghFn).toHaveBeenCalledTimes(1); // только выборка issues
+    });
+
+    it('пустой репозиторий — нули и ни одной мутации', () => {
+        const ghFn = vi.fn().mockReturnValue([]);
+        expect(addMissingIssues({ ghFn, board: board([]), repo: 'O/r', logFn: vi.fn() })).toEqual({
+            checked: 0,
+            added: 0,
+        });
+        expect(ghFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('сверяет по node-id, а не по номеру: чужой #90 на доске не скрывает свой', () => {
+        const ghFn = vi
+            .fn()
+            .mockReturnValueOnce([{ number: 90, id: 'I_свой' }])
+            .mockReturnValue({ data: {} });
+        expect(
+            addMissingIssues({
+                ghFn,
+                board: board([issueItem('it1', 90, 'I_чужой')]),
+                repo: 'O/r',
+                logFn: vi.fn(),
+            }),
+        ).toEqual({ checked: 1, added: 1 });
+    });
+
+    it('архивную карточку считает присутствующей: архив — решение человека', () => {
+        const ghFn = vi.fn().mockReturnValue([{ number: 90, id: 'I_a' }]);
+        expect(
+            addMissingIssues({
+                ghFn,
+                board: board([issueItem('it1', 90, 'I_a', { isArchived: true })]),
+                repo: 'O/r',
+                logFn: vi.fn(),
+            }),
+        ).toEqual({ checked: 1, added: 0 });
+        expect(ghFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('ошибка gh доходит наружу — fail-closed, а не «добавлять нечего»', () => {
+        const ghFn = vi.fn().mockImplementation(() => {
+            throw new Error('HTTP 403 forbidden');
+        });
+        expect(() =>
+            addMissingIssues({ ghFn, board: board([]), repo: 'O/r', logFn: vi.fn() }),
+        ).toThrow(/403/);
+    });
+
+    it('без готовой доски читает её сам — функция остаётся вызываемой отдельно', () => {
+        const ghFn = vi.fn().mockReturnValueOnce(page([])).mockReturnValueOnce([]);
+        expect(
+            addMissingIssues({ ghFn, owner: 'O', number: 1, repo: 'O/r', logFn: vi.fn() }),
+        ).toEqual({ checked: 0, added: 0 });
+    });
+});
+
+describe('runSync — оба прохода за одно чтение доски, сводка одной строкой', () => {
+    it('читает доску один раз на оба прохода', () => {
+        const ghFn = vi
+            .fn()
+            .mockReturnValueOnce(page([item('i1', 80, 'Issue', 'CLOSED', 'opt-wip')]))
+            .mockReturnValueOnce({ data: {} }) // markDone
+            .mockReturnValueOnce([]); // выборка открытых issues
+        runSync({ ghFn, owner: 'O', number: 1, repo: 'O/r', logFn: vi.fn() });
+        const boardReads = ghFn.mock.calls.filter((c) => c[0].join(' ').includes('projectV2('));
+        expect(boardReads).toHaveLength(1);
+    });
+
+    it('сводка возвращается (её печатает вызывающий последней), а не теряется среди логов', () => {
+        const logs = [];
+        const ghFn = vi
+            .fn()
+            .mockReturnValueOnce(page([item('i1', 80, 'Issue', 'CLOSED', 'opt-wip')]))
+            .mockReturnValueOnce({ data: {} })
+            .mockReturnValueOnce([{ number: 91, id: 'I_b' }])
+            .mockReturnValueOnce({ data: {} });
+        const summary = runSync({
+            ghFn,
+            owner: 'O',
+            number: 1,
+            repo: 'O/r',
+            logFn: (m) => logs.push(m),
+        });
+        expect(summary).toContain('переведено — 1');
+        expect(summary).toContain('добавлено на доску — 1');
+        expect(logs.every((l) => !l.includes('project-sync:'))).toBe(true);
+    });
+
+    it('на приведённой доске отчитывается нулями, а не молчит', () => {
+        const ghFn = vi.fn().mockReturnValueOnce(page([])).mockReturnValueOnce([]);
+        expect(runSync({ ghFn, owner: 'O', number: 1, repo: 'O/r', logFn: vi.fn() })).toContain(
+            'добавлено на доску — 0',
+        );
     });
 });
