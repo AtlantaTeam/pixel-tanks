@@ -23,6 +23,13 @@ export type TCraterStyle = {
 /** Тёмный тон размокшей воронки (#547): почти чёрный, силу задаёт `darkenAlpha`. */
 const CRATER_DARKEN_COLOR = '#0a0806';
 
+/**
+ * Короткий хвост затемнения ниже дна воронки (#620): столб красится не строго
+ * по границе дна, а с небольшим запасом — край не обрывается ровно по расчётной
+ * глубине пиксель в пиксель.
+ */
+const CRATER_DARKEN_TAIL_PX = 6;
+
 type THeightBand = { min: number; max: number };
 
 /**
@@ -334,20 +341,63 @@ export class Ground {
      * воронки «оплывает» — на `edgeSoftenPx` пикселей по краям альфа спадает
      * (`craterEdgeFactor`), а не обрывается резко. Нет дождя (`craterStyle` пуст)
      * или воронок ещё не было — no-op. Запекается в offscreen-слой, не проход за кадр.
+     *
+     * По вертикали (#620) столб красится не на всю `heightMax` до низа канваса, а на
+     * фактическую глубину воронки в этом столбце (`craterBaseline` минус текущая
+     * высота) плюс короткий хвост `CRATER_DARKEN_TAIL_PX` — иначе краска утекала
+     * колонной до нижнего края экрана и читалась как дюны/шов текстуры, а не воронка.
      */
     private darkenCraters(ctx: CanvasRenderingContext2D) {
         const style = this.craterStyle;
         if (!style || style.darkenAlpha <= 0) return;
+        const baseline = this.craterBaseline();
         ctx.save();
         ctx.globalCompositeOperation = 'source-atop';
         ctx.fillStyle = CRATER_DARKEN_COLOR;
-        const bandTop = this.innerHeight - this.heightMax;
         for (let x = 0; x < this.innerWidth; x++) {
             if (!this.cratered[x]) continue;
+            const depth = Math.max(0, baseline[x] - this.heights[x]);
+            const bandHeight = Math.min(this.heightMax, depth + CRATER_DARKEN_TAIL_PX);
+            const surfaceY = this.innerHeight - this.heights[x];
             ctx.globalAlpha = style.darkenAlpha * this.craterEdgeFactor(x, style.edgeSoftenPx);
-            ctx.fillRect(x, bandTop, 1, this.heightMax);
+            ctx.fillRect(x, surfaceY, 1, bandHeight);
         }
         ctx.restore();
+    }
+
+    /**
+     * Высота рельефа «до воронки» по столбцу (#620) — для оценки глубины пробитой
+     * ямы, поскольку `fall()` вычитает кратер прямо из `heights` и исходное значение
+     * не хранится отдельно. Берётся как среднее высот ближайших НЕ кратерных соседей
+     * слева и справа (если сосед есть только с одной стороны — используется он; если
+     * весь ряд кратерный — фолбэк на `heightMax`, прежнее поведение). Два линейных
+     * прохода вместо поиска соседа на каждый столбец — иначе сплошная полоса воронок
+     * даёт O(width²).
+     */
+    private craterBaseline(): number[] {
+        const width = this.innerWidth;
+        const leftHeight = new Array<number>(width).fill(-1);
+        let last = -1;
+        for (let x = 0; x < width; x++) {
+            if (!this.cratered[x]) last = this.heights[x];
+            leftHeight[x] = last;
+        }
+        const rightHeight = new Array<number>(width).fill(-1);
+        last = -1;
+        for (let x = width - 1; x >= 0; x--) {
+            if (!this.cratered[x]) last = this.heights[x];
+            rightHeight[x] = last;
+        }
+        const baseline = new Array<number>(width);
+        for (let x = 0; x < width; x++) {
+            const l = leftHeight[x];
+            const r = rightHeight[x];
+            if (l >= 0 && r >= 0) baseline[x] = (l + r) / 2;
+            else if (l >= 0) baseline[x] = l;
+            else if (r >= 0) baseline[x] = r;
+            else baseline[x] = this.heightMax;
+        }
+        return baseline;
     }
 
     /**

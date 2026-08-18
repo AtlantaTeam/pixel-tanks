@@ -377,6 +377,40 @@ describe('Ground: offscreen-кэш террейна (.claude/rules/canvas.md)', 
         expect(layerCtxMock.globalCompositeOperation).toBe('source-atop');
     });
 
+    it('затемнение воронки ограничено по вертикали глубиной ямы, не всей heightMax (#620)', () => {
+        const ground = new Ground(
+            100,
+            100,
+            createSeededRandom(1),
+            undefined,
+            undefined,
+            [],
+            undefined,
+            { darkenAlpha: 0.28, edgeSoftenPx: 1 },
+        );
+        const heightMax = Math.floor(100 / 2);
+        ground.flatten(50);
+        // bulletY=70 копает ниже плоского рельефа (высота 50) — фактическая яма
+        // получается заметно мельче heightMax, иначе не отличить фикс от бага.
+        ground.fall(50, 70, 5);
+        // Догоняем осыпание кратера до полной остановки (как реальный игровой цикл
+        // делает через beginFrame() на каждом тике), чтобы взять финальную глубину.
+        ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        while (ground.isFalling) {
+            ground.beginFrame();
+            ground.draw(makeDestCtx() as unknown as CanvasRenderingContext2D);
+        }
+
+        expect(layerCtxMock.fillRect.mock.calls.length).toBeGreaterThan(0);
+        layerCtxMock.fillRect.mock.calls.forEach(([, y, , height]) => {
+            // Старый баг: высота всегда равнялась heightMax, а верх колонны — фиксированному
+            // bandTop = innerHeight - heightMax, то есть красило до низа канваса.
+            expect(height).toBeLessThan(heightMax);
+            expect(y).toBeGreaterThan(100 - heightMax);
+            expect(y + height).toBeLessThanOrEqual(100);
+        });
+    });
+
     it('без осадков-дождя (нет craterStyle) воронки не затемняются', () => {
         const ground = new Ground(100, 100, createSeededRandom(1));
         ground.fall(50, 10, 5);
