@@ -170,35 +170,31 @@ const mkCmdRecorders = (shImpl?: (cmd: string) => string) => {
     };
 };
 
-describe('buildClaudeArgs — построение argv для claude -p (ядро порта)', () => {
-    it('минимальный вызов: -p <prompt> --max-turns <n> и больше ничего при пустом конфиге', () => {
-        const argv = buildClaudeArgs('привет', { maxTurns: 200 }, {});
-        expect(argv).toEqual(['-p', 'привет', '--max-turns', '200']);
+describe('buildClaudeArgs — построение argv для claude -p (ядро порта; #607 — без промпта)', () => {
+    it('минимальный вызов: -p --max-turns <n> и больше ничего при пустом конфиге', () => {
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
+        expect(argv).toEqual(['-p', '--max-turns', '200']);
     });
 
     it('maxTurns приводится к строке (spawnSync требует строковые argv)', () => {
-        const argv = buildClaudeArgs('x', { maxTurns: 30 }, {});
-        expect(argv[3]).toBe('30');
-        expect(typeof argv[3]).toBe('string');
+        const argv = buildClaudeArgs({ maxTurns: 30 }, {});
+        expect(argv[2]).toBe('30');
+        expect(typeof argv[2]).toBe('string');
     });
 
     it('model добавляет пару --model <model>', () => {
-        const argv = buildClaudeArgs('x', { model: 'claude-opus-4-8', maxTurns: 200 }, {});
+        const argv = buildClaudeArgs({ model: 'claude-opus-4-8', maxTurns: 200 }, {});
         expect(argv).toContain('--model');
         expect(argv[argv.indexOf('--model') + 1]).toBe('claude-opus-4-8');
     });
 
     it('permissionMode из конфига добавляет --permission-mode', () => {
-        const argv = buildClaudeArgs(
-            'x',
-            { maxTurns: 200 },
-            { permissionMode: 'bypassPermissions' },
-        );
+        const argv = buildClaudeArgs({ maxTurns: 200 }, { permissionMode: 'bypassPermissions' });
         expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('bypassPermissions');
     });
 
     it('fallbackModel из конфига используется, когда опция fallbackModel не передана (back-compat)', () => {
-        const argv = buildClaudeArgs('x', { maxTurns: 200 }, { fallbackModel: 'claude-sonnet-5' });
+        const argv = buildClaudeArgs({ maxTurns: 200 }, { fallbackModel: 'claude-sonnet-5' });
         expect(argv[argv.indexOf('--fallback-model') + 1]).toBe('claude-sonnet-5');
     });
 
@@ -207,7 +203,6 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
     // явно указывает СВОЮ модель фолбэка (см. pickReviewFallbackModel).
     it('явный опции.fallbackModel переопределяет cfg.fallbackModel', () => {
         const argv = buildClaudeArgs(
-            'x',
             { maxTurns: 200, fallbackModel: 'claude-opus-4-8' },
             { fallbackModel: 'claude-sonnet-5' },
         );
@@ -216,7 +211,6 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
 
     it('опции.fallbackModel = null подавляет --fallback-model, даже если в конфиге он задан (fail-closed без фолбэка)', () => {
         const argv = buildClaudeArgs(
-            'x',
             { maxTurns: 200, fallbackModel: null },
             { fallbackModel: 'claude-sonnet-5' },
         );
@@ -225,7 +219,6 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
 
     it('опции.fallbackModel = "none" тоже подавляет --fallback-model', () => {
         const argv = buildClaudeArgs(
-            'x',
             { maxTurns: 200, fallbackModel: 'none' },
             { fallbackModel: 'claude-sonnet-5' },
         );
@@ -233,19 +226,17 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
     });
 
     it('без fallbackModel в конфиге и в опциях флаг fallback не появляется', () => {
-        const argv = buildClaudeArgs('x', { maxTurns: 200 }, {});
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
         expect(argv).not.toContain('--fallback-model');
     });
 
     it('полный набор опций: порядок флагов детерминирован', () => {
         const argv = buildClaudeArgs(
-            'задача',
             { model: 'claude-fable-5', maxTurns: 100 },
             { permissionMode: 'bypassPermissions', fallbackModel: 'claude-sonnet-5' },
         );
         expect(argv).toEqual([
             '-p',
-            'задача',
             '--max-turns',
             '100',
             '--model',
@@ -257,40 +248,34 @@ describe('buildClaudeArgs — построение argv для claude -p (ядр
         ]);
     });
 
-    it('anti-RCE: спецсимволы промпта проходят ОДНИМ дословным элементом argv, не раскрываются и не разбиваются', () => {
-        // Ровно тот класс, ради которого порт ушёл от shell-строки: backtick/$()/%/
-        // кавычки/точка-с-запятой на /bin/sh были бы command substitution (RCE), на
-        // cmd.exe % раскрывался бы в %VAR%. В argv-массиве всё это — байты промпта.
-        const evil = 'вывод: `rm -rf /` и $(whoami) и %PATH% и "кавычки" ; echo pwned';
-        const argv = buildClaudeArgs(evil, { maxTurns: 200 }, {});
-        // Промпт — ровно один элемент, идентичный входу (ничего не срезано/не экранировано).
-        expect(argv[1]).toBe(evil);
-        // Никакой лишний элемент не появился из-за пробелов/точки-с-запятой внутри промпта.
-        expect(argv).toHaveLength(4);
-    });
-
-    it('промпт с переводами строк и кавычками остаётся единым элементом', () => {
-        const multiline = 'строка1\nstring "2"\n\tтаб';
-        const argv = buildClaudeArgs(multiline, { maxTurns: 200 }, {});
-        expect(argv[1]).toBe(multiline);
+    // #607: argv больше не содержит промпт вовсе — длина и состав зависят только от
+    // model/maxTurns/permissionMode/fallbackModel, а не от размера диффа или ленты
+    // комментариев PR. Это и снимает класс E2BIG целиком: argv одного и того же
+    // фиксированного вида что для промпта в 10 байт, что в 200 КБ.
+    it('#607: argv не растёт с размером промпта — промпт в аргументы не попадает вовсе', () => {
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
+        expect(argv.join(' ').length).toBeLessThan(64);
+        expect(argv).toEqual(['-p', '--max-turns', '200']);
     });
 
     it('чистота: не мутирует переданный конфиг', () => {
         const cfg = { permissionMode: 'bypassPermissions', fallbackModel: 'claude-sonnet-5' };
         const snapshot = JSON.stringify(cfg);
-        buildClaudeArgs('x', { maxTurns: 200 }, cfg);
+        buildClaudeArgs({ maxTurns: 200 }, cfg);
         expect(JSON.stringify(cfg)).toBe(snapshot);
     });
 });
 
-describe('spawnClaude — фактический вызов spawn-функции (граница anti-RCE защиты)', () => {
+describe('spawnClaude — фактический вызов spawn-функции (граница anti-RCE защиты + #607 стдин)', () => {
     // buildClaudeArgs выше проверяет только сборку argv-массива. Здесь — что этот
-    // массив реально доходит до вызова ОДНИМ элементом на промпт и с shell:false:
-    // именно это, а не сама сборка массива, закрывает RCE-класс (#67). Регрессия вида
-    // «shell:false случайно потерялся при рефакторе» ловится только тут.
-    // Фейковую spawn-функцию передаём 3-м параметром явно (см. комментарий в шапке
-    // файла) — production-путь (без 3-го аргумента) здесь намеренно не трогаем,
-    // чтобы не дёргать настоящий claude.exe из юнит-теста.
+    // массив реально доходит до вызова с shell:false, и что промпт уходит через
+    // `input` (stdin), а НЕ через argv — именно это, а не сама сборка массива,
+    // закрывает и RCE-класс (#67), и E2BIG-класс (#607). Регрессия вида «shell:false
+    // случайно потерялся при рефакторе» или «промпт снова подмешали в argv» ловится
+    // только тут.
+    // Фейковую spawn-функцию передаём параметром явно (см. комментарий в шапке
+    // файла) — production-путь (без него) здесь намеренно не трогаем, чтобы не
+    // дёргать настоящий claude.exe из юнит-теста.
     let spawnFn: Mock;
     beforeEach(() => {
         spawnFn = vi.fn();
@@ -305,28 +290,56 @@ describe('spawnClaude — фактический вызов spawn-функции
         vi.restoreAllMocks();
     });
 
-    it('вызывает spawnFn с бинарём claude, shell:false и ровно тем argv-массивом, что построил buildClaudeArgs', () => {
+    it('вызывает spawnFn с бинарём claude, shell:false, argv от buildClaudeArgs и промптом через input, НЕ argv', () => {
         spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
-        const evil = 'вывод: `rm -rf /` и $(whoami) и %PATH%';
-        const argv = buildClaudeArgs(evil, { maxTurns: 200 }, {});
+        const evil = 'вывод: `rm -rf /` и $(whoami) и %PATH% и "кавычки" ; echo pwned';
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
 
-        spawnClaude(argv, 60_000, spawnFn);
+        spawnClaude(argv, evil, 60_000, spawnFn);
 
         expect(spawnFn).toHaveBeenCalledTimes(1);
         const [bin, calledArgs, opts] = spawnFn.mock.calls[0];
         expect(bin).toBe('claude');
-        // Тот же массив, не пересобран и не сериализован в строку — промпт со
-        // спецсимволами доходит до вызова одним элементом argv, а не только до
-        // чистой сборки массива в buildClaudeArgs.
+        // Тот же массив, не пересобран — и промпт в нём НЕ появился (#607: раньше был
+        // вторым элементом argv, теперь argv от размера/содержимого промпта не зависит).
         expect(calledArgs).toBe(argv);
-        expect(calledArgs[1]).toBe(evil);
+        expect(calledArgs.join(' ')).not.toContain(evil);
+        // Промпт со спецсимволами доходит до вызова как есть — байт-в-байт, дословно,
+        // но через input, не через шелл-строку и не через argv.
+        expect(opts.input).toBe(evil);
         expect(opts.shell).toBe(false);
         expect(opts.timeout).toBe(60_000);
     });
 
+    it('промпт с переводами строк и кавычками уходит через input дословно', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+        const multiline = 'строка1\nstring "2"\n\tтаб';
+        spawnClaude(['-p', '--max-turns', '1'], multiline, 1000, spawnFn);
+        const [, , opts] = spawnFn.mock.calls[0];
+        expect(opts.input).toBe(multiline);
+    });
+
+    // #607, критерий готовности: промпт 200 КБ (дифф фазы + вся лента комментариев PR)
+    // уходит в сессию и не роняет запуск. Раньше эквивалентный по размеру промпт в
+    // argv ловил execve E2BIG (предел ядра — 131072 байта на аргумент); через input
+    // такого предела нет.
+    it('#607: промпт 200 КБ уходит через input, argv остаётся коротким и фиксированным', () => {
+        spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
+        const bigPrompt = 'ф'.repeat(200_000);
+        const argv = buildClaudeArgs({ maxTurns: 200 }, {});
+
+        const result = spawnClaude(argv, bigPrompt, 60_000, spawnFn);
+
+        const [, calledArgs, opts] = spawnFn.mock.calls[0];
+        expect(calledArgs.join('').length).toBeLessThan(64);
+        expect(opts.input).toBe(bigPrompt);
+        expect(opts.input.length).toBe(200_000);
+        expect(result.code).toBe(0);
+    });
+
     it('успешное завершение (status:0) → {code:0, output: stdout+stderr}', () => {
         spawnFn.mockReturnValue({ status: 0, stdout: 'done', stderr: '', signal: null });
-        expect(spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn)).toEqual({
+        expect(spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn)).toEqual({
             code: 0,
             output: 'done\n',
         });
@@ -334,7 +347,7 @@ describe('spawnClaude — фактический вызов spawn-функции
 
     it('ненулевой exit-код процесса пробрасывается как code', () => {
         spawnFn.mockReturnValue({ status: 2, stdout: '', stderr: 'boom', signal: null });
-        expect(spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn)).toEqual({
+        expect(spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn)).toEqual({
             code: 2,
             output: '\nboom',
         });
@@ -342,13 +355,13 @@ describe('spawnClaude — фактический вызов spawn-функции
 
     it('процесс убит по сигналу (таймаут) → code:1, не бросает исключение', () => {
         spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: 'SIGTERM' });
-        const result = spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn);
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
         expect(result.code).toBe(1);
     });
 
     it('без env-аргумента опции spawn НЕ содержат ключ env — Claude-путь наследует env раннера байт-в-байт', () => {
         spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
-        spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn);
+        spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
         const [, , opts] = spawnFn.mock.calls[0];
         expect('env' in opts).toBe(false);
     });
@@ -356,10 +369,90 @@ describe('spawnClaude — фактический вызов spawn-функции
     it('с env-аргументом (#373 Kimi) опции spawn несут ровно этот env', () => {
         spawnFn.mockReturnValue({ status: 0, stdout: 'ok', stderr: '', signal: null });
         const env = { PATH: '/usr/bin', ANTHROPIC_BASE_URL: 'https://api.moonshot.ai/anthropic' };
-        spawnClaude(['-p', 'x', '--max-turns', '1'], 1000, spawnFn, env);
+        spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn, env);
         const [, , opts] = spawnFn.mock.calls[0];
         expect(opts.env).toBe(env);
         expect(opts.shell).toBe(false);
+    });
+
+    // #607, критерий готовности: E2BIG (или текстовая формулировка "Argument list too
+    // long") распознаётся отдельно от обычного падения сессии, и лог называет причину
+    // прямо — раньше это тонуло в generic «code 1, ноль строк вывода», которое раннер
+    // трактовал как «ревью не дало вердикта».
+    it('#607: спавн-ошибка E2BIG логируется отдельной строкой, называющей причину', () => {
+        const err = Object.assign(new Error('spawnSync claude E2BIG'), { code: 'E2BIG' });
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+        const logSpy = vi.spyOn(console, 'log');
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.code).toBe(1);
+        const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).toMatch(/E2BIG/);
+        expect(logged).not.toMatch(/не дало вердикта/);
+    });
+
+    it('#607: текст "Argument list too long" без кода E2BIG распознаётся тем же путём', () => {
+        const err = new Error('posix_spawn: Argument list too long');
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+        const logSpy = vi.spyOn(console, 'log');
+
+        spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).toMatch(/Argument list too long/);
+    });
+
+    it('обычная ошибка запуска (не E2BIG) не подхватывается argv-too-long веткой — код 1 по общему пути', () => {
+        const err = Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' });
+        spawnFn.mockReturnValue({ status: null, stdout: '', stderr: '', signal: null, error: err });
+        const logSpy = vi.spyOn(console, 'log');
+
+        const result = spawnClaude(['-p', '--max-turns', '1'], 'x', 1000, spawnFn);
+
+        expect(result.code).toBe(1);
+        const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(logged).not.toMatch(/E2BIG|Argument list too long/);
+    });
+});
+
+describe('isArgvTooLong / argvTooLongMessage — детекция и текст причины (#607)', () => {
+    const { isArgvTooLong, argvTooLongMessage } = ralph;
+
+    it('код E2BIG распознаётся', () => {
+        expect(isArgvTooLong({ code: 'E2BIG', message: 'x', name: 'Error' })).toBe(true);
+    });
+
+    it('текст "Argument list too long" без кода E2BIG тоже распознаётся', () => {
+        expect(
+            isArgvTooLong({
+                code: undefined,
+                message: 'posix_spawn: Argument list too long',
+                name: 'Error',
+            }),
+        ).toBe(true);
+    });
+
+    it('отсутствие ошибки — не argv-too-long', () => {
+        expect(isArgvTooLong(undefined)).toBe(false);
+        expect(isArgvTooLong(null)).toBe(false);
+    });
+
+    it('другая ошибка (ENOENT) — не argv-too-long', () => {
+        expect(isArgvTooLong({ code: 'ENOENT', message: 'no such file', name: 'Error' })).toBe(
+            false,
+        );
+    });
+
+    it('текст сообщения называет причину явно и не путает её с «сессия/ревью не дало вердикта»', () => {
+        const msg = argvTooLongMessage({
+            code: 'E2BIG',
+            message: 'spawnSync claude E2BIG',
+            name: 'Error',
+        });
+        expect(msg).toMatch(/E2BIG/);
+        expect(msg).toMatch(/запуска/i);
+        expect(msg).not.toMatch(/не дало вердикта/);
     });
 });
 

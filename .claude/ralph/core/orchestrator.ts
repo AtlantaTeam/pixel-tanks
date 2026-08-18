@@ -786,8 +786,20 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
     // Построение argv для claude -p (ядро Linux-порта #67). Чистая функция: тот же
     // вход → тот же массив, без побочных эффектов — вынесена из runClaudeOnce, чтобы
-    // покрыть юнит-тестами (спецсимволы промпта проходят дословно; флаги model/
-    // permission-mode добавляются по конфигу).
+    // покрыть юнит-тестами (флаги model/permission-mode добавляются по конфигу).
+    //
+    // #607: ПРОМПТА В ARGV БОЛЬШЕ НЕТ. Раньше он был вторым элементом ('-p', prompt, …), и
+    // у одного argv-элемента в Linux жёсткий предел — MAX_ARG_STRLEN, 131072 байта.
+    // Повторное ревью собирает промпт из диффа фазы (до review.diffLimit символов) И ВСЕЙ
+    // ленты комментариев PR — на PR #601 это дало ≈138000 байт при пределе 131072: execve
+    // вернул E2BIG, `claude` не запустился ВООБЩЕ (код 1, ноль строк вывода за 2-3 секунды),
+    // а раннер трактовал пустой вывод как «ревью не дало вердикта» и вставал fail-closed с
+    // меткой blocked — притом что чинить было нечего, промпт просто не поместился в argv.
+    // Отказ самоусиливался: чем дотошнее ревью, тем больше комментариев, тем вернее
+    // следующий круг снова упрётся в тот же потолок. Argv теперь ФИКСИРОВАННОЙ длины (флаги
+    // + имена моделей — единицы/десятки байт), промпт уходит отдельно через stdin
+    // (spawnClaude, опция input) — у stdin такого предела нет. См. shArgv (exec.ts, #133) —
+    // тот же приём уже применялся для комментариев PR, уходящих счётчику находок.
     //
     // fallback-модель: опции.fallbackModel, если передан (даже null/'none'), ПОЛНОСТЬЮ
     // переопределяет cfg.fallbackModel — не подмешивается и не деградирует до общего
@@ -806,13 +818,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // вывод упавшего теста (excerpt в heal-промпте) с обратной кавычкой исполнился бы
     // как команда (RCE). argv-массив снимает ВЕСЬ класс: шелл не участвует, спецсимволы
     // не раскрываются — прежний guard /["%]/ и санитизация excerpt больше не нужны.
+    // Промпт со спецсимволами теперь тем же приёмом уходит через input (см. spawnClaude) —
+    // не строкой в шелл, а сырыми байтами на stdin дочернего процесса.
     // См. docs/ralph-prod-mode/linux-port-audit.md (#66/#67).
     function buildClaudeArgs(
-        prompt: string,
         { model, maxTurns, fallbackModel }: ClaudeOpts,
         cfg: Pick<RalphConfig, 'permissionMode' | 'fallbackModel'>,
     ): string[] {
-        const cmdArgs = ['-p', prompt, '--max-turns', String(maxTurns)];
+        const cmdArgs = ['-p', '--max-turns', String(maxTurns)];
         if (model) cmdArgs.push('--model', model);
         if (cfg.permissionMode) cmdArgs.push('--permission-mode', cfg.permissionMode);
         const fb = fallbackModel !== undefined ? fallbackModel : cfg.fallbackModel;
@@ -820,12 +833,46 @@ export function createOrchestrator(env: OrchestratorEnv) {
         return cmdArgs;
     }
 
+    // #607: узкая детекция отказа ЗАПУСКА процесса (execve вернул E2BIG — argv/env вместе
+    // превысили системный предел), а не падения самой сессии. До перехода промпта на stdin
+    // это был единственный молчаливый путь: spawnSync не поднимал процесс вовсе, отдавал
+    // res.error, а не status/signal, и раннер это видел как code:1 без единой строки
+    // вывода — неотличимо от «ревью не дало вердикта». Проверка остаётся defense-in-depth
+    // (argv теперь фиксированной длины, но имя модели/пути — тоже в argv, и барьер не
+    // должен зависеть от того, что где-то ещё не выросло).
+    const ARGV_TOO_LONG_RE = /E2BIG|Argument list too long/i;
+
+    function isArgvTooLong(error: NodeJS.ErrnoException | null | undefined): boolean {
+        if (!error) return false;
+        return error.code === 'E2BIG' || ARGV_TOO_LONG_RE.test(error.message ?? '');
+    }
+
+    // Текст — ЕДИНСТВЕННЫЙ источник формулировки причины (тот же приём, что
+    // runtimeUnavailableExhaustedMessage в runtime-availability.ts, #606): называет её
+    // прямо, а не оставляет раннеру гадать по пустому выводу.
+    function argvTooLongMessage(error: NodeJS.ErrnoException): string {
+        return (
+            `⛔ claude -p не запустился: превышен предел ядра на аргумент командной строки ` +
+            `(E2BIG${error.code ? ` / код ${error.code}` : ''} — обычно MAX_ARG_STRLEN, ` +
+            `131072 байта). Это отказ ЗАПУСКА процесса, а НЕ отказ сессии/ревью по существу — ` +
+            `${error.message}`
+        );
+    }
+
     // Тонкая обвязка над реальным spawnSync (Linux-порт #67) — единственное место, где
     // действительно запускается процесс claude. Вынесена отдельно от runClaudeOnce и
     // экспортирована, чтобы проверить САМУ границу anti-RCE защиты: что shell:false и
     // argv от buildClaudeArgs реально доходят до вызова (не только собираются в массив,
-    // но и уходят процессу как есть, одним элементом на промпт) — раньше это
-    // подразумевалось, но ничем не было покрыто.
+    // но и уходят процессу как есть) — раньше это подразумевалось, но ничем не было
+    // покрыто.
+    //
+    // #607: промпт передаётся ОТДЕЛЬНЫМ параметром и уходит через `input` (stdin
+    // дочернего процесса), не через argv — см. докблок buildClaudeArgs. `claude -p` без
+    // позиционного промпта читает его со стандартного ввода (штатное поведение CLI, как
+    // `cat file | claude -p`), лимита MAX_ARG_STRLEN там нет. `stdio: ['pipe', …]` ставим
+    // ЯВНО (не полагаемся на то, что `input` молча перекрывает 'ignore' — тот же приём,
+    // что shArgv в exec.ts #133/#138: молчаливая зависимость от перекрытия — ровно то
+    // место, где следующая правка опций spawn тихо оборвёт stdin).
     //
     // spawnFn — инжектируемая точка вызова (дефолт: настоящий spawnSync модуля). В проде
     // параметр никогда не передают — работает как раньше. В тестах передают фейковую
@@ -834,10 +881,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // реально пробивался до настоящего spawnSync и один раз запустил живой процесс
     // `claude` вместо фейка). Явный параметр — детерминирован независимо от того, как
     // раннер загружен require'ом или через import.
-    // Чистый вход (argv + timeout [+ spawnFn]) → {code, output}; чтение config — забота
-    // вызывающего.
+    // Чистый вход (argv + prompt + timeout [+ spawnFn]) → {code, output}; чтение config —
+    // забота вызывающего.
     function spawnClaude(
         cmdArgs: string[],
+        prompt: string,
         timeoutMs: number,
         spawnFn: typeof spawnSync = spawnSync,
         env?: NodeJS.ProcessEnv,
@@ -849,11 +897,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // байт-в-байт прежний (опция `env` в объекте не появляется). Задан → передаём как
         // есть: так рантайм Kimi (#373) подсовывает окружение Moonshot (ANTHROPIC_BASE_URL/
         // ANTHROPIC_AUTH_TOKEN) тому же бинарю `claude`, не форкая spawn-путь.
-        // pipe вместо inherit — вывод нужен для детекции API-лимита (см. runClaude).
         // maxBuffer 64 МБ: многочасовая сессия может быть многословной, обрезка вывода
         // уронила бы spawnSync и замаскировала настоящий exit-код.
         const res = spawnFn('claude', cmdArgs, {
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ['pipe', 'pipe', 'pipe'],
+            input: prompt,
             shell: false,
             timeout: timeoutMs,
             encoding: 'utf-8',
@@ -865,6 +913,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // делал inherit — просто постфактум, а не потоком.
         if (res.stdout) process.stdout.write(res.stdout);
         if (res.stderr) process.stderr.write(res.stderr);
+        // #607: ПЕРЕД проверкой signal — spawnSync, не сумевший поднять процесс (execve
+        // упал), отдаёт res.error, а не status/signal. Раньше это молча падало в
+        // `code: res.status ?? 1` — код 1 без единой строки вывода, неотличимый от
+        // «сессия отработала и не сказала ни слова». Называем причину прямо в лог.
+        if (res.error && isArgvTooLong(res.error as NodeJS.ErrnoException)) {
+            log(argvTooLongMessage(res.error as NodeJS.ErrnoException));
+            return { code: 1, output };
+        }
         if (res.signal) {
             log(`⚠ claude убит по сигналу ${res.signal} (таймаут ${timeoutMs}мс?)`);
             return { code: 1, output };
@@ -881,7 +937,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
     } {
         // Работает кроссплатформенно, т.к. `claude` — нативный бинарник (claude.exe на
         // Windows, бинарь/симлинк на Linux), а НЕ npm .cmd-shim (тот без shell даёт ENOENT).
-        const cmdArgs = buildClaudeArgs(prompt, { model, maxTurns, fallbackModel }, config);
+        const cmdArgs = buildClaudeArgs({ model, maxTurns, fallbackModel }, config);
         log(
             `▶ claude -p "${prompt.slice(0, 80)}…" --max-turns ${maxTurns}${model ? ` --model ${model}` : ''}`,
         );
@@ -889,7 +945,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // timeout (M3): зависший claude (сетевой столл) иначе блокирует синхронный
         // loop навсегда — AFK-прогон молча стоит до утра.
         const timeout = config.claudeTimeoutMs || 2 * 60 * 60 * 1000;
-        return spawnClaude(cmdArgs, timeout);
+        return spawnClaude(cmdArgs, prompt, timeout);
     }
 
     // ── Рантайм Kimi (#373, фаза 6) ──────────────────────────────────────────
@@ -1005,7 +1061,6 @@ export function createOrchestrator(env: OrchestratorEnv) {
             model: routedModel,
         });
         const cmdArgs = buildClaudeArgs(
-            prompt,
             { model: resolvedModel, maxTurns, fallbackModel },
             // permissionMode — из конфига (bypassPermissions в бою); общий cfg.fallbackModel
             // НЕ прокидываем (opts.fallbackModel всегда задан → cfg.fallbackModel не читается).
@@ -1019,7 +1074,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // token гарантированно не-null при !DRY (requireToken выше). Секрет — только в env
         // процесса (buildKimiSpawnEnv), НЕ в argv (иначе виден в /proc/*/cmdline).
         const env = buildKimiSpawnEnv(baseUrl, token as string, process.env);
-        return spawnClaude(cmdArgs, timeout, spawnFn, env);
+        return spawnClaude(cmdArgs, prompt, timeout, spawnFn, env);
     }
 
     // ── Рантайм OpenAI (#374, фаза 6) ────────────────────────────────────────
@@ -5179,6 +5234,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
         sweepOrphanMonitors,
         ensureMonitorAlive,
         buildClaudeArgs,
+        // #607: чистые хелперы детекции E2BIG экспортируются отдельно от spawnClaude —
+        // юнит-тестам не нужен фейковый spawnFn, чтобы проверить саму классификацию ошибки.
+        isArgvTooLong,
+        argvTooLongMessage,
         shq,
         // sh/log/sideEffectAttempts экспортируются только ради предохранителя #138: проверить,
         // что в тестовом окружении шелл запрещён и лог не пишется, можно лишь дёрнув их

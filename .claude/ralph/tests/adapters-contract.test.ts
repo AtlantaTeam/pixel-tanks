@@ -1362,8 +1362,8 @@ function buildRealRuntime(spawnResult: {
     const spawnFn = vi.fn(() => spawnResult);
     return createCoderRuntime({
         run: (prompt: string, options): RunResult => {
-            const argv = ralph.buildClaudeArgs(prompt, options, {});
-            return ralph.spawnClaude(argv, 1000, spawnFn);
+            const argv = ralph.buildClaudeArgs(options, {});
+            return ralph.spawnClaude(argv, prompt, 1000, spawnFn);
         },
     });
 }
