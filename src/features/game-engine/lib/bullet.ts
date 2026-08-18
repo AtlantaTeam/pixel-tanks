@@ -31,6 +31,8 @@ export class Bullet {
     explosionRadius: number;
     /** Базовый радиус взрыва (`WORLD_UNITS.explosionMaxRadius · scale`) — очаги считаются в его долях. */
     private baseExplosionRadius: number;
+    /** Посчитанная один раз полоса взрыва (см. `explosionRedrawRange`). */
+    private redrawRangeCache?: TExplosionRedrawRange;
     /**
      * Тип оружия (issue #483): числа взрыва (стопы градиента, рост, кратер, очаги)
      * читаются из спеки. Дефолт — фугас (замороженный дефолт движка), поэтому
@@ -113,6 +115,8 @@ export class Bullet {
         this.radius = WORLD_UNITS.bulletRadius * scale;
         this.mass = this.radius;
         this.baseExplosionRadius = WORLD_UNITS.explosionMaxRadius * scale;
+        // Полоса взрыва выведена из базового радиуса — пересчитать при следующем чтении.
+        this.redrawRangeCache = undefined;
     }
 
     /** Центр текущего очага по X: точка попадания плюс смещение очага (кластер).
@@ -140,13 +144,22 @@ export class Bullet {
     /**
      * Полоса сцены, которую занимает взрыв этого снаряда (issue #582): её чистит и
      * перерисовывает `GamePlay.explosionAreaRedraw` — одним диапазоном на всё.
+     * Почему полоса одна и почему статична — в шапке `explosion-area.ts`.
      *
-     * Считается от `x` (точка попадания) и базового радиуса, а не от текущего
-     * `explosionRadius`: полоса обязана стоять на месте весь взрыв, включая три
-     * очага кластера со смещением до ±0.8 базового радиуса и сбросом радиуса в ноль
-     * на каждой смене очага.
+     * После детонации результат неизменен (`x` заморожен в `move()`, спека и базовый
+     * радиус не меняются), поэтому считается ОДИН раз и кешируется: геттер зовётся
+     * каждый кадр взрыва, а внутри он аллоцирует объект и прогоняет габарит по всем
+     * очагам — `canvas.md` просит не аллоцировать в кадре. Кеш сбрасывает `setScale`
+     * (ресайз меняет базовый радиус). До детонации кеша нет вовсе: там `x` ещё
+     * меняется, а путь не кадровый.
      */
     get explosionRedrawRange(): TExplosionRedrawRange {
+        if (!this.detonated) return this.computeExplosionRedrawRange();
+        this.redrawRangeCache ??= this.computeExplosionRedrawRange();
+        return this.redrawRangeCache;
+    }
+
+    private computeExplosionRedrawRange(): TExplosionRedrawRange {
         return explosionRedrawRange({
             hitX: this.x,
             baseRadius: this.baseExplosionRadius,
@@ -178,6 +191,10 @@ export class Bullet {
         // `wind = -0.007` в сдвиг на 1 px за кадр, и полоса очистки (она считается от
         // `this.x`) уезжала из-под нарисованного прошлым кадром: правый край отступал
         // раньше, чем стирал вспышку. Замер: старт x=400, 50 кадров взрыва → x=350.
+        //
+        // Заморозка меняет и ИСХОД: воронка ложится в точку попадания, а не там, куда
+        // снаряд успел уползти (замер на main: 156 px при ветре −0.02). Для записанных
+        // реплеев это ретроактивная правка физики — разбор в докблоке `TReplay`.
         if (this.detonated) return;
         // Единый шаг физики с предпросмотром прицела (`advanceProjectile`, #475).
         // Гейт гравитации у нижней стены сохранён прежним: снаряд не притягивается,

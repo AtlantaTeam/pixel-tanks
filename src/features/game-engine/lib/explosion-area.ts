@@ -28,7 +28,7 @@
  */
 
 import { explosionSpriteHalfWidth } from './explosion-sprite';
-import type { TWeaponSpec } from './weapon-specs';
+import type { TWeaponFocus, TWeaponSpec } from './weapon-specs';
 
 /** Горизонтальная полоса сцены в CSS-пикселях: `from` включительно, `to` — правый край. */
 export type TExplosionRedrawRange = {
@@ -67,8 +67,8 @@ function peakRadiusOf(radiusFactor: number, baseRadius: number, growthPerFrame: 
  * блитит слой только внутри запрошенной полосы, и край воронки за её пределами
  * остался бы старым до следующего полного перерисова.
  */
-function focusReach(spec: TWeaponSpec, radiusFactor: number, baseRadius: number): number {
-    const peak = peakRadiusOf(radiusFactor, baseRadius, spec.growthPerFrame);
+function focusReach(spec: TWeaponSpec, focus: TWeaponFocus, baseRadius: number): number {
+    const peak = peakRadiusOf(focus.radiusFactor, baseRadius, spec.growthPerFrame);
     const sprite = explosionSpriteHalfWidth(spec.silhouette, peak);
     const crater = spec.craterRadiusFactor * peak + CRATER_SNAP_MARGIN;
     return Math.max(sprite, crater);
@@ -89,12 +89,14 @@ export function explosionRedrawRange({
     let to = -Infinity;
     for (const focus of spec.foci) {
         const centerX = hitX + focus.dxFactor * baseRadius;
-        const reach = focusReach(spec, focus.radiusFactor, baseRadius);
+        const reach = focusReach(spec, focus, baseRadius);
         from = Math.min(from, centerX - reach);
         to = Math.max(to, centerX + reach);
     }
-    // Спека без очагов невозможна по типу (`foci: ≥1`), но пустой список дал бы
-    // здесь ±Infinity и `clearRect` во всю сцену — вырождаем в пустую полосу.
+    // По соглашению у каждой спеки есть хотя бы один очаг, но ТИП этого не держит
+    // (`foci: readonly TWeaponFocus[]` — пустой массив легален, тест рядом такой и
+    // собирает). Пустой список дал бы здесь ±Infinity и `clearRect` во всю сцену —
+    // вырождаем в пустую полосу.
     if (!Number.isFinite(from) || !Number.isFinite(to)) return { from: hitX, to: hitX };
     return { from: Math.floor(from), to: Math.ceil(to) };
 }

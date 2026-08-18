@@ -37,13 +37,7 @@ export const EXPLOSION_ALPHA_LEVELS = 4;
  * Пиксельный спрайт одного кадра очага: квадратная решётка ячеек, у каждой уровень
  * альфы 0..`EXPLOSION_ALPHA_LEVELS` (0 — пусто). Хранение row-major в `Uint8Array`.
  */
-export type TExplosionSprite = {
-    /** Сторона решётки в ЯЧЕЙКАХ (нечётная — центр ровно в середине). */
-    size: number;
-    /** Радиус залитого очага в ячейках (без запаса под лучи/обод/конус). */
-    gridRadius: number;
-    /** Целый масштаб ячейки в пиксели канваса. */
-    scale: number;
+export type TExplosionSprite = Pick<TExplosionSpriteMetrics, 'size' | 'gridRadius' | 'scale'> & {
     /** Уровень каждой ячейки 0..`EXPLOSION_ALPHA_LEVELS`, row-major (длина size·size). */
     levels: Uint8Array;
 };
@@ -77,6 +71,9 @@ function marginFor(silhouette: TExplosionSilhouette, gridRadius: number): number
  * очистки взрыва в `game-play.ts` считалась от `explosionRadius` — из-за чего кончики
  * лучей фугаса (35% радиуса) оставались на песке. Теперь габарит считается ОДНОЙ
  * функцией и для отрисовки, и для очистки.
+ *
+ * Экспортируется ради теста рядом (`explosion-sprite.test.ts`): вне модуля габарит
+ * читает только `explosion-area.ts`, и ему хватает `explosionSpriteHalfWidth`.
  */
 export type TExplosionSpriteMetrics = {
     /** Сторона решётки в ячейках (нечётная — центр ровно в середине). */
@@ -95,13 +92,16 @@ export type TExplosionSpriteMetrics = {
  * Считает габариты решётки по силуэту и радиусу. Чистая функция без аллокаций —
  * её зовёт и `buildExplosionSprite` (рисование), и `explosion-area.ts` (очистка):
  * один источник правды вместо двух формул, которые уже разъезжались.
+ *
+ * Масштаб ячейки — не параметр, а константа модуля: пока он был необязательным
+ * аргументом, очистка и отрисовка сходились лишь на общем ДЕФОЛТЕ, то есть
+ * расхождение оставалось в одном аргументе от возвращения (ревью #601).
  */
 export function explosionSpriteMetrics(
     silhouette: TExplosionSilhouette,
     radius: number,
-    scale: number = EXPLOSION_PIXEL_SCALE,
 ): TExplosionSpriteMetrics {
-    const s = Math.max(1, Math.floor(scale));
+    const s = EXPLOSION_PIXEL_SCALE;
     const gridRadius = Math.max(0, Math.floor(radius / s));
     const margin = radius <= 0 ? 0 : marginFor(silhouette, gridRadius);
     const half = gridRadius + margin;
@@ -118,13 +118,9 @@ export function explosionSpriteMetrics(
  * не дальше `(half + 1)·scale`, а левый — не дальше `half·scale + 1`. Большая из
  * двух величин (`scale ≥ 1`) и есть общий полугабарит.
  */
-export function explosionSpriteHalfWidth(
-    silhouette: TExplosionSilhouette,
-    radius: number,
-    scale: number = EXPLOSION_PIXEL_SCALE,
-): number {
+export function explosionSpriteHalfWidth(silhouette: TExplosionSilhouette, radius: number): number {
     if (radius <= 0) return 0;
-    const metrics = explosionSpriteMetrics(silhouette, radius, scale);
+    const metrics = explosionSpriteMetrics(silhouette, radius);
     return (metrics.half + 1) * metrics.scale;
 }
 
@@ -136,15 +132,8 @@ export function explosionSpriteHalfWidth(
 export function buildExplosionSprite(
     silhouette: TExplosionSilhouette,
     radius: number,
-    scale: number = EXPLOSION_PIXEL_SCALE,
 ): TExplosionSprite {
-    const {
-        size,
-        gridRadius,
-        scale: s,
-        half,
-        margin,
-    } = explosionSpriteMetrics(silhouette, radius, scale);
+    const { size, gridRadius, scale: s, half, margin } = explosionSpriteMetrics(silhouette, radius);
     const levels = new Uint8Array(size * size);
 
     if (radius <= 0 || gridRadius === 0) {
