@@ -90,6 +90,23 @@ describe('pickCelestialGeometry — детерминизм и сектор не�
         expect(maxCelestialYFrac('day', 0.06)).toBeCloseTo(0.4, 10);
     });
 
+    it('у заката потолок ВСЕГДА горизонтный — верхняя граница сектора недостижима', () => {
+        // Ревью #601: `CELESTIAL_Y_RANGE.sunset[1] = 0.56` не участвует в выборе —
+        // `horizonLimit` при закатных радиусах не превышает 0.535. Тест держит эту
+        // ЧИТАЕМУЮ КАК ДЕЙСТВУЮЩУЮ константу честной: сузят радиусы так, что сектор
+        // снова начнёт связывать, — покраснеет здесь, а не в глазах игрока.
+        const radii = new Set<number>();
+        for (let seed = 0; seed < 200; seed++) {
+            const { radiusFrac } = pickCelestialGeometry(seed, 'sunset');
+            radii.add(radiusFrac);
+            const horizonLimit = MOUNTAIN_HORIZON_FRAC - radiusFrac - CELESTIAL_HORIZON_MARGIN_FRAC;
+            expect(maxCelestialYFrac('sunset', radiusFrac)).toBeCloseTo(horizonLimit, 10);
+            expect(horizonLimit).toBeLessThan(0.56);
+        }
+        // Гвард от вырождения: радиусы по сидам действительно разные.
+        expect(radii.size).toBeGreaterThan(100);
+    });
+
     it('потолок никогда не проваливается ниже нижней границы сектора', () => {
         // Патологический радиус (гипотетическая правка диапазона) не переворачивает
         // сектор: yMax не уходит под yMin, иначе диапазон стал бы отрицательным.
