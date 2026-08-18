@@ -41,7 +41,7 @@ import { test, expect, type Page } from '@playwright/test';
  * погашены флагами (`HINT_SEEN_KEYS`) — их плашки сидят посреди арены, и маска
  * вырезала бы из кадра полосу рельефа. Иначе барьер сторожил бы ещё и хром боевого
  * экрана — слои, которые он своими не заявляет и чьи файлы не покрыты globs правила
- * `scene-visual-baseline.md`: правка текста палубы краснила бы двенадцать тяжёлых
+ * `scene-visual-baseline.md`: правка текста палубы краснила бы пятнадцать тяжёлых
  * эталонов без подсказки на причину (ревью #585).
  *
  * Кадры снимаются только в образе `node:24` — `npm run test:visual`
@@ -89,7 +89,8 @@ const GROUND_SETTLE_CAP_FRAMES = 60;
 const AIM_LEFT_PRESSES = 45;
 
 /** Нажатий «стрелка вниз» — сбавляют мощность, чтобы снаряд лёг в рельеф в кадре,
- *  а не улетел за правый край (там взрыва не будет вовсе). */
+ *  а не улетел за правый край (там взрыва не будет вовсе). Дефолт для пресетов без
+ *  своего `downPresses` (см. `TScenePreset`). */
 const AIM_DOWN_PRESSES = 4;
 
 /**
@@ -134,12 +135,24 @@ type TSceneDebug = {
 type TScenePreset = {
     id: 'day' | 'sunset' | 'night';
     seed: string;
+    /**
+     * Нажатий «стрелка вниз» ПЕРЕД выстрелом этого пресета — своя мощность вместо
+     * общего `AIM_DOWN_PRESSES`, когда дефолт кладёт снаряд в дно долины между
+     * холмами: там воронка проседает в уже низкий рельеф и не меняет силуэт в
+     * кадре вовсе (issue #605 — на закате `scene-sunset-05-after.png` не показывал
+     * попадание никак). `vrt-sunset-1` с мощностью 4 (дефолт) ложится ровно в такую
+     * долину; с мощностью 5 снаряд не долетает до неё и режет воронку в гребень
+     * ближнего холма — там кратер виден чётким сколом силуэта. (Мощность 6 режет
+     * тот же склон, но укорачивает полёт до 17 кадров — короче 20-кадрового окна,
+     * которое кадр «02-flight» ждёт ПОСЛЕ входа в полёт, и роняет его ассерт.)
+     */
+    downPresses: number;
 };
 
 const PRESETS: readonly TScenePreset[] = [
-    { id: 'day', seed: 'vrt-day-2' },
-    { id: 'sunset', seed: 'vrt-sunset-1' },
-    { id: 'night', seed: 'vrt-night-9' },
+    { id: 'day', seed: 'vrt-day-2', downPresses: AIM_DOWN_PRESSES },
+    { id: 'sunset', seed: 'vrt-sunset-1', downPresses: 5 },
+    { id: 'night', seed: 'vrt-night-9', downPresses: AIM_DOWN_PRESSES },
 ];
 
 /** Снимок состояния движка. Хук read-only и висит всегда, в том числе в прод-сборке. */
@@ -227,9 +240,9 @@ async function expectSkyPreset(page: Page, preset: TScenePreset): Promise<void> 
 }
 
 /** Прицеливается и стреляет клавиатурой — тем же путём ввода, что у игрока. */
-async function aimAndFire(page: Page): Promise<void> {
+async function aimAndFire(page: Page, downPresses: number): Promise<void> {
     for (let i = 0; i < AIM_LEFT_PRESSES; i++) await page.keyboard.press('ArrowLeft');
-    for (let i = 0; i < AIM_DOWN_PRESSES; i++) await page.keyboard.press('ArrowDown');
+    for (let i = 0; i < downPresses; i++) await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Space');
 }
 
@@ -248,7 +261,7 @@ async function expectSceneShot(page: Page, name: string): Promise<void> {
 }
 
 for (const preset of PRESETS) {
-    test(`боевая сцена · пресет неба «${preset.id}» · четыре состояния`, async ({ page }) => {
+    test(`боевая сцена · пресет неба «${preset.id}» · пять состояний`, async ({ page }) => {
         test.setTimeout(180_000);
 
         await openBattle(page, preset.seed);
@@ -257,7 +270,7 @@ for (const preset of PRESETS) {
         await page.clock.runFor(SETTLE_MS);
         await expectSceneShot(page, `scene-${preset.id}-01-start.png`);
 
-        await aimAndFire(page);
+        await aimAndFire(page, preset.downPresses);
 
         // Полёт: снаряд в воздухе — ждём, пока движок его заведёт, и даём трассе
         // отрисоваться, чтобы в кадр попал не только снаряд, но и хвост следа.
@@ -272,15 +285,25 @@ for (const preset of PRESETS) {
         await page.clock.runFor(EXPLOSION_BLOOM_FRAMES * FRAME_MS);
         await expectSceneShot(page, `scene-${preset.id}-03-explosion.png`);
 
-        // После взрыва: частицы догорели, очаг вспышки закрылся, земля осыпалась в
-        // воронку. Первые два — строгие условия по состоянию движка (без
-        // `explosionActive` в кадр попадала бы догорающая вспышка вместо воронки),
-        // осадка земли — с потолком: на пологом рельефе она идёт сотнями кадров
-        // (см. `GROUND_SETTLE_CAP_FRAMES`). Всё вместе — фиксированное число шагов
-        // симуляции, а не «подождём 800 мс» (ревью #585).
+        // Догорание: частицы уже погасли, но снаряд ещё не убран — движок идёт по
+        // ветке `explosionAreaRedraw` + `redrawGroundUnderTanks` (`GamePlay.animate`,
+        // `bullet.detonated` без `particlesAlive`), а не по `fullRedraw`, как в двух
+        // соседних кадрах. Ровно этот путь эталоны не сторожили до issue #605 — PR
+        // #601 (фиксы #580/#582) не сдвинул ни одного пикселя ни в одном из
+        // четырёх прежних кадров, хотя чинил именно вид. Явный ассерт на
+        // `explosionActive`, а не только имя кадра: если тайминг когда-нибудь
+        // сойдётся (частицы станут гаснуть позже конца вспышки), кадр молча
+        // перестанет проверять эту ветку — тест должен покраснеть, а не смолчать.
         await stepUntil(page, 'частицы догорели', (d) => !d.particlesAlive);
+        expect((await sceneDebug(page)).explosionActive).toBe(true);
+        await expectSceneShot(page, `scene-${preset.id}-04-fading.png`);
+
+        // После взрыва: очаг вспышки закрылся, земля осыпалась в воронку — с
+        // потолком в кадрах, на пологом рельефе осадка идёт сотнями кадров
+        // (см. `GROUND_SETTLE_CAP_FRAMES`). Фиксированное число шагов симуляции,
+        // а не «подождём 800 мс» (ревью #585).
         await stepUntil(page, 'взрыв догорел', (d) => !d.explosionActive);
         await stepUpTo(page, GROUND_SETTLE_CAP_FRAMES, (d) => !d.groundFalling);
-        await expectSceneShot(page, `scene-${preset.id}-04-after.png`);
+        await expectSceneShot(page, `scene-${preset.id}-05-after.png`);
     });
 }
