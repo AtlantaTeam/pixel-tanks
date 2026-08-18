@@ -31,9 +31,52 @@ export type TSessionRequest =
     | { kind: 'pr-comment'; comment: string; anchor?: { path: string; line: number } }
     | { kind: 'pr-block'; comment: string };
 
-// Предохранитель от сорвавшейся сессии: сотня карточек, заведённых за одну итерацию,
-// разгребается дороже, чем один отказ с внятной причиной.
-export const MAX_SESSION_REQUESTS = 20;
+// #603: предел считает КЛАССЫ намерений раздельно, а не кучей. Инцидент PR #601 —
+// ревью честно нашло 23 замечания (1 major, 6 minor, 16 nit + сводка), все `pr-comment`,
+// ни одной мутации — и батч отвергло целиком: большой отревьюенный PR закономерно даёт
+// много замечаний, и чем дотошнее ревью, тем вернее оно упирается в общий предохранитель.
+//
+// Мутации — то, что меняет состояние проекта: закрывает/блокирует карточку, заводит
+// новую, ставит блокер на PR. Именно они опасны при сорвавшейся сессии (штампует их
+// пачками), и предел на них остаётся жёстким.
+const MUTATION_KINDS = ['close', 'block', 'new-issue', 'pr-block'] as const;
+// Комментарии ничего не закрывают, не блокируют и не создают сущностей — это текст в
+// ленте PR или карточки. Судить о сорвавшейся сессии по их числу — как судить о буйстве
+// по количеству сказанных слов.
+const COMMENT_KINDS = ['comment', 'pr-comment'] as const;
+
+// Предохранитель от сорвавшейся сессии: десятки мутаций, наделанных за одну итерацию,
+// разгребаются дороже, чем один отказ с внятной причиной.
+export const MAX_MUTATION_REQUESTS = 20;
+// Заметно больше: комментарий стоит строки в ленте, а не состояния проекта — тесный
+// предел здесь ловит не сорвавшуюся сессию, а просто дотошное ревью.
+export const MAX_COMMENT_REQUESTS = 200;
+// Не предел, а водораздел для лога (не отказ): столько комментариев в батче — не срыв,
+// но повод сказать человеку «PR/фаза великоват(а)», тем же числом, что раньше отвергало
+// батч целиком.
+export const COMMENT_NOTICE_THRESHOLD = 20;
+
+// Классификация намерений на мутации/комментарии — используется и здесь (пределы), и
+// оркестратором (лог-заметка о размере батча комментариев).
+export function classifySessionRequests(requests: readonly TSessionRequest[]): {
+    mutations: TSessionRequest[];
+    comments: TSessionRequest[];
+} {
+    const mutationSet: readonly string[] = MUTATION_KINDS;
+    const commentSet: readonly string[] = COMMENT_KINDS;
+    return {
+        mutations: requests.filter((r) => mutationSet.includes(r.kind)),
+        comments: requests.filter((r) => commentSet.includes(r.kind)),
+    };
+}
+
+// Разбивка батча по kind — для сообщения об отказе: человек видит не просто «слишком
+// много», а «сколько чего именно» («23 намерения: 23 pr-comment, 0 мутаций»).
+function breakdownByKind(requests: readonly TSessionRequest[]): string {
+    const counts = new Map<string, number>();
+    for (const r of requests) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
+    return [...counts.entries()].map(([kind, n]) => `${String(n)} ${kind}`).join(', ');
+}
 
 // Пределы длин — не про красоту: комментарий на мегабайт уедет в тело запроса к форжу и
 // вернётся отказом транспорта, диагностировать который будет нечем.
@@ -67,7 +110,10 @@ function asRecord(value: unknown, lineNo: number): Record<string, unknown> {
 // уедет значение, которого никто не проверял.
 function issueNumber(value: unknown, lineNo: number): number {
     if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-        fail(lineNo, `номер карточки должен быть целым положительным, пришло ${JSON.stringify(value)}`);
+        fail(
+            lineNo,
+            `номер карточки должен быть целым положительным, пришло ${JSON.stringify(value)}`,
+        );
     }
     return value;
 }
@@ -144,14 +190,7 @@ export function parseSessionRequests(
         .map((l, i) => ({ text: l.trim(), no: i + 1 }))
         .filter((l) => l.text !== '');
 
-    if (lines.length > MAX_SESSION_REQUESTS) {
-        throw new Error(
-            `Запрос сессии: ${String(lines.length)} намерений — больше предела ${String(MAX_SESSION_REQUESTS)}. ` +
-                'Батч отвергнут целиком: столько мутаций за одну итерацию похоже на сорвавшуюся сессию.',
-        );
-    }
-
-    return lines.map(({ text: source, no }) => {
+    const requests = lines.map(({ text: source, no }) => {
         let parsed: unknown;
         try {
             parsed = JSON.parse(source);
@@ -199,6 +238,28 @@ export function parseSessionRequests(
                 'Снятие hold и blocked, одобрение ревью и мердж намерениями сессии не являются.',
         );
     });
+
+    // #603: пределы проверяются ПОСЛЕ разбора и РАЗДЕЛЬНО по классам — иначе большой,
+    // но честно отревьюенный PR (сплошь `pr-comment`) бился бы о тот же предохранитель,
+    // что и сорвавшаяся сессия, штампующая close/block/new-issue пачками.
+    const { mutations, comments } = classifySessionRequests(requests);
+    if (mutations.length > MAX_MUTATION_REQUESTS) {
+        throw new Error(
+            `Запрос сессии: ${String(mutations.length)} мутаций (close/block/new-issue/pr-block) — ` +
+                `больше предела ${String(MAX_MUTATION_REQUESTS)}. Батч отвергнут целиком: столько мутаций ` +
+                'за одну итерацию похоже на сорвавшуюся сессию. ' +
+                `Разбивка по классам: ${String(requests.length)} намерений — ${breakdownByKind(requests)}.`,
+        );
+    }
+    if (comments.length > MAX_COMMENT_REQUESTS) {
+        throw new Error(
+            `Запрос сессии: ${String(comments.length)} комментариев (comment/pr-comment) — ` +
+                `больше предела ${String(MAX_COMMENT_REQUESTS)}. Батч отвергнут целиком. ` +
+                `Разбивка по классам: ${String(requests.length)} намерений — ${breakdownByKind(requests)}.`,
+        );
+    }
+
+    return requests;
 }
 
 /**

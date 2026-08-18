@@ -7,7 +7,8 @@
 // как из него соберётся мутация форжа.
 import { describe, expect, it } from 'vitest';
 import {
-    MAX_SESSION_REQUESTS,
+    MAX_MUTATION_REQUESTS,
+    MAX_COMMENT_REQUESTS,
     parseSessionRequests,
     serializeSessionRequest,
 } from './session-requests.ts';
@@ -100,7 +101,9 @@ describe('parseSessionRequests — разбор намерений кодер-с
 
     it('НЕГАТИВНЫЙ: pr-block без причины — отказ', () => {
         // Метка без объяснения оставляет и человека, и чини-сессию гадать, что блокирует.
-        expect(() => parseSessionRequests(line({ kind: 'pr-block' }), opts)).toThrow(/комментарий/i);
+        expect(() => parseSessionRequests(line({ kind: 'pr-block' }), opts)).toThrow(
+            /комментарий/i,
+        );
     });
 
     it('НЕГАТИВНЫЙ: снятия блока намерением не существует', () => {
@@ -217,12 +220,64 @@ describe('parseSessionRequests — разбор намерений кодер-с
         ).toThrow(/тело/i);
     });
 
-    it('НЕГАТИВНЫЙ: батч длиннее предела — отказ целиком', () => {
-        // Предел — предохранитель от сорвавшейся сессии: сотня карточек, заведённых за
-        // одну итерацию, дороже разгребается, чем один отказ с внятной причиной.
-        const raw = Array.from({ length: MAX_SESSION_REQUESTS + 1 }, (_, i) =>
-            line({ kind: 'comment', issue: i + 1, comment: 'x' }),
+    // ── #603: пределы раздельно по классам намерений ────────────────────────────
+    // Инцидент PR #601: 23 pr-comment (дотошное ревью, ни одной мутации) отвергли батч
+    // целиком тем же предохранителем, что ловит сорвавшуюся сессию, штампующую мутации.
+
+    it('НЕГАТИВНЫЙ: батч мутаций длиннее своего предела — отказ целиком', () => {
+        // Предел на мутации (close/block/new-issue/pr-block) — предохранитель от
+        // сорвавшейся сессии: десятки закрытых/заблокированных/заведённых карточек за
+        // одну итерацию дороже разгребать, чем один отказ с внятной причиной.
+        const raw = Array.from({ length: MAX_MUTATION_REQUESTS + 1 }, (_, i) =>
+            line({ kind: 'close', issue: i + 1, comment: 'x' }),
         ).join('\n');
+        expect(() => parseSessionRequests(raw, opts)).toThrow(/предел|лимит/i);
+    });
+
+    it('отказ по пределу мутаций несёт разбивку намерений по классам', () => {
+        const raw = Array.from({ length: MAX_MUTATION_REQUESTS + 1 }, (_, i) =>
+            line({ kind: 'close', issue: i + 1, comment: 'x' }),
+        ).join('\n');
+        expect(() => parseSessionRequests(raw, opts)).toThrow(
+            new RegExp(`${String(MAX_MUTATION_REQUESTS + 1)} close`),
+        );
+    });
+
+    it('30 pr-comment без единой мутации — батч применяется (не срыв, а дотошное ревью)', () => {
+        const raw = Array.from({ length: 30 }, (_, i) =>
+            line({ kind: 'pr-comment', comment: `замечание ${String(i)}` }),
+        ).join('\n');
+        expect(parseSessionRequests(raw, opts)).toHaveLength(30);
+    });
+
+    it('НЕГАТИВНЫЙ: батч комментариев длиннее своего (большего) предела — отказ целиком', () => {
+        const raw = Array.from({ length: MAX_COMMENT_REQUESTS + 1 }, (_, i) =>
+            line({ kind: 'pr-comment', comment: `замечание ${String(i)}` }),
+        ).join('\n');
+        expect(() => parseSessionRequests(raw, opts)).toThrow(/предел|лимит/i);
+    });
+
+    it('смешанный батч: каждый класс считается по своему пределу независимо', () => {
+        // Мутаций — ровно на пределе (проходит), комментариев — далеко за старым общим
+        // пределом (20), но под своим (200): раньше такой батч отвергся бы целиком.
+        const raw = [
+            ...Array.from({ length: MAX_MUTATION_REQUESTS }, (_, i) =>
+                line({ kind: 'close', issue: i + 1, comment: 'x' }),
+            ),
+            ...Array.from({ length: 50 }, (_, i) =>
+                line({ kind: 'pr-comment', comment: `замечание ${String(i)}` }),
+            ),
+        ].join('\n');
+        expect(parseSessionRequests(raw, opts)).toHaveLength(MAX_MUTATION_REQUESTS + 50);
+    });
+
+    it('смешанный батч: перебор по мутациям отвергает батч, даже если комментариев мало', () => {
+        const raw = [
+            ...Array.from({ length: MAX_MUTATION_REQUESTS + 1 }, (_, i) =>
+                line({ kind: 'close', issue: i + 1, comment: 'x' }),
+            ),
+            line({ kind: 'pr-comment', comment: 'сводка' }),
+        ].join('\n');
         expect(() => parseSessionRequests(raw, opts)).toThrow(/предел|лимит/i);
     });
 

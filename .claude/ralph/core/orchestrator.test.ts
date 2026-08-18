@@ -7542,6 +7542,53 @@ describe('applySessionRequests: намерения сессии применяе
 
     const line = (o: unknown) => JSON.stringify(o);
 
+    // #603: предел на батч намерений теперь считается раздельно по классам (мутации vs
+    // комментарии) — здесь проверяется ПРОВОДКА до пуша/лога, сами пределы и разбор — в
+    // session-requests.test.ts.
+    it('#603 батч мутаций сверх предела: не применилось, пуш несёт разбивку по классам', () => {
+        const { ts, calls } = fakeTaskSource();
+        const pushEventFn = vi.fn();
+        const raw = Array.from({ length: 21 }, (_, i) =>
+            line({ kind: 'close', issue: i + 1, comment: 'x' }),
+        ).join('\n');
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            dry: false,
+            readFn: () => raw,
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn: () => {},
+            pushEventFn,
+        });
+        expect(calls).toEqual([]);
+        expect(res.failed).toBe(true);
+        expect(pushEventFn.mock.calls[0][0]).toMatch(/21 close/);
+    });
+
+    it('#603 30 pr-comment без мутаций — применяется, лог несёт заметку о размере', () => {
+        const { ts, calls } = prTaskSource();
+        const logFn = vi.fn();
+        const raw = Array.from({ length: 30 }, (_, i) =>
+            line({ kind: 'pr-comment', comment: `замечание ${String(i)}` }),
+        ).join('\n');
+        const res = ralph.applySessionRequests({
+            cfg: CFG,
+            phase: PHASE,
+            dry: false,
+            readFn: () => raw,
+            writeFn: () => {},
+            removeFn: () => {},
+            taskSource: ts,
+            logFn,
+            pushEventFn: () => {},
+        });
+        expect(res.failed).toBe(false);
+        expect(res.applied).toBe(30);
+        expect(calls).toHaveLength(30);
+        expect(logFn.mock.calls.some((c) => /30 комментариев/.test(String(c[0])))).toBe(true);
+    });
+
     // #45: намерения ревью-сессии по PR. Фейк шва тот же, плюс PR ветки фазы и метки на нём.
     const prTaskSource = (over: Record<string, unknown> = {}) => {
         const calls: string[] = [];

@@ -50,7 +50,12 @@ import { createWorktreeManager } from './worktree.ts';
 import { createReviewModule } from './review.ts';
 import { createGateRunner, resolveGateChecks } from './gate.ts';
 import { createDeployCheckModule } from './deploy-check.ts';
-import { parseSessionRequests, serializeSessionRequest } from './session-requests.ts';
+import {
+    parseSessionRequests,
+    serializeSessionRequest,
+    classifySessionRequests,
+    COMMENT_NOTICE_THRESHOLD,
+} from './session-requests.ts';
 // #45: тексты промптов сессий — отдельным модулем, чтобы барьер чистоты мог их грепать
 // (в самом оркестраторе команды `gh` законны — там живёт реализация форжа GitHub).
 import {
@@ -1620,6 +1625,17 @@ export function createOrchestrator(env: OrchestratorEnv) {
             return { applied: 0, failed: true, closedIssues: [] };
         }
         if (requests.length === 0) return { applied: 0, failed: false, closedIssues: [] };
+
+        // #603: комментариев в батче много — не отказ (свой, куда больший предел, живёт в
+        // session-requests.ts), но повод сказать человеку, что PR/фаза великоват(а), — той
+        // же цифрой, что раньше отвергала батч целиком наравне с мутациями.
+        const { comments } = classifySessionRequests(requests);
+        if (comments.length > COMMENT_NOTICE_THRESHOLD) {
+            logFn(
+                `ℹ️ Ralph: в батче намерений ${String(requests.length)}, из них ${String(comments.length)} ` +
+                    'комментариев — PR/фаза великоват(а), но предел мутаций это не задевает.',
+            );
+        }
 
         if (dry) {
             logFn(
