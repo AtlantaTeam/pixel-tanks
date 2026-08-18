@@ -27,6 +27,16 @@ const DONE_OPTION = 'Done';
 // репо), а не от cwd: project:sync зовётся и раннером, и человеком из разных мест.
 const CONFIG_PATH = fileURLToPath(new URL('../.claude/ralph/ralph.config.json', import.meta.url));
 
+// #90: добавление открытых issues на доску. При создании нового issue раннер не трогает
+// доску, поэтому вручную добавляем: fetch открытые issues по бэклог-метке, находим
+// отсутствующие на доске, добавляем их. Идемпотентен — issue уже на доске не порождает ни одной мутации.
+const ADD_ITEM_MUTATION = `
+mutation($project: ID!, $contentId: ID!) {
+  addProjectV2ItemById(
+    input: {projectId: $project, contentId: $contentId}
+  ) { item { id } }
+}`;
+
 // Резолв доски: env важнее конфига (быстрый оверрайд под другой проект без правки файла),
 // иначе common.board из ralph.config.json. Отсутствие owner ИЛИ невалидный номер — throw
 // (fail-closed): без адреса доски синкать нечего, а угадывать чужую нельзя.
@@ -276,6 +286,38 @@ export function markDone(item, { projectId, fieldId, doneOptionId }, ghFn = runG
     ]);
 }
 
+// #90: получить открытые issues с меткой backlog
+export function fetchBacklogIssues({ owner, repo } = {}, ghFn = runGh) {
+    const args = [
+        'issue',
+        'list',
+        '--repo',
+        `${owner}/${repo}`,
+        '--label',
+        'backlog',
+        '--state',
+        'open',
+        '--json',
+        'number,id',
+    ];
+    const result = ghFn(args);
+    return Array.isArray(result) ? result : [];
+}
+
+// #90: добавить issue на доску, если его там ещё нет
+export function addBacklogIssue(issueId, { projectId }, ghFn = runGh) {
+    ghFn([
+        'api',
+        'graphql',
+        '-f',
+        `query=${ADD_ITEM_MUTATION}`,
+        '-f',
+        `project=${projectId}`,
+        '-f',
+        `contentId=${issueId}`,
+    ]);
+}
+
 export function syncBoard({ ghFn = runGh, owner, number, logFn = console.log } = {}) {
     const { projectId, field, items } = fetchBoard(ghFn, { owner, number });
     const { fieldId, doneOptionId } = resolveDone(field);
@@ -287,15 +329,82 @@ export function syncBoard({ ghFn = runGh, owner, number, logFn = console.log } =
     return { scanned: items.length, updated: stale.length };
 }
 
+// #90: добавить открытые backlog-issues на доску, если их там нет
+export function addMissingBacklogIssues({
+    ghFn = runGh,
+    owner,
+    number,
+    logFn = console.log,
+    repo,
+} = {}) {
+    const { projectId, items } = fetchBoard(ghFn, { owner, number });
+
+    // Получить номера issues уже на доске
+    const boardIssueNumbers = new Set(
+        items
+            .filter((item) => item?.content?.__typename === 'Issue')
+            .map((item) => item.content.number),
+    );
+
+    // Получить открытые backlog-issues
+    const backlogIssues = fetchBacklogIssues({ owner, repo }, ghFn);
+
+    // Найти недостающие и добавить их
+    let added = 0;
+    for (const backlogIssue of backlogIssues) {
+        if (!boardIssueNumbers.has(backlogIssue.number)) {
+            addBacklogIssue(backlogIssue.id, { projectId }, ghFn);
+            logFn(`   • #${backlogIssue.number} добавлена на доску`);
+            added++;
+        }
+    }
+
+    return { checked: backlogIssues.length, added };
+}
+
 function main() {
     try {
         const { owner, number } = resolveBoard();
+
+        // Получить имя репозитория
+        let repo;
+        try {
+            const repoData = runGh(['repo', 'view', '--json', 'nameWithOwner']);
+            const fullName = repoData?.nameWithOwner;
+            if (!fullName?.includes('/')) {
+                throw new Error('неверный формат имена репо');
+            }
+            repo = fullName.split('/')[1];
+        } catch {
+            console.warn('⚠️  не удалось получить имя репо, пропускаем добавление backlog-issues');
+            repo = null;
+        }
+
+        // Синхронизировать статусы закрытых карточек
         const { scanned, updated } = syncBoard({ owner, number });
         console.log(
             updated
                 ? `✅ project-sync: переведено в ${DONE_OPTION} закрытых карточек — ${updated} (просмотрено ${scanned})`
                 : `✅ project-sync: доска в порядке, правок не потребовалось (просмотрено ${scanned})`,
         );
+
+        // Добавить недостающие backlog-issues (#90)
+        if (repo) {
+            try {
+                const { checked, added } = addMissingBacklogIssues({
+                    owner,
+                    number,
+                    repo,
+                });
+                if (added > 0) {
+                    console.log(
+                        `✅ project-sync: добавлено backlog-issues на доску — ${added} (проверено ${checked})`,
+                    );
+                }
+            } catch (e) {
+                console.warn(`⚠️  не удалось добавить backlog-issues: ${e.message}`);
+            }
+        }
     } catch (e) {
         console.error(`⛔ project-sync: ${e.message}`);
         process.exit(1);
