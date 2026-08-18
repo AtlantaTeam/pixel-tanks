@@ -93,7 +93,7 @@
                 "scripts/**"
             ],
             "maxTurns": 80,
-            "diffLimit": 60000
+            "diffLimit": 20000
         },
         "tunnelCheck": {
             "enabled": false,
@@ -105,20 +105,16 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Экран боя · Хвост правок",
-                "branch": "feature/battle-tail-fixes"
+                "milestone": "Раннер · Устойчивость к отказам",
+                "branch": "feature/ralph-resilience"
             },
             {
-                "milestone": "Раннер · Барьеры и форж",
-                "branch": "feature/ralph-forge-trust"
+                "milestone": "Прод-режим ralph · Фаза 6: Бэклог в issues",
+                "branch": "feature/ralph-backlog"
             },
             {
-                "milestone": "Барьер визрегрессии и мелочи",
-                "branch": "feature/scene-visual-baseline"
-            },
-            {
-                "milestone": "Экран боя · Сцена: тень, взрыв, светило",
-                "branch": "feature/battle-scene-fixes"
+                "milestone": "Наблюдаемость ralph · Фаза 7: Research-вопросы",
+                "branch": "feature/ralph-observability"
             }
         ]
     },
