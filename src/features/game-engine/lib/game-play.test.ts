@@ -345,6 +345,77 @@ describe('GamePlay.moveBullet — взрыв доигрывается до ко�
 });
 
 /**
+ * Перебор всего боевого пространства выстрела, а не отдельных подобранных случаев.
+ *
+ * Три сценария выше стоят на попадании, собранном руками (центр ровно на пороге
+ * `isHit`). Это лечит найденное зависание, но не отвечает на вопрос «а другие входы?» —
+ * а зависание из ревью #601 и было именно классом входов: снаряд, у которого центр в
+ * кадре детонации остался выше поверхности. Здесь снаряды летят ПО-НАСТОЯЩЕМУ (угол и
+ * сила у танка, ветер у снаряда, `moveBullet` до конца хода), и требование одно:
+ * каждый выстрел обязан завершиться — иначе бой лечится только перезагрузкой страницы.
+ *
+ * Барьер не декларативный: снимаешь с гейта в `moveBullet` слагаемое
+ * `bullet.detonated ||` — из 480 выстрелов набора не доигрываются 44, и падает именно
+ * этот тест (проверено прогоном). Потолок в 4000 кадров — заведомый запас: самый
+ * долгий выстрел набора укладывается в сотни.
+ */
+describe('GamePlay.moveBullet — любой выстрел доигрывается (ревью #601)', () => {
+    const ANGLES_DEG = [-10, -25, -40, -55, -70, -85];
+    const POWERS = [8, 14, 20, 28];
+    const WINDS = [-0.05, -0.007, 0, 0.007, 0.05];
+    const MAX_FRAMES = 4000;
+
+    it('перебор оружий, углов, сил и ветров — снаряд всегда сбрасывается и ход уходит', () => {
+        const hangs: string[] = [];
+        let shots = 0;
+
+        for (const kind of Object.values(EWeaponKind)) {
+            for (const angleDeg of ANGLES_DEG) {
+                for (const power of POWERS) {
+                    for (const wind of WINDS) {
+                        shots += 1;
+                        const { gamePlay, ground, leftTank, rightTank } = makeGamePlay();
+                        const stub = new CtxStub();
+                        gamePlay.ctx = asCtx(stub);
+                        leftTank.gunpointAngle = (angleDeg * Math.PI) / 180;
+                        leftTank.power = power;
+                        const bullet = new Bullet(
+                            WIDTH,
+                            HEIGHT,
+                            ground,
+                            leftTank,
+                            rightTank,
+                            wind,
+                            WEAPON_SPECS[kind],
+                        );
+                        gamePlay.bullet = bullet;
+
+                        let frames = 0;
+                        while (gamePlay.bullet && frames < MAX_FRAMES) {
+                            gamePlay.moveBullet(asCtx(stub));
+                            frames += 1;
+                        }
+                        if (gamePlay.bullet) {
+                            hangs.push(
+                                `${kind} угол=${angleDeg} сила=${power} ветер=${wind} ` +
+                                    `детонировал=${bullet.detonated} очаг=${bullet.focusIndex}`,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Гвард от вырождения: перебор обязан быть непустым, иначе «зависаний нет»
+        // означало бы «выстрелов не было».
+        expect(shots).toBe(
+            Object.values(EWeaponKind).length * ANGLES_DEG.length * POWERS.length * WINDS.length,
+        );
+        expect(hangs, 'выстрелы не доиграны — бой подвис').toEqual([]);
+    });
+});
+
+/**
  * Кадровый цикл целиком (`animate`), а не его куски: ветка точечной перерисовки
  * выбирается по состоянию боя, и выбор этот тестируется только отсюда. rAF и часы
  * подменены — цикл шагает ровно столько раз, сколько его позвали.
