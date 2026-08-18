@@ -53,6 +53,13 @@ export const PARTICLE_CAPACITY = 96;
 
 /** Запас очистки при сдвиге сцены во время тряски, CSS-пиксели. */
 const SHAKE_CLEAR_PAD = 4;
+/**
+ * Запас полосы рельефа на толщину обводки контура: `Ground.renderLayer` рисует
+ * силуэт линией шириной 2, то есть крайний столбец полосы красит и половину
+ * соседнего. Без запаса на кромке осыпающейся воронки оставалась бы линия
+ * прошлого кадра.
+ */
+const GROUND_STROKE_MARGIN = 1;
 /** Базовый интервал шага симуляции (~66 к/с). Slow-mo растягивает его. */
 const BASE_FRAME_INTERVAL_MS = 15;
 
@@ -952,6 +959,13 @@ export class GamePlay {
                 // чистилась бы каждый кадр вокруг не детонировавшего снаряда — лишняя
                 // работа и смысловой сдвиг (ревью #601). Свой прошлый прямоугольник
                 // снаряд стирает сам (`Bullet.draw`).
+                //
+                // Но саму осадку показать обязаны: `renderLayer` двигает высоты в
+                // offscreen-слое независимо от запрошенного диапазона, а на сцену
+                // попадает только то, что кто-то заблитил. Без полосы осыпающихся
+                // столбцов воронка визуально замирала бы на весь полёт следующего
+                // снаряда и прыгала на первом `fullRedraw` (ревью #601).
+                this.groundFallRedraw();
                 this.tankAreaRedraw([this.leftTank, this.rightTank]);
             }
         } else if (!this.bullet) {
@@ -1025,8 +1039,35 @@ export class GamePlay {
      * статична — в шапке `explosion-area.ts`, здесь не пересказываем.
      */
     private explosionAreaRedraw(bullet: Bullet) {
+        const { from, to } = bullet.explosionRedrawRange;
+        this.groundBandRedraw(from, to);
+    }
+
+    /**
+     * Перерисовывает полосу рельефа, которая осыпается прямо сейчас
+     * (`Ground.fallingFrom/To`, ревью #601). Диапазон берётся у земли — тот же
+     * проход `renderLayer`, который двигает высоты, и помечает столбцы, — а не
+     * считается второй формулой по координатам прошлой воронки.
+     *
+     * Полоса на пиксель шире с каждой стороны: контур рельефа обводится линией
+     * шириной 2 (`lineWidth = 2` в `renderLayer`), то есть крайний столбец красит
+     * и половину соседнего.
+     */
+    private groundFallRedraw() {
+        if (!this.ground) return;
+        const { fallingFrom, fallingTo } = this.ground;
+        if (fallingFrom < 0 || fallingTo < fallingFrom) return;
+        this.groundBandRedraw(fallingFrom - GROUND_STROKE_MARGIN, fallingTo + GROUND_STROKE_MARGIN);
+    }
+
+    /**
+     * Общий примитив точечной перерисовки: стереть вертикальную полосу, положить в
+     * неё рельеф и починить призрачную трассу. Одно место на все точечные ветки
+     * кадра — расхождение очистки и блита рельефа (симптом #582) невозможно
+     * структурно, а не «поправлено на 5 пикселей».
+     */
+    private groundBandRedraw(from: number, to: number) {
         if (this.ctx && this.ground) {
-            const { from, to } = bullet.explosionRedrawRange;
             this.ctx.clearRect(from, 0, to - from, this.innerHeight);
             this.ground.draw(this.ctx, from, to);
             // Точечная перерисовка чистит лишь узкую вертикальную полосу — призрачная

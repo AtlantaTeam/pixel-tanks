@@ -471,7 +471,7 @@ describe('GamePlay.animate — ветка точечной перерисовк�
         bullet.dx = 0;
         bullet.dy = 0;
         gamePlay.bullet = bullet;
-        return { gamePlay, bullet, stub };
+        return { gamePlay, bullet, ground, stub };
     };
 
     /** Есть ли среди очищенных прямоугольников тот, что накрывает полосу целиком. */
@@ -492,6 +492,37 @@ describe('GamePlay.animate — ветка точечной перерисовк�
             bandCleared(stub, from, to),
             `полоса взрыва [${from}, ${to}] чистится вокруг НЕ взорвавшегося снаряда`,
         ).toBe(false);
+    });
+
+    it('снаряд летит, а воронка осыпается: её полоса всё равно перерисовывается', () => {
+        const { gamePlay, ground, stub } = setupSettlingGround();
+        // Столбцы воронки от ПРОШЛОГО выстрела: между левым краем сцены и зоной
+        // очистки левого танка ([150 … 310] при паддинге 50), чтобы «полоса воронки
+        // почищена» не спуталось с «почищена зона танка».
+        ground.fallingFrom = 60;
+        ground.fallingTo = 100;
+
+        drive(gamePlay, 1);
+
+        expect(
+            bandCleared(stub, 60, 100),
+            'осыпающаяся воронка не перерисована: осадка идёт в слое, но не на сцене',
+        ).toBe(true);
+    });
+
+    it('осадки нет — лишней полосы рельефа кадр не чистит', () => {
+        const { gamePlay, ground, stub } = setupSettlingGround();
+        // `isFalling` без помеченных столбцов: чистить нечего, и кадр не должен
+        // выдумывать полосу «на всякий случай».
+        ground.fallingFrom = -1;
+        ground.fallingTo = -1;
+
+        drive(gamePlay, 1);
+
+        // Полосы рельефа — очистки во всю высоту сцены; квадратик снаряда, который
+        // `Bullet.draw` стирает за собой, сюда не попадает.
+        const groundBands = stub.clearRects.filter(([, , , h]) => h === HEIGHT);
+        expect(groundBands, 'кадр почистил полосу рельефа, которой не осыпается').toHaveLength(2);
     });
 
     it('тот же кадр после детонации: полоса взрыва чистится — гейт не задушил живой путь', () => {
