@@ -4542,6 +4542,17 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         body: string;
                         labels: string[];
                     }): void => {
+                        // C1 (инвариант №8): --dry-run строго read-only. Guard стоит ЗДЕСЬ,
+                        // в единственной точке заведения карточки лестницей, а не у
+                        // вызывающих: в dry намерений сессии не применяют вовсе, поэтому
+                        // находок нет и сюда не доходят — но полагаться на «сюда всё равно
+                        // не дойдёт» вместо явного guard'а это ровно тихий дефолт.
+                        if (dry) {
+                            logFn(
+                                `💤 DRY: карточка по замечанию ревью правок не заводится: ${issue.title}`,
+                            );
+                            return;
+                        }
                         try {
                             const num = createIssueFn({ ...issue, labels: backlogLabels });
                             logFn(
@@ -4572,15 +4583,20 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         // Голову ветки прочитать не удалось (git чихнул) — не пропускаем
                         // проход, а честно ревьюим фазу целиком: лишний дорогой проход
                         // дешевле непрочитанных правок, ради которых всё и затевалось.
-                        if (!fixBase) {
+                        let fixFiles = fixBase
+                            ? phaseDiffFilesFn(phase.branch, { base: fixBase })
+                            : null;
+                        // null — дифф ПОСЧИТАТЬ не удалось (git чихнул), и это не то же
+                        // самое, что пустой список. Проход без предмета («дифф не
+                        // приложен») стал бы ревью вслепую, поэтому откатываемся на дифф
+                        // ФАЗЫ: он дороже, но это по-прежнему ревью, а не его видимость.
+                        if (!fixBase || fixFiles === null) {
                             logFn(
-                                '⚠ Базу диффа правок получить не удалось — ревью правок пройдёт по диффу ФАЗЫ целиком (дороже, но пропускать проход нельзя).',
+                                '⚠ Дифф правок получить не удалось — ревью правок пройдёт по диффу ФАЗЫ целиком (дороже, но пропускать проход нельзя).',
                             );
+                            fixBase = null;
+                            fixFiles = phaseDiffFilesFn(phase.branch, {});
                         }
-                        const fixFiles = phaseDiffFilesFn(
-                            phase.branch,
-                            fixBase ? { base: fixBase } : {},
-                        );
                         if (fixBase && fixFiles && fixFiles.length === 0) {
                             // Сессия правок ничего не запушила (все замечания отклонены с
                             // обоснованием). Ревьюить нечего — и придумывать предмет проходу
@@ -4777,6 +4793,10 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                         milestone: phase.milestone,
                                         pr: prNow,
                                         labels: backlogLabels,
+                                        // Причина «не держит мердж» здесь ДРУГАЯ, чем у
+                                        // косметики: не правило про severity, а вердикт
+                                        // арбитра. Карточку читает человек — соврать нельзя.
+                                        context: 'arbiter',
                                     }),
                                 );
                             }

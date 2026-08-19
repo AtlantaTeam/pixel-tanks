@@ -291,6 +291,25 @@ describe('карточки: незакрытая косметика и закр�
         expect(issue.body).toContain(long);
     });
 
+    it('карточка после арбитра объясняет ДРУГУЮ причину, чем карточка косметики', () => {
+        const c = classifyFixReview(
+            [f('🔴 [blocker] спорное', at('src/a.ts', 3))],
+            emptyReviewOfFixes(),
+        );
+        const arb = backlogIssueFor(c.freshBlocking[0], {
+            milestone: 'M1',
+            pr: 42,
+            context: 'arbiter',
+        });
+        expect(arb.body).toMatch(/арбитр.*не воспроизвёл/s);
+        // Про «такие замечания мердж не держат» здесь нельзя: blocker его как раз держит,
+        // а отпустил его вердикт арбитра. Один текст на два пути соврал бы человеку.
+        expect(arb.body).not.toMatch(/держат только blocker и major/);
+
+        const cosmetic = backlogIssueFor(c.freshBlocking[0], { milestone: 'M1', pr: 42 });
+        expect(cosmetic.body).toMatch(/держат только blocker и major/);
+    });
+
     it('спор — карточка с ОБЕИМИ позициями', () => {
         const c = classifyFixReview(
             [f('🔴 [blocker] спорное', at('src/a.ts', 3))],

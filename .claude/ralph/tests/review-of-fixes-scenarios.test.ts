@@ -89,6 +89,7 @@ function runPhase({
     gate = 'merged' as ReturnType<Runtime['tryMergePhase']>,
     config = cfg(),
     state = mkState(),
+    dryRun = false,
 } = {}) {
     const prompts: string[] = [];
     const logs: string[] = [];
@@ -105,7 +106,7 @@ function runPhase({
         { state, maxIterations: 10, maxTurns: 200 },
         {
             once: false,
-            dry: false,
+            dry: dryRun,
             logFn: (m: string) => logs.push(m),
             shFn: () => '',
             runArgvFn: () => '',
@@ -326,6 +327,105 @@ function runPhaseWithEmptyFixDiff() {
     };
 }
 
+describe('отказ git по базе диффа: проход не пропускается, а дешевеет до диффа фазы', () => {
+    // Дифф правок посчитать не удалось — это НЕ «пустой дифф» и не повод пропустить
+    // барьер. Проход всё равно идёт, но по диффу фазы: дороже, зато это по-прежнему
+    // ревью, а не его видимость.
+    it('голова ветки не прочиталась → проход идёт по диффу ФАЗЫ, с предупреждением', () => {
+        const s = runPhaseWithBrokenBase({ headSha: null });
+        expect(s.fixReviewPrompts()).toHaveLength(1);
+        expect(s.fixReviewPrompts()[0]).toContain('ДИФФ-ФАЗЫ-ЦЕЛИКОМ');
+        expect(s.logs.some((l) => /Дифф правок получить не удалось/.test(l))).toBe(true);
+        expect(s.merged()).toBe(true);
+    });
+
+    it('дифф по базе не посчитался (null ≠ пусто) → тот же откат, а не «проход не нужен»', () => {
+        const s = runPhaseWithBrokenBase({ headSha: 'b'.repeat(40), filesWithBase: null });
+        expect(s.fixReviewPrompts()).toHaveLength(1);
+        expect(s.fixReviewPrompts()[0]).toContain('ДИФФ-ФАЗЫ-ЦЕЛИКОМ');
+        expect(s.logs.some((l) => /сессия правок ничего не изменила/.test(l))).toBe(false);
+    });
+});
+
+function runPhaseWithBrokenBase({
+    headSha,
+    filesWithBase = ['src/a.ts'],
+}: {
+    headSha: string | null;
+    filesWithBase?: string[] | null;
+}) {
+    const prompts: string[] = [];
+    const logs: string[] = [];
+    const pushes: string[] = [];
+    let idxCalls = 0;
+    const state = mkState();
+    runLoop(
+        cfg(),
+        { state, maxIterations: 10, maxTurns: 200 },
+        {
+            once: false,
+            dry: false,
+            logFn: (m: string) => logs.push(m),
+            shFn: () => '',
+            runArgvFn: () => '',
+            saveStateFn: () => {},
+            openIssuesFn: () => [],
+            allOpenIssuesFn: () => [],
+            hasAnyIssuesFn: () => true,
+            findOpenPrFn: () => ({ number: PR, labels: [] }),
+            createPrFn: () => PR,
+            phasePrBodyFn: () => 'тело PR',
+            getIssueFn: (number: number) => ({ number, title: 'задача', body: 'тело' }),
+            prCommentsFn: () => [],
+            phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
+            pickModelFn: () => 'claude-coder',
+            pickRuntimeFn: () => 'claude',
+            pickRouteFn: () => ({ provider: 'claude', model: 'claude-coder' }),
+            pickReviewModelFn: () => REVIEW_MODEL,
+            phaseDiffFilesFn: (_b: string, opts?: { base?: string }) =>
+                opts?.base ? filesWithBase : ['src/a.ts'],
+            reviewDiffContextFn: (_b: string, opts?: { base?: string }) =>
+                opts?.base ? FIX_DIFF : PHASE_DIFF,
+            branchHeadShaFn: () => headSha,
+            createIssueFn: () => 1,
+            recordFixReviewFindingsFn: () => {},
+            removeBlockedLabelFn: () => {},
+            addBlockedLabelFn: () => {},
+            runClaudeFn: (prompt: string) => {
+                prompts.push(prompt);
+                return 0;
+            },
+            applySessionRequestsFn: () => ({
+                applied: 0,
+                failed: false,
+                closedIssues: [],
+                prFindings: [],
+                prBlocked: false,
+            }),
+            ensureCleanFn: () => true,
+            phaseMergedFn: () => false,
+            mergedPhasePrFn: () => null,
+            advancePhaseFn: () => {},
+            tryMergePhaseFn: () => 'merged',
+            closeMilestoneByTitleFn: () => {},
+            syncProjectBoardFn: () => {},
+            recordReviewFindingsFn: () => {},
+            getLastRedCheck: () => null,
+            getLastGatePr: () => PR,
+            pushEventFn: (msg: string) => {
+                pushes.push(msg);
+                return false;
+            },
+            ensureMonitorAliveFn: () => null,
+        },
+    );
+    return {
+        logs,
+        fixReviewPrompts: () => prompts.filter(isFixReviewPrompt),
+        merged: () => pushes.some((t) => /смерджена в main/.test(t)),
+    };
+}
+
 describe('крит. 2: поток новых minor/nit не продлевает цикл и не стопорит мердж', () => {
     it('пять свежих minor/nit за проход → один проход, мердж, карточки вместо задержки', () => {
         const s = runPhase({
@@ -444,6 +544,19 @@ describe('крит. 3: три прохода с новыми major → неза�
         });
         expect(s.addBlockedLabelFn).toHaveBeenCalledTimes(1);
         expect(s.merged()).toBe(false);
+    });
+});
+
+describe('C1: --dry-run строго read-only — лестница карточек не заводит', () => {
+    it('dry: находки прохода есть, а карточка не заводится (только строка в логе)', () => {
+        const s = runPhase({
+            passes: [{ findings: [minor('нейминг', 1)] }],
+            dryRun: true,
+        });
+        expect(s.issues).toHaveLength(0);
+        expect(
+            s.logs.some((l) => /DRY: карточка по замечанию ревью правок не заводится/.test(l)),
+        ).toBe(true);
     });
 });
 
