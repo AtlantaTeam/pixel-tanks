@@ -108,8 +108,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Раннер · Ревью правок без остановки петли",
-                "branch": "feature/ralph-review-of-fixes"
+                "milestone": "Раннер · Состояние лестницы ревью правок",
+                "branch": "feature/ralph-ladder-state"
             }
         ]
     },
