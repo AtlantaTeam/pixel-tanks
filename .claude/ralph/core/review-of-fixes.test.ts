@@ -285,12 +285,48 @@ describe('decideAfterFixReview — что делать по итогам про�
         expect(decideAfterFixReview(c).action).toBe('arbiter');
     });
 
-    it('арбитр уже отработал → фаза идёт на гейт, второй раз петлю не крутим', () => {
-        const c = classifyFixReview([f('🔴 [blocker] раз')], {
+    it('арбитр уже отработал → ПОВТОРНОЕ замечание мердж не держит, второй раз петлю не крутим', () => {
+        const first = classifyFixReview([f('🔴 [blocker] раз')], emptyReviewOfFixes());
+        const again = classifyFixReview([f('🔴 [blocker] раз')], {
+            ...first.next,
+            arbitrated: true,
+        });
+        expect(again.repeatedBlocking).toHaveLength(1);
+        expect(again.freshBlocking).toHaveLength(0);
+        expect(decideAfterFixReview(again).action).toBe('merge');
+    });
+
+    // #630: `arbitrated` живёт на диске и переживает рестарт процесса, а `submitted`
+    // выставляется ПОЗЖЕ него — то есть после падения в этом окне рестарт гонит весь цикл
+    // сдачи заново, и лестница получает СВЕЖИЙ код с унаследованным флагом. Безусловный
+    // мердж по флагу увёл бы блокер, которого арбитр никогда не видел, прямо в main.
+    it('арбитр отработал, но находка СВЕЖАЯ → барьер не обходится (потолок исчерпан → арбитр)', () => {
+        const c = classifyFixReview([f('🔴 [blocker] регрессия нового круга', at('src/b.ts', 5))], {
+            ...emptyReviewOfFixes(),
+            arbitrated: true,
+            passes: FIX_REVIEW_MAX_PASSES,
+        });
+        expect(c.freshBlocking).toHaveLength(1);
+        expect(decideAfterFixReview(c).action).toBe('arbiter');
+    });
+
+    it('арбитр отработал, находка свежая, потолок ещё есть → круг правок, а не мердж', () => {
+        const c = classifyFixReview([f('🔴 [blocker] регрессия нового круга', at('src/b.ts', 5))], {
             ...emptyReviewOfFixes(),
             arbitrated: true,
         });
-        expect(decideAfterFixReview(c).action).toBe('merge');
+        expect(decideAfterFixReview(c).action).toBe('fix');
+    });
+
+    it('арбитр отработал, находок нет вовсе → мердж (ветка не мешает штатному исходу)', () => {
+        expect(
+            decideAfterFixReview(
+                classifyFixReview([f('⚪ [nit] мелочь')], {
+                    ...emptyReviewOfFixes(),
+                    arbitrated: true,
+                }),
+            ).action,
+        ).toBe('merge');
     });
 });
 
@@ -375,15 +411,6 @@ describe('disputeLabelsFor — метка роутинга у спорной к�
         ).toEqual(['complexity:high', 'area:core', 'backlog']);
     });
 
-    it('карточка не остаётся без метки сложности — иначе она ещё и нарушает конвенцию трекера', () => {
-        const labels = disputeLabelsFor({
-            backlogLabels: base,
-            routingLabels: routing,
-            modelStrength: strength,
-        });
-        expect(labels.some((l) => l in routing)).toBe(true);
-    });
-
     it('запись { provider, model } читается так же, как строка', () => {
         expect(
             disputeLabelsFor({
@@ -407,14 +434,50 @@ describe('disputeLabelsFor — метка роутинга у спорной к�
         ).toEqual(['complexity:high', 'area:core']);
     });
 
-    it('при равной силе моделей выбор воспроизводим — первая метка по порядку конфига', () => {
+    it('ничья по силе разрешается СТАРШИНСТВОМ меток, как в pickRoute', () => {
+        // Боевая форма: complexity:high и complexity:expert ведут на одну модель. Для
+        // роутинга разницы нет, а метку читает человек — «сильнейшая» обязана значить
+        // одно и то же и здесь, и в pickRoute (перебор по COMPLEXITY_PRIORITY).
         const tie = { 'complexity:high': 'opus', 'complexity:expert': 'opus' };
-        const labels = disputeLabelsFor({
+        expect(
+            disputeLabelsFor({
+                backlogLabels: ['complexity:low', 'area:core'],
+                routingLabels: { 'complexity:low': 'haiku', ...tie },
+                modelStrength: strength,
+                labelPriority: ['complexity:expert', 'complexity:high', 'complexity:low'],
+            }),
+        ).toEqual(['complexity:expert', 'area:core']);
+    });
+
+    it('старшинство меток не задано — ничья решается порядком конфига, воспроизводимо', () => {
+        // Результат обязан быть одинаковым от прогона к прогону: иначе карточки одной
+        // фазы получали бы разные метки.
+        const args = {
             backlogLabels: ['complexity:low', 'area:core'],
-            routingLabels: { 'complexity:low': 'haiku', ...tie },
+            routingLabels: {
+                'complexity:low': 'haiku',
+                'complexity:high': 'opus',
+                'complexity:expert': 'opus',
+            },
             modelStrength: strength,
-        });
-        expect(labels).toEqual(['complexity:high', 'area:core']);
+        };
+        expect(disputeLabelsFor(args)).toEqual(['complexity:high', 'area:core']);
+        expect(disputeLabelsFor(args)).toEqual(disputeLabelsFor(args));
+    });
+
+    it('метка вне порядка старшинства младше перечисленных при равной силе модели', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: ['complexity:low', 'area:core'],
+                routingLabels: {
+                    'complexity:low': 'haiku',
+                    'area:weird': 'opus',
+                    'complexity:high': 'opus',
+                },
+                modelStrength: strength,
+                labelPriority: ['complexity:expert', 'complexity:high', 'complexity:low'],
+            }),
+        ).toEqual(['complexity:high', 'area:core']);
     });
 
     it('метки роутинга в базе не было — новой не появляется', () => {
@@ -422,6 +485,37 @@ describe('disputeLabelsFor — метка роутинга у спорной к�
             disputeLabelsFor({
                 backlogLabels: ['area:core', 'backlog'],
                 routingLabels: routing,
+                modelStrength: strength,
+            }),
+        ).toEqual(['area:core', 'backlog']);
+    });
+
+    // #630: шкала здесь чужая по происхождению — `review.modelStrength` ранжирует модели
+    // РЕВЬЮ, а метки роутинга ведут на КОДЕРСКИЕ модели. Совпадают они только пока проект
+    // держит в обоих ключах одни и те же claude-имена; кросс-провайдерная запись (#376)
+    // ломает совпадение молча, и «сильнейшей» без этого барьера объявлялась бы
+    // единственная известная — сплошь и рядом та самая механическая complexity:low.
+    it('ЧАСТЬ моделей роутинга вне порядка сил → метка снимается, а не отдаётся известной слабой', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: {
+                    'complexity:low': 'haiku',
+                    'complexity:high': { provider: 'kimi', model: 'kimi-k2-thinking' },
+                },
+                modelStrength: strength,
+            }),
+        ).toEqual(['area:core', 'backlog']);
+    });
+
+    it('запись роутинга без имени модели — тот же fail-closed, а не «слабейшая»', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: {
+                    'complexity:low': 'haiku',
+                    'complexity:high': { provider: 'kimi' },
+                },
                 modelStrength: strength,
             }),
         ).toEqual(['area:core', 'backlog']);

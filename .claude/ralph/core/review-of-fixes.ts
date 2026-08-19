@@ -315,9 +315,24 @@ export function decideAfterFixReview(
     if (!blocking.length && !blocked) {
         return { action: 'merge', reason: 'блокирующих находок в правках нет' };
     }
-    if (next.arbitrated) {
+    if (next.arbitrated && !freshBlocking.length) {
         // Арбитр уже высказался в этой фазе. Второй раз его звать не о чем — а держать
         // фазу дальше значит вернуть ровно тот стоп, ради отмены которого он и заведён.
+        //
+        // НО короткое замыкание сужено до УЖЕ ПРЕДЪЯВЛЕННЫХ находок (#630). Флаг
+        // `arbitrated` живёт на диске, а `submitted` выставляется ПОЗЖЕ него (заведение
+        // карточек, синк доски, пуш в Telegram — orchestrator.ts). Смерть процесса в этом
+        // окне оставляет на диске «арбитр отработал» при `submitted === false`, и рестарт
+        // прогоняет ВЕСЬ цикл сдачи заново: новое ревью, новая сессия правок — то есть
+        // НОВЫЙ код, которого арбитр никогда не видел. Безусловный мердж по флагу увёл бы
+        // свежий blocker по этому коду в main непрочитанным.
+        //
+        // Поэтому гасим только спор: повторное (`repeatedBlocking`) замечание после
+        // вердикта арбитра мердж не держит — ради этого ветка и заведена, — а свежая
+        // блокирующая находка барьер не обходит НИ ПРИ КАКОМ состоянии на диске. Проверка
+        // здесь, а не в оркестраторе (обнуление лестницы на входе в сдачу), намеренно:
+        // fail-closed не должен зависеть от того, кто и когда чистит state (инвариант №1).
+        // Цена — повторный вызов арбитра после падения; он ограничен теми же потолками.
         return {
             action: 'merge',
             reason: 'независимый арбитр по этой фазе уже отработал — второй раз петлю не крутим',
@@ -447,17 +462,29 @@ export function pingPongIssueFor(
 // ни другого.
 //
 // Ядро по-прежнему не знает имён меток: и набор роутинговых меток, и порядок силы моделей
-// приходят из конфига проекта (`modelRouting.labels`, `review.modelStrength`).
+// приходят из конфига проекта (`modelRouting.labels`, `review.modelStrength`), а порядок
+// старшинства самих меток — из `labelPriority` (у оркестратора это `COMPLEXITY_PRIORITY`).
 export function disputeLabelsFor({
     backlogLabels,
     routingLabels,
     modelStrength,
+    labelPriority = [],
 }: {
     backlogLabels: ReadonlyArray<string>;
     // `modelRouting.labels` как есть: метка → модель (строкой либо `{ provider, model }`).
     routingLabels: Readonly<Record<string, unknown>>;
-    // `review.modelStrength` — порядок сил ОТ СЛАБОЙ К СИЛЬНОЙ.
+    // Шкала силы моделей. ВАЖНО (#630): это `review.modelStrength` — порядок сил моделей
+    // РЕВЬЮ, а ранжируются по нему модели КОДЕРСКИЕ (`modelRouting.labels`). Что это разные
+    // множества, ядро знает явно: `assertKnownReviewModels` намеренно НЕ проверяет
+    // `modelRouting.*` по этому списку («иначе честный coder-only id ложно красил бы
+    // старт»). Пока проект держит в обоих ключах одни и те же claude-имена, шкала для
+    // кодерских моделей выводится верно; как только модель роутинга по шкале неизвестна
+    // (кросс-провайдерная запись #376 — штатная форма), шкалы у нас НЕТ, и функция
+    // деградирует к снятию метки, а не назначает «какую-нибудь» (см. ниже).
     modelStrength: ReadonlyArray<string>;
+    // Старшинство меток для разрешения НИЧЬЕЙ по силе модели, от старшей к младшей.
+    // Пусто — ничья решается порядком ключей конфига.
+    labelPriority?: ReadonlyArray<string>;
 }): string[] {
     const modelOf = (entry: unknown): string => {
         if (typeof entry === 'string') return entry.trim();
@@ -467,19 +494,40 @@ export function disputeLabelsFor({
         }
         return '';
     };
-    const routing = routingLabels ?? {};
-    const names = Object.keys(routing);
+    const names = Object.keys(routingLabels);
     const isRouting = new Set(names);
-    // Сильнейшая метка роутинга. При РАВНОЙ силе побеждает первая по порядку конфига:
-    // модель у них одна и та же, так что выбор ничего не решает для роутинга — но
-    // результат обязан быть воспроизводимым, иначе карточки одной фазы получали бы разные
+    // Деградация к прежнему поведению (#625): метку роутинга снимаем, карточка достаётся
+    // `modelRouting.default`.
+    const withoutRouting = (): string[] => [
+        ...new Set(backlogLabels.filter((l) => !isRouting.has(l))),
+    ];
+    // Ничья по силе (метки ведут на ОДНУ модель) разрешается старшинством самих меток:
+    // на боевом конфиге `complexity:high` и `complexity:expert` ведут на одну модель, и
+    // «сильнейшей» человек, читающий карточку, назовёт `expert` — ровно так же считает
+    // `pickRoute`, перебирая метки по `COMPLEXITY_PRIORITY`. Метка вне порядка — младше
+    // любой перечисленной; при полном равенстве побеждает первая по порядку конфига.
+    // Результат обязан быть воспроизводимым: иначе карточки одной фазы получали бы разные
     // метки от прогона к прогону.
+    const priorityOf = (label: string): number => {
+        const i = labelPriority.indexOf(label);
+        return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+    };
     let strongest: string | null = null;
     let bestRank = -1;
+    let bestPriority = Number.MAX_SAFE_INTEGER;
     for (const label of names) {
-        const rank = modelStrength.indexOf(modelOf(routing[label]));
-        if (rank > bestRank) {
+        const rank = modelStrength.indexOf(modelOf(routingLabels[label]));
+        // Fail-closed по ЛЮБОЙ неизвестной модели среди роутинговых меток (#630), а не
+        // только когда неизвестны ВСЕ. Неизвестная модель получает ранг -1, то есть
+        // объявляется слабейшей, — и на смешанном конфиге (часть меток ведёт на claude,
+        // часть на другого провайдера) «сильнейшей» оказалась бы метка claude-модели,
+        // сплошь и рядом `complexity:low`, то есть ПРИЦЕЛЬНО та механическая модель, ради
+        // ухода от которой замена и делается. Не знаем шкалы — не назначаем.
+        if (rank < 0) return withoutRouting();
+        const priority = priorityOf(label);
+        if (rank > bestRank || (rank === bestRank && priority < bestPriority)) {
             bestRank = rank;
+            bestPriority = priority;
             strongest = label;
         }
     }
@@ -494,12 +542,10 @@ export function disputeLabelsFor({
         // месте первой из них: порядок меток карточки читает человек.
         if (replaced) continue;
         replaced = true;
-        // bestRank < 0 — ни одна метка роутинга не ведёт на модель из порядка сил
-        // (конфиг проекта разъехался сам с собой). Сильнейшую тогда назвать нечем, и
-        // ставить любую значило бы с равной вероятностью назначить спорному блокеру
-        // именно механическую модель. Деградируем к прежнему поведению — метку снимаем,
-        // карточка достаётся `modelRouting.default`.
-        if (strongest && bestRank >= 0) out.push(strongest);
+        // `strongest` пуст только когда роутинговых меток нет вовсе — тогда эта ветка
+        // недостижима (в базе нечему совпасть с пустым `isRouting`). Проверка оставлена
+        // ради сужения типа, а не как страховка от состояния.
+        if (strongest) out.push(strongest);
     }
     // Сильнейшая метка могла уже стоять в базе ниже по списку — дубль в карточке не нужен.
     return [...new Set(out)];

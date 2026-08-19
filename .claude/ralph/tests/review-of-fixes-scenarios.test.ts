@@ -17,7 +17,11 @@ import { describe, it, expect, vi } from 'vitest';
 import ralph from '../ralph.js';
 import type { RalphConfig } from '../core/orchestrator.ts';
 import type { RalphState } from '../core/state-lock.ts';
-import { normalizeReviewOfFixes } from '../core/review-of-fixes.ts';
+import {
+    FIX_REVIEW_MAX_PASSES,
+    findingKey,
+    normalizeReviewOfFixes,
+} from '../core/review-of-fixes.ts';
 
 type Runtime = ReturnType<typeof import('../core/orchestrator.ts').createOrchestrator>;
 const runLoop = ralph.runLoop as Runtime['runLoop'];
@@ -625,7 +629,12 @@ describe('#628: «арбитр отработал» — состояние ПО�
                     arbiter: 'none',
                     maxTurns: 80,
                     backlogLabels: ['complexity:low', 'area:core', 'backlog'],
-                    modelStrength: ['none'],
+                    // Порядок сил — общий для фикстуры: боевой preflight
+                    // (assertKnownReviewModels) требует, чтобы review.default входил в
+                    // список, а 'none' — маркер «модели нет», не идентификатор. Ветке
+                    // проверяемого сценария список и не нужен: arbiter: 'none' сам по
+                    // себе даёт strongerReviewModel('none', null) === null.
+                    modelStrength: [WEAK_MODEL, STRONG_MODEL, REVIEW_MODEL, ARBITER_MODEL],
                 },
             }),
         });
@@ -638,6 +647,74 @@ describe('#628: «арбитр отработал» — состояние ПО�
     it('вердикт получен и намерения применены → флаг выставлен ровно один раз', () => {
         const s = runPhase({ passes: threeFreshMajors, arbiter: { findings: [] } });
         expect(s.ladder().arbitrated).toBe(true);
+        expect(s.merged()).toBe(true);
+    });
+});
+
+describe('#630: унаследованный «арбитр отработал» не проносит СВЕЖИЙ блокер мимо барьера', () => {
+    // Третий вход в лестницу с чужим состоянием — рестарт процесса при submitted === false.
+    // Флаг пишется на диск раньше, чем state.submitted (между ними — заведение карточек,
+    // синк доски и пуш в Telegram), поэтому смерть процесса в этом окне оставляет
+    // {arbitrated: true, submitted: false}. Рестарт гонит ВЕСЬ цикл сдачи заново: новое
+    // ревью, новая сессия правок — то есть новый код, которого арбитр не видел.
+    const restarted = () =>
+        mkState({
+            submitted: false,
+            reviewOfFixes: {
+                passes: FIX_REVIEW_MAX_PASSES,
+                rounds: FIX_REVIEW_MAX_PASSES,
+                answered: [],
+                disputes: {},
+                settled: [],
+                arbitrated: true,
+            },
+        });
+
+    it('свежий blocker по новому коду поднимает арбитра, а не уезжает в мердж непрочитанным', () => {
+        const s = runPhase({
+            state: restarted(),
+            passes: [{ findings: [blocker('регрессия нового круга', 4)] }],
+            arbiter: { findings: [] },
+        });
+
+        // Барьер отработал: находку судил арбитр, а не унаследованный флаг.
+        expect(s.arbiterPrompts()).toHaveLength(1);
+        // Не воспроизвёл — карточка и мердж; это штатный исход лестницы, а не обход.
+        expect(s.issues.some((i) => /регрессия нового круга/.test(i.title))).toBe(true);
+        expect(s.merged()).toBe(true);
+    });
+
+    it('арбитр свежий блокер воспроизвёл → разбор blocked, мерджа нет', () => {
+        const s = runPhase({
+            state: restarted(),
+            passes: [{ findings: [blocker('регрессия нового круга', 4)] }],
+            arbiter: { findings: [blocker('регрессия нового круга', 4)], blocked: true },
+            gate: 'blocked',
+        });
+
+        expect(s.arbiterPrompts()).toHaveLength(1);
+        expect(s.merged()).toBe(false);
+    });
+
+    it('ПОВТОРНОЕ замечание после вердикта арбитра мердж по-прежнему не держит', () => {
+        // Ради этого ветка и заведена: спор, который арбитр уже разрешил, второй раз петлю
+        // не крутит. Замечание «уже отвечено» (лежит в answered) — значит повторное.
+        const s = runPhase({
+            state: mkState({
+                submitted: false,
+                reviewOfFixes: {
+                    passes: FIX_REVIEW_MAX_PASSES,
+                    rounds: FIX_REVIEW_MAX_PASSES,
+                    answered: [findingKey(blocker('спорное', 4))],
+                    disputes: {},
+                    settled: [],
+                    arbitrated: true,
+                },
+            }),
+            passes: [{ findings: [blocker('спорное', 4)] }],
+        });
+
+        expect(s.arbiterPrompts()).toHaveLength(0);
         expect(s.merged()).toBe(true);
     });
 });
