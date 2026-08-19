@@ -54,6 +54,12 @@ const cfg = (o: Partial<RalphConfig> = {}): RalphConfig => ({
     prompt: 'сделай {milestone} в ветке {branch}',
     authorAllowlist: ['owner'],
     phases: [{ milestone: 'M1', branch: 'feature/m1' }],
+    // Роутинг кодер-модели по метке — как в боевом конфиге: по нему лестница понимает,
+    // какие метки решают о модели, и снимает их со спорных карточек.
+    modelRouting: {
+        default: 'claude-coder',
+        labels: { 'complexity:low': 'claude-haiku', 'complexity:high': 'claude-opus' },
+    },
     review: {
         default: REVIEW_MODEL,
         escalated: REVIEW_MODEL,
@@ -110,6 +116,11 @@ function runPhase({
     let passIdx = 0;
     let idxCalls = 0;
     let fixDiffIdx = 0;
+    // Голова ветки МЕНЯЕТСЯ от круга к кругу — иначе не отличить «дифф последнего круга»
+    // от «диффа всех правок фазы», а это ровно предмет проверки для арбитра.
+    let headCalls = 0;
+    const HEADS = ['b', 'c', 'd', 'e', 'f'].map((c) => c.repeat(40));
+    const nextHead = () => HEADS[Math.min(headCalls++, HEADS.length - 1)];
 
     runLoop(
         config,
@@ -140,10 +151,11 @@ function runPhase({
                 fixDiffIdx += 1;
                 return fixDiffFiles[i];
             },
-            // Дифф правок отличим от диффа фазы: у него задана база.
+            // Дифф правок отличим от диффа фазы: у него задана база. Саму базу кладём
+            // в текст — по ней видно, от какой точки собран дифф.
             reviewDiffContextFn: (_b: string, opts?: { base?: string }) =>
-                opts?.base ? FIX_DIFF : PHASE_DIFF,
-            branchHeadShaFn: () => headSha,
+                opts?.base ? `${FIX_DIFF}(${opts.base})` : PHASE_DIFF,
+            branchHeadShaFn: () => (headSha === null ? null : nextHead()),
             createIssueFn: (input) => {
                 issues.push(input);
                 return 100 + issues.length;
@@ -223,6 +235,7 @@ function runPhase({
         fixReviewPrompts: () => prompts.filter(isFixReviewPrompt),
         fixPrompts: () => prompts.filter(isFixPrompt),
         arbiterPrompts: () => prompts.filter(isArbiterPrompt),
+        heads: HEADS,
         pushTexts: () => pushEventFn.mock.calls.map((c: unknown[]) => c[0] as string),
         merged: () =>
             pushEventFn.mock.calls.some((c: unknown[]) => /смерджена в main/.test(c[0] as string)),
@@ -420,6 +433,33 @@ describe('крит. 2: поток новых minor/nit не продлевает
         expect(s.issues.map((i) => i.title).join(' ')).toContain('другой пробел');
     });
 
+    it('отклонённая косметика не теряется: повторный minor уходит карточкой', () => {
+        // Проход 1 отдал minor в сессию правок вместе с блокером; сессия его отклонила,
+        // проход 2 предъявил снова. Раньше повтор не попадал ни в cosmetic, ни в
+        // repeatedBlocking — и «minor не держит мердж» означало «minor не делается».
+        const s = runPhase({
+            passes: [
+                { findings: [blocker('дыра', 1), minor('нейминг', 2)] },
+                { findings: [minor('нейминг', 2)] },
+            ],
+        });
+
+        expect(s.merged()).toBe(true);
+        expect(s.issues.some((i) => i.title.includes('нейминг'))).toBe(true);
+    });
+
+    it('карточки лестницы доезжают до доски — иначе для человека они потеряны', () => {
+        // Синк зовётся и после мерджа фазы (#199), поэтому сравниваем два прогона:
+        // лишний вызов есть ровно там, где лестница завела карточки.
+        const withCards = runPhase({ passes: [{ findings: [minor('нейминг', 1)] }] });
+        const without = runPhase({ passes: [{ findings: [] }] });
+        expect(withCards.issues).toHaveLength(1);
+        expect(without.issues).toHaveLength(0);
+        expect(withCards.syncProjectBoardFn.mock.calls.length).toBeGreaterThan(
+            without.syncProjectBoardFn.mock.calls.length,
+        );
+    });
+
     it('замечание, оспоренное дважды, становится карточкой с обеими позициями и отпускает мердж', () => {
         const same = () => blocker('спорное место', 1);
         const s = runPhase({
@@ -458,6 +498,18 @@ describe('крит. 3: три прохода с новыми major → неза�
         expect(s.ladder().arbitrated).toBe(true);
     });
 
+    it('арбитр судит дифф ВСЕХ правок фазы, а не последнего круга', () => {
+        // В decision.blocking лежат находки всех кругов, и кода ранних кругов в диффе
+        // последней сессии может не быть вовсе: «не воспроизвёл» тогда значило бы «не
+        // нашёл в том куске, который ему дали», а карточка утверждает человеку сильное.
+        const s = runPhase({ passes: threeFreshMajors });
+        const arb = s.arbiterPrompts()[0];
+        expect(arb).toContain(`ДИФФ-ТОЛЬКО-ПРАВОК(${s.heads[0]})`);
+        // Последний проход ревью при этом смотрел именно свой круг — экономия цела.
+        const lastPass = s.fixReviewPrompts()[s.fixReviewPrompts().length - 1];
+        expect(lastPass).toContain(`ДИФФ-ТОЛЬКО-ПРАВОК(${s.heads[2]})`);
+    });
+
     it('арбитр не воспроизвёл → находки в бэклог, фаза мёржится, человека не будят', () => {
         const s = runPhase({ passes: threeFreshMajors, arbiter: { findings: [] } });
 
@@ -467,6 +519,26 @@ describe('крит. 3: три прохода с новыми major → неза�
         expect(s.logs.some((l) => /блокирующего не воспроизвёл/.test(l))).toBe(true);
         // Никакого «оставлен человеку»: лестница кончается решением, а не стопом.
         expect(s.pushTexts().some((t) => /оставлен человеку|устоял/.test(t))).toBe(false);
+    });
+
+    it('спорная карточка не уезжает к самой слабой модели: метки роутинга с неё сняты', () => {
+        const s = runPhase({ passes: threeFreshMajors, arbiter: { findings: [] } });
+        const disputed = s.issues.find((i) => i.title.includes('три'));
+        // complexity:low = «механическая задача» по modelRouting.labels, а тут спорный
+        // major, который не развели два ревью и арбитр.
+        expect(disputed?.labels).toEqual(['area:core', 'backlog']);
+    });
+
+    it('собственная косметика арбитра тоже становится карточкой — промпт ей это обещает', () => {
+        const s = runPhase({
+            passes: threeFreshMajors,
+            arbiter: { findings: [minor('арбитр заметил мелочь', 4)] },
+        });
+        expect(s.merged()).toBe(true);
+        const own = s.issues.find((i) => i.title.includes('арбитр заметил мелочь'));
+        expect(own).toBeDefined();
+        // Косметике — метки как есть из конфига: это обычная мелкая работа.
+        expect(own?.labels).toEqual(['complexity:low', 'area:core', 'backlog']);
     });
 
     it('арбитр воспроизвёл → label blocked и штатный разбор, а не стоп петли', () => {

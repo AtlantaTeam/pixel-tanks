@@ -69,9 +69,24 @@ describe('findingKey — дедуп между проходами', () => {
         );
     });
 
-    it('другое место — другой ключ', () => {
+    it('другой файл — другой ключ', () => {
         expect(findingKey(f('теряется отказ', at('src/a.ts', 1)))).not.toBe(
             findingKey(f('теряется отказ', at('src/b.ts', 1))),
+        );
+    });
+
+    it('правка сдвинула строку — ключ ПРЕЖНИЙ, иначе дедуп промахивается всегда', () => {
+        // Круг лестницы — это коммит в тот же файл: то же место после правки почти
+        // наверняка имеет другой номер строки. Ключ с номером строки объявлял бы повтор
+        // свежей находкой (двигал потолок) и делал карточку спора недостижимой.
+        expect(findingKey(f('теряется отказ', at('src/a.ts', 12)))).toBe(
+            findingKey(f('теряется отказ', at('src/a.ts', 87))),
+        );
+    });
+
+    it('разные замечания в одном файле — разные ключи (текст в ключе не зря)', () => {
+        expect(findingKey(f('🔴 [blocker] теряется отказ', at('src/a.ts', 1)))).not.toBe(
+            findingKey(f('🔴 [blocker] тест не может упасть', at('src/a.ts', 1))),
         );
     });
 });
@@ -197,6 +212,19 @@ describe('classifyFixReview — что именно принёс проход', 
         const second = classifyFixReview([f('🔴 [blocker] раз')], first.next);
         expect(second.freshBlocking).toHaveLength(0);
         expect(second.repeatedBlocking).toHaveLength(1);
+        expect(second.next.passes).toBe(first.next.passes);
+    });
+
+    it('повторная косметика не теряется: она отдельно от свежей и от повторных блокеров', () => {
+        // Сессия правок косметику видела и отклонила, ревью предъявило снова. Без
+        // отдельного списка такая находка не попадала НИКУДА: ни в cosmetic (она не
+        // свежая), ни в repeatedBlocking (она не блокирующая) — и терялась с мерджем.
+        const first = classifyFixReview([f('🟡 [minor] нейминг')], emptyReviewOfFixes());
+        const second = classifyFixReview([f('🟡 [minor] нейминг')], first.next);
+        expect(second.cosmetic).toHaveLength(0);
+        expect(second.repeatedBlocking).toHaveLength(0);
+        expect(second.repeatedCosmetic).toHaveLength(1);
+        // И потолок она по-прежнему не двигает — мердж такие замечания не держат.
         expect(second.next.passes).toBe(first.next.passes);
     });
 
