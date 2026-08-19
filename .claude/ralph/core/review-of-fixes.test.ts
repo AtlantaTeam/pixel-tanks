@@ -140,6 +140,7 @@ describe('normalizeReviewOfFixes — состояние с диска не га�
                 disputes: { a: 2, b: 'нет', '': 5 },
                 settled: null,
                 arbitrated: 'да',
+                arbitratedKeys: 'src/a.ts|дыра',
             }),
         ).toEqual({
             passes: 0,
@@ -148,6 +149,7 @@ describe('normalizeReviewOfFixes — состояние с диска не га�
             disputes: { a: 2 },
             settled: [],
             arbitrated: false,
+            arbitratedKeys: [],
         });
     });
 
@@ -159,6 +161,7 @@ describe('normalizeReviewOfFixes — состояние с диска не га�
             disputes: { k1: 1 },
             settled: ['k2'],
             arbitrated: true,
+            arbitratedKeys: ['k3'],
         };
         expect(normalizeReviewOfFixes(st)).toEqual(st);
     });
@@ -285,15 +288,56 @@ describe('decideAfterFixReview — что делать по итогам про�
         expect(decideAfterFixReview(c).action).toBe('arbiter');
     });
 
-    it('арбитр уже отработал → ПОВТОРНОЕ замечание мердж не держит, второй раз петлю не крутим', () => {
+    it('арбитр уже вынес вердикт ПО ЭТОЙ находке → повтор мердж не держит, петлю второй раз не крутим', () => {
         const first = classifyFixReview([f('🔴 [blocker] раз')], emptyReviewOfFixes());
         const again = classifyFixReview([f('🔴 [blocker] раз')], {
             ...first.next,
             arbitrated: true,
+            // Ключ находки лёг на диск ВМЕСТЕ с вердиктом «не воспроизвёл» — это и есть
+            // разрешённый спор, ради гашения которого ветка заведена.
+            arbitratedKeys: [findingKey(f('🔴 [blocker] раз'))],
         });
         expect(again.repeatedBlocking).toHaveLength(1);
         expect(again.freshBlocking).toHaveLength(0);
         expect(decideAfterFixReview(again).action).toBe('merge');
+    });
+
+    // #630-2: сужение до `!freshBlocking.length` дефект не закрыло, а сдвинуло на круг.
+    // Унаследованный с диска флаг относится к ПРОШЛОМУ коду, и находка по новому коду,
+    // пережившая один круг правок (штатный путь спора), становилась «повторной» — и
+    // уходила в мердж без арбитра и без карточки. Поэтому спор гасят КЛЮЧИ вердикта.
+    it('флаг унаследован, но вердикта по находке не было → повтор мердж держит (второй круг)', () => {
+        const inherited = { ...emptyReviewOfFixes(), arbitrated: true };
+        const first = classifyFixReview([f('🔴 [blocker] регрессия правок')], inherited);
+        expect(first.freshBlocking).toHaveLength(1);
+        expect(decideAfterFixReview(first).action).toBe('fix');
+
+        const second = classifyFixReview([f('🔴 [blocker] регрессия правок')], first.next);
+        expect(second.repeatedBlocking).toHaveLength(1);
+        expect(second.freshBlocking).toHaveLength(0);
+        const decision = decideAfterFixReview(second);
+        expect(decision.action).toBe('fix');
+        expect(decision.action !== 'merge' && decision.blocking).toHaveLength(1);
+    });
+
+    it('вердикт по одной находке спор гасит, вторую — нет: барьер поимённый, а не оптовый', () => {
+        const judged = f('🔴 [blocker] спорное место', at('src/a.ts', 1));
+        const other = f('🔴 [blocker] другое место', at('src/b.ts', 2));
+        const first = classifyFixReview([judged, other], emptyReviewOfFixes());
+        const again = classifyFixReview([judged, other], {
+            ...first.next,
+            arbitrated: true,
+            arbitratedKeys: [findingKey(judged)],
+        });
+        expect(again.repeatedBlocking).toHaveLength(2);
+        const decision = decideAfterFixReview(again);
+        expect(decision.action).toBe('fix');
+        // В круг правок уходит РОВНО не разобранная арбитром находка: гонять сессию по
+        // тому, что арбитр уже разрешил, значит вернуть стоп, ради отмены которого он и
+        // заведён.
+        expect(decision.action !== 'merge' && decision.blocking.map((i) => i.key)).toEqual([
+            findingKey(other),
+        ]);
     });
 
     // #630: `arbitrated` живёт на диске и переживает рестарт процесса, а `submitted`
@@ -331,6 +375,7 @@ describe('decideAfterFixReview — что делать по итогам про�
         const again = classifyFixReview([f('🔴 [blocker] спорное место')], {
             ...first.next,
             arbitrated: true,
+            arbitratedKeys: [findingKey(f('🔴 [blocker] спорное место'))],
         });
         expect(again.repeatedBlocking).toHaveLength(1);
         expect(again.freshBlocking).toHaveLength(0);
