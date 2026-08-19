@@ -66,7 +66,15 @@ const cfg = (o: Partial<RalphConfig> = {}): RalphConfig => ({
     // какие метки решают о модели, и меняет слабую на сильнейшую у спорных карточек.
     modelRouting: {
         default: 'claude-coder',
-        labels: { 'complexity:low': WEAK_MODEL, 'complexity:high': STRONG_MODEL },
+        // `complexity:high` и `complexity:expert` ведут на ОДНУ модель — это боевая форма
+        // (в `ralph.config.json` обе метки идут на opus-5), и без неё ничья по силе в
+        // фикстуре не встречалась вовсе: проводку `labelPriority: COMPLEXITY_PRIORITY` в
+        // оркестраторе можно было удалить, не покраснив ни одного теста.
+        labels: {
+            'complexity:low': WEAK_MODEL,
+            'complexity:high': STRONG_MODEL,
+            'complexity:expert': STRONG_MODEL,
+        },
     },
     review: {
         default: REVIEW_MODEL,
@@ -546,7 +554,12 @@ describe('крит. 3: три прохода с новыми major → неза�
         // major, который не развели два ревью и арбитр. Но и БЕЗ метки сложности карточку
         // оставлять нельзя (#628): она нарушает конвенцию трекера и достаётся
         // modelRouting.default. Поэтому слабая метка заменена сильнейшей, а не снята.
-        expect(disputed?.labels).toEqual(['complexity:high', 'area:core', 'backlog']);
+        //
+        // Ждём именно `expert`, а не `high`: обе метки фикстуры ведут на ОДНУ модель, и
+        // ничью разрешает старшинство меток, которое оркестратор передаёт ядру
+        // (`labelPriority: COMPLEXITY_PRIORITY`) — тем же порядком, каким сам выбирает
+        // маршрут в `pickRoute`. Уберут проводку — здесь приедет `complexity:high`.
+        expect(disputed?.labels).toEqual(['complexity:expert', 'area:core', 'backlog']);
     });
 
     it('собственная косметика арбитра тоже становится карточкой — промпт ей это обещает', () => {

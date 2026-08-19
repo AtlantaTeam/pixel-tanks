@@ -318,15 +318,23 @@ describe('decideAfterFixReview — что делать по итогам про�
         expect(decideAfterFixReview(c).action).toBe('fix');
     });
 
-    it('арбитр отработал, находок нет вовсе → мердж (ветка не мешает штатному исходу)', () => {
-        expect(
-            decideAfterFixReview(
-                classifyFixReview([f('⚪ [nit] мелочь')], {
-                    ...emptyReviewOfFixes(),
-                    arbitrated: true,
-                }),
-            ).action,
-        ).toBe('merge');
+    it('арбитр отработал, повтор + просьба сессии о блоке → всё равно мердж, а не круг', () => {
+        // Вход обязан ДОЙТИ до ветки `next.arbitrated`, иначе тест зелен и при её полном
+        // удалении. Поэтому: повторная блокирующая находка (мимо первой ветки — blocking
+        // непуст) И `blocked: true` (мимо неё же по второму условию).
+        //
+        // Сторожим осознанную трактовку: просьба сессии о метке ПОСЛЕ вердикта арбитра
+        // лестницей гасится — крутить круг правок по тому, что арбитр уже разобрал, значит
+        // вернуть стоп, ради отмены которого он и заведён. Мердж при этом всё равно не
+        // пройдёт: метку `blocked` ставит `applySessionRequests`, и её видит гейт.
+        const first = classifyFixReview([f('🔴 [blocker] спорное место')], emptyReviewOfFixes());
+        const again = classifyFixReview([f('🔴 [blocker] спорное место')], {
+            ...first.next,
+            arbitrated: true,
+        });
+        expect(again.repeatedBlocking).toHaveLength(1);
+        expect(again.freshBlocking).toHaveLength(0);
+        expect(decideAfterFixReview(again, { blocked: true }).action).toBe('merge');
     });
 });
 
@@ -449,20 +457,34 @@ describe('disputeLabelsFor — метка роутинга у спорной к�
         ).toEqual(['complexity:expert', 'area:core']);
     });
 
-    it('старшинство меток не задано — ничья решается порядком конфига, воспроизводимо', () => {
+    it('старшинство меток не задано — ничья решается порядком конфига, вход не мутируется', () => {
         // Результат обязан быть одинаковым от прогона к прогону: иначе карточки одной
-        // фазы получали бы разные метки.
-        const args = {
-            backlogLabels: ['complexity:low', 'area:core'],
-            routingLabels: {
+        // фазы получали бы разные метки. Само правило сторожит `toEqual` по литералу ниже —
+        // он краснеет от ЛЮБОГО изменения разрешения ничьей.
+        //
+        // Отдельно проверяется то, чего литерал не видит: функция чистая и вход не портит.
+        // Аргументы приходят из живого конфига (`cfg.modelRouting.labels`, `backlogLabels`),
+        // и мутация здесь тихо меняла бы роутинг остального прогона. `Object.freeze` ловит
+        // это на месте (в strict-режиме модулей запись в замороженное — исключение), сверка
+        // копий — на случай перестановки без записи.
+        const args = Object.freeze({
+            backlogLabels: Object.freeze(['complexity:low', 'area:core']),
+            routingLabels: Object.freeze({
                 'complexity:low': 'haiku',
                 'complexity:high': 'opus',
                 'complexity:expert': 'opus',
-            },
+            }),
             modelStrength: strength,
-        };
+        });
+        const before = structuredClone({
+            backlogLabels: args.backlogLabels,
+            routingLabels: args.routingLabels,
+        });
         expect(disputeLabelsFor(args)).toEqual(['complexity:high', 'area:core']);
-        expect(disputeLabelsFor(args)).toEqual(disputeLabelsFor(args));
+        expect({
+            backlogLabels: args.backlogLabels,
+            routingLabels: args.routingLabels,
+        }).toEqual(before);
     });
 
     it('метка вне порядка старшинства младше перечисленных при равной силе модели', () => {
