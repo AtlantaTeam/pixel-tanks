@@ -83,6 +83,7 @@ const scenarioState = (o: Partial<RalphState> = {}): RalphState => ({
     reviewModelFloor: null,
     lastReviewModel: SCENARIO_REVIEW_MODEL,
     reReviewPending: false,
+    reviewOfFixes: null,
     deployBlock: null,
     ...o,
 });
@@ -186,6 +187,11 @@ export function makeRunLoopScenario(
                 closeMilestoneByTitleFn: () => {},
                 syncProjectBoardFn: () => {},
                 recordReviewFindingsFn: () => {},
+                // #625: заглушки лестницы ревью правок (база диффа правок, карточки,
+                // журнал прохода) — иначе сценарий уходил бы в настоящие git/форж/диск.
+                branchHeadShaFn: () => 'a'.repeat(40),
+                createIssueFn: () => 1,
+                recordFixReviewFindingsFn: () => {},
                 getLastRedCheck: () => redCheck,
                 getLastGatePr: () => lastGatePr,
                 pushEventFn,

@@ -3,6 +3,7 @@ import {
     appendJournalEntry,
     JOURNAL_PATH,
     JOURNAL_SOURCES,
+    recordFixReviewFindings,
     recordReviewLoopFindings,
 } from './review-findings-journal.mjs';
 
@@ -13,8 +14,8 @@ import {
 const VALID_COUNTS = { blocker: 1, major: 2, minor: 0, nit: 3, unmarked: 1, total: 7 };
 
 describe('JOURNAL_SOURCES', () => {
-    it('ровно две размеченных категории источника', () => {
-        expect(JOURNAL_SOURCES).toEqual(['review-loop', 'found-after']);
+    it('три размеченных категории источника: обе половины метрики и проход ревью правок', () => {
+        expect(JOURNAL_SOURCES).toEqual(['review-loop', 'found-after', 'review-of-fixes']);
     });
 });
 
@@ -36,6 +37,9 @@ describe('appendJournalEntry', () => {
             milestone: 'Фаза 6',
             source: 'review-loop',
             pr: 235,
+            // #625: поле есть у КАЖДОЙ записи (null там, где запись не про отдельный
+            // проход) — иначе читателю журнала пришлось бы различать две формы строки.
+            pass: null,
             counts: VALID_COUNTS,
         });
         expect(entry.pr).toBe(235);
@@ -239,5 +243,80 @@ describe('recordReviewLoopFindings', () => {
             }),
         ).toThrow(/gh api упал/);
         expect(appendCalls).toHaveLength(0);
+    });
+});
+
+// #625: журнал различает проходы — без этого он отвечает только на «сколько находок было
+// у фазы» и молчит о том, ради чего лестница ревью правок заведена: сколько дефектов
+// нашлось именно в правках.
+describe('recordFixReviewFindings — счёт отдельного прохода ревью правок', () => {
+    it('пишет source=review-of-fixes с номером прохода и готовым счётом', () => {
+        const calls = [];
+        const entry = recordFixReviewFindings(42, 'Фаза 7', VALID_COUNTS, {
+            pass: 2,
+            appendFn: (e, o) => {
+                calls.push({ e, o });
+                return e;
+            },
+        });
+        expect(calls[0].e).toEqual({
+            milestone: 'Фаза 7',
+            source: 'review-of-fixes',
+            pr: 42,
+            pass: 2,
+            counts: VALID_COUNTS,
+        });
+        expect(entry.source).toBe('review-of-fixes');
+    });
+
+    it('счёт прохода реально доезжает до строки журнала', () => {
+        const calls = [];
+        recordFixReviewFindings(42, 'Фаза 7', VALID_COUNTS, {
+            pass: 1,
+            writeFn: undefined,
+            nowFn: () => '2026-08-19T10:00:00.000Z',
+            appendFn: (e, o) =>
+                appendJournalEntry(e, {
+                    ...o,
+                    writeFn: (path, data) => calls.push(data),
+                    nowFn: () => '2026-08-19T10:00:00.000Z',
+                }),
+        });
+        expect(JSON.parse(calls[0])).toEqual({
+            ts: '2026-08-19T10:00:00.000Z',
+            milestone: 'Фаза 7',
+            source: 'review-of-fixes',
+            pr: 42,
+            pass: 1,
+            counts: VALID_COUNTS,
+        });
+    });
+
+    it('номер прохода валидируется так же строго, как номер PR', () => {
+        for (const bad of [0, -1, '2', 1.5]) {
+            expect(() =>
+                appendJournalEntry(
+                    {
+                        milestone: 'Фаза 7',
+                        source: 'review-of-fixes',
+                        pr: 42,
+                        pass: bad,
+                        counts: VALID_COUNTS,
+                    },
+                    { writeFn: () => {} },
+                ),
+            ).toThrow(/pass обязан быть положительным целым/);
+        }
+    });
+
+    it('рассогласованный счёт прохода отвергается инвариантом total (метрика не врёт числом)', () => {
+        expect(() =>
+            recordFixReviewFindings(
+                42,
+                'Фаза 7',
+                { blocker: 1, major: 0, minor: 0, nit: 0, unmarked: 0, total: 40 },
+                { pass: 1, appendFn: (e, o) => appendJournalEntry(e, { ...o, writeFn: () => {} }) },
+            ),
+        ).toThrow(/total/);
     });
 });

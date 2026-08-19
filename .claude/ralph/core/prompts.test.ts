@@ -10,7 +10,9 @@ import {
     buildBlockedFixPrompt,
     buildCommentsContext,
     buildIssueContext,
+    buildFixArbiterPrompt,
     buildFixByReviewPrompt,
+    buildFixReviewPrompt,
     buildGateHealPrompt,
     buildReReviewPrompt,
     buildReviewPrompt,
@@ -32,6 +34,20 @@ const ALL: Array<[string, string]> = [
     [
         'повторное ревью',
         buildReReviewPrompt({ branch: BRANCH, allowNames: 'owner', diffContext: '<дифф>' }),
+    ],
+    [
+        'ревью правок',
+        buildFixReviewPrompt({
+            branch: BRANCH,
+            allowNames: 'owner',
+            fixDiffContext: '<дифф правок>',
+            pass: 1,
+            maxPasses: 3,
+        }),
+    ],
+    [
+        'арбитр ревью правок',
+        buildFixArbiterPrompt({ branch: BRANCH, fixDiffContext: '<дифф правок>' }),
     ],
     [
         'самолечение гейта',
@@ -245,5 +261,46 @@ describe('промпты сессий: намерение вместо спос�
         expect(
             buildBlockedFixPrompt({ branch: BRANCH, allowNames: 'o', gateCmdList: GATE }),
         ).toMatch(/снять ты не можешь/i);
+    });
+});
+
+// #625: у лестницы ревью правок два свойства, которые ломаются молча и стоят дорого:
+// предмет прохода (дифф ПРАВОК, а не PR целиком) и независимость арбитра (никакой истории
+// предыдущих проходов). Оба — в промпте, поэтому проверяются здесь.
+describe('лестница ревью правок: предмет прохода и независимость арбитра (#625)', () => {
+    const fixReview = buildFixReviewPrompt({
+        branch: BRANCH,
+        allowNames: 'owner',
+        fixDiffContext: '<дифф правок>',
+        commentsContext: '<комментарии>',
+        pass: 2,
+        maxPasses: 3,
+    });
+
+    it('проход ревью правок получает дифф правок и номер круга', () => {
+        expect(fixReview).toContain('<дифф правок>');
+        expect(fixReview).toContain('проход 2 из 3');
+    });
+
+    it('проход прямо запрещает пересматривать PR целиком — иначе это пинг-понг', () => {
+        expect(fixReview).toMatch(/целиком заново не пересматривай/);
+    });
+
+    it('проход объясняет цену метки severity: blocker/major держат мердж, minor/nit — нет', () => {
+        expect(fixReview).toContain('🔴 [blocker]');
+        expect(fixReview).toMatch(/minor и nit петля заведёт карточками/);
+    });
+
+    it('арбитр не получает ни комментариев, ни выводов прошлых проходов — только дифф', () => {
+        const arbiter = buildFixArbiterPrompt({
+            branch: BRANCH,
+            fixDiffContext: '<дифф правок>',
+        });
+        expect(arbiter).toContain('<дифф правок>');
+        expect(arbiter).toMatch(/НЕ показаны намеренно/);
+        // Приём работает ровно тем, что предыдущие вердикты арбитру недоступны: даже
+        // «учти, что коллеги нашли X» вернуло бы согласие, ради отсутствия которого он и
+        // заведён. Формы для подмешивания истории у промпта нет вовсе.
+        expect(arbiter).not.toContain('<комментарии>');
     });
 });

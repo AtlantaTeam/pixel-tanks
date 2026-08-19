@@ -63,12 +63,28 @@ import {
     buildBlockedFixPrompt,
     buildCommentsContext,
     buildIssueContext,
+    buildFixArbiterPrompt,
     buildFixByReviewPrompt,
+    buildFixReviewPrompt,
     buildGateHealPrompt,
     buildReReviewPrompt,
     buildReviewPrompt,
 } from './prompts.ts';
 import type { TSessionRequest } from './session-requests.ts';
+// #625: лестница «ревью правок». Чистая арифметика сходимости (дедуп находок, потолок
+// проходов, анти-пинг-понг, решение «мердж / ещё круг / арбитр») живёт отдельным модулем —
+// здесь остаётся оркестрация: сессии, дифф, журнал, карточки.
+import {
+    backlogIssueFor,
+    classifyFixReview,
+    countsOf,
+    decideAfterFixReview,
+    emptyReviewOfFixes,
+    FIX_REVIEW_MAX_PASSES,
+    normalizeReviewOfFixes,
+    pingPongIssueFor,
+} from './review-of-fixes.ts';
+import type { FixFinding as TFixFinding } from './review-of-fixes.ts';
 import {
     API_LIMIT_RE,
     TURN_LIMIT_RE,
@@ -207,6 +223,16 @@ export type RalphConfig = {
         // бюджет ходов (--max-turns). Целое ≥ 0, дефолт FIX_TURN_RETRIES; 0 — повторов нет
         // (прежнее поведение: исчерпание ходов = стоп сдачи).
         fixTurnRetries?: unknown;
+        // #625: сильнейшая модель для независимого арбитра — последней ступени лестницы
+        // ревью правок. Не задана — берётся вершина modelStrength (сильнейшая известная
+        // планке), поднятая до reviewModelFloor. Смысл ключа в том, чтобы арбитром можно
+        // было поставить модель ДРУГОГО провайдера: приём работает ровно потому, что
+        // согласившиеся друг с другом проходы одной модели пропускают одно и то же.
+        arbiter?: string;
+        // #625: метки карточек, которыми петля заводит незакрытую косметику ревью правок и
+        // закрытые споры. Набор меток — проектная специфика (у следующего проекта он свой),
+        // поэтому в ядре его нет: пусто ⇒ карточка заводится без меток.
+        backlogLabels?: string[];
     };
     reviewModel?: string;
     authorAllowlist: string[];
@@ -221,6 +247,10 @@ export type RalphConfig = {
     maxNoProgress?: number;
     gateHealAttempts?: number;
     blockedHealAttempts?: number;
+    // #625: потолок проходов ревью правок. Считаются только проходы с НОВЫМИ blocker/major
+    // — поток косметики цикл не продлевает. Дефолт — FIX_REVIEW_MAX_PASSES (3, как у
+    // blockedHealAttempts).
+    fixReviewAttempts?: number;
     apiLimitMaxWaits?: number;
     waitOnApiLimit?: boolean;
     apiLimitGraceMin?: number;
@@ -2014,9 +2044,28 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // Ревью #612: пауза между запросами форжа на КРУПНОМ батче (см. FORGE_PACE_MS).
         // Инжектируется, чтобы тесты не спали по-настоящему.
         sleepFn?: typeof sleep;
-    }): { applied: number; failed: boolean; closedIssues: number[] } {
+    }): {
+        applied: number;
+        failed: boolean;
+        closedIssues: number[];
+        // #625: что именно сессия предъявила по PR — намерения `pr-comment` (тексты +
+        // якоря) и факт просьбы о блоке. Лестница ревью правок решает по НАХОДКАМ ПРОХОДА,
+        // а не по ленте комментариев PR: лента к третьему кругу содержит все проходы разом,
+        // и «что нового принёс именно этот» из неё уже не читается. Разобранные намерения,
+        // а не доставленные: доставка у форжа многоступенчатая (инлайн → файл → сводка), и
+        // деградация способа доставки не отменяет самого замечания.
+        prFindings: TFixFinding[];
+        prBlocked: boolean;
+    } {
         const raw = readFn();
-        if (!raw || raw.trim() === '') return { applied: 0, failed: false, closedIssues: [] };
+        if (!raw || raw.trim() === '')
+            return {
+                applied: 0,
+                failed: false,
+                closedIssues: [],
+                prFindings: [],
+                prBlocked: false,
+            };
 
         let requests: TSessionRequest[];
         try {
@@ -2028,9 +2077,16 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 cfg,
                 { logFn },
             );
-            return { applied: 0, failed: true, closedIssues: [] };
+            return { applied: 0, failed: true, closedIssues: [], prFindings: [], prBlocked: false };
         }
-        if (requests.length === 0) return { applied: 0, failed: false, closedIssues: [] };
+        if (requests.length === 0)
+            return {
+                applied: 0,
+                failed: false,
+                closedIssues: [],
+                prFindings: [],
+                prBlocked: false,
+            };
 
         // #603: комментариев в батче много — не отказ (свой, куда больший предел, живёт в
         // session-requests.ts), но повод сказать человеку, что PR/фаза великоват(а), — той
@@ -2049,7 +2105,13 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     .map((r) => r.kind)
                     .join(', ')}), не применяю.`,
             );
-            return { applied: 0, failed: false, closedIssues: [] };
+            return {
+                applied: 0,
+                failed: false,
+                closedIssues: [],
+                prFindings: [],
+                prBlocked: false,
+            };
         }
 
         // #65: чьи карточки петля закрыла САМА. Списки issue у форжа согласуются с
@@ -2057,6 +2119,16 @@ export function createOrchestrator(env: OrchestratorEnv) {
         // как открытую — петля берёт её повторно и жжёт целую сессию впустую. Собственное
         // действие надёжнее чужого списка.
         const closedIssues: number[] = [];
+        // #625: находки прохода снимаем с РАЗОБРАННОГО батча, до применения — форж может
+        // отказать в доставке (rate limit, чужой PR закрыт), но замечание от этого не
+        // исчезает, и решение о мердже обязано его учесть.
+        const prFindings: TFixFinding[] = requests
+            .filter(
+                (r): r is Extract<TSessionRequest, { kind: 'pr-comment' }> =>
+                    r.kind === 'pr-comment',
+            )
+            .map((r) => ({ comment: r.comment, anchor: r.anchor }));
+        const prBlocked = requests.some((r) => r.kind === 'pr-block');
 
         // Ревью #612: крупный батч применяем РОВНЫМ потоком. У GitHub на создание контента
         // свой secondary rate limit (порядка 80 создающих запросов в минуту), а применение
@@ -2250,7 +2322,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     cfg,
                     { logFn },
                 );
-                return { applied: i, failed: true, closedIssues };
+                return { applied: i, failed: true, closedIssues, prFindings, prBlocked };
             }
         }
         // #62: файл УДАЛЯЕТСЯ, а не опустошается. Пустой остаток остаётся untracked-файлом
@@ -2271,9 +2343,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 cfg,
                 { logFn },
             );
-            return { applied: requests.length, failed: true, closedIssues };
+            return { applied: requests.length, failed: true, closedIssues, prFindings, prBlocked };
         }
-        return { applied: requests.length, failed: false, closedIssues };
+        return { applied: requests.length, failed: false, closedIssues, prFindings, prBlocked };
     }
 
     // Боевые чтение/запись файла-запроса. Отсутствие файла — норма (сессия ничего не
@@ -2492,15 +2564,41 @@ export function createOrchestrator(env: OrchestratorEnv) {
     // #252: сам fetch — мутация, через argv (shArgv); diff --name-only остаётся на shFn
     // (чтение, не мутация — обоснование #194). branch уже провалидирована safeBranch
     // выше, но argv закрывает класс структурно (не полагается только на shq()).
+    // #625: база сравнения — не всегда origin/main. Дифф ПРАВОК берётся от головы ветки на
+    // момент до сессии правок, и эта строка уходит в git-команду, поэтому форма её —
+    // предмет проверки, а не доверия: только полный/укороченный sha, ничего похожего на
+    // опцию (`--upload-pack=…`) или ревизионное выражение с подстановкой команды.
+    const SAFE_SHA_RE = /^[0-9a-f]{7,40}$/;
+
+    function safeBase(base: string | undefined, { logFn = log }: { logFn?: LogFn } = {}): boolean {
+        if (!base) return false;
+        if (!SAFE_SHA_RE.test(base)) {
+            logFn(`⛔ Небезопасная база диффа "${base}" — ожидается sha коммита, отказ.`);
+            return false;
+        }
+        return true;
+    }
+
+    // Диапазон сравнения. Без базы — прежний трёхточечный `origin/main...origin/<branch>`
+    // (изменения фазы от точки расхождения). С базой — двухточечный `<sha>..origin/<branch>`:
+    // ровно то, что добавили правки, без «а что там было в фазе до них».
+    function diffRange(branch: string, base?: string): string {
+        return base ? `${base}..origin/${branch}` : `origin/main...origin/${branch}`;
+    }
+
     function phaseDiffFiles(
         branch: string,
         {
             shFn = sh,
             runArgvFn = shArgv,
             logFn = log,
-        }: { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn } = {},
+            base,
+        }: { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn; base?: string } = {},
     ): string[] | null {
         if (!safeBranch(branch, { logFn, where: 'выбор ревью-модели' })) return null;
+        // Fail-closed: база задана, но не похожа на sha — не «посчитаем от main» (тогда
+        // предметом «ревью правок» молча стала бы вся фаза), а отказ.
+        if (base !== undefined && !safeBase(base, { logFn })) return null;
         try {
             // #252/C1: сам fetch — мутация (обновляет remote-ссылки .git), а --dry-run
             // строго read-only (инвариант №8). Живой --dry-run доходит до цикла сдачи и
@@ -2515,7 +2613,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 );
             }
             const out = shFn(
-                `git -c core.quotePath=false diff --name-only --no-renames ${shq(`origin/main...origin/${branch}`)}`,
+                `git -c core.quotePath=false diff --name-only --no-renames ${shq(diffRange(branch, base))}`,
             );
             const files = out
                 ? out
@@ -2529,7 +2627,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
             // нельзя — пусть в логе останется след.
             if (!files.length) {
                 logFn(
-                    `⚠ Дифф ${branch} против origin/main пуст — зоны риска определить не по чему.`,
+                    base
+                        ? `⚠ Дифф правок ${branch} от ${base} пуст — сессия правок ничего не запушила.`
+                        : `⚠ Дифф ${branch} против origin/main пуст — зоны риска определить не по чему.`,
                 );
             }
             return files;
@@ -2578,22 +2678,27 @@ export function createOrchestrator(env: OrchestratorEnv) {
             logFn = log,
             limit = REVIEW_DIFF_LIMIT,
             files: known,
+            // #625: база диффа. Не задана — изменения фазы (как было). Задана — изменения
+            // ПРАВОК от этого sha: предмет второго прохода ревью.
+            base,
         }: {
             shFn?: ShFn;
             runArgvFn?: ShArgvFn;
             logFn?: LogFn;
             limit?: number;
             files?: string[] | null;
+            base?: string;
         } = {},
     ): string {
+        if (base !== undefined && !safeBase(base, { logFn })) return '';
         const files =
-            known !== undefined ? known : phaseDiffFiles(branch, { shFn, runArgvFn, logFn });
+            known !== undefined ? known : phaseDiffFiles(branch, { shFn, runArgvFn, logFn, base });
         if (!files || !files.length) return '';
 
         let diff = '';
         try {
             diff = shFn(
-                `git -c core.quotePath=false diff --no-renames ${shq(`origin/main...origin/${branch}`)}`,
+                `git -c core.quotePath=false diff --no-renames ${shq(diffRange(branch, base))}`,
             );
         } catch (e) {
             logFn(`⚠ Не смог получить текст диффа для промпта ревью: ${(e as Error).message}`);
@@ -2605,7 +2710,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
         const listed = files.slice(0, MAX_LISTED);
         const more =
             files.length > MAX_LISTED ? `\n- …и ещё ${files.length - MAX_LISTED} файлов` : '';
-        const head = `\n\nИзменения фазы — ${files.length} файлов:\n${listed.map((f) => `- ${f}`).join('\n')}${more}`;
+        const head = `\n\n${base ? 'Изменения ПРАВОК по ревью' : 'Изменения фазы'} — ${files.length} файлов:\n${listed.map((f) => `- ${f}`).join('\n')}${more}`;
         // #50: раньше здесь стояло «возьми его сам: gh pr diff <номер>» — команда форжа,
         // которой у сессии нет. Инструкция, которую невозможно выполнить, хуже её
         // отсутствия: сессия потратит ходы на попытки и решит, что ревьюить нечего.
@@ -2625,6 +2730,35 @@ export function createOrchestrator(env: OrchestratorEnv) {
         );
     }
 
+    // #625: голова ветки на форже. Нужна как БАЗА диффа правок: «что добавила сессия
+    // правок» — это `<голова до неё>..origin/<branch>`, и запомнить эту точку можно только
+    // до её запуска. Читаем origin-ссылку, а не локальный HEAD: дерево раннера в цикле
+    // сдачи стоит на origin/main (detached), а работу сессии видно только после её пуша.
+    function branchHeadSha(
+        branch: string,
+        {
+            shFn = sh,
+            runArgvFn = shArgv,
+            logFn = log,
+        }: { shFn?: ShFn; runArgvFn?: ShArgvFn; logFn?: LogFn } = {},
+    ): string | null {
+        if (!safeBranch(branch, { logFn, where: 'база диффа правок' })) return null;
+        try {
+            // C1 (инвариант №8): --dry-run строго read-only, фетч — мутация ссылок .git.
+            if (!DRY) runArgvFn('git', ['fetch', 'origin', branch, '--quiet']);
+            const out = shFn(`git rev-parse ${shq(`origin/${branch}`)}`).trim();
+            // Форма ответа проверяется, а не предполагается: строка отсюда уходит обратно
+            // в git-команду диффа, и «rev-parse отдал сообщение об ошибке в stdout» не
+            // должно превратиться в аргумент.
+            return SAFE_SHA_RE.test(out) ? out : null;
+        } catch (e) {
+            logFn(
+                `⚠ Не смог прочитать голову ${branch} для базы диффа правок: ${(e as Error).message}`,
+            );
+            return null;
+        }
+    }
+
     // ── Ревью фазы (#363, фаза 3) ────────────────────────────────────────────
     // pickReviewModel / pickReviewFallbackModel / reviewModelRank / strongerReviewModel /
     // assertKnownReviewModels / recordReviewFindings — review.ts. Фабрика захватывает
@@ -2640,9 +2774,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
         pickReviewModel,
         pickReviewFallbackModel,
         reviewModelRank,
+        reviewModelStrength,
         assertKnownReviewModels,
         strongerReviewModel,
         recordReviewFindings,
+        recordFixReviewFindings,
     } = createReviewModule({
         getConfig: () => config,
         ghJson,
@@ -3311,6 +3447,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         st.lastReviewModel = null;
         // #223: разбор blocked остался в прошлой фазе — новая начинает без «висящего» окна.
         st.reReviewPending = false;
+        // #625: лестница ревью правок привязана к PR фазы — дедуп находок и счётчик споров
+        // прошлой фазы на новой означали бы «это замечание уже отвечено» про чужой код.
+        st.reviewOfFixes = null;
         saveState(st);
     }
 
@@ -3647,6 +3786,22 @@ export function createOrchestrator(env: OrchestratorEnv) {
             prNumber: number | null,
             authorAllowlist?: unknown,
         ) => void;
+        // #625: лестница ревью правок. Три новые побочки — голова ветки (база диффа
+        // правок), заведение карточки петлёй (незакрытая косметика и закрытые споры) и
+        // журнальная запись прохода. Все три с DI по той же причине, что соседи: без
+        // хуков сценарий уходил бы в настоящий git/форж/диск.
+        branchHeadShaFn?: (branch: string) => string | null;
+        createIssueFn?: (input: {
+            title: string;
+            body: string;
+            labels: readonly string[];
+        }) => number | null;
+        recordFixReviewFindingsFn?: (
+            phase: Phase,
+            prNumber: number | null,
+            counts: Record<string, number>,
+            pass: number,
+        ) => void;
         getLastRedCheck?: typeof gateGetLastRedCheck;
         getLastGatePr?: typeof gateGetLastGatePr;
         pushEventFn?: typeof pushEvent;
@@ -3728,6 +3883,15 @@ export function createOrchestrator(env: OrchestratorEnv) {
                 phase: Phase,
                 prNumber: number | null,
                 authorAllowlist?: unknown,
+            ) => void,
+            // #625: см. RunLoopDeps — база диффа правок, карточки петли, журнал прохода.
+            branchHeadShaFn = (branch: string) => branchHeadSha(branch),
+            createIssueFn = adapters.taskSource.createIssue,
+            recordFixReviewFindingsFn = recordFixReviewFindings as (
+                phase: Phase,
+                prNumber: number | null,
+                counts: Record<string, number>,
+                pass: number,
             ) => void,
             getLastRedCheck = gateGetLastRedCheck,
             getLastGatePr = gateGetLastGatePr,
@@ -4115,8 +4279,21 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     }
                 };
 
+                // #625: находки ПОСЛЕДНЕЙ применённой пачки намерений. Лестница ревью правок
+                // решает по тому, что принёс ИМЕННО этот проход, а не по ленте комментариев
+                // PR: к третьему кругу лента содержит все проходы разом, и «что нового»
+                // из неё уже не читается. Сбрасывается перед каждым применением — иначе
+                // проход, не оставивший ни одного намерения, унаследовал бы находки соседа.
+                let lastPrFindings: TFixFinding[] = [];
+                let lastPrBlocked = false;
                 const sessionIntentsApplied = (what: string): boolean => {
+                    lastPrFindings = [];
+                    lastPrBlocked = false;
                     const res = applySessionRequestsFn({ cfg, phase, dry, logFn, pushEventFn });
+                    // Тесты инжектируют упрощённый applySessionRequestsFn без этих полей —
+                    // читаем мягко, отсутствие полей означает «находок не сообщили».
+                    lastPrFindings = res.prFindings ?? [];
+                    lastPrBlocked = res.prBlocked === true;
                     if (res.failed) {
                         logFn(
                             `⛔ Намерения сессии (${what}) не применились — сдача остановлена (fail-closed). ` +
@@ -4308,17 +4485,23 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         .join(', ');
                     // #45: обоснования пропусков приходят намерением pr-comment; #594:
                     // исчерпание ходов — не отказ, а «не успела» (см. runSessionWithTurnRetries).
-                    const fix = runSessionWithTurnRetries(
-                        (resumed) =>
-                            buildFixByReviewPrompt({
-                                branch: phase.branch,
-                                allowNames,
-                                gateCmdList: fixGateCmdList,
-                                commentsContext: trustedCommentsContext(phase.branch),
-                                resumed,
-                            }),
-                        { what: 'правки по ревью', retries: fixTurnRetries },
-                    );
+                    const runFixSession = (what: string) =>
+                        runSessionWithTurnRetries(
+                            (resumed) =>
+                                buildFixByReviewPrompt({
+                                    branch: phase.branch,
+                                    allowNames,
+                                    gateCmdList: fixGateCmdList,
+                                    commentsContext: trustedCommentsContext(phase.branch),
+                                    resumed,
+                                }),
+                            { what, retries: fixTurnRetries },
+                        );
+                    // #625: база диффа правок — голова ветки ДО сессии. Снимаем ЗАРАНЕЕ:
+                    // после её пуша эта точка уже невосстановима, а без неё предметом
+                    // «ревью правок» молча стала бы вся фаза.
+                    let fixBase = branchHeadShaFn(phase.branch);
+                    const fix = runFixSession('правки по ревью');
                     if (fix.intentsBroken) break;
                     if (fix.code !== 0) {
                         logFn(
@@ -4328,6 +4511,294 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         );
                         break;
                     }
+
+                    // ── 3b. Ревью ПРАВОК (#625) ──────────────────────────────────
+                    // Правки по ревью — код, написанный быстро, под конец сессии и без
+                    // собственного ревью; на разборе 14.08 половина дефектов фазы нашлась
+                    // именно в них. Повторный проход в петле был и до этого, но висел на
+                    // метке blocked (#217/#223): блокеров не было — прохода не было, и
+                    // правки по 19 замечаниям уехали в main никем не прочитанными (PR #624).
+                    //
+                    // Больше качества — но НЕ ценой AFK, поэтому проход не «ещё одно ревью
+                    // PR», а лестница с потолком и последней ступенью-арбитром вместо стопа
+                    // (арифметика — review-of-fixes.ts, здесь только оркестрация).
+                    const fixReviewMax = positiveIntOrDefault(
+                        cfg.fixReviewAttempts,
+                        FIX_REVIEW_MAX_PASSES,
+                    );
+                    const reviewTurns = positiveIntOrDefault(cfg.review?.maxTurns, maxTurns);
+                    const reviewLimit = positiveIntOrDefault(
+                        cfg.review?.diffLimit,
+                        REVIEW_DIFF_LIMIT,
+                    );
+                    const backlogLabels = (
+                        Array.isArray(cfg.review?.backlogLabels) ? cfg.review.backlogLabels : []
+                    ).filter((l): l is string => typeof l === 'string' && !!l.trim());
+                    // Карточка — побочка, которая НЕ имеет права остановить сдачу: она
+                    // сохраняет незакрытую мелочь, а не решает о мердже (fail-open, как
+                    // closeMilestoneByTitle/syncProjectBoard).
+                    const fileBacklogCard = (issue: {
+                        title: string;
+                        body: string;
+                        labels: string[];
+                    }): void => {
+                        try {
+                            const num = createIssueFn({ ...issue, labels: backlogLabels });
+                            logFn(
+                                `🗂 Ревью правок → карточка ${num ? `#${String(num)}` : '(номер не отдан форжем)'}: ${issue.title}`,
+                            );
+                        } catch (e) {
+                            logFn(
+                                `⚠ Не смог завести карточку по замечанию ревью правок (не критично): ` +
+                                    `${String((e as Error).message).split('\n')[0]} — текст: ${issue.title}`,
+                            );
+                        }
+                    };
+                    const currentPrNumber = (): number | null => {
+                        try {
+                            return findOpenPrFn(phase.branch)?.number ?? null;
+                        } catch {
+                            return null;
+                        }
+                    };
+
+                    let ladder = normalizeReviewOfFixes(state.reviewOfFixes);
+                    let ladderStop = false;
+                    for (;;) {
+                        // Дифф ПРАВОК, а не PR целиком (ступень 2 лестницы): PR уже
+                        // отревьюен, и повтор той же работы дал бы те же замечания заново —
+                        // ровно пинг-понг, от которого лестница и защищается.
+                        //
+                        // Голову ветки прочитать не удалось (git чихнул) — не пропускаем
+                        // проход, а честно ревьюим фазу целиком: лишний дорогой проход
+                        // дешевле непрочитанных правок, ради которых всё и затевалось.
+                        if (!fixBase) {
+                            logFn(
+                                '⚠ Базу диффа правок получить не удалось — ревью правок пройдёт по диффу ФАЗЫ целиком (дороже, но пропускать проход нельзя).',
+                            );
+                        }
+                        const fixFiles = phaseDiffFilesFn(
+                            phase.branch,
+                            fixBase ? { base: fixBase } : {},
+                        );
+                        if (fixBase && fixFiles && fixFiles.length === 0) {
+                            // Сессия правок ничего не запушила (все замечания отклонены с
+                            // обоснованием). Ревьюить нечего — и придумывать предмет проходу
+                            // не нужно: это не пропуск барьера, а его пустое множество.
+                            logFn(
+                                '▫ Ревью правок: сессия правок ничего не изменила — проход не нужен.',
+                            );
+                            break;
+                        }
+                        const passNo = ladder.rounds + 1;
+                        // Модель прохода — не слабее планки фазы (#217): ревью правок судит
+                        // тот же класс дефектов, что и ревью фазы.
+                        const fixReviewModel = strongerReviewModel(
+                            pickReviewModelFn(phase.milestone, phase.branch, { files: fixFiles }),
+                            state.reviewModelFloor,
+                        );
+                        if (!fixReviewModel || fixReviewModel === 'none') {
+                            logFn(
+                                '👀 Ревью правок пропущено: ревью-модели нет (review: none) — проход за супервизором.',
+                            );
+                            break;
+                        }
+                        const fixReviewFallback = (() => {
+                            const picked = pickReviewFallbackModel(cfg);
+                            return picked === 'none'
+                                ? 'none'
+                                : strongerReviewModel(picked, state.reviewModelFloor);
+                        })();
+                        const fixDiffContext = reviewDiffContextFn(phase.branch, {
+                            files: fixFiles,
+                            limit: reviewLimit,
+                            ...(fixBase ? { base: fixBase } : {}),
+                        });
+                        // Маркер «🔍 Ревью» — намеренно: deadman.CODER_RE считает окно
+                        // ревью-сессии активностью кодера (инв. 10), а не тишиной гейта.
+                        logFn(
+                            `🔍 Ревью ПРАВОК (проход ${String(passNo)}/${String(fixReviewMax)}) моделью: ${fixReviewModel}` +
+                                ` (фолбэк при overload: ${fixReviewFallback && fixReviewFallback !== 'none' ? fixReviewFallback : 'нет'})`,
+                        );
+                        const fixReviewCode = runClaudeFn(
+                            buildFixReviewPrompt({
+                                branch: phase.branch,
+                                allowNames,
+                                fixDiffContext,
+                                commentsContext: trustedCommentsContext(phase.branch),
+                                pass: passNo,
+                                maxPasses: fixReviewMax,
+                            }),
+                            {
+                                model: fixReviewModel,
+                                maxTurns: reviewTurns,
+                                fallbackModel: fixReviewFallback,
+                            },
+                        );
+                        if (!sessionIntentsApplied('ревью правок')) {
+                            ladderStop = true;
+                            break;
+                        }
+                        if (fixReviewCode !== 0) {
+                            // Тот же fail-closed, что у ревью фазы: без вердикта прохода
+                            // мерджить нельзя — иначе правки снова уедут непрочитанными.
+                            logFn(
+                                `⛔ Проход ревью правок упал (код ${fixReviewCode}) — сдача фазы остановлена (fail-closed). Перезапусти loop.`,
+                            );
+                            ladderStop = true;
+                            break;
+                        }
+
+                        const cls = classifyFixReview(lastPrFindings, ladder);
+                        ladder = cls.next;
+                        state.reviewOfFixes = ladder;
+                        saveStateFn(state);
+                        const prNow = currentPrNumber();
+                        // Журнал различает проходы (крит. готовности #625): по строкам
+                        // source=review-of-fixes видно, сколько дефектов нашлось ИМЕННО в
+                        // правках. Считаем свежие находки прохода — повторы уже сосчитаны.
+                        recordFixReviewFindingsFn(
+                            phase,
+                            prNow,
+                            countsOf(cls.fresh.map((i) => i.finding)),
+                            passNo,
+                        );
+                        // Спор, дошедший до предела, закрывается карточкой с обеими
+                        // позициями СРАЗУ: держать его дальше — это и есть пинг-понг.
+                        for (const item of cls.pingPong) {
+                            fileBacklogCard(
+                                pingPongIssueFor(item, {
+                                    milestone: phase.milestone,
+                                    pr: prNow,
+                                    disputes: ladder.disputes[item.key] ?? 0,
+                                    labels: backlogLabels,
+                                }),
+                            );
+                        }
+                        const decision = decideAfterFixReview(cls, {
+                            blocked: lastPrBlocked,
+                            maxPasses: fixReviewMax,
+                        });
+                        logFn(
+                            `📋 Ревью правок, проход ${String(passNo)}: новых находок ${String(cls.fresh.length)} ` +
+                                `(блокирующих ${String(cls.freshBlocking.length)}, косметики ${String(cls.cosmetic.length)}), ` +
+                                `повторных ${String(cls.repeatedBlocking.length)}, споров закрыто ${String(cls.pingPong.length)} → ` +
+                                `${decision.action} (${decision.reason}).`,
+                        );
+
+                        if (decision.action === 'fix') {
+                            // Ещё круг правок: косметика этого прохода уходит в ту же
+                            // сессию вместе с блокерами — карточки заводятся только на то,
+                            // что осталось незакрытым к концу лестницы.
+                            fixBase = branchHeadShaFn(phase.branch);
+                            const again = runFixSession('правки по ревью правок');
+                            if (again.intentsBroken || again.code !== 0) {
+                                logFn(
+                                    TURN_LIMIT_RE.test(again.output)
+                                        ? `⛔ Правки по ревью правок не уложились в бюджет ходов за ${fixTurnRetries + 1} попыток — сдача остановлена (fail-closed).`
+                                        : `⛔ Правки по ревью правок упали (код ${again.code}) — сдача остановлена (fail-closed).`,
+                                );
+                                ladderStop = true;
+                                break;
+                            }
+                            continue;
+                        }
+
+                        if (decision.action === 'arbiter') {
+                            // Ступень 5: НЕ стоп человеку, а независимый арбитр — сильнейшая
+                            // модель БЕЗ истории предыдущих проходов. Приём проверен 18.08:
+                            // шесть согласившихся друг с другом ревью внесли регрессию,
+                            // нашёл её седьмой, прежних выводов не видевший.
+                            const strength = reviewModelStrength(cfg);
+                            const arbiterModel = strongerReviewModel(
+                                cfg.review?.arbiter ?? strength[strength.length - 1],
+                                state.reviewModelFloor,
+                            );
+                            ladder = { ...ladder, arbitrated: true };
+                            state.reviewOfFixes = ladder;
+                            saveStateFn(state);
+                            if (!arbiterModel || arbiterModel === 'none') {
+                                // Судить нечем. Мердж вслепую здесь был бы обходом всей
+                                // лестницы, поэтому блок и разбор по кругу — тот же путь,
+                                // что у ревью фазы, и он тоже не стоп.
+                                logFn(
+                                    '⛔ Ревью правок: арбитра нет (модель не задана) — ставлю label blocked, гейт отправит фазу в разбор.',
+                                );
+                                addBlockedLabelFn(phase.branch, { shFn, logFn });
+                                break;
+                            }
+                            logFn(
+                                `⚖️ Ревью правок: потолок исчерпан → независимый арбитр моделью ${arbiterModel} (без истории проходов).`,
+                            );
+                            const arbCode = runClaudeFn(
+                                buildFixArbiterPrompt({
+                                    branch: phase.branch,
+                                    fixDiffContext,
+                                }),
+                                { model: arbiterModel, maxTurns: reviewTurns },
+                            );
+                            const arbApplied = sessionIntentsApplied('арбитр ревью правок');
+                            if (!arbApplied || arbCode !== 0) {
+                                // Арбитр — ступень ПРОТИВ остановки петли, поэтому его
+                                // падение не стоп: метка blocked отправляет фазу в штатный
+                                // разбор (#217), который сам конечен и сам решает, звать ли
+                                // человека. Мердж вслепую тут был бы худшим из исходов.
+                                logFn(
+                                    `⛔ Арбитр ревью правок не дал вердикта (код ${arbCode}) — ставлю label blocked, гейт отправит фазу в разбор.`,
+                                );
+                                addBlockedLabelFn(phase.branch, { shFn, logFn });
+                                break;
+                            }
+                            const arbBlocking = classifyFixReview(lastPrFindings, {
+                                ...emptyReviewOfFixes(),
+                            });
+                            if (lastPrBlocked || arbBlocking.freshBlocking.length > 0) {
+                                // Воспроизвёл: метку уже поставило намерение pr-block (либо
+                                // ставим её сами по severity находок) — дальше штатный
+                                // разбор blocked, а не стоп.
+                                if (!lastPrBlocked)
+                                    addBlockedLabelFn(phase.branch, { shFn, logFn });
+                                pushEventFn(
+                                    `⛔ Ralph: фаза "${phase.milestone}" — независимый арбитр подтвердил блокирующий дефект в правках (PR #${String(prNow ?? '?')}), фаза ушла в разбор blocked.`,
+                                    cfg,
+                                    { logFn },
+                                );
+                                break;
+                            }
+                            // Не воспроизвёл — спорные находки уходят в бэклог, фаза
+                            // мёржится. Именно это и означает «не ценой AFK»: несогласие
+                            // двух проходов не повод будить человека ночью.
+                            logFn(
+                                '✅ Арбитр ревью правок блокирующего не воспроизвёл — спорные находки в бэклог, фаза идёт на гейт.',
+                            );
+                            for (const item of decision.blocking) {
+                                fileBacklogCard(
+                                    backlogIssueFor(item, {
+                                        milestone: phase.milestone,
+                                        pr: prNow,
+                                        labels: backlogLabels,
+                                    }),
+                                );
+                            }
+                            break;
+                        }
+
+                        // 'merge': держать нечем. Незакрытая косметика ПОСЛЕДНЕГО прохода
+                        // (её уже никто не разберёт — круга правок больше не будет) уходит
+                        // карточками: «minor не держит мердж» не должно означать «minor не
+                        // делается никогда».
+                        for (const item of cls.cosmetic) {
+                            fileBacklogCard(
+                                backlogIssueFor(item, {
+                                    milestone: phase.milestone,
+                                    pr: prNow,
+                                    labels: backlogLabels,
+                                }),
+                            );
+                        }
+                        break;
+                    }
+                    if (ladderStop) break;
 
                     state.submitted = true;
                     saveStateFn(state);
@@ -5612,6 +6083,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
         matchRiskPaths,
         phaseDiffFiles,
         reviewDiffContext,
+        // #625: голова ветки на форже — база диффа правок. Экспорт для юнит-теста
+        // (валидация формы ответа git и отказ на небезопасном имени ветки).
+        branchHeadSha,
         pickReviewModel,
         pickReviewFallbackModel,
         reviewModelRank,

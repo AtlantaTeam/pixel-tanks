@@ -340,6 +340,97 @@ describe('assertKnownReviewModels — fail-closed планка моделей р
         const cfg = { review: { default: 'claude-opus-4-8', fallback: 'claude-fable-5' } };
         expect(assertKnownReviewModels(cfg, 'prod', boom)).toBe(true);
     });
+
+    // #625: арбитр — последняя ступень лестницы ревью правок, и он проверяется тем же
+    // циклом. Незнакомая модель получила бы ранг -1, планка reviewModelFloor «подняла» бы
+    // его до модели предыдущего прохода — и независимый арбитр молча стал бы тем же
+    // ревьюером, от согласия которого он и спасает.
+    it('незнакомая модель в review.arbiter → стоп (#625)', () => {
+        const { assertKnownReviewModels } = createReviewModule(makeEnv());
+        expect(() =>
+            assertKnownReviewModels(
+                { review: { default: 'claude-opus-4-8', arbiter: 'claude-mystery' } },
+                'prod',
+                boom,
+            ),
+        ).toThrow(/review\.arbiter.*claude-mystery.*REVIEW_MODEL_STRENGTH/s);
+    });
+
+    it('известная модель арбитра принимается', () => {
+        const { assertKnownReviewModels } = createReviewModule(makeEnv());
+        expect(
+            assertKnownReviewModels(
+                { review: { default: 'claude-opus-4-8', arbiter: 'claude-fable-5' } },
+                'prod',
+                boom,
+            ),
+        ).toBe(true);
+    });
+});
+
+// #625: журнал различает проходы. Запись прохода — отдельная функция: счёт ей приносит
+// петля (только она знает, что в проходе НОВОГО), в форж эта запись не ходит вовсе.
+describe('recordFixReviewFindings — журнальная запись прохода ревью правок (#625)', () => {
+    const COUNTS = { blocker: 1, major: 0, minor: 2, nit: 0, unmarked: 0, total: 3 };
+
+    it('зовёт журнал через argv с готовым счётом и номером прохода', () => {
+        const calls: Array<{ file: string; args: string[] }> = [];
+        const { recordFixReviewFindings } = createReviewModule(makeEnv());
+        recordFixReviewFindings(
+            { milestone: 'M1' },
+            42,
+            COUNTS,
+            2,
+            (file: string, args: string[]) => {
+                calls.push({ file, args });
+                return '{"ok":true}';
+            },
+            () => {},
+        );
+        expect(calls).toHaveLength(1);
+        expect(calls[0].file).toBe('node');
+        expect(calls[0].args).toEqual([
+            'scripts/review-findings-journal.mjs',
+            '42',
+            'M1',
+            `--counts=${JSON.stringify(COUNTS)}`,
+            '--pass=2',
+        ]);
+    });
+
+    it('номер PR неизвестен → запись пропущена, журнал не зовётся', () => {
+        const logs: string[] = [];
+        const { recordFixReviewFindings } = createReviewModule(makeEnv());
+        recordFixReviewFindings(
+            { milestone: 'M1' },
+            null,
+            COUNTS,
+            1,
+            () => {
+                throw new Error('журнал звать не должны');
+            },
+            (m: string) => logs.push(m),
+        );
+        expect(logs.join('\n')).toMatch(/номер PR неизвестен/);
+    });
+
+    it('сбой записи не роняет цикл сдачи — метрика не имеет права остановить петлю', () => {
+        const logs: string[] = [];
+        const { recordFixReviewFindings } = createReviewModule(makeEnv());
+        expect(() =>
+            recordFixReviewFindings(
+                { milestone: 'M1' },
+                42,
+                COUNTS,
+                1,
+                () => {
+                    throw new Error('диск полон');
+                },
+                (m: string) => logs.push(m),
+            ),
+        ).not.toThrow();
+        expect(logs.join('\n')).toMatch(/не критично/);
+    });
 });
 
 // Порядок сил моделей — ДАННЫЕ проекта, а не константа ядра: каждый релиз моделей иначе

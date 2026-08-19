@@ -144,6 +144,7 @@ describe('dry-run переносимости ядра на чужом конфи
                 reviewModelFloor: null,
                 lastReviewModel: null,
                 reReviewPending: false,
+                reviewOfFixes: null,
                 deployBlock: null,
             }),
             phaseIndexOfFn: () => 0,

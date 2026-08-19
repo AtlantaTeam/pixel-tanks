@@ -3430,6 +3430,13 @@ describe('runLoop — основной while-цикл: итерации коде
             // до gate === 'merged', ловил бы предохранитель #138 (даже через try/catch —
             // guardSideEffect пишет попытку в журнал ДО throw).
             recordReviewFindingsFn: () => {},
+            // #625: те же безопасные дефолты-заглушки для лестницы ревью правок — без них
+            // каждый тест, доходящий до цикла сдачи, звал бы НАСТОЯЩИЕ branchHeadSha
+            // (git fetch + rev-parse), createIssue (форж) и recordFixReviewFindings
+            // (node scripts/…) и ловил бы предохранитель #138.
+            branchHeadShaFn: () => 'a'.repeat(40),
+            createIssueFn: () => 1,
+            recordFixReviewFindingsFn: () => {},
             getLastRedCheck: () => null,
             // #86: безопасный дефолт-заглушка — без него тест, не переопределивший
             // pushEventFn явно, звал бы НАСТОЯЩИЙ pushEvent (реальный log() + попытка
@@ -8113,6 +8120,135 @@ describe('phaseDiffFiles — не-ASCII пути и пустой дифф (#132)
     });
 });
 
+// #625: предмет второго прохода — дифф ПРАВОК, а не PR целиком. База сравнения приходит
+// строкой в git-команду, поэтому её форма — предмет проверки, а не доверия.
+describe('дифф ПРАВОК: база сравнения и её валидация (#625)', () => {
+    const { phaseDiffFiles, reviewDiffContext, branchHeadSha } = ralph;
+    const SHA = 'b'.repeat(40);
+
+    it('с базой сравнение двухточечное от sha, без базы — прежнее трёхточечное от main', () => {
+        const cmds: string[] = [];
+        const shFn = (c: string) => {
+            cmds.push(c);
+            return 'src/a.ts';
+        };
+        phaseDiffFiles('feature/x', { shFn, runArgvFn: () => '', logFn: () => {}, base: SHA });
+        phaseDiffFiles('feature/x', { shFn, runArgvFn: () => '', logFn: () => {} });
+        expect(cmds[0]).toContain(`${SHA}..origin/feature/x`);
+        expect(cmds[1]).toContain('origin/main...origin/feature/x');
+    });
+
+    it.each([
+        ['ведущий дефис', '-b'.repeat(4)],
+        ['опция git', '--upload-pack=x'],
+        ['ревизионное выражение', 'HEAD^{/x}'],
+        ['не hex', 'zzzzzzz'],
+        ['слишком короткий', 'abc'],
+    ])('%s как база отвергается — дифф не считается вовсе (fail-closed)', (_n, base) => {
+        const logs: string[] = [];
+        expect(
+            phaseDiffFiles('feature/x', {
+                shFn: () => 'src/a.ts',
+                runArgvFn: () => '',
+                logFn: (m: string) => logs.push(m),
+                base,
+            }),
+        ).toBe(null);
+        expect(logs.join('\n')).toMatch(/Небезопасная база/);
+    });
+
+    it('кривая база не даёт молча уехать на дифф ФАЗЫ — контекст пустой, а не «вся фаза»', () => {
+        expect(
+            reviewDiffContext('feature/x', {
+                shFn: () => 'diff',
+                runArgvFn: () => '',
+                logFn: () => {},
+                base: 'нет',
+            }),
+        ).toBe('');
+    });
+
+    it('шапка контекста называет предмет: правки, а не фаза', () => {
+        const shFn = (cmd: string) => (cmd.includes('--name-only') ? 'src/a.ts' : 'дифф-тело');
+        expect(
+            reviewDiffContext('feature/x', {
+                shFn,
+                runArgvFn: () => '',
+                logFn: () => {},
+                base: SHA,
+            }),
+        ).toContain('Изменения ПРАВОК по ревью');
+    });
+
+    it('пустой дифф правок описывается своим сообщением: сессия ничего не запушила', () => {
+        const logs: string[] = [];
+        expect(
+            phaseDiffFiles('feature/x', {
+                shFn: () => '',
+                runArgvFn: () => '',
+                logFn: (m: string) => logs.push(m),
+                base: SHA,
+            }),
+        ).toEqual([]);
+        expect(logs.join('\n')).toMatch(/сессия правок ничего не запушила/);
+    });
+
+    describe('branchHeadSha — база берётся с origin, а форма ответа проверяется', () => {
+        it('читает origin-ссылку ветки и отдаёт sha', () => {
+            const cmds: string[] = [];
+            const sha = branchHeadSha('feature/x', {
+                shFn: (c: string) => {
+                    cmds.push(c);
+                    return `${SHA}\n`;
+                },
+                runArgvFn: () => '',
+                logFn: () => {},
+            });
+            expect(sha).toBe(SHA);
+            expect(cmds[0]).toContain('origin/feature/x');
+        });
+
+        it('ответ не похож на sha (git ответил текстом) → null, а не аргумент в git', () => {
+            expect(
+                branchHeadSha('feature/x', {
+                    shFn: () => 'fatal: unknown revision',
+                    runArgvFn: () => '',
+                    logFn: () => {},
+                }),
+            ).toBe(null);
+        });
+
+        it('небезопасное имя ветки отвергается до похода в git', () => {
+            const cmds: string[] = [];
+            expect(
+                branchHeadSha('--upload-pack=x', {
+                    shFn: (c: string) => {
+                        cmds.push(c);
+                        return SHA;
+                    },
+                    runArgvFn: () => '',
+                    logFn: () => {},
+                }),
+            ).toBe(null);
+            expect(cmds).toEqual([]);
+        });
+
+        it('сбой git — null и строка в логе, а не исключение из цикла сдачи', () => {
+            const logs: string[] = [];
+            expect(
+                branchHeadSha('feature/x', {
+                    shFn: () => {
+                        throw new Error('git лёг');
+                    },
+                    runArgvFn: () => '',
+                    logFn: (m: string) => logs.push(m),
+                }),
+            ).toBe(null);
+            expect(logs.join('\n')).toMatch(/база диффа правок|git лёг/);
+        });
+    });
+});
+
 describe('reviewDiffContext — дифф в промпт ревью (#133)', () => {
     const { reviewDiffContext } = ralph;
 
@@ -8276,6 +8412,10 @@ describe('runLoop → промпт ревью получает контекст 
                 getLastGatePr: () => null,
                 phaseDiffFilesFn: () => ['src/a.ts'],
                 reviewDiffContextFn: () => '\n\nМАРКЕР-КОНТЕКСТА-ДИФФА',
+                // #625: заглушки лестницы ревью правок — см. общий deps выше.
+                branchHeadShaFn: () => 'a'.repeat(40),
+                createIssueFn: () => 1,
+                recordFixReviewFindingsFn: () => {},
                 ...over,
             },
         );
@@ -8288,12 +8428,15 @@ describe('runLoop → промпт ревью получает контекст 
         expect(reviewPrompt).toContain('МАРКЕР-КОНТЕКСТА-ДИФФА');
     });
 
-    it('дифф собирается ОДИН раз и переиспользуется выбором модели и контекстом', () => {
-        let diffCalls = 0;
+    it('дифф ФАЗЫ собирается ОДИН раз и переиспользуется выбором модели и контекстом', () => {
+        // #625: считаем вызовы БЕЗ базы — это и есть дифф фазы. Дифф ПРАВОК (с base) —
+        // другой предмет и законно собирается своим вызовом; смысл барьера #135 в том,
+        // что один и тот же дифф не собирается дважды подряд.
+        let phaseDiffCalls = 0;
         const seen: Record<string, unknown> = {};
         runWithReview({
-            phaseDiffFilesFn: () => {
-                diffCalls++;
+            phaseDiffFilesFn: (_b: unknown, opts?: { base?: string }) => {
+                if (!opts?.base) phaseDiffCalls++;
                 return ['src/a.ts'];
             },
             pickReviewModelFn: (_m: unknown, _b: unknown, opts?: { files?: string[] }) => {
@@ -8305,7 +8448,7 @@ describe('runLoop → промпт ревью получает контекст 
                 return '\n\nМАРКЕР-КОНТЕКСТА-ДИФФА';
             },
         });
-        expect(diffCalls).toBe(1);
+        expect(phaseDiffCalls).toBe(1);
         expect(seen.pick).toEqual(['src/a.ts']);
         expect(seen.ctx).toEqual(['src/a.ts']);
     });
@@ -8983,6 +9126,86 @@ describe('applySessionRequests: намерения сессии применяе
     };
 
     const PHASE = { branch: 'feature/m1' };
+
+    // #625: лестница ревью правок решает по находкам ИМЕННО этого прохода, а не по ленте
+    // комментариев PR (к третьему кругу она содержит все проходы разом). Отчёт о том, что
+    // сессия предъявила, отдаёт применение намерений — единственное место, где проход виден
+    // отдельно.
+    describe('#625 отчёт о находках прохода', () => {
+        it('pr-comment с якорем и без, плюс pr-block — всё видно вызывающему', () => {
+            const { ts } = prTaskSource();
+            const res = ralph.applySessionRequests({
+                cfg: CFG,
+                phase: PHASE,
+                dry: false,
+                readFn: () =>
+                    [
+                        line({
+                            kind: 'pr-comment',
+                            comment: '🔴 [blocker] раз',
+                            path: 'src/a.ts',
+                            line: 7,
+                        }),
+                        line({ kind: 'pr-comment', comment: 'сводка прохода' }),
+                        line({ kind: 'pr-block', comment: 'чем блокируется' }),
+                    ].join('\n'),
+                writeFn: () => {},
+                removeFn: () => {},
+                taskSource: ts,
+                logFn: () => {},
+                pushEventFn: () => false,
+            });
+            expect(res.prBlocked).toBe(true);
+            expect(res.prFindings).toEqual([
+                { comment: '🔴 [blocker] раз', anchor: { path: 'src/a.ts', line: 7 } },
+                { comment: 'сводка прохода', anchor: undefined },
+            ]);
+        });
+
+        it('намерений по PR не было — пустой отчёт, а не «унаследованный» от соседа', () => {
+            const { ts } = prTaskSource();
+            const res = ralph.applySessionRequests({
+                cfg: CFG,
+                phase: PHASE,
+                dry: false,
+                readFn: () => line({ kind: 'comment', issue: 5, comment: 'что выяснилось' }),
+                writeFn: () => {},
+                removeFn: () => {},
+                taskSource: ts,
+                logFn: () => {},
+                pushEventFn: () => false,
+            });
+            expect(res.prFindings).toEqual([]);
+            expect(res.prBlocked).toBe(false);
+        });
+
+        it('форж отказал в доставке — замечание всё равно в отчёте: оно от этого не исчезло', () => {
+            const { ts } = prTaskSource({
+                commentOnPullRequest: () => {
+                    throw new Error('rate limit');
+                },
+            });
+            const res = ralph.applySessionRequests({
+                cfg: CFG,
+                phase: PHASE,
+                dry: false,
+                readFn: () =>
+                    line({
+                        kind: 'pr-comment',
+                        comment: '🟠 [major] раз',
+                        path: 'src/a.ts',
+                        line: 1,
+                    }),
+                writeFn: () => {},
+                removeFn: () => {},
+                taskSource: ts,
+                logFn: () => {},
+                pushEventFn: () => false,
+            });
+            expect(res.failed).toBe(true);
+            expect(res.prFindings).toHaveLength(1);
+        });
+    });
 
     it('#45 pr-comment: якорь доезжает, номер PR резолвит петля — сессия его не называет', () => {
         const { ts, calls } = prTaskSource();

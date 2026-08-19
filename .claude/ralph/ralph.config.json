@@ -48,6 +48,7 @@
             "prodDropChecks": ["test"]
         },
         "blockedHealAttempts": 3,
+        "fixReviewAttempts": 3,
         "gateHealAttempts": 2,
         "apiLimitMaxWaits": 3,
         "apiLimitGraceMin": 5,
@@ -92,6 +93,8 @@
                 "deploy/**",
                 "scripts/**"
             ],
+            "arbiter": "claude-fable-5",
+            "backlogLabels": ["complexity:low", "area:core", "backlog"],
             "maxTurns": 80,
             "diffLimit": 20000
         },

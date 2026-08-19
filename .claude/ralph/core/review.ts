@@ -65,6 +65,8 @@ type ReviewConfig = {
     default?: string;
     escalated?: string;
     fallback?: string;
+    // #625: модель независимого арбитра (последняя ступень лестницы ревью правок).
+    arbiter?: string;
     escalateOn?: unknown;
     escalateOnPaths?: unknown;
     // Порядок сил моделей по возрастанию. Не задан — DEFAULT_REVIEW_MODEL_STRENGTH.
@@ -326,7 +328,11 @@ export function createReviewModule(env: ReviewEnv) {
         if (strengthCheck !== true) return strengthCheck;
 
         const strength = reviewModelStrength(cfg as ReviewCfg);
-        for (const key of ['default', 'escalated', 'fallback'] as const) {
+        // #625: `arbiter` проверяется тем же циклом и по той же причине, что остальные:
+        // незнакомая модель арбитра получила бы ранг -1, и планка reviewModelFloor
+        // «подняла» бы его до модели, поставившей блок, — то есть последняя ступень
+        // лестницы молча стала бы тем же ревьюером, от согласия которого она и спасает.
+        for (const key of ['default', 'escalated', 'fallback', 'arbiter'] as const) {
             const model = review[key];
             if (model === undefined || model === null || model === 'none') continue;
             if (reviewModelRank(model, cfg as ReviewCfg) === -1) {
@@ -458,6 +464,43 @@ export function createReviewModule(env: ReviewEnv) {
         }
     }
 
+    // #625: журнальная запись ОДНОГО прохода ревью правок. Отдельная функция, а не флаг у
+    // recordReviewFindings: у той вся работа — сходить в форж за лентой комментариев и
+    // посчитать её, а здесь счёт УЖЕ посчитан петлёй (только она знает, что в проходе
+    // нового), и ходить никуда не нужно. Общего кода между ними — одна строка вызова
+    // скрипта, общего смысла — ноль.
+    //
+    // Fail-open, как и у соседки: журнал — метрика наблюдаемости, и уронить из-за неё цикл
+    // сдачи нельзя (инвариант №1 в части «косметика не имеет права остановить петлю»).
+    function recordFixReviewFindings(
+        phase: Phase,
+        prNumber: number | null,
+        counts: Record<string, number>,
+        pass: number,
+        runArgvFn: ShArgvFn = shArgv,
+        logFn: LogFn = log,
+    ): void {
+        if (!Number.isInteger(prNumber) || (prNumber as number) <= 0) {
+            logFn('⚠ Журнал находок (ревью правок): номер PR неизвестен, запись пропущена.');
+            return;
+        }
+        try {
+            const out = runArgvFn('node', [
+                'scripts/review-findings-journal.mjs',
+                String(prNumber),
+                phase.milestone,
+                `--counts=${JSON.stringify(counts)}`,
+                `--pass=${String(pass)}`,
+            ]);
+            logFn(
+                `📊 Находки прохода ${String(pass)} ревью правок в журнале: ${String(out).trim()}`,
+            );
+        } catch (e) {
+            const why = String((e as Error)?.message ?? e).split('\n')[0];
+            logFn(`⚠ Не смог записать находки ревью правок в журнал (не критично): ${why}`);
+        }
+    }
+
     return {
         pickReviewModel,
         pickReviewFallbackModel,
@@ -469,5 +512,6 @@ export function createReviewModule(env: ReviewEnv) {
         assertKnownReviewModels,
         strongerReviewModel,
         recordReviewFindings,
+        recordFixReviewFindings,
     };
 }

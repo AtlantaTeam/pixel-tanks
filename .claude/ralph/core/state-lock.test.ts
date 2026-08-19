@@ -54,6 +54,7 @@ describe('defaultState — канонический полный state из пе
             reviewModelFloor: null,
             lastReviewModel: null,
             reReviewPending: false,
+            reviewOfFixes: null,
             deployBlock: null,
         });
     });
