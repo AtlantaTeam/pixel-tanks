@@ -105,16 +105,8 @@
         "prompt": "Прочитай .claude/ralph/ralph.md и строго следуй правилам оттуда. Возьми следующий открытый Issue из milestone '{milestone}' и реализуй его в ветке '{branch}'.",
         "phases": [
             {
-                "milestone": "Раннер · Устойчивость к отказам",
-                "branch": "feature/ralph-resilience"
-            },
-            {
-                "milestone": "Прод-режим ralph · Фаза 6: Бэклог в issues",
-                "branch": "feature/ralph-backlog"
-            },
-            {
-                "milestone": "Экран боя · Визуальные дефекты",
-                "branch": "feature/battle-visual-defects"
+                "milestone": "Раннер · Ревью правок без остановки петли",
+                "branch": "feature/ralph-review-of-fixes"
             }
         ]
     },
