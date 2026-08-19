@@ -41,6 +41,12 @@ export type RalphState = {
     reviewModelFloor: string | null;
     lastReviewModel: string | null;
     reReviewPending: boolean;
+    // #625: состояние лестницы «ревью правок» текущей фазы (счётчики проходов, дедуп
+    // находок, споры). Форма — ReviewOfFixesState (review-of-fixes.ts), но тип здесь
+    // `unknown` по той же причине, что у deployBlock: state читается с диска, где его мог
+    // написать прошлый раннер или рука человека, и приводит его к форме нормализатор
+    // (normalizeReviewOfFixes), а не вера в тип.
+    reviewOfFixes: unknown;
     deployBlock: unknown;
 };
 
@@ -108,6 +114,10 @@ export function createStateLock(env: StateLockEnv) {
             // #223: раннер снял label blocked, но повторное ревью ещё не дало вердикта.
             // Флаг переживает рестарт → гейт вернёт метку, если сессия ревью погибла.
             reReviewPending: false,
+            // #625: лестница ревью правок ещё не начиналась. Живёт ровно одну фазу —
+            // advancePhase её обнуляет вместе с blockedHeals: дедуп находок и счётчик
+            // споров относятся к КОНКРЕТНОМУ PR и на следующей фазе смысла не имеют.
+            reviewOfFixes: null,
             // #165: красный/недосмотренный пост-мердж деплой прошлой фазы. Пока не null —
             // барьер в preflight не даёт строить следующую фазу поверх недоехавшего до
             // прода main; снимает только человек флагом --deploy-resolved (см. preflight).

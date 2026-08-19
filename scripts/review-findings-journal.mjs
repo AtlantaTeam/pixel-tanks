@@ -34,7 +34,12 @@ export const JOURNAL_PATH = process.env.RALPH_REVIEW_FINDINGS_JOURNAL || DEFAULT
 
 // review-loop — автоматизированная половина (счёт по меткам severity в комментариях PR,
 // #168). found-after — ручная половина (#170): находки, всплывшие уже после мерджа фазы.
-export const JOURNAL_SOURCES = ['review-loop', 'found-after'];
+// review-of-fixes (#625) — счёт ОТДЕЛЬНОГО прохода ревью ПРАВОК: без него журнал знает
+// только «сколько находок было у фазы» и не отвечает на вопрос, ради которого лестница
+// заведена, — сколько дефектов нашлось именно в правках по ревью. Такие записи несут поле
+// `pass` (номер круга), а counts приходят посчитанными снаружи: считать «все комментарии
+// PR» здесь нечем — проход виден только петле, которая знает, что в нём нового.
+export const JOURNAL_SOURCES = ['review-loop', 'found-after', 'review-of-fixes'];
 
 // Выводим из SEVERITY_LEVELS (#237), а не дублируем список руками: добавишь новую severity
 // в review-findings.mjs — валидация журнала подхватит её же ключ, записи не разъедутся.
@@ -65,7 +70,7 @@ function assertValidCounts(counts) {
     }
 }
 
-function assertValidEntry({ milestone, source, pr, counts }) {
+function assertValidEntry({ milestone, source, pr, pass, counts }) {
     if (typeof milestone !== 'string' || !milestone.trim()) {
         throw new Error(
             `milestone обязан быть непустой строкой (получено: ${JSON.stringify(milestone)})`,
@@ -79,6 +84,14 @@ function assertValidEntry({ milestone, source, pr, counts }) {
     if (pr !== null && pr !== undefined && (!Number.isInteger(pr) || pr <= 0)) {
         throw new Error(
             `pr обязан быть положительным целым или null (получено: ${JSON.stringify(pr)})`,
+        );
+    }
+    // #625: номер прохода. null/отсутствие — запись не про отдельный проход (обе прежние
+    // половины метрики). Валидируется той же строгостью, что pr: «pass: 0» или «pass: '2'»
+    // прошли бы молча и различали бы проходы неверно — то есть метрика соврала бы числом.
+    if (pass !== null && pass !== undefined && (!Number.isInteger(pass) || pass <= 0)) {
+        throw new Error(
+            `pass обязан быть положительным целым или null (получено: ${JSON.stringify(pass)})`,
         );
     }
     assertValidCounts(counts);
@@ -101,15 +114,15 @@ function guardedAppendFileSync(path, data) {
 // Одна строка журнала = один вызов = одна запись. pr необязателен (found-after может
 // не привязываться к конкретному PR — находка после мерджа фазы, а не в её ревью).
 export function appendJournalEntry(
-    { milestone, source, pr = null, counts },
+    { milestone, source, pr = null, pass = null, counts },
     {
         journalPath = JOURNAL_PATH,
         writeFn = guardedAppendFileSync,
         nowFn = () => new Date().toISOString(),
     } = {},
 ) {
-    assertValidEntry({ milestone, source, pr, counts });
-    const entry = { ts: nowFn(), milestone, source, pr, counts };
+    assertValidEntry({ milestone, source, pr, pass, counts });
+    const entry = { ts: nowFn(), milestone, source, pr, pass, counts };
     writeFn(journalPath, `${JSON.stringify(entry)}\n`);
     return entry;
 }
@@ -138,9 +151,39 @@ export function recordReviewLoopFindings(
     );
 }
 
+// #625: запись об ОТДЕЛЬНОМ проходе ревью правок. counts приходят готовыми, а не считаются
+// здесь: «что нашлось именно в этом проходе» знает только петля — она держит дедуп находок
+// между кругами, а лента комментариев PR к этому моменту содержит все проходы разом.
+export function recordFixReviewFindings(
+    prNumber,
+    milestone,
+    counts,
+    { pass = null, appendFn = appendJournalEntry, journalPath, nowFn } = {},
+) {
+    return appendFn(
+        { milestone, source: 'review-of-fixes', pr: prNumber, pass, counts },
+        { journalPath, nowFn },
+    );
+}
+
+// Разбор именованных флагов CLI (#625). Позиционные аргументы остаются прежними
+// (`<pr> <milestone> [авторы…]`) — иначе прежние вызовы (раннер, RUNBOOK, рука человека)
+// сломались бы молча.
+function parseFlags(argv) {
+    const flags = {};
+    const positional = [];
+    for (const arg of argv) {
+        const m = /^--([a-z-]+)=([\s\S]*)$/.exec(arg);
+        if (m) flags[m[1]] = m[2];
+        else positional.push(arg);
+    }
+    return { flags, positional };
+}
+
 function main() {
-    const prNumber = Number(process.argv[2]);
-    const milestone = process.argv[3];
+    const { flags, positional } = parseFlags(process.argv.slice(2));
+    const prNumber = Number(positional[0]);
+    const milestone = positional[1];
     if (!Number.isInteger(prNumber) || prNumber <= 0) {
         console.error('⛔ review-findings-journal: укажи номер PR первым аргументом');
         process.exit(1);
@@ -150,10 +193,23 @@ function main() {
         process.exit(1);
     }
     // Остальные позиционные аргументы — allowlist авторов (логины GitHub), см. #237.
-    const authorAllowlist = process.argv.slice(4);
+    const authorAllowlist = positional.slice(2);
     let entry;
     try {
-        entry = recordReviewLoopFindings(prNumber, milestone, { authorAllowlist });
+        if (flags.counts !== undefined) {
+            // Готовый счёт → запись о проходе ревью правок. Разбор fail-closed: кривой JSON
+            // в argv не должен уехать в журнал «как есть» — метрика соврала бы числом.
+            let counts;
+            try {
+                counts = JSON.parse(flags.counts);
+            } catch (e) {
+                throw new Error(`--counts не разобрался как JSON: ${e.message}`);
+            }
+            const pass = flags.pass === undefined ? null : Number(flags.pass);
+            entry = recordFixReviewFindings(prNumber, milestone, counts, { pass });
+        } else {
+            entry = recordReviewLoopFindings(prNumber, milestone, { authorAllowlist });
+        }
     } catch (e) {
         console.error(`⛔ review-findings-journal: ${e.message}`);
         process.exit(1);
