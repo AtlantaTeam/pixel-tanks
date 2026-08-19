@@ -84,7 +84,11 @@ import {
     normalizeReviewOfFixes,
     pingPongIssueFor,
 } from './review-of-fixes.ts';
-import type { FixFinding as TFixFinding } from './review-of-fixes.ts';
+import type {
+    ClassifiedFinding,
+    FixFinding as TFixFinding,
+    FixReviewClassification,
+} from './review-of-fixes.ts';
 import {
     API_LIMIT_RE,
     TURN_LIMIT_RE,
@@ -4522,7 +4526,12 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // Больше качества — но НЕ ценой AFK, поэтому проход не «ещё одно ревью
                     // PR», а лестница с потолком и последней ступенью-арбитром вместо стопа
                     // (арифметика — review-of-fixes.ts, здесь только оркестрация).
-                    const fixReviewMax = positiveIntOrDefault(
+                    // Потолок читаем nonNegativeIntOrDefault (#594-приём): 0 здесь — не
+                    // мусор, а осмысленное «второй проход не нужен» (playground-профиль,
+                    // чужой проект, где лишняя пара ревью-сессий на фазу неоправданна).
+                    // positiveIntOrDefault молча подменял бы такой ноль тройкой — то есть
+                    // включал бы повторы тому, кто их явно выключил.
+                    const fixReviewMax = nonNegativeIntOrDefault(
                         cfg.fixReviewAttempts,
                         FIX_REVIEW_MAX_PASSES,
                     );
@@ -4534,6 +4543,24 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     const backlogLabels = (
                         Array.isArray(cfg.review?.backlogLabels) ? cfg.review.backlogLabels : []
                     ).filter((l): l is string => typeof l === 'string' && !!l.trim());
+                    // Метки СПОРНОЙ карточки — те же, минус метки роутинга модели.
+                    // Причина (ревью #625): `backlogLabels` подобраны под косметику, и в
+                    // этом проекте там `complexity:low` = самая слабая модель. Карточка
+                    // после арбитра или закрытого спора по определению содержит blocker или
+                    // major, который не смогли развести два ревью и арбитр, — отправлять
+                    // его к «механической» модели значит гарантировать второй заход.
+                    // Набор роутинговых меток берём из самого конфига (`modelRouting.labels`),
+                    // а не по имени `complexity:*`: имена меток — проектная специфика, и
+                    // ядро о них знать не должно. Без роутинговой метки карточка достаётся
+                    // `modelRouting.default`, то есть модели по умолчанию.
+                    const routingLabels = new Set(Object.keys(cfg.modelRouting?.labels ?? {}));
+                    const disputeLabels = backlogLabels.filter((l) => !routingLabels.has(l));
+                    // #199-приём: карточка, которой нет на доске, для человека равна
+                    // потерянной находке — доска источник правды по статусу. `createIssue`
+                    // доску не трогает, поэтому синк зовём один раз в конце лестницы (он
+                    // идемпотентен и добавляет открытые issues на доску), а не на каждую
+                    // карточку.
+                    let backlogCards = 0;
                     // Карточка — побочка, которая НЕ имеет права остановить сдачу: она
                     // сохраняет незакрытую мелочь, а не решает о мердже (fail-open, как
                     // closeMilestoneByTitle/syncProjectBoard).
@@ -4554,7 +4581,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
                             return;
                         }
                         try {
-                            const num = createIssueFn({ ...issue, labels: backlogLabels });
+                            // Метки берём ИЗ карточки: их выбирает вызывающий (косметика —
+                            // backlogLabels, спор — disputeLabels). Перетирать их здесь
+                            // одним набором значило бы держать поле `labels` мёртвым.
+                            const num = createIssueFn(issue);
+                            backlogCards += 1;
                             logFn(
                                 `🗂 Ревью правок → карточка ${num ? `#${String(num)}` : '(номер не отдан форжем)'}: ${issue.title}`,
                             );
@@ -4575,7 +4606,44 @@ export function createOrchestrator(env: OrchestratorEnv) {
 
                     let ladder = normalizeReviewOfFixes(state.reviewOfFixes);
                     let ladderStop = false;
+                    // База ВСЕЙ лестницы — голова ветки до ПЕРВОЙ сессии правок. Круги
+                    // двигают `fixBase` вперёд, а арбитру нужен дифф всех правок фазы:
+                    // судит он находки ВСЕХ кругов (`decision.blocking`), и кода ранних
+                    // кругов в диффе последнего может не быть вовсе — «не воспроизвёл»
+                    // тогда означало бы «не нашёл в том куске, который ему дали», а
+                    // карточка утверждает человеку сильное (ревью #625).
+                    const ladderBase = fixBase;
+                    const arbiterDiffContext = (): string => {
+                        if (ladderBase) {
+                            const all = phaseDiffFilesFn(phase.branch, { base: ladderBase });
+                            if (all && all.length) {
+                                return reviewDiffContextFn(phase.branch, {
+                                    files: all,
+                                    limit: reviewLimit,
+                                    base: ladderBase,
+                                });
+                            }
+                        }
+                        return reviewDiffContextFn(phase.branch, { limit: reviewLimit });
+                    };
+                    // Находки, которыми мердж держится ПРЯМО СЕЙЧАС (решение прошлого
+                    // круга), и незакрытая косметика, которую ещё никто не разобрал.
+                    // Обе копилки нужны на случай, когда сессия правок ничего не запушила:
+                    // без них прочитанное и признанное блокирующим замечание молча
+                    // терялось бы вместе с фазой, уехавшей на гейт.
+                    let pendingBlocking: ClassifiedFinding[] = [];
+                    let pendingCosmetic: ClassifiedFinding[] = [];
+                    // Сессия правок предъявленное не приняла (дифф правок пуст). Спрашивать
+                    // её второй раз тем же промптом нечего — круг спора идёт по лестнице.
+                    let fixDeclined = false;
                     for (;;) {
+                        if (fixReviewMax === 0) {
+                            // Лестница выключена конфигом явно (fixReviewAttempts: 0).
+                            logFn(
+                                '👀 Ревью правок выключено конфигом (fixReviewAttempts: 0) — фаза идёт на гейт сразу после правок.',
+                            );
+                            break;
+                        }
                         // Дифф ПРАВОК, а не PR целиком (ступень 2 лестницы): PR уже
                         // отревьюен, и повтор той же работы дал бы те же замечания заново —
                         // ровно пинг-понг, от которого лестница и защищается.
@@ -4597,75 +4665,120 @@ export function createOrchestrator(env: OrchestratorEnv) {
                             fixBase = null;
                             fixFiles = phaseDiffFilesFn(phase.branch, {});
                         }
-                        if (fixBase && fixFiles && fixFiles.length === 0) {
-                            // Сессия правок ничего не запушила (все замечания отклонены с
-                            // обоснованием). Ревьюить нечего — и придумывать предмет проходу
+                        // Круг лестницы (все проходы) и проход, засчитанный потолку (только
+                        // круги с НОВЫМИ blocker/major) — РАЗНЫЕ величины, и печатать их
+                        // одной парой нельзя: «проход 5/3» человек читает как сорванный
+                        // барьер, а модель ревью — как «лимит превышен, можно не стараться».
+                        const roundNo = ladder.rounds + 1;
+                        const passNo = ladder.passes + 1;
+                        let cls: FixReviewClassification;
+                        // Проход ревью реально состоялся — только тогда в журнале появляется
+                        // строка. Повтор непринятых находок ревью не звал, и нули по живому
+                        // PR читались бы как факт «в правках ничего не нашли».
+                        let passHappened = true;
+                        if (
+                            fixBase &&
+                            fixFiles &&
+                            fixFiles.length === 0 &&
+                            !pendingBlocking.length
+                        ) {
+                            // Сессия правок ничего не запушила, и держать нечем: все
+                            // замечания прошлого прохода были не блокирующие либо их не
+                            // было вовсе. Ревьюить нечего — и придумывать предмет проходу
                             // не нужно: это не пропуск барьера, а его пустое множество.
                             logFn(
                                 '▫ Ревью правок: сессия правок ничего не изменила — проход не нужен.',
                             );
                             break;
                         }
-                        const passNo = ladder.rounds + 1;
-                        // Модель прохода — не слабее планки фазы (#217): ревью правок судит
-                        // тот же класс дефектов, что и ревью фазы.
-                        const fixReviewModel = strongerReviewModel(
-                            pickReviewModelFn(phase.milestone, phase.branch, { files: fixFiles }),
-                            state.reviewModelFloor,
-                        );
-                        if (!fixReviewModel || fixReviewModel === 'none') {
+                        if (fixBase && fixFiles && fixFiles.length === 0) {
+                            // ...а вот если держать ЕСТЬ чем — выходить здесь нельзя
+                            // (ревью #625): фаза с непогашенным blocker/major уехала бы на
+                            // гейт и смерджилась молча, минуя и спор, и арбитра. Метки
+                            // blocked при этом нет — разметка severity сама по себе её не
+                            // ставит, и tryMergePhase ничего не держит.
+                            //
+                            // Штатный путь для «правки не приняли замечание» — спор:
+                            // предъявляем те же находки ПОВТОРНО той же лестницей. Спор
+                            // конечен по построению (disputes → карточка с обеими позициями,
+                            // круговой предохранитель → арбитр), поэтому AFK не страдает.
                             logFn(
-                                '👀 Ревью правок пропущено: ревью-модели нет (review: none) — проход за супервизором.',
+                                `♻️ Ревью правок: сессия правок ничего не запушила, а мердж держат ${String(pendingBlocking.length)} ` +
+                                    `блокирующих находок — предъявляю их повторно (круг ${String(roundNo)}), спор решит лестница.`,
                             );
-                            break;
-                        }
-                        const fixReviewFallback = (() => {
-                            const picked = pickReviewFallbackModel(cfg);
-                            return picked === 'none'
-                                ? 'none'
-                                : strongerReviewModel(picked, state.reviewModelFloor);
-                        })();
-                        const fixDiffContext = reviewDiffContextFn(phase.branch, {
-                            files: fixFiles,
-                            limit: reviewLimit,
-                            ...(fixBase ? { base: fixBase } : {}),
-                        });
-                        // Маркер «🔍 Ревью» — намеренно: deadman.CODER_RE считает окно
-                        // ревью-сессии активностью кодера (инв. 10), а не тишиной гейта.
-                        logFn(
-                            `🔍 Ревью ПРАВОК (проход ${String(passNo)}/${String(fixReviewMax)}) моделью: ${fixReviewModel}` +
-                                ` (фолбэк при overload: ${fixReviewFallback && fixReviewFallback !== 'none' ? fixReviewFallback : 'нет'})`,
-                        );
-                        const fixReviewCode = runClaudeFn(
-                            buildFixReviewPrompt({
-                                branch: phase.branch,
-                                allowNames,
-                                fixDiffContext,
-                                commentsContext: trustedCommentsContext(phase.branch),
-                                pass: passNo,
-                                maxPasses: fixReviewMax,
-                            }),
-                            {
-                                model: fixReviewModel,
-                                maxTurns: reviewTurns,
-                                fallbackModel: fixReviewFallback,
-                            },
-                        );
-                        if (!sessionIntentsApplied('ревью правок')) {
-                            ladderStop = true;
-                            break;
-                        }
-                        if (fixReviewCode !== 0) {
-                            // Тот же fail-closed, что у ревью фазы: без вердикта прохода
-                            // мерджить нельзя — иначе правки снова уедут непрочитанными.
+                            fixDeclined = true;
+                            passHappened = false;
+                            cls = classifyFixReview(
+                                pendingBlocking.map((i) => i.finding),
+                                ladder,
+                            );
+                        } else {
+                            fixDeclined = false;
+                            // Модель прохода — не слабее планки фазы (#217): ревью правок
+                            // судит тот же класс дефектов, что и ревью фазы.
+                            const fixReviewModel = strongerReviewModel(
+                                pickReviewModelFn(phase.milestone, phase.branch, {
+                                    files: fixFiles,
+                                }),
+                                state.reviewModelFloor,
+                            );
+                            if (!fixReviewModel || fixReviewModel === 'none') {
+                                logFn(
+                                    '👀 Ревью правок пропущено: ревью-модели нет (review: none) — проход за супервизором.',
+                                );
+                                break;
+                            }
+                            const fixReviewFallback = (() => {
+                                const picked = pickReviewFallbackModel(cfg);
+                                return picked === 'none'
+                                    ? 'none'
+                                    : strongerReviewModel(picked, state.reviewModelFloor);
+                            })();
+                            const fixDiffContext = reviewDiffContextFn(phase.branch, {
+                                files: fixFiles,
+                                limit: reviewLimit,
+                                ...(fixBase ? { base: fixBase } : {}),
+                            });
+                            // Маркер «🔍 Ревью» — намеренно: deadman.CODER_RE считает окно
+                            // ревью-сессии активностью кодера (инв. 10), а не тишиной гейта.
                             logFn(
-                                `⛔ Проход ревью правок упал (код ${fixReviewCode}) — сдача фазы остановлена (fail-closed). Перезапусти loop.`,
+                                `🔍 Ревью ПРАВОК (круг ${String(roundNo)}, проход с новыми блокерами ${String(passNo)}/${String(fixReviewMax)})` +
+                                    ` моделью: ${fixReviewModel}` +
+                                    ` (фолбэк при overload: ${fixReviewFallback && fixReviewFallback !== 'none' ? fixReviewFallback : 'нет'})`,
                             );
-                            ladderStop = true;
-                            break;
+                            const fixReviewCode = runClaudeFn(
+                                buildFixReviewPrompt({
+                                    branch: phase.branch,
+                                    allowNames,
+                                    fixDiffContext,
+                                    commentsContext: trustedCommentsContext(phase.branch),
+                                    // В промпт идёт та же величина, что и в знаменателе:
+                                    // проходы с новыми блокерами, а не круги.
+                                    pass: passNo,
+                                    maxPasses: fixReviewMax,
+                                }),
+                                {
+                                    model: fixReviewModel,
+                                    maxTurns: reviewTurns,
+                                    fallbackModel: fixReviewFallback,
+                                },
+                            );
+                            if (!sessionIntentsApplied('ревью правок')) {
+                                ladderStop = true;
+                                break;
+                            }
+                            if (fixReviewCode !== 0) {
+                                // Тот же fail-closed, что у ревью фазы: без вердикта прохода
+                                // мерджить нельзя — иначе правки снова уедут непрочитанными.
+                                logFn(
+                                    `⛔ Проход ревью правок упал (код ${fixReviewCode}) — сдача фазы остановлена (fail-closed). Перезапусти loop.`,
+                                );
+                                ladderStop = true;
+                                break;
+                            }
+                            cls = classifyFixReview(lastPrFindings, ladder);
                         }
 
-                        const cls = classifyFixReview(lastPrFindings, ladder);
                         ladder = cls.next;
                         state.reviewOfFixes = ladder;
                         saveStateFn(state);
@@ -4673,12 +4786,21 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         // Журнал различает проходы (крит. готовности #625): по строкам
                         // source=review-of-fixes видно, сколько дефектов нашлось ИМЕННО в
                         // правках. Считаем свежие находки прохода — повторы уже сосчитаны.
-                        recordFixReviewFindingsFn(
-                            phase,
-                            prNow,
-                            countsOf(cls.fresh.map((i) => i.finding)),
-                            passNo,
-                        );
+                        //
+                        // C1 (инвариант №8): запись идёт через shArgv и своего DRY-guard'а
+                        // не имеет — значит guard нужен здесь. В dry сюда доезжают: при
+                        // отказе git по базе диффа проход идёт по диффу фазы, а намерения в
+                        // dry не применяются, и в журнал живого PR ушла бы строка с НУЛЯМИ.
+                        // Нули после непрочитанного ревью хуже пропуска: пропуск виден
+                        // дырой в ряду фаз, а нули читаются как факт.
+                        if (passHappened && !dry) {
+                            recordFixReviewFindingsFn(
+                                phase,
+                                prNow,
+                                countsOf(cls.fresh.map((i) => i.finding)),
+                                roundNo,
+                            );
+                        }
                         // Спор, дошедший до предела, закрывается карточкой с обеими
                         // позициями СРАЗУ: держать его дальше — это и есть пинг-понг.
                         for (const item of cls.pingPong) {
@@ -4687,25 +4809,43 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                     milestone: phase.milestone,
                                     pr: prNow,
                                     disputes: ladder.disputes[item.key] ?? 0,
-                                    labels: backlogLabels,
+                                    labels: disputeLabels,
                                 }),
                             );
                         }
+                        // Незакрытая косметика копится до терминального решения: свежую
+                        // разберёт следующий круг правок, а ту, что сессия уже отклонила
+                        // (repeatedCosmetic), не разберёт никто — она уйдёт карточкой.
+                        pendingCosmetic = [
+                            ...pendingCosmetic,
+                            ...cls.cosmetic,
+                            ...cls.repeatedCosmetic,
+                        ];
                         const decision = decideAfterFixReview(cls, {
                             blocked: lastPrBlocked,
                             maxPasses: fixReviewMax,
                         });
+                        pendingBlocking = decision.action === 'merge' ? [] : decision.blocking;
                         logFn(
-                            `📋 Ревью правок, проход ${String(passNo)}: новых находок ${String(cls.fresh.length)} ` +
+                            `📋 Ревью правок, круг ${String(roundNo)}: новых находок ${String(cls.fresh.length)} ` +
                                 `(блокирующих ${String(cls.freshBlocking.length)}, косметики ${String(cls.cosmetic.length)}), ` +
                                 `повторных ${String(cls.repeatedBlocking.length)}, споров закрыто ${String(cls.pingPong.length)} → ` +
                                 `${decision.action} (${decision.reason}).`,
                         );
 
                         if (decision.action === 'fix') {
+                            if (fixDeclined) {
+                                // Сессия правок эти же замечания уже видела и не приняла —
+                                // второй раз тем же промптом её звать нечего. Круг всё
+                                // равно засчитан (rounds++), поэтому спор конечен: он
+                                // упрётся либо в карточку с обеими позициями, либо в
+                                // арбитра, но не в тихий мердж.
+                                continue;
+                            }
                             // Ещё круг правок: косметика этого прохода уходит в ту же
                             // сессию вместе с блокерами — карточки заводятся только на то,
                             // что осталось незакрытым к концу лестницы.
+                            pendingCosmetic = [];
                             fixBase = branchHeadShaFn(phase.branch);
                             const again = runFixSession('правки по ревью правок');
                             if (again.intentsBroken || again.code !== 0) {
@@ -4737,8 +4877,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                 // Судить нечем. Мердж вслепую здесь был бы обходом всей
                                 // лестницы, поэтому блок и разбор по кругу — тот же путь,
                                 // что у ревью фазы, и он тоже не стоп.
+                                //
+                                // Маркер ♻️, а не ⛔: петля отсюда НЕ выходит, а идёт на
+                                // гейт с меткой blocked. Транзитный ⛔ ослепил бы deadman —
+                                // STOPPED_RE читает его как «раннер вышел из loop» и берёт
+                                // порог тишины Infinity (deadman.ts), а окно до 🚦 гейта
+                                // как раз то, где addBlockedLabel ходит в форж и висит.
                                 logFn(
-                                    '⛔ Ревью правок: арбитра нет (модель не задана) — ставлю label blocked, гейт отправит фазу в разбор.',
+                                    '♻️ Ревью правок: арбитра нет (модель не задана) — ставлю label blocked, гейт отправит фазу в разбор.',
                                 );
                                 addBlockedLabelFn(phase.branch, { shFn, logFn });
                                 break;
@@ -4749,7 +4895,7 @@ export function createOrchestrator(env: OrchestratorEnv) {
                             const arbCode = runClaudeFn(
                                 buildFixArbiterPrompt({
                                     branch: phase.branch,
-                                    fixDiffContext,
+                                    fixDiffContext: arbiterDiffContext(),
                                 }),
                                 { model: arbiterModel, maxTurns: reviewTurns },
                             );
@@ -4759,15 +4905,24 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                 // падение не стоп: метка blocked отправляет фазу в штатный
                                 // разбор (#217), который сам конечен и сам решает, звать ли
                                 // человека. Мердж вслепую тут был бы худшим из исходов.
+                                //
+                                // Причины две и они разные: батч намерений не применился
+                                // (fail-closed по батчу, модель отработала) против падения
+                                // самой сессии. «Код 0» в тексте про первый случай — вранье
+                                // числом, по которому человек чинил бы не то.
                                 logFn(
-                                    `⛔ Арбитр ревью правок не дал вердикта (код ${arbCode}) — ставлю label blocked, гейт отправит фазу в разбор.`,
+                                    (arbApplied
+                                        ? `♻️ Арбитр ревью правок упал (код ${arbCode})`
+                                        : '♻️ Намерения арбитра ревью правок не применились (fail-closed по батчу)') +
+                                        ' — ставлю label blocked, гейт отправит фазу в разбор.',
                                 );
                                 addBlockedLabelFn(phase.branch, { shFn, logFn });
                                 break;
                             }
-                            const arbBlocking = classifyFixReview(lastPrFindings, {
-                                ...emptyReviewOfFixes(),
-                            });
+                            const arbBlocking = classifyFixReview(
+                                lastPrFindings,
+                                emptyReviewOfFixes(),
+                            );
                             if (lastPrBlocked || arbBlocking.freshBlocking.length > 0) {
                                 // Воспроизвёл: метку уже поставило намерение pr-block (либо
                                 // ставим её сами по severity находок) — дальше штатный
@@ -4792,7 +4947,9 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                     backlogIssueFor(item, {
                                         milestone: phase.milestone,
                                         pr: prNow,
-                                        labels: backlogLabels,
+                                        // Спорный blocker/major — не механическая работа:
+                                        // метки роутинга модели с него сняты.
+                                        labels: disputeLabels,
                                         // Причина «не держит мердж» здесь ДРУГАЯ, чем у
                                         // косметики: не правило про severity, а вердикт
                                         // арбитра. Карточку читает человек — соврать нельзя.
@@ -4800,14 +4957,27 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                     }),
                                 );
                             }
+                            // Собственная косметика арбитра — тоже находки, и промпт прямо
+                            // обещает ему карточки за 🟡/⚪. Без этого обещание пустое:
+                            // остался бы комментарий на PR, который после squash-merge
+                            // никто не перечитает, а модель тратила бы на них ходы зря.
+                            for (const item of [...pendingCosmetic, ...arbBlocking.cosmetic]) {
+                                fileBacklogCard(
+                                    backlogIssueFor(item, {
+                                        milestone: phase.milestone,
+                                        pr: prNow,
+                                        labels: backlogLabels,
+                                    }),
+                                );
+                            }
                             break;
                         }
 
-                        // 'merge': держать нечем. Незакрытая косметика ПОСЛЕДНЕГО прохода
-                        // (её уже никто не разберёт — круга правок больше не будет) уходит
-                        // карточками: «minor не держит мердж» не должно означать «minor не
-                        // делается никогда».
-                        for (const item of cls.cosmetic) {
+                        // 'merge': держать нечем. Незакрытая косметика (её уже никто не
+                        // разберёт — круга правок больше не будет) уходит карточками:
+                        // «minor не держит мердж» не должно означать «minor не делается
+                        // никогда».
+                        for (const item of pendingCosmetic) {
                             fileBacklogCard(
                                 backlogIssueFor(item, {
                                     milestone: phase.milestone,
@@ -4818,6 +4988,11 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         }
                         break;
                     }
+                    // Карточки лестницы — на доску: доска источник правды по статусу
+                    // (CLAUDE.md, раздел Git), и карточка, которой там нет, для человека
+                    // равна потерянной находке. Синк best-effort и идемпотентен, поэтому
+                    // зовём один раз в конце и только если карточки реально заводились.
+                    if (backlogCards > 0 && !dry) syncProjectBoardFn();
                     if (ladderStop) break;
 
                     state.submitted = true;

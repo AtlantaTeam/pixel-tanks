@@ -83,6 +83,12 @@ const mkState = (o: Partial<RalphState> = {}): RalphState => ({
 
 // Один прогон полного цикла сдачи. `passes` — что приносит каждый очередной проход ревью
 // правок, `arbiter` — что приносит независимый арбитр. Всё остальное — нейтральные фейки.
+//
+// `fixDiffFiles` — очередь ответов на «что изменила сессия правок» (по одному на круг
+// лестницы, последний повторяется): `[]` = сессия ничего не запушила, `null` = дифф по
+// базе не посчитался (git чихнул). Параметром, а не отдельной копией всей обвязки:
+// дубль на ~70 строк уже разъезжался с оригиналом (в нём не было ни журнала, ни карточек,
+// ни арбитра), и следующая правка обвязки поехала бы только в одну из копий.
 function runPhase({
     passes = [] as PassResult[],
     arbiter = { findings: [] } as PassResult,
@@ -90,6 +96,8 @@ function runPhase({
     config = cfg(),
     state = mkState(),
     dryRun = false,
+    headSha = 'b'.repeat(40) as string | null,
+    fixDiffFiles = [['src/a.ts']] as Array<string[] | null>,
 } = {}) {
     const prompts: string[] = [];
     const logs: string[] = [];
@@ -98,8 +106,10 @@ function runPhase({
     const journal: Array<{ pass: number; counts: Record<string, number>; pr: number | null }> = [];
     const addBlockedLabelFn = vi.fn();
     const pushEventFn = vi.fn();
+    const syncProjectBoardFn = vi.fn();
     let passIdx = 0;
     let idxCalls = 0;
+    let fixDiffIdx = 0;
 
     runLoop(
         config,
@@ -124,11 +134,16 @@ function runPhase({
             pickRuntimeFn: () => 'claude',
             pickRouteFn: () => ({ provider: 'claude', model: 'claude-coder' }),
             pickReviewModelFn: () => REVIEW_MODEL,
-            phaseDiffFilesFn: () => ['src/a.ts'],
+            phaseDiffFilesFn: (_b: string, opts?: { base?: string }) => {
+                if (!opts?.base) return ['src/a.ts'];
+                const i = Math.min(fixDiffIdx, fixDiffFiles.length - 1);
+                fixDiffIdx += 1;
+                return fixDiffFiles[i];
+            },
             // Дифф правок отличим от диффа фазы: у него задана база.
             reviewDiffContextFn: (_b: string, opts?: { base?: string }) =>
                 opts?.base ? FIX_DIFF : PHASE_DIFF,
-            branchHeadShaFn: () => 'b'.repeat(40),
+            branchHeadShaFn: () => headSha,
             createIssueFn: (input) => {
                 issues.push(input);
                 return 100 + issues.length;
@@ -185,7 +200,7 @@ function runPhase({
             advancePhaseFn: () => {},
             tryMergePhaseFn: () => gate,
             closeMilestoneByTitleFn: () => {},
-            syncProjectBoardFn: () => {},
+            syncProjectBoardFn,
             recordReviewFindingsFn: () => {},
             getLastRedCheck: () => null,
             getLastGatePr: () => PR,
@@ -203,6 +218,7 @@ function runPhase({
         journal,
         addBlockedLabelFn,
         pushEventFn,
+        syncProjectBoardFn,
         ladder: () => normalizeReviewOfFixes(state.reviewOfFixes),
         fixReviewPrompts: () => prompts.filter(isFixReviewPrompt),
         fixPrompts: () => prompts.filter(isFixPrompt),
@@ -236,103 +252,109 @@ describe('крит. 1: фаза БЕЗ блокеров всё равно пол
         const s = runPhase({ passes: [{ findings: [] }] });
         const idx = s.prompts.findIndex(isFixReviewPrompt);
         expect(s.models[idx]).toBe(REVIEW_MODEL);
-        expect(s.logs.some((l) => /Ревью ПРАВОК \(проход 1\/3\)/.test(l))).toBe(true);
+        expect(
+            s.logs.some((l) => /Ревью ПРАВОК \(круг 1, проход с новыми блокерами 1\/3\)/.test(l)),
+        ).toBe(true);
     });
 
-    it('сессия правок ничего не изменила → проход не выдумывается, но и мердж не стопорится', () => {
+    it('круг и потолок — разные величины: «проход 5/3» в логе и промпте невозможен', () => {
+        // Чередование «новый major → повтор того же → новый major»: кругов больше, чем
+        // проходов, засчитанных потолку. Раньше числитель считал круги, знаменатель —
+        // проходы, и лог штатно печатал номер выше потолка.
+        const s = runPhase({
+            passes: [
+                { findings: [major('раз', 1)] },
+                { findings: [major('раз', 1)] },
+                { findings: [major('два', 2)] },
+                { findings: [] },
+            ],
+        });
+        const ceiling = s.logs.filter((l) => /Ревью ПРАВОК \(круг/.test(l));
+        expect(ceiling.length).toBeGreaterThan(2);
+        for (const line of ceiling) {
+            const m = /проход с новыми блокерами (\d+)\/(\d+)\)/.exec(line);
+            expect(m).not.toBeNull();
+            expect(Number(m?.[1])).toBeLessThanOrEqual(Number(m?.[2]));
+        }
+        // Круг при этом честно свой: чередование дало больше кругов, чем проходов.
+        expect(ceiling.some((l) => /круг 3,/.test(l))).toBe(true);
+        for (const p of s.fixReviewPrompts()) {
+            const m = /проход (\d+) из (\d+)/.exec(p);
+            expect(Number(m?.[1])).toBeLessThanOrEqual(Number(m?.[2]));
+        }
+    });
+
+    it('сессия правок ничего не изменила и держать нечем → проход не выдумывается, мердж не стопорится', () => {
         const s = runPhase({
             passes: [{ findings: [] }],
             config: cfg(),
             state: mkState(),
         });
         expect(s.fixReviewPrompts()).toHaveLength(1);
-        // Отдельный прогон: дифф правок пуст.
-        const empty = runPhaseWithEmptyFixDiff();
+        // Тот же прогон, но дифф правок пуст с самого начала.
+        const empty = runPhase({ fixDiffFiles: [[]] });
         expect(empty.fixReviewPrompts()).toHaveLength(0);
         expect(empty.logs.some((l) => /сессия правок ничего не изменила/.test(l))).toBe(true);
         expect(empty.merged()).toBe(true);
     });
+
+    it('ревью правок выключено конфигом (fixReviewAttempts: 0) — лестницы нет, а не тихий дефолт 3', () => {
+        const s = runPhase({
+            passes: [{ findings: [blocker('никто этого не увидит', 1)] }],
+            config: cfg({ fixReviewAttempts: 0 }),
+        });
+        expect(s.fixReviewPrompts()).toHaveLength(0);
+        expect(s.logs.some((l) => /Ревью правок выключено конфигом/.test(l))).toBe(true);
+        expect(s.merged()).toBe(true);
+    });
 });
 
-// Отдельный прогон с пустым диффом правок: phaseDiffFiles с базой отдаёт пустой список.
-function runPhaseWithEmptyFixDiff() {
-    const prompts: string[] = [];
-    const logs: string[] = [];
-    const pushes: string[] = [];
-    let idxCalls = 0;
-    const state = mkState();
-    runLoop(
-        cfg(),
-        { state, maxIterations: 10, maxTurns: 200 },
-        {
-            once: false,
-            dry: false,
-            logFn: (m: string) => logs.push(m),
-            shFn: () => '',
-            runArgvFn: () => '',
-            saveStateFn: () => {},
-            openIssuesFn: () => [],
-            allOpenIssuesFn: () => [],
-            hasAnyIssuesFn: () => true,
-            findOpenPrFn: () => ({ number: PR, labels: [] }),
-            createPrFn: () => PR,
-            phasePrBodyFn: () => 'тело PR',
-            getIssueFn: (number: number) => ({ number, title: 'задача', body: 'тело' }),
-            prCommentsFn: () => [],
-            phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
-            pickModelFn: () => 'claude-coder',
-            pickRuntimeFn: () => 'claude',
-            pickRouteFn: () => ({ provider: 'claude', model: 'claude-coder' }),
-            pickReviewModelFn: () => REVIEW_MODEL,
-            phaseDiffFilesFn: (_b: string, opts?: { base?: string }) =>
-                opts?.base ? [] : ['src/a.ts'],
-            reviewDiffContextFn: () => PHASE_DIFF,
-            branchHeadShaFn: () => 'b'.repeat(40),
-            createIssueFn: () => 1,
-            recordFixReviewFindingsFn: () => {},
-            removeBlockedLabelFn: () => {},
-            addBlockedLabelFn: () => {},
-            runClaudeFn: (prompt: string) => {
-                prompts.push(prompt);
-                return 0;
-            },
-            applySessionRequestsFn: () => ({
-                applied: 0,
-                failed: false,
-                closedIssues: [],
-                prFindings: [],
-                prBlocked: false,
-            }),
-            ensureCleanFn: () => true,
-            phaseMergedFn: () => false,
-            mergedPhasePrFn: () => null,
-            advancePhaseFn: () => {},
-            tryMergePhaseFn: () => 'merged',
-            closeMilestoneByTitleFn: () => {},
-            syncProjectBoardFn: () => {},
-            recordReviewFindingsFn: () => {},
-            getLastRedCheck: () => null,
-            getLastGatePr: () => PR,
-            pushEventFn: (msg: string) => {
-                pushes.push(msg);
-                return false;
-            },
-            ensureMonitorAliveFn: () => null,
-        },
-    );
-    return {
-        logs,
-        fixReviewPrompts: () => prompts.filter(isFixReviewPrompt),
-        merged: () => pushes.some((t) => /смерджена в main/.test(t)),
-    };
-}
+describe('крит. 1b: пустой дифф правок ПОСЛЕ решения «fix» не отпускает фазу в мердж', () => {
+    // Дыра, найденная ревью самих правок #625: проход 1 нашёл 🔴 → решение 'fix' → сессия
+    // правок сочла замечание неверным и НИЧЕГО не запушила (штатное поведение — промпт
+    // прямо разрешает обоснование пропуска). Прежний код видел пустой дифф и выходил из
+    // лестницы: фаза с непогашенным blocker уезжала на гейт и мёржилась, минуя и спор, и
+    // арбитра, — метки blocked при этом нет, держать мердж нечем.
+    const declinedBlocker = () => ({
+        passes: [{ findings: [blocker('правка убила отказ', 1)] }],
+        // Круг 1 — сессия правок что-то запушила; дальше она молчит.
+        fixDiffFiles: [['src/a.ts'], []] as Array<string[] | null>,
+    });
+
+    it('находка не теряется: те же замечания предъявляются повторно, спор идёт по лестнице', () => {
+        const s = runPhase(declinedBlocker());
+
+        expect(s.logs.some((l) => /предъявляю их повторно/.test(l))).toBe(true);
+        // Второй раз ту же сессию правок тем же промптом не зовут — она уже отказалась.
+        expect(s.fixPrompts()).toHaveLength(2);
+        // И ревью на пустом диффе не выдумывается: повтор считает лестница, а не модель.
+        expect(s.fixReviewPrompts()).toHaveLength(1);
+    });
+
+    it('спор кончается карточкой с обеими позициями, а не молчаливым мерджем', () => {
+        const s = runPhase(declinedBlocker());
+
+        const dispute = s.issues.find((i) => i.title.startsWith('Спор ревью и правок'));
+        expect(dispute).toBeDefined();
+        expect(dispute?.body).toContain('правка убила отказ');
+        // Лестница конечна: человека ночью не будят, фаза доезжает до гейта.
+        expect(s.merged()).toBe(true);
+    });
+
+    it('журнал прохода не выдумывается: повтор ревью не звал, нулей по живому PR нет', () => {
+        const s = runPhase(declinedBlocker());
+        // Ровно одна запись — от единственного состоявшегося прохода.
+        expect(s.journal).toHaveLength(1);
+        expect(s.journal[0].counts).toMatchObject({ blocker: 1, total: 1 });
+    });
+});
 
 describe('отказ git по базе диффа: проход не пропускается, а дешевеет до диффа фазы', () => {
     // Дифф правок посчитать не удалось — это НЕ «пустой дифф» и не повод пропустить
     // барьер. Проход всё равно идёт, но по диффу фазы: дороже, зато это по-прежнему
     // ревью, а не его видимость.
     it('голова ветки не прочиталась → проход идёт по диффу ФАЗЫ, с предупреждением', () => {
-        const s = runPhaseWithBrokenBase({ headSha: null });
+        const s = runPhase({ headSha: null });
         expect(s.fixReviewPrompts()).toHaveLength(1);
         expect(s.fixReviewPrompts()[0]).toContain('ДИФФ-ФАЗЫ-ЦЕЛИКОМ');
         expect(s.logs.some((l) => /Дифф правок получить не удалось/.test(l))).toBe(true);
@@ -340,91 +362,17 @@ describe('отказ git по базе диффа: проход не пропу�
     });
 
     it('дифф по базе не посчитался (null ≠ пусто) → тот же откат, а не «проход не нужен»', () => {
-        const s = runPhaseWithBrokenBase({ headSha: 'b'.repeat(40), filesWithBase: null });
+        const s = runPhase({ fixDiffFiles: [null] });
         expect(s.fixReviewPrompts()).toHaveLength(1);
         expect(s.fixReviewPrompts()[0]).toContain('ДИФФ-ФАЗЫ-ЦЕЛИКОМ');
         expect(s.logs.some((l) => /сессия правок ничего не изменила/.test(l))).toBe(false);
     });
-});
 
-function runPhaseWithBrokenBase({
-    headSha,
-    filesWithBase = ['src/a.ts'],
-}: {
-    headSha: string | null;
-    filesWithBase?: string[] | null;
-}) {
-    const prompts: string[] = [];
-    const logs: string[] = [];
-    const pushes: string[] = [];
-    let idxCalls = 0;
-    const state = mkState();
-    runLoop(
-        cfg(),
-        { state, maxIterations: 10, maxTurns: 200 },
-        {
-            once: false,
-            dry: false,
-            logFn: (m: string) => logs.push(m),
-            shFn: () => '',
-            runArgvFn: () => '',
-            saveStateFn: () => {},
-            openIssuesFn: () => [],
-            allOpenIssuesFn: () => [],
-            hasAnyIssuesFn: () => true,
-            findOpenPrFn: () => ({ number: PR, labels: [] }),
-            createPrFn: () => PR,
-            phasePrBodyFn: () => 'тело PR',
-            getIssueFn: (number: number) => ({ number, title: 'задача', body: 'тело' }),
-            prCommentsFn: () => [],
-            phaseIndexOfFn: () => (idxCalls++ === 0 ? 0 : 99),
-            pickModelFn: () => 'claude-coder',
-            pickRuntimeFn: () => 'claude',
-            pickRouteFn: () => ({ provider: 'claude', model: 'claude-coder' }),
-            pickReviewModelFn: () => REVIEW_MODEL,
-            phaseDiffFilesFn: (_b: string, opts?: { base?: string }) =>
-                opts?.base ? filesWithBase : ['src/a.ts'],
-            reviewDiffContextFn: (_b: string, opts?: { base?: string }) =>
-                opts?.base ? FIX_DIFF : PHASE_DIFF,
-            branchHeadShaFn: () => headSha,
-            createIssueFn: () => 1,
-            recordFixReviewFindingsFn: () => {},
-            removeBlockedLabelFn: () => {},
-            addBlockedLabelFn: () => {},
-            runClaudeFn: (prompt: string) => {
-                prompts.push(prompt);
-                return 0;
-            },
-            applySessionRequestsFn: () => ({
-                applied: 0,
-                failed: false,
-                closedIssues: [],
-                prFindings: [],
-                prBlocked: false,
-            }),
-            ensureCleanFn: () => true,
-            phaseMergedFn: () => false,
-            mergedPhasePrFn: () => null,
-            advancePhaseFn: () => {},
-            tryMergePhaseFn: () => 'merged',
-            closeMilestoneByTitleFn: () => {},
-            syncProjectBoardFn: () => {},
-            recordReviewFindingsFn: () => {},
-            getLastRedCheck: () => null,
-            getLastGatePr: () => PR,
-            pushEventFn: (msg: string) => {
-                pushes.push(msg);
-                return false;
-            },
-            ensureMonitorAliveFn: () => null,
-        },
-    );
-    return {
-        logs,
-        fixReviewPrompts: () => prompts.filter(isFixReviewPrompt),
-        merged: () => pushes.some((t) => /смерджена в main/.test(t)),
-    };
-}
+    it('dry: журнал прохода НЕ пишется — нули по живому PR читались бы как факт', () => {
+        const s = runPhase({ headSha: null, dryRun: true });
+        expect(s.journal).toHaveLength(0);
+    });
+});
 
 describe('крит. 2: поток новых minor/nit не продлевает цикл и не стопорит мердж', () => {
     it('пять свежих minor/nit за проход → один проход, мердж, карточки вместо задержки', () => {

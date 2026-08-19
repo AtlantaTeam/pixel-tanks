@@ -76,15 +76,25 @@ export function isBlockingSeverity(severity: FixSeverity): boolean {
     return severity === 'blocker' || severity === 'major';
 }
 
-// Ключ находки для дедупа между проходами. Якорь (файл+строка) — устойчивая часть: одно и
-// то же место кода ревью назовёт одинаково, даже если формулировку перепишет. Текст берём
-// нормализованным и обрезанным: полная строка сделала бы ключ хрупким к любой запятой, а
-// одного якоря мало — в одной строке бывает два разных замечания.
+// Ключ находки для дедупа между проходами: ФАЙЛ + нормализованный текст.
+//
+// Номера строки в ключе НЕТ намеренно (ревью #625). Круг лестницы — это коммит в тот же
+// файл, после которого то же самое место почти всегда имеет другой `line`: ключ с номером
+// строки промахивался бы ровно там, где дедуп и нужен, повтор читался бы как свежая
+// находка (двигал потолок `passes`), а карточка спора с обеими позициями требовала бы трёх
+// предъявлений с совпавшим номером строки — то есть была бы практически недостижима.
+// Файл переживает правку, номер строки — нет.
+//
+// Текст берём нормализованным и обрезанным: полная строка сделала бы ключ хрупким к любой
+// запятой, а одного файла мало — в файле бывает несколько разных замечаний. Цена
+// ослабления: два РАЗНЫХ замечания в одном файле, сформулированных первыми 120 символами
+// одинаково, склеятся в одно. Размен осознанный — склейка стоит одной потерянной находки,
+// промах дедупа стоил бы неработающего анти-пинг-понга.
 //
 // Ключ намеренно НЕ включает severity: понижение тем же ревью «🔴 → 🟡» того же места —
 // это тот же спор, а не новая находка, и продлевать им цикл нельзя.
 export function findingKey(finding: FixFinding): string {
-    const anchor = finding.anchor ? `${finding.anchor.path}:${String(finding.anchor.line)}` : '-';
+    const anchor = finding.anchor ? finding.anchor.path : '-';
     const text = String(finding.comment ?? '')
         // Маркер серьёзности из ключа выбрасываем по той же причине: «тот же дефект,
         // другая оценка» — не новая находка.
@@ -181,6 +191,11 @@ export type FixReviewClassification = {
     freshBlocking: ClassifiedFinding[];
     // Новые minor/nit — карточки бэклога, цикл не продлевают.
     cosmetic: ClassifiedFinding[];
+    // Повторно предъявленные minor/nit, спор по которым ещё не закрыт: сессия правок их
+    // уже видела и не приняла. Мердж они не держат (п.4), но и потеряться не должны —
+    // иначе «minor не держит мердж» превращается в «minor не делается никогда»: свежую
+    // косметику разбирает следующий круг правок, а отклонённую — уже никто.
+    repeatedCosmetic: ClassifiedFinding[];
     // Повторно предъявленные blocking, спор по которым ещё не закрыт: мердж держат, но
     // потолок НЕ двигают (иначе несогласие ревью с собой считалось бы новой работой).
     repeatedBlocking: ClassifiedFinding[];
@@ -206,6 +221,7 @@ export function classifyFixReview(
 
     const fresh: ClassifiedFinding[] = [];
     const cosmetic: ClassifiedFinding[] = [];
+    const repeatedCosmetic: ClassifiedFinding[] = [];
     const freshBlocking: ClassifiedFinding[] = [];
     const repeatedBlocking: ClassifiedFinding[] = [];
     const pingPong: ClassifiedFinding[] = [];
@@ -236,6 +252,8 @@ export function classifyFixReview(
                 pingPong.push(item);
             } else if (isBlockingSeverity(severity)) {
                 repeatedBlocking.push(item);
+            } else {
+                repeatedCosmetic.push(item);
             }
             continue;
         }
@@ -249,6 +267,7 @@ export function classifyFixReview(
         fresh,
         freshBlocking,
         cosmetic,
+        repeatedCosmetic,
         repeatedBlocking,
         pingPong,
         ignored,

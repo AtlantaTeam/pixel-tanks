@@ -273,7 +273,6 @@ describe('recordFixReviewFindings — счёт отдельного проход
         const calls = [];
         recordFixReviewFindings(42, 'Фаза 7', VALID_COUNTS, {
             pass: 1,
-            writeFn: undefined,
             nowFn: () => '2026-08-19T10:00:00.000Z',
             appendFn: (e, o) =>
                 appendJournalEntry(e, {
