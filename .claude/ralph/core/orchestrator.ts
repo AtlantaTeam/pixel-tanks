@@ -84,6 +84,7 @@ import {
     FIX_REVIEW_MAX_PASSES,
     normalizeReviewOfFixes,
     pingPongIssueFor,
+    routingModelName,
 } from './review-of-fixes.ts';
 import type {
     ClassifiedFinding,
@@ -4598,6 +4599,35 @@ export function createOrchestrator(env: OrchestratorEnv) {
                         // одна), а метку читает человек.
                         labelPriority: COMPLEXITY_PRIORITY,
                     });
+                    // Деградация `disputeLabelsFor` (модель роутинговой метки вне
+                    // `review.modelStrength` — штатная кросс-провайдерная запись #376)
+                    // fail-closed, но НЕМАЯ: наружу она видна только тем, что спорная
+                    // карточка оказалась без `complexity:*` — то самое состояние, которое
+                    // докблок функции называет нарушением конвенции трекера и дорогой к
+                    // `modelRouting.default`. Отличить «шкала разъехалась с роутингом» от
+                    // «так и задумано» по одной карточке человек не может, а лог петли —
+                    // единственное место, где такое замечают в тот же прогон, а не через
+                    // месяц по странным карточкам. Функция чистая и логировать не должна,
+                    // поэтому строку пишет вызывающий: у него есть и `logFn`, и оба входа.
+                    const routingLabelMap = cfg.modelRouting?.labels ?? {};
+                    const routingNames = Object.keys(routingLabelMap);
+                    if (
+                        backlogLabels.some((l) => routingNames.includes(l)) &&
+                        !disputeLabels.some((l) => routingNames.includes(l))
+                    ) {
+                        const strength = reviewModelStrength(cfg);
+                        const unknown = routingNames
+                            .map((l) => ({ label: l, model: routingModelName(routingLabelMap[l]) }))
+                            .filter((e) => !strength.includes(e.model))
+                            .map((e) => `${e.label} → ${e.model || '(модель не указана)'}`);
+                        logFn(
+                            `⚠ Метка роутинга у спорной карточки СНЯТА, а не заменена сильнейшей: ` +
+                                `${unknown.join(', ')} — вне review.modelStrength, шкалы силы для этих моделей нет, ` +
+                                `назначать сильнейшую не по чему (fail-closed). Спорная карточка останется без ` +
+                                `complexity:* и уедет к modelRouting.default. Если это не задумано — согласуйте ` +
+                                `review.modelStrength с modelRouting.labels.`,
+                        );
+                    }
                     // #199-приём: карточка, которой нет на доске, для человека равна
                     // потерянной находке — доска источник правды по статусу. `createIssue`
                     // доску не трогает, поэтому синк зовём один раз в конце лестницы (он

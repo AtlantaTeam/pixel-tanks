@@ -329,10 +329,20 @@ export function decideAfterFixReview(
         //
         // Поэтому гасим только спор: повторное (`repeatedBlocking`) замечание после
         // вердикта арбитра мердж не держит — ради этого ветка и заведена, — а свежая
-        // блокирующая находка барьер не обходит НИ ПРИ КАКОМ состоянии на диске. Проверка
+        // блокирующая находка проходит барьер при любом значении САМОГО ФЛАГА. Проверка
         // здесь, а не в оркестраторе (обнуление лестницы на входе в сдачу), намеренно:
         // fail-closed не должен зависеть от того, кто и когда чистит state (инвариант №1).
         // Цена — повторный вызов арбитра после падения; он ограничен теми же потолками.
+        //
+        // ГРАНИЦА, которую эта ветка НЕ закрывает (ревью #630): «свежесть» находки решает
+        // дедуп, а он живёт на том же диске — `answered` и `settled` из прошлых кругов.
+        // Находка по НОВОМУ коду, чей ключ (`findingKey` = путь + первые 120 символов
+        // текста) совпал с ключом из унаследованного состояния, свежей не считается: по
+        // `settled` она уходит в `ignored` (мердж первой веткой), по `answered` — в
+        // `repeatedBlocking` (мердж вот этой). Окно узкое — нужен другой дефект в том же
+        // файле с совпадающей формулировкой, — но оно есть, и потому обнуление лестницы
+        // (`clearFixReviewLadder`) остаётся ОБЯЗАТЕЛЬНОЙ гигиеной, а не украшением.
+        // Читать это как «состояние на диске на исход больше не влияет» нельзя.
         return {
             action: 'merge',
             reason: 'независимый арбитр по этой фазе уже отработал — второй раз петлю не крутим',
@@ -447,6 +457,20 @@ export function pingPongIssueFor(
     };
 }
 
+// Имя модели из ОДНОЙ записи `modelRouting.labels`: строка (обратная совместимость) либо
+// `{ provider, model }` (штатная форма после #376). Экспортируется не ради красоты —
+// вызывающий сверяет ТО ЖЕ имя со шкалой, чтобы объяснить в логе деградацию
+// `disputeLabelsFor` (orchestrator.ts). Две копии этого разбора разъехались бы, и лог
+// показывал бы не ту модель, из-за которой метку сняли.
+export function routingModelName(entry: unknown): string {
+    if (typeof entry === 'string') return entry.trim();
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        const model = (entry as { model?: unknown }).model;
+        return typeof model === 'string' ? model.trim() : '';
+    }
+    return '';
+}
+
 // Метки СПОРНОЙ карточки (#628): та же база `backlogLabels`, но метка роутинга модели —
 // СИЛЬНЕЙШАЯ из доступных, а не снятая.
 //
@@ -486,14 +510,6 @@ export function disputeLabelsFor({
     // Пусто — ничья решается порядком ключей конфига.
     labelPriority?: ReadonlyArray<string>;
 }): string[] {
-    const modelOf = (entry: unknown): string => {
-        if (typeof entry === 'string') return entry.trim();
-        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-            const model = (entry as { model?: unknown }).model;
-            return typeof model === 'string' ? model.trim() : '';
-        }
-        return '';
-    };
     const names = Object.keys(routingLabels);
     const isRouting = new Set(names);
     // Деградация к прежнему поведению (#625): метку роутинга снимаем, карточка достаётся
@@ -516,7 +532,7 @@ export function disputeLabelsFor({
     let bestRank = -1;
     let bestPriority = Number.MAX_SAFE_INTEGER;
     for (const label of names) {
-        const rank = modelStrength.indexOf(modelOf(routingLabels[label]));
+        const rank = modelStrength.indexOf(routingModelName(routingLabels[label]));
         // Fail-closed по ЛЮБОЙ неизвестной модели среди роутинговых меток (#630), а не
         // только когда неизвестны ВСЕ. Неизвестная модель получает ранг -1, то есть
         // объявляется слабейшей, — и на смешанном конфиге (часть меток ведёт на claude,
