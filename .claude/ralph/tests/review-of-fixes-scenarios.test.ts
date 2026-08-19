@@ -24,6 +24,10 @@ const runLoop = ralph.runLoop as Runtime['runLoop'];
 
 const REVIEW_MODEL = 'claude-opus-4-8';
 const ARBITER_MODEL = 'claude-fable-5';
+// Модели кодер-роутинга: слабая («механическая») и сильная. Обе — в review.modelStrength
+// ниже, иначе «сильнейшая метка» не определима и проверять было бы нечего.
+const WEAK_MODEL = 'claude-haiku-4-5-20251001';
+const STRONG_MODEL = 'claude-sonnet-5';
 const PR = 777;
 
 // Маркеры диффов: по ним видно, ЧТО именно приложено к промпту прохода.
@@ -55,10 +59,10 @@ const cfg = (o: Partial<RalphConfig> = {}): RalphConfig => ({
     authorAllowlist: ['owner'],
     phases: [{ milestone: 'M1', branch: 'feature/m1' }],
     // Роутинг кодер-модели по метке — как в боевом конфиге: по нему лестница понимает,
-    // какие метки решают о модели, и снимает их со спорных карточек.
+    // какие метки решают о модели, и меняет слабую на сильнейшую у спорных карточек.
     modelRouting: {
         default: 'claude-coder',
-        labels: { 'complexity:low': 'claude-haiku', 'complexity:high': 'claude-opus' },
+        labels: { 'complexity:low': WEAK_MODEL, 'complexity:high': STRONG_MODEL },
     },
     review: {
         default: REVIEW_MODEL,
@@ -67,6 +71,11 @@ const cfg = (o: Partial<RalphConfig> = {}): RalphConfig => ({
         arbiter: ARBITER_MODEL,
         maxTurns: 80,
         backlogLabels: ['complexity:low', 'area:core', 'backlog'],
+        // Порядок сил — ОБЯЗАТЕЛЬНАЯ часть фикстуры (#628): по нему лестница выбирает
+        // сильнейшую метку роутинга для спорной карточки. Пока модели фикстуры в него не
+        // входили, ветка выбора не исполнялась вовсе и сценарий проходил вхолостую —
+        // «метки сняты» выглядело верным просто потому, что назвать сильнейшую было нечем.
+        modelStrength: [WEAK_MODEL, STRONG_MODEL, REVIEW_MODEL, ARBITER_MODEL],
     },
     gate: { checks: [['test', 'npm run test']] },
     ...o,
@@ -104,6 +113,11 @@ function runPhase({
     dryRun = false,
     headSha = 'b'.repeat(40) as string | null,
     fixDiffFiles = [['src/a.ts']] as Array<string[] | null>,
+    // #628: чем кончилась сессия арбитра. `arbiterCode` — её код возврата (≠0 = упала),
+    // `arbiterIntentsFailed` — батч намерений не применился. Оба случая означают «вердикта
+    // НЕТ», и лестница не имеет права считать арбитра отработавшим.
+    arbiterCode = 0,
+    arbiterIntentsFailed = false,
 } = {}) {
     const prompts: string[] = [];
     const logs: string[] = [];
@@ -173,7 +187,7 @@ function runPhase({
             runClaudeFn: (prompt: string, opts?: { model?: string }) => {
                 prompts.push(prompt);
                 models.push(opts?.model ?? '');
-                return 0;
+                return isArbiterPrompt(prompt) ? arbiterCode : 0;
             },
             // Намерения применяет петля; здесь фейк отдаёт то, что «оставила» сессия.
             applySessionRequestsFn: () => {
@@ -192,10 +206,10 @@ function runPhase({
                 if (isArbiterPrompt(last)) {
                     return {
                         applied: 0,
-                        failed: false,
+                        failed: arbiterIntentsFailed,
                         closedIssues: [],
-                        prFindings: arbiter.findings,
-                        prBlocked: arbiter.blocked === true,
+                        prFindings: arbiterIntentsFailed ? [] : arbiter.findings,
+                        prBlocked: !arbiterIntentsFailed && arbiter.blocked === true,
                     };
                 }
                 return {
@@ -521,12 +535,14 @@ describe('крит. 3: три прохода с новыми major → неза�
         expect(s.pushTexts().some((t) => /оставлен человеку|устоял/.test(t))).toBe(false);
     });
 
-    it('спорная карточка не уезжает к самой слабой модели: метки роутинга с неё сняты', () => {
+    it('спорная карточка не уезжает к самой слабой модели: метка роутинга заменена сильнейшей', () => {
         const s = runPhase({ passes: threeFreshMajors, arbiter: { findings: [] } });
         const disputed = s.issues.find((i) => i.title.includes('три'));
         // complexity:low = «механическая задача» по modelRouting.labels, а тут спорный
-        // major, который не развели два ревью и арбитр.
-        expect(disputed?.labels).toEqual(['area:core', 'backlog']);
+        // major, который не развели два ревью и арбитр. Но и БЕЗ метки сложности карточку
+        // оставлять нельзя (#628): она нарушает конвенцию трекера и достаётся
+        // modelRouting.default. Поэтому слабая метка заменена сильнейшей, а не снята.
+        expect(disputed?.labels).toEqual(['complexity:high', 'area:core', 'backlog']);
     });
 
     it('собственная косметика арбитра тоже становится карточкой — промпт ей это обещает', () => {
@@ -564,6 +580,65 @@ describe('крит. 3: три прохода с новыми major → неза�
         });
         expect(s.addBlockedLabelFn).toHaveBeenCalledTimes(1);
         expect(s.merged()).toBe(false);
+    });
+});
+
+describe('#628: «арбитр отработал» — состояние ПОСЛЕ вердикта, а не до запуска сессии', () => {
+    const threeFreshMajors = [
+        { findings: [major('раз', 1)] },
+        { findings: [major('два', 2)] },
+        { findings: [major('три', 3)] },
+    ];
+
+    // Симптом: флаг писался на диск ДО запуска арбитра, а сессия идёт десятки минут.
+    // Падение процесса в этом окне оставляло состояние «арбитр уже высказался» — и после
+    // рестарта первый же блокер уходил в безусловный мердж (ветка next.arbitrated).
+    it('сессия арбитра упала → флаг НЕ выставлен, фаза ушла в разбор blocked', () => {
+        const s = runPhase({ passes: threeFreshMajors, arbiterCode: 1, gate: 'blocked' });
+
+        expect(s.arbiterPrompts()).toHaveLength(1);
+        expect(s.ladder().arbitrated).toBe(false);
+        expect(s.addBlockedLabelFn).toHaveBeenCalledTimes(1);
+        expect(s.merged()).toBe(false);
+    });
+
+    it('батч намерений арбитра не применился → флаг НЕ выставлен (вердикта нет)', () => {
+        const s = runPhase({
+            passes: threeFreshMajors,
+            arbiterIntentsFailed: true,
+            gate: 'blocked',
+        });
+
+        expect(s.ladder().arbitrated).toBe(false);
+        expect(s.addBlockedLabelFn).toHaveBeenCalledTimes(1);
+        expect(s.merged()).toBe(false);
+    });
+
+    it('арбитра звать нечем (модель не задана) → флаг НЕ выставлен, сессии не было', () => {
+        const s = runPhase({
+            passes: threeFreshMajors,
+            config: cfg({
+                review: {
+                    default: REVIEW_MODEL,
+                    escalated: REVIEW_MODEL,
+                    fallback: REVIEW_MODEL,
+                    arbiter: 'none',
+                    maxTurns: 80,
+                    backlogLabels: ['complexity:low', 'area:core', 'backlog'],
+                    modelStrength: ['none'],
+                },
+            }),
+        });
+
+        expect(s.arbiterPrompts()).toHaveLength(0);
+        expect(s.ladder().arbitrated).toBe(false);
+        expect(s.addBlockedLabelFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('вердикт получен и намерения применены → флаг выставлен ровно один раз', () => {
+        const s = runPhase({ passes: threeFreshMajors, arbiter: { findings: [] } });
+        expect(s.ladder().arbitrated).toBe(true);
+        expect(s.merged()).toBe(true);
     });
 });
 

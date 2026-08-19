@@ -3226,6 +3226,32 @@ describe('preflight — валидация конфига/среды и подг
         expect(saveStateFn).toHaveBeenCalledWith(state);
     });
 
+    // #628: повторная сдача судится ЗАНОВО. Унаследованная лестница ревью правок означала
+    // бы обратное: `arbitrated: true` уводит любую свежую блокирующую находку прямо в
+    // мердж (ветка next.arbitrated в decideAfterFixReview), а `answered`/`settled` прячут
+    // её как «уже отвеченную».
+    it('resubmit=true → лестница ревью правок обнуляется вместе с submitted', () => {
+        const state = {
+            count: 2,
+            milestone: 'M1',
+            submitted: true,
+            noProgress: 0,
+            reviewOfFixes: {
+                passes: 3,
+                rounds: 5,
+                answered: ['src/a.ts|дыра'],
+                disputes: {},
+                settled: [],
+                arbitrated: true,
+            },
+        };
+        preflight(
+            validCfg(),
+            okDeps({ loadStateFn: () => state, saveStateFn: vi.fn(), resubmit: true }),
+        );
+        expect(state.reviewOfFixes).toBeNull();
+    });
+
     it('#165 барьер: state.deployBlock задан → пуш на старте + fail (следующая фаза не начинается)', () => {
         const state = {
             count: 0,
@@ -5702,6 +5728,40 @@ describe('runLoop — основной while-цикл: итерации коде
         expect(healPrompt).toContain('test');
         expect(healPrompt).toContain('npm run test');
         expect(healPrompt).toContain('boom-fail');
+    });
+
+    // #628: heal-коммит — НОВЫЙ код, которого не видел ни один проход лестницы. Пережившее
+    // цикл сдачи состояние отправило бы свежую блокирующую находку по нему в безусловный
+    // мердж (`arbitrated: true`) либо спрятало бы её дедупом как «уже отвеченную» — то
+    // есть регрессия чини-сессии уехала бы в main непрочитанной.
+    it('гейт red-checks → чини-сессия обнуляет и лестницу ревью правок, не только submitted', () => {
+        const logs: string[] = [];
+        const state = mkState({
+            submitted: true,
+            gateHeals: 0,
+            reviewOfFixes: {
+                passes: 3,
+                rounds: 4,
+                answered: ['src/a.ts|дыра'],
+                disputes: {},
+                settled: ['src/b.ts|спор'],
+                arbitrated: true,
+            },
+        });
+        runLoop(
+            validCfg({ gateHealAttempts: 2 }),
+            ctx(state),
+            deps(logs, {
+                openIssuesFn: () => [],
+                allOpenIssuesFn: () => [],
+                phaseMergedFn: () => false,
+                tryMergePhaseFn: () => 'red-checks',
+                getLastRedCheck: () => ({ name: 'test', cmd: 'npm run test', excerpt: 'boom' }),
+                runClaudeFn: vi.fn<RunClaudeFake>(() => 0),
+            }),
+        );
+        expect(state.submitted).toBe(false);
+        expect(state.reviewOfFixes).toBeNull();
     });
 
     // #376 доп.скоуп: ПОСЛЕ modelRouting.healEscalation.afterAttempts НЕУДАЧНЫХ heal-попыток

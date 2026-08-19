@@ -79,6 +79,7 @@ import {
     classifyFixReview,
     countsOf,
     decideAfterFixReview,
+    disputeLabelsFor,
     emptyReviewOfFixes,
     FIX_REVIEW_MAX_PASSES,
     normalizeReviewOfFixes,
@@ -237,6 +238,11 @@ export type RalphConfig = {
         // закрытые споры. Набор меток — проектная специфика (у следующего проекта он свой),
         // поэтому в ядре его нет: пусто ⇒ карточка заводится без меток.
         backlogLabels?: string[];
+        // Порядок сил моделей ревью ОТ СЛАБОЙ К СИЛЬНОЙ (валидируется на старте —
+        // `assertReviewModelStrength`). Оркестратор читает его через `reviewModelStrength`
+        // ещё и для меток спорной карточки (#628): сильнейшая метка роутинга выбирается
+        // ровно по этому порядку. unknown, а не string[]: значение приходит из чужого JSON.
+        modelStrength?: unknown;
     };
     reviewModel?: string;
     authorAllowlist: string[];
@@ -3651,6 +3657,12 @@ export function createOrchestrator(env: OrchestratorEnv) {
         const state = loadStateFn(failFn as (msg: string) => void);
         if (resubmit) {
             state.submitted = false;
+            // #628: вместе с `submitted` обнуляется и лестница ревью правок. Иначе новый
+            // цикл сдачи наследует состояние прошлого: `arbitrated: true` уводит ЛЮБУЮ
+            // свежую блокирующую находку прямо в мердж (ветка `next.arbitrated` в
+            // decideAfterFixReview), а множества `answered`/`settled` прячут её как «уже
+            // отвеченную». Просят повторить сдачу — значит, судить надо заново.
+            state.reviewOfFixes = null;
             saveStateFn(state);
             logFn('🔁 --resubmit: цикл сдачи фазы (PR/ревью/правки) будет выполнен заново.');
         }
@@ -4543,18 +4555,23 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     const backlogLabels = (
                         Array.isArray(cfg.review?.backlogLabels) ? cfg.review.backlogLabels : []
                     ).filter((l): l is string => typeof l === 'string' && !!l.trim());
-                    // Метки СПОРНОЙ карточки — те же, минус метки роутинга модели.
-                    // Причина (ревью #625): `backlogLabels` подобраны под косметику, и в
-                    // этом проекте там `complexity:low` = самая слабая модель. Карточка
-                    // после арбитра или закрытого спора по определению содержит blocker или
-                    // major, который не смогли развести два ревью и арбитр, — отправлять
-                    // его к «механической» модели значит гарантировать второй заход.
-                    // Набор роутинговых меток берём из самого конфига (`modelRouting.labels`),
-                    // а не по имени `complexity:*`: имена меток — проектная специфика, и
-                    // ядро о них знать не должно. Без роутинговой метки карточка достаётся
-                    // `modelRouting.default`, то есть модели по умолчанию.
-                    const routingLabels = new Set(Object.keys(cfg.modelRouting?.labels ?? {}));
-                    const disputeLabels = backlogLabels.filter((l) => !routingLabels.has(l));
+                    // Метки СПОРНОЙ карточки — те же, но метка роутинга ЗАМЕНЕНА сильнейшей
+                    // (#628; арифметика замены — `disputeLabelsFor`). Причина (ревью #625):
+                    // `backlogLabels` подобраны под косметику, и в этом проекте там
+                    // `complexity:low` = самая слабая модель. Карточка после арбитра или
+                    // закрытого спора по определению содержит blocker или major, который не
+                    // смогли развести два ревью и арбитр, — отправлять его к «механической»
+                    // модели значит гарантировать второй заход. Снимать метку целиком (как
+                    // делала первая редакция) тоже нельзя: карточка остаётся без метки
+                    // сложности вовсе — нарушает конвенцию трекера и достаётся
+                    // `modelRouting.default`, сильным быть не обязанному.
+                    const disputeLabels = disputeLabelsFor({
+                        backlogLabels,
+                        // Имена меток — проектная специфика, ядро о них не знает: и набор
+                        // роутинговых меток, и порядок силы моделей приходят из конфига.
+                        routingLabels: cfg.modelRouting?.labels ?? {},
+                        modelStrength: reviewModelStrength(cfg),
+                    });
                     // #199-приём: карточка, которой нет на доске, для человека равна
                     // потерянной находке — доска источник правды по статусу. `createIssue`
                     // доску не трогает, поэтому синк зовём один раз в конце лестницы (он
@@ -4870,9 +4887,6 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                 cfg.review?.arbiter ?? strength[strength.length - 1],
                                 state.reviewModelFloor,
                             );
-                            ladder = { ...ladder, arbitrated: true };
-                            state.reviewOfFixes = ladder;
-                            saveStateFn(state);
                             if (!arbiterModel || arbiterModel === 'none') {
                                 // Судить нечем. Мердж вслепую здесь был бы обходом всей
                                 // лестницы, поэтому блок и разбор по кругу — тот же путь,
@@ -4919,6 +4933,18 @@ export function createOrchestrator(env: OrchestratorEnv) {
                                 addBlockedLabelFn(phase.branch, { shFn, logFn });
                                 break;
                             }
+                            // Флаг «арбитр отработал» фиксируется ТОЛЬКО ЗДЕСЬ — после того
+                            // как вердикт получен и батч намерений применён (#628). Раньше
+                            // он писался на диск ДО запуска сессии, которая идёт десятки
+                            // минут: падение процесса в этом окне оставляло состояние
+                            // «арбитр уже высказался», и после рестарта первый же блокер
+                            // уходил в безусловный мердж (ветка `next.arbitrated` в
+                            // decideAfterFixReview) — то есть ровно мимо барьера. Цена
+                            // честного порядка — повторный вызов арбитра после падения; он
+                            // ограничен теми же потолками, а вот мердж вслепую ничем.
+                            ladder = { ...ladder, arbitrated: true };
+                            state.reviewOfFixes = ladder;
+                            saveStateFn(state);
                             const arbBlocking = classifyFixReview(
                                 lastPrFindings,
                                 emptyReviewOfFixes(),
@@ -5610,6 +5636,14 @@ export function createOrchestrator(env: OrchestratorEnv) {
                     // Дубли ревью-комментариев — осознанная цена ночной автономии; blocked
                     // от повторного ревью остаётся честным стопом.
                     state.submitted = false;
+                    // #628: лестница ревью правок обнуляется вместе с `submitted`.
+                    // Heal-коммит — это НОВЫЙ код, которого не видел ни один проход:
+                    // унаследованный `arbitrated: true` отправил бы любую свежую
+                    // блокирующую находку по нему прямиком в мердж, а дедуп-множества
+                    // спрятали бы её как «уже отвеченную». Регрессия, внесённая чини-
+                    // сессией, уезжала бы в main непрочитанной — ровно та дыра, ради
+                    // которой лестница и заводилась.
+                    state.reviewOfFixes = null;
                     saveStateFn(state);
                     logFn('🔁 После чини-сессии — повторное ревью фазы перед гейтом.');
                     continue;

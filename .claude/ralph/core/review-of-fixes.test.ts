@@ -12,6 +12,7 @@ import {
     classifyFixReview,
     countsOf,
     decideAfterFixReview,
+    disputeLabelsFor,
     emptyReviewOfFixes,
     findingKey,
     FIX_REVIEW_MAX_DISPUTES,
@@ -354,5 +355,100 @@ describe('карточки: незакрытая косметика и закр�
         const issue = backlogIssueFor(c.cosmetic[0], { milestone: 'M1', pr: null });
         expect(issue.body).toContain('src/a.ts:7');
         expect(issue.body).not.toContain('PR #');
+    });
+});
+
+describe('disputeLabelsFor — метка роутинга у спорной карточки ЗАМЕНЯЕТСЯ, а не снимается (#628)', () => {
+    // Порядок сил и роутинг — как в боевом конфиге: complexity:low ведёт на самую слабую
+    // («механическую») модель, complexity:high — на сильную.
+    const strength = ['haiku', 'sonnet', 'opus', 'fable'];
+    const routing = { 'complexity:low': 'haiku', 'complexity:high': 'opus' };
+    const base = ['complexity:low', 'area:core', 'backlog'];
+
+    it('слабая метка роутинга заменена сильнейшей, остальные метки на месте', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: routing,
+                modelStrength: strength,
+            }),
+        ).toEqual(['complexity:high', 'area:core', 'backlog']);
+    });
+
+    it('карточка не остаётся без метки сложности — иначе она ещё и нарушает конвенцию трекера', () => {
+        const labels = disputeLabelsFor({
+            backlogLabels: base,
+            routingLabels: routing,
+            modelStrength: strength,
+        });
+        expect(labels.some((l) => l in routing)).toBe(true);
+    });
+
+    it('запись { provider, model } читается так же, как строка', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: {
+                    'complexity:low': { provider: 'claude', model: 'haiku' },
+                    'complexity:high': { provider: 'openai', model: 'fable' },
+                },
+                modelStrength: strength,
+            }),
+        ).toEqual(['complexity:high', 'area:core', 'backlog']);
+    });
+
+    it('несколько меток роутинга в базе → остаётся ОДНА сильнейшая, дублей нет', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: ['complexity:low', 'complexity:high', 'area:core'],
+                routingLabels: routing,
+                modelStrength: strength,
+            }),
+        ).toEqual(['complexity:high', 'area:core']);
+    });
+
+    it('при равной силе моделей выбор воспроизводим — первая метка по порядку конфига', () => {
+        const tie = { 'complexity:high': 'opus', 'complexity:expert': 'opus' };
+        const labels = disputeLabelsFor({
+            backlogLabels: ['complexity:low', 'area:core'],
+            routingLabels: { 'complexity:low': 'haiku', ...tie },
+            modelStrength: strength,
+        });
+        expect(labels).toEqual(['complexity:high', 'area:core']);
+    });
+
+    it('метки роутинга в базе не было — новой не появляется', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: ['area:core', 'backlog'],
+                routingLabels: routing,
+                modelStrength: strength,
+            }),
+        ).toEqual(['area:core', 'backlog']);
+    });
+
+    it('роутинг ведёт на модели вне порядка сил → метка снимается (назвать сильнейшую нечем)', () => {
+        // Деградация к прежнему поведению: карточка достаётся modelRouting.default.
+        // Ставить «любую» нельзя — с равной вероятностью это была бы механическая модель.
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: { 'complexity:low': 'чужая-модель' },
+                modelStrength: strength,
+            }),
+        ).toEqual(['area:core', 'backlog']);
+    });
+
+    it('роутинга нет вовсе / база пуста — не падает и ничего не выдумывает', () => {
+        expect(
+            disputeLabelsFor({ backlogLabels: base, routingLabels: {}, modelStrength: strength }),
+        ).toEqual(base);
+        expect(
+            disputeLabelsFor({
+                backlogLabels: [],
+                routingLabels: routing,
+                modelStrength: strength,
+            }),
+        ).toEqual([]);
     });
 });
