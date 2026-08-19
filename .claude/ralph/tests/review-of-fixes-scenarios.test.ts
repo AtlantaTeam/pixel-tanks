@@ -17,13 +17,21 @@ import { describe, it, expect, vi } from 'vitest';
 import ralph from '../ralph.js';
 import type { RalphConfig } from '../core/orchestrator.ts';
 import type { RalphState } from '../core/state-lock.ts';
-import { normalizeReviewOfFixes } from '../core/review-of-fixes.ts';
+import {
+    FIX_REVIEW_MAX_PASSES,
+    findingKey,
+    normalizeReviewOfFixes,
+} from '../core/review-of-fixes.ts';
 
 type Runtime = ReturnType<typeof import('../core/orchestrator.ts').createOrchestrator>;
 const runLoop = ralph.runLoop as Runtime['runLoop'];
 
 const REVIEW_MODEL = 'claude-opus-4-8';
 const ARBITER_MODEL = 'claude-fable-5';
+// Модели кодер-роутинга: слабая («механическая») и сильная. Обе — в review.modelStrength
+// ниже, иначе «сильнейшая метка» не определима и проверять было бы нечего.
+const WEAK_MODEL = 'claude-haiku-4-5-20251001';
+const STRONG_MODEL = 'claude-sonnet-5';
 const PR = 777;
 
 // Маркеры диффов: по ним видно, ЧТО именно приложено к промпту прохода.
@@ -55,10 +63,18 @@ const cfg = (o: Partial<RalphConfig> = {}): RalphConfig => ({
     authorAllowlist: ['owner'],
     phases: [{ milestone: 'M1', branch: 'feature/m1' }],
     // Роутинг кодер-модели по метке — как в боевом конфиге: по нему лестница понимает,
-    // какие метки решают о модели, и снимает их со спорных карточек.
+    // какие метки решают о модели, и меняет слабую на сильнейшую у спорных карточек.
     modelRouting: {
         default: 'claude-coder',
-        labels: { 'complexity:low': 'claude-haiku', 'complexity:high': 'claude-opus' },
+        // `complexity:high` и `complexity:expert` ведут на ОДНУ модель — это боевая форма
+        // (в `ralph.config.json` обе метки идут на opus-5), и без неё ничья по силе в
+        // фикстуре не встречалась вовсе: проводку `labelPriority: COMPLEXITY_PRIORITY` в
+        // оркестраторе можно было удалить, не покраснив ни одного теста.
+        labels: {
+            'complexity:low': WEAK_MODEL,
+            'complexity:high': STRONG_MODEL,
+            'complexity:expert': STRONG_MODEL,
+        },
     },
     review: {
         default: REVIEW_MODEL,
@@ -67,6 +83,11 @@ const cfg = (o: Partial<RalphConfig> = {}): RalphConfig => ({
         arbiter: ARBITER_MODEL,
         maxTurns: 80,
         backlogLabels: ['complexity:low', 'area:core', 'backlog'],
+        // Порядок сил — ОБЯЗАТЕЛЬНАЯ часть фикстуры (#628): по нему лестница выбирает
+        // сильнейшую метку роутинга для спорной карточки. Пока модели фикстуры в него не
+        // входили, ветка выбора не исполнялась вовсе и сценарий проходил вхолостую —
+        // «метки сняты» выглядело верным просто потому, что назвать сильнейшую было нечем.
+        modelStrength: [WEAK_MODEL, STRONG_MODEL, REVIEW_MODEL, ARBITER_MODEL],
     },
     gate: { checks: [['test', 'npm run test']] },
     ...o,
@@ -104,6 +125,11 @@ function runPhase({
     dryRun = false,
     headSha = 'b'.repeat(40) as string | null,
     fixDiffFiles = [['src/a.ts']] as Array<string[] | null>,
+    // #628: чем кончилась сессия арбитра. `arbiterCode` — её код возврата (≠0 = упала),
+    // `arbiterIntentsFailed` — батч намерений не применился. Оба случая означают «вердикта
+    // НЕТ», и лестница не имеет права считать арбитра отработавшим.
+    arbiterCode = 0,
+    arbiterIntentsFailed = false,
 } = {}) {
     const prompts: string[] = [];
     const logs: string[] = [];
@@ -173,7 +199,7 @@ function runPhase({
             runClaudeFn: (prompt: string, opts?: { model?: string }) => {
                 prompts.push(prompt);
                 models.push(opts?.model ?? '');
-                return 0;
+                return isArbiterPrompt(prompt) ? arbiterCode : 0;
             },
             // Намерения применяет петля; здесь фейк отдаёт то, что «оставила» сессия.
             applySessionRequestsFn: () => {
@@ -192,10 +218,10 @@ function runPhase({
                 if (isArbiterPrompt(last)) {
                     return {
                         applied: 0,
-                        failed: false,
+                        failed: arbiterIntentsFailed,
                         closedIssues: [],
-                        prFindings: arbiter.findings,
-                        prBlocked: arbiter.blocked === true,
+                        prFindings: arbiterIntentsFailed ? [] : arbiter.findings,
+                        prBlocked: !arbiterIntentsFailed && arbiter.blocked === true,
                     };
                 }
                 return {
@@ -521,12 +547,19 @@ describe('крит. 3: три прохода с новыми major → неза�
         expect(s.pushTexts().some((t) => /оставлен человеку|устоял/.test(t))).toBe(false);
     });
 
-    it('спорная карточка не уезжает к самой слабой модели: метки роутинга с неё сняты', () => {
+    it('спорная карточка не уезжает к самой слабой модели: метка роутинга заменена сильнейшей', () => {
         const s = runPhase({ passes: threeFreshMajors, arbiter: { findings: [] } });
         const disputed = s.issues.find((i) => i.title.includes('три'));
         // complexity:low = «механическая задача» по modelRouting.labels, а тут спорный
-        // major, который не развели два ревью и арбитр.
-        expect(disputed?.labels).toEqual(['area:core', 'backlog']);
+        // major, который не развели два ревью и арбитр. Но и БЕЗ метки сложности карточку
+        // оставлять нельзя (#628): она нарушает конвенцию трекера и достаётся
+        // modelRouting.default. Поэтому слабая метка заменена сильнейшей, а не снята.
+        //
+        // Ждём именно `expert`, а не `high`: обе метки фикстуры ведут на ОДНУ модель, и
+        // ничью разрешает старшинство меток, которое оркестратор передаёт ядру
+        // (`labelPriority: COMPLEXITY_PRIORITY`) — тем же порядком, каким сам выбирает
+        // маршрут в `pickRoute`. Уберут проводку — здесь приедет `complexity:high`.
+        expect(disputed?.labels).toEqual(['complexity:expert', 'area:core', 'backlog']);
     });
 
     it('собственная косметика арбитра тоже становится карточкой — промпт ей это обещает', () => {
@@ -564,6 +597,237 @@ describe('крит. 3: три прохода с новыми major → неза�
         });
         expect(s.addBlockedLabelFn).toHaveBeenCalledTimes(1);
         expect(s.merged()).toBe(false);
+    });
+});
+
+describe('#628: «арбитр отработал» — состояние ПОСЛЕ вердикта, а не до запуска сессии', () => {
+    const threeFreshMajors = [
+        { findings: [major('раз', 1)] },
+        { findings: [major('два', 2)] },
+        { findings: [major('три', 3)] },
+    ];
+
+    // Симптом: флаг писался на диск ДО запуска арбитра, а сессия идёт десятки минут.
+    // Падение процесса в этом окне оставляло состояние «арбитр уже высказался» — и после
+    // рестарта первый же блокер уходил в безусловный мердж (ветка next.arbitrated).
+    it('сессия арбитра упала → флаг НЕ выставлен, фаза ушла в разбор blocked', () => {
+        const s = runPhase({ passes: threeFreshMajors, arbiterCode: 1, gate: 'blocked' });
+
+        expect(s.arbiterPrompts()).toHaveLength(1);
+        expect(s.ladder().arbitrated).toBe(false);
+        expect(s.addBlockedLabelFn).toHaveBeenCalledTimes(1);
+        expect(s.merged()).toBe(false);
+    });
+
+    it('батч намерений арбитра не применился → флаг НЕ выставлен (вердикта нет)', () => {
+        const s = runPhase({
+            passes: threeFreshMajors,
+            arbiterIntentsFailed: true,
+            gate: 'blocked',
+        });
+
+        expect(s.ladder().arbitrated).toBe(false);
+        expect(s.addBlockedLabelFn).toHaveBeenCalledTimes(1);
+        expect(s.merged()).toBe(false);
+    });
+
+    it('арбитра звать нечем (модель не задана) → флаг НЕ выставлен, сессии не было', () => {
+        const s = runPhase({
+            passes: threeFreshMajors,
+            config: cfg({
+                review: {
+                    default: REVIEW_MODEL,
+                    escalated: REVIEW_MODEL,
+                    fallback: REVIEW_MODEL,
+                    arbiter: 'none',
+                    maxTurns: 80,
+                    backlogLabels: ['complexity:low', 'area:core', 'backlog'],
+                    // Порядок сил — общий для фикстуры: боевой preflight
+                    // (assertKnownReviewModels) требует, чтобы review.default входил в
+                    // список, а 'none' — маркер «модели нет», не идентификатор. Ветке
+                    // проверяемого сценария список и не нужен: arbiter: 'none' сам по
+                    // себе даёт strongerReviewModel('none', null) === null.
+                    modelStrength: [WEAK_MODEL, STRONG_MODEL, REVIEW_MODEL, ARBITER_MODEL],
+                },
+            }),
+        });
+
+        expect(s.arbiterPrompts()).toHaveLength(0);
+        expect(s.ladder().arbitrated).toBe(false);
+        expect(s.addBlockedLabelFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('вердикт получен и намерения применены → флаг выставлен ровно один раз', () => {
+        const s = runPhase({ passes: threeFreshMajors, arbiter: { findings: [] } });
+        expect(s.ladder().arbitrated).toBe(true);
+        expect(s.merged()).toBe(true);
+    });
+});
+
+describe('#630: унаследованный «арбитр отработал» не проносит СВЕЖИЙ блокер мимо барьера', () => {
+    // Третий вход в лестницу с чужим состоянием — рестарт процесса при submitted === false.
+    // Флаг пишется на диск раньше, чем state.submitted (между ними — заведение карточек,
+    // синк доски и пуш в Telegram), поэтому смерть процесса в этом окне оставляет
+    // {arbitrated: true, submitted: false}. Рестарт гонит ВЕСЬ цикл сдачи заново: новое
+    // ревью, новая сессия правок — то есть новый код, которого арбитр не видел.
+    const restarted = () =>
+        mkState({
+            submitted: false,
+            reviewOfFixes: {
+                passes: FIX_REVIEW_MAX_PASSES,
+                rounds: FIX_REVIEW_MAX_PASSES,
+                answered: [],
+                disputes: {},
+                settled: [],
+                arbitrated: true,
+            },
+        });
+
+    it('свежий blocker по новому коду поднимает арбитра, а не уезжает в мердж непрочитанным', () => {
+        const s = runPhase({
+            state: restarted(),
+            passes: [{ findings: [blocker('регрессия нового круга', 4)] }],
+            arbiter: { findings: [] },
+        });
+
+        // Барьер отработал: находку судил арбитр, а не унаследованный флаг.
+        expect(s.arbiterPrompts()).toHaveLength(1);
+        // Не воспроизвёл — карточка и мердж; это штатный исход лестницы, а не обход.
+        expect(s.issues.some((i) => /регрессия нового круга/.test(i.title))).toBe(true);
+        expect(s.merged()).toBe(true);
+    });
+
+    it('арбитр свежий блокер воспроизвёл → разбор blocked, мерджа нет', () => {
+        const s = runPhase({
+            state: restarted(),
+            passes: [{ findings: [blocker('регрессия нового круга', 4)] }],
+            arbiter: { findings: [blocker('регрессия нового круга', 4)], blocked: true },
+            gate: 'blocked',
+        });
+
+        expect(s.arbiterPrompts()).toHaveLength(1);
+        expect(s.merged()).toBe(false);
+    });
+
+    it('ПОВТОРНОЕ замечание, по которому вердикт ПОЛУЧЕН, мердж по-прежнему не держит', () => {
+        // Ради этого ветка и заведена: спор, который арбитр уже разрешил, второй раз петлю
+        // не крутит. «Разрешил» — это ключ находки в `arbitratedKeys`, положенный туда
+        // вместе с вердиктом «не воспроизвёл», а не булев флаг на диске.
+        const s = runPhase({
+            state: mkState({
+                submitted: false,
+                reviewOfFixes: {
+                    passes: FIX_REVIEW_MAX_PASSES,
+                    rounds: FIX_REVIEW_MAX_PASSES,
+                    answered: [findingKey(blocker('спорное', 4))],
+                    disputes: {},
+                    settled: [],
+                    arbitrated: true,
+                    arbitratedKeys: [findingKey(blocker('спорное', 4))],
+                },
+            }),
+            passes: [{ findings: [blocker('спорное', 4)] }],
+        });
+
+        expect(s.arbiterPrompts()).toHaveLength(0);
+        expect(s.merged()).toBe(true);
+    });
+});
+
+describe('#630-2: унаследованный флаг не хоронит блокер и на ВТОРОМ круге', () => {
+    // Сужение «гасим только повторные» закрывало ровно ОДНУ подачу находки: кругом позже
+    // та же находка становилась повторной (её ключ лестница сама записала в `answered`) и
+    // уходила в безусловный мердж — без арбитра, без карточки, то есть бесследно. Условие
+    // срабатывания не редкость, а штатный путь модуля: находка, пережившая один круг
+    // правок, — ровно тот случай, ради которого заведены споры и пинг-понг.
+    //
+    // Состояние — то самое окно рестарта: флаг лёг на диск раньше `submitted`, а ключей
+    // вердикта в нём нет (арбитр судил ПРОШЛЫЙ код, а после рестарта прогоняется весь
+    // цикл сдачи заново — новое ревью, новая сессия правок).
+    const inheritedFlagOnly = () =>
+        mkState({
+            submitted: false,
+            reviewOfFixes: {
+                passes: 0,
+                rounds: 0,
+                answered: [],
+                disputes: {},
+                settled: [],
+                arbitrated: true,
+                arbitratedKeys: [],
+            },
+        });
+
+    it('вариант A: сессия правок замечание не приняла → спор доходит до карточки, а не до тихого мерджа', () => {
+        const s = runPhase({
+            state: inheritedFlagOnly(),
+            // Первая сессия правок (по ревью фазы) запушила код — лестница началась. Дальше
+            // дифф правок пуст: сессия замечание не приняла, и проход предъявляет его
+            // повторно. Ровно здесь прежняя редакция отдавала мердж.
+            fixDiffFiles: [['src/a.ts'], []],
+            passes: [
+                { findings: [blocker('регрессия правок', 4)] },
+                { findings: [blocker('регрессия правок', 4)] },
+                { findings: [blocker('регрессия правок', 4)] },
+            ],
+        });
+
+        // Находка не исчезла: спор дошёл до предела и закрыт карточкой с обеими позициями —
+        // тот же исход, что и без унаследованного флага (контроль ревью #630).
+        const dispute = s.issues.find((i) => i.title.startsWith('Спор ревью и правок'));
+        expect(dispute).toBeDefined();
+        expect(dispute?.body).toContain('регрессия правок');
+        expect(s.logs.some((l) => /круг 2: .*повторных 1.* → fix/.test(l))).toBe(true);
+    });
+
+    it('вариант B: правки запушены, но ревью предъявляет ТОТ ЖЕ блокер → ещё круг правок', () => {
+        const s = runPhase({
+            state: inheritedFlagOnly(),
+            passes: [
+                { findings: [blocker('починили не то', 4)] },
+                { findings: [blocker('починили не то', 4)] },
+            ],
+        });
+
+        // Круг правок по повторной находке состоялся: сессий правок три (по ревью фазы и по
+        // двум кругам лестницы). Под прежней редакцией второй круг заменялся мерджем.
+        expect(s.fixPrompts()).toHaveLength(3);
+        expect(s.logs.some((l) => /круг 2: .*повторных 1.* → fix/.test(l))).toBe(true);
+    });
+
+    it('вердикт арбитра ложится на диск ПОИМЁННО — ключами разобранных находок', () => {
+        const s = runPhase({
+            passes: [
+                { findings: [major('раз', 1)] },
+                { findings: [major('два', 2)] },
+                { findings: [major('три', 3)] },
+            ],
+            arbiter: { findings: [] },
+        });
+
+        expect(s.ladder().arbitrated).toBe(true);
+        // Ровно то, что арбитру предъявили (`decision.blocking` последнего круга) — те же
+        // находки, на которые он же завёл карточки. Находки прошлых кругов сюда не входят:
+        // их сняли сессии правок, мердж они не держат и гасить в них нечего.
+        expect(s.ladder().arbitratedKeys).toEqual([findingKey(major('три', 3))]);
+        expect(s.issues.some((i) => i.title.includes('три'))).toBe(true);
+    });
+
+    it('арбитр блокер ВОСПРОИЗВЁЛ → его ключ на диск не ложится: повтор гасить нечем', () => {
+        const s = runPhase({
+            passes: [
+                { findings: [major('раз', 1)] },
+                { findings: [major('два', 2)] },
+                { findings: [blocker('настоящая дыра', 3)] },
+            ],
+            arbiter: { findings: [blocker('настоящая дыра', 3)], blocked: true },
+            gate: 'blocked',
+        });
+
+        expect(s.merged()).toBe(false);
+        // Подтверждённый дефект — не разрешённый спор: коротким замыканием он не гасится
+        // ни на каком круге, поэтому ключей у него на диске нет.
+        expect(s.ladder().arbitratedKeys).toEqual([]);
     });
 });
 

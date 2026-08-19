@@ -12,6 +12,7 @@ import {
     classifyFixReview,
     countsOf,
     decideAfterFixReview,
+    disputeLabelsFor,
     emptyReviewOfFixes,
     findingKey,
     FIX_REVIEW_MAX_DISPUTES,
@@ -139,6 +140,7 @@ describe('normalizeReviewOfFixes — состояние с диска не га�
                 disputes: { a: 2, b: 'нет', '': 5 },
                 settled: null,
                 arbitrated: 'да',
+                arbitratedKeys: 'src/a.ts|дыра',
             }),
         ).toEqual({
             passes: 0,
@@ -147,6 +149,7 @@ describe('normalizeReviewOfFixes — состояние с диска не га�
             disputes: { a: 2 },
             settled: [],
             arbitrated: false,
+            arbitratedKeys: [],
         });
     });
 
@@ -158,6 +161,7 @@ describe('normalizeReviewOfFixes — состояние с диска не га�
             disputes: { k1: 1 },
             settled: ['k2'],
             arbitrated: true,
+            arbitratedKeys: ['k3'],
         };
         expect(normalizeReviewOfFixes(st)).toEqual(st);
     });
@@ -284,12 +288,98 @@ describe('decideAfterFixReview — что делать по итогам про�
         expect(decideAfterFixReview(c).action).toBe('arbiter');
     });
 
-    it('арбитр уже отработал → фаза идёт на гейт, второй раз петлю не крутим', () => {
-        const c = classifyFixReview([f('🔴 [blocker] раз')], {
+    it('арбитр уже вынес вердикт ПО ЭТОЙ находке → повтор мердж не держит, петлю второй раз не крутим', () => {
+        const first = classifyFixReview([f('🔴 [blocker] раз')], emptyReviewOfFixes());
+        const again = classifyFixReview([f('🔴 [blocker] раз')], {
+            ...first.next,
+            arbitrated: true,
+            // Ключ находки лёг на диск ВМЕСТЕ с вердиктом «не воспроизвёл» — это и есть
+            // разрешённый спор, ради гашения которого ветка заведена.
+            arbitratedKeys: [findingKey(f('🔴 [blocker] раз'))],
+        });
+        expect(again.repeatedBlocking).toHaveLength(1);
+        expect(again.freshBlocking).toHaveLength(0);
+        expect(decideAfterFixReview(again).action).toBe('merge');
+    });
+
+    // #630-2: сужение до `!freshBlocking.length` дефект не закрыло, а сдвинуло на круг.
+    // Унаследованный с диска флаг относится к ПРОШЛОМУ коду, и находка по новому коду,
+    // пережившая один круг правок (штатный путь спора), становилась «повторной» — и
+    // уходила в мердж без арбитра и без карточки. Поэтому спор гасят КЛЮЧИ вердикта.
+    it('флаг унаследован, но вердикта по находке не было → повтор мердж держит (второй круг)', () => {
+        const inherited = { ...emptyReviewOfFixes(), arbitrated: true };
+        const first = classifyFixReview([f('🔴 [blocker] регрессия правок')], inherited);
+        expect(first.freshBlocking).toHaveLength(1);
+        expect(decideAfterFixReview(first).action).toBe('fix');
+
+        const second = classifyFixReview([f('🔴 [blocker] регрессия правок')], first.next);
+        expect(second.repeatedBlocking).toHaveLength(1);
+        expect(second.freshBlocking).toHaveLength(0);
+        const decision = decideAfterFixReview(second);
+        expect(decision.action).toBe('fix');
+        expect(decision.action !== 'merge' && decision.blocking).toHaveLength(1);
+    });
+
+    it('вердикт по одной находке спор гасит, вторую — нет: барьер поимённый, а не оптовый', () => {
+        const judged = f('🔴 [blocker] спорное место', at('src/a.ts', 1));
+        const other = f('🔴 [blocker] другое место', at('src/b.ts', 2));
+        const first = classifyFixReview([judged, other], emptyReviewOfFixes());
+        const again = classifyFixReview([judged, other], {
+            ...first.next,
+            arbitrated: true,
+            arbitratedKeys: [findingKey(judged)],
+        });
+        expect(again.repeatedBlocking).toHaveLength(2);
+        const decision = decideAfterFixReview(again);
+        expect(decision.action).toBe('fix');
+        // В круг правок уходит РОВНО не разобранная арбитром находка: гонять сессию по
+        // тому, что арбитр уже разрешил, значит вернуть стоп, ради отмены которого он и
+        // заведён.
+        expect(decision.action !== 'merge' && decision.blocking.map((i) => i.key)).toEqual([
+            findingKey(other),
+        ]);
+    });
+
+    // #630: `arbitrated` живёт на диске и переживает рестарт процесса, а `submitted`
+    // выставляется ПОЗЖЕ него — то есть после падения в этом окне рестарт гонит весь цикл
+    // сдачи заново, и лестница получает СВЕЖИЙ код с унаследованным флагом. Безусловный
+    // мердж по флагу увёл бы блокер, которого арбитр никогда не видел, прямо в main.
+    it('арбитр отработал, но находка СВЕЖАЯ → барьер не обходится (потолок исчерпан → арбитр)', () => {
+        const c = classifyFixReview([f('🔴 [blocker] регрессия нового круга', at('src/b.ts', 5))], {
+            ...emptyReviewOfFixes(),
+            arbitrated: true,
+            passes: FIX_REVIEW_MAX_PASSES,
+        });
+        expect(c.freshBlocking).toHaveLength(1);
+        expect(decideAfterFixReview(c).action).toBe('arbiter');
+    });
+
+    it('арбитр отработал, находка свежая, потолок ещё есть → круг правок, а не мердж', () => {
+        const c = classifyFixReview([f('🔴 [blocker] регрессия нового круга', at('src/b.ts', 5))], {
             ...emptyReviewOfFixes(),
             arbitrated: true,
         });
-        expect(decideAfterFixReview(c).action).toBe('merge');
+        expect(decideAfterFixReview(c).action).toBe('fix');
+    });
+
+    it('арбитр отработал, повтор + просьба сессии о блоке → всё равно мердж, а не круг', () => {
+        // Вход обязан ДОЙТИ до ветки `next.arbitrated`, иначе тест зелен и при её полном
+        // удалении. Поэтому: повторная блокирующая находка (мимо первой ветки — blocking
+        // непуст) И `blocked: true` (мимо неё же по второму условию).
+        //
+        // Сторожим осознанную трактовку: просьба сессии о метке ПОСЛЕ вердикта арбитра
+        // лестницей гасится — крутить круг правок по тому, что арбитр уже разобрал, значит
+        // вернуть стоп, ради отмены которого он и заведён. Мердж при этом всё равно не
+        // пройдёт: метку `blocked` ставит `applySessionRequests`, и её видит гейт.
+        const first = classifyFixReview([f('🔴 [blocker] спорное место')], emptyReviewOfFixes());
+        const again = classifyFixReview([f('🔴 [blocker] спорное место')], {
+            ...first.next,
+            arbitrated: true,
+            arbitratedKeys: [findingKey(f('🔴 [blocker] спорное место'))],
+        });
+        expect(again.repeatedBlocking).toHaveLength(1);
+        expect(again.freshBlocking).toHaveLength(0);
+        expect(decideAfterFixReview(again, { blocked: true }).action).toBe('merge');
     });
 });
 
@@ -354,5 +444,172 @@ describe('карточки: незакрытая косметика и закр�
         const issue = backlogIssueFor(c.cosmetic[0], { milestone: 'M1', pr: null });
         expect(issue.body).toContain('src/a.ts:7');
         expect(issue.body).not.toContain('PR #');
+    });
+});
+
+describe('disputeLabelsFor — метка роутинга у спорной карточки ЗАМЕНЯЕТСЯ, а не снимается (#628)', () => {
+    // Порядок сил и роутинг — как в боевом конфиге: complexity:low ведёт на самую слабую
+    // («механическую») модель, complexity:high — на сильную.
+    const strength = ['haiku', 'sonnet', 'opus', 'fable'];
+    const routing = { 'complexity:low': 'haiku', 'complexity:high': 'opus' };
+    const base = ['complexity:low', 'area:core', 'backlog'];
+
+    it('слабая метка роутинга заменена сильнейшей, остальные метки на месте', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: routing,
+                modelStrength: strength,
+            }),
+        ).toEqual(['complexity:high', 'area:core', 'backlog']);
+    });
+
+    it('запись { provider, model } читается так же, как строка', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: {
+                    'complexity:low': { provider: 'claude', model: 'haiku' },
+                    'complexity:high': { provider: 'openai', model: 'fable' },
+                },
+                modelStrength: strength,
+            }),
+        ).toEqual(['complexity:high', 'area:core', 'backlog']);
+    });
+
+    it('несколько меток роутинга в базе → остаётся ОДНА сильнейшая, дублей нет', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: ['complexity:low', 'complexity:high', 'area:core'],
+                routingLabels: routing,
+                modelStrength: strength,
+            }),
+        ).toEqual(['complexity:high', 'area:core']);
+    });
+
+    it('ничья по силе разрешается СТАРШИНСТВОМ меток, как в pickRoute', () => {
+        // Боевая форма: complexity:high и complexity:expert ведут на одну модель. Для
+        // роутинга разницы нет, а метку читает человек — «сильнейшая» обязана значить
+        // одно и то же и здесь, и в pickRoute (перебор по COMPLEXITY_PRIORITY).
+        const tie = { 'complexity:high': 'opus', 'complexity:expert': 'opus' };
+        expect(
+            disputeLabelsFor({
+                backlogLabels: ['complexity:low', 'area:core'],
+                routingLabels: { 'complexity:low': 'haiku', ...tie },
+                modelStrength: strength,
+                labelPriority: ['complexity:expert', 'complexity:high', 'complexity:low'],
+            }),
+        ).toEqual(['complexity:expert', 'area:core']);
+    });
+
+    it('старшинство меток не задано — ничья решается порядком конфига, вход не мутируется', () => {
+        // Результат обязан быть одинаковым от прогона к прогону: иначе карточки одной
+        // фазы получали бы разные метки. Само правило сторожит `toEqual` по литералу ниже —
+        // он краснеет от ЛЮБОГО изменения разрешения ничьей.
+        //
+        // Отдельно проверяется то, чего литерал не видит: функция чистая и вход не портит.
+        // Аргументы приходят из живого конфига (`cfg.modelRouting.labels`, `backlogLabels`),
+        // и мутация здесь тихо меняла бы роутинг остального прогона. `Object.freeze` ловит
+        // это на месте (в strict-режиме модулей запись в замороженное — исключение), сверка
+        // копий — на случай перестановки без записи.
+        const args = Object.freeze({
+            backlogLabels: Object.freeze(['complexity:low', 'area:core']),
+            routingLabels: Object.freeze({
+                'complexity:low': 'haiku',
+                'complexity:high': 'opus',
+                'complexity:expert': 'opus',
+            }),
+            modelStrength: strength,
+        });
+        const before = structuredClone({
+            backlogLabels: args.backlogLabels,
+            routingLabels: args.routingLabels,
+        });
+        expect(disputeLabelsFor(args)).toEqual(['complexity:high', 'area:core']);
+        expect({
+            backlogLabels: args.backlogLabels,
+            routingLabels: args.routingLabels,
+        }).toEqual(before);
+    });
+
+    it('метка вне порядка старшинства младше перечисленных при равной силе модели', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: ['complexity:low', 'area:core'],
+                routingLabels: {
+                    'complexity:low': 'haiku',
+                    'area:weird': 'opus',
+                    'complexity:high': 'opus',
+                },
+                modelStrength: strength,
+                labelPriority: ['complexity:expert', 'complexity:high', 'complexity:low'],
+            }),
+        ).toEqual(['complexity:high', 'area:core']);
+    });
+
+    it('метки роутинга в базе не было — новой не появляется', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: ['area:core', 'backlog'],
+                routingLabels: routing,
+                modelStrength: strength,
+            }),
+        ).toEqual(['area:core', 'backlog']);
+    });
+
+    // #630: шкала здесь чужая по происхождению — `review.modelStrength` ранжирует модели
+    // РЕВЬЮ, а метки роутинга ведут на КОДЕРСКИЕ модели. Совпадают они только пока проект
+    // держит в обоих ключах одни и те же claude-имена; кросс-провайдерная запись (#376)
+    // ломает совпадение молча, и «сильнейшей» без этого барьера объявлялась бы
+    // единственная известная — сплошь и рядом та самая механическая complexity:low.
+    it('ЧАСТЬ моделей роутинга вне порядка сил → метка снимается, а не отдаётся известной слабой', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: {
+                    'complexity:low': 'haiku',
+                    'complexity:high': { provider: 'kimi', model: 'kimi-k2-thinking' },
+                },
+                modelStrength: strength,
+            }),
+        ).toEqual(['area:core', 'backlog']);
+    });
+
+    it('запись роутинга без имени модели — тот же fail-closed, а не «слабейшая»', () => {
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: {
+                    'complexity:low': 'haiku',
+                    'complexity:high': { provider: 'kimi' },
+                },
+                modelStrength: strength,
+            }),
+        ).toEqual(['area:core', 'backlog']);
+    });
+
+    it('роутинг ведёт на модели вне порядка сил → метка снимается (назвать сильнейшую нечем)', () => {
+        // Деградация к прежнему поведению: карточка достаётся modelRouting.default.
+        // Ставить «любую» нельзя — с равной вероятностью это была бы механическая модель.
+        expect(
+            disputeLabelsFor({
+                backlogLabels: base,
+                routingLabels: { 'complexity:low': 'чужая-модель' },
+                modelStrength: strength,
+            }),
+        ).toEqual(['area:core', 'backlog']);
+    });
+
+    it('роутинга нет вовсе / база пуста — не падает и ничего не выдумывает', () => {
+        expect(
+            disputeLabelsFor({ backlogLabels: base, routingLabels: {}, modelStrength: strength }),
+        ).toEqual(base);
+        expect(
+            disputeLabelsFor({
+                backlogLabels: [],
+                routingLabels: routing,
+                modelStrength: strength,
+            }),
+        ).toEqual([]);
     });
 });
